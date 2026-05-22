@@ -71,6 +71,39 @@ def _hf_cache_root(*, create: bool = False) -> Optional[Path]:
     return root if root.is_dir() else None
 
 
+def _hf_cache_roots() -> list[Path]:
+    """Every existing HF hub cache the listing also scans: the active
+    ``HF_HUB_CACHE``, the legacy Unsloth cache, and the platform default.
+
+    Status detection (partial / resumable / transport marker) must cover
+    the same roots the model and dataset listings draw from, otherwise a
+    repo cached under the legacy or default root is shown but its partial
+    state is read from the active root only and reported as complete.
+    Deduped by resolved path. Write operations stay on the active root via
+    :func:`_hf_cache_root`."""
+    from utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Optional[Path]) -> None:
+        if path is None or not path.is_dir():
+            return
+        try:
+            key = str(path.resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path)
+
+    _add(_hf_cache_root())
+    _add(legacy_hf_cache_dir())
+    _add(hf_default_cache_dir())
+    return roots
+
+
 def _target_dir_name(repo_type: str, repo_id: str) -> str:
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
 
@@ -86,16 +119,14 @@ def _blob_dir_is_partial(blobs_dir: Path) -> bool:
 
 
 def iter_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
-    root = _hf_cache_root()
-    if root is None:
-        return
     target = _target_dir_name(repo_type, repo_id)
-    try:
-        for entry in root.iterdir():
-            if entry.name.lower() == target:
-                yield entry
-    except OSError:
-        return
+    for root in _hf_cache_roots():
+        try:
+            for entry in root.iterdir():
+                if entry.name.lower() == target:
+                    yield entry
+        except OSError:
+            continue
 
 
 def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
@@ -110,20 +141,18 @@ def partial_repo_ids(repo_type: str, repo_ids: Iterable[str]) -> set[str]:
     wanted = {_target_dir_name(repo_type, r): r for r in repo_ids}
     if not wanted:
         return set()
-    root = _hf_cache_root()
-    if root is None:
-        return set()
     partial: set[str] = set()
-    try:
-        for entry in root.iterdir():
-            repo_id = wanted.get(entry.name.lower())
-            if repo_id is None or repo_id in partial:
-                continue
-            blobs_dir = entry / "blobs"
-            if blobs_dir.is_dir() and _blob_dir_is_partial(blobs_dir):
-                partial.add(repo_id)
-    except OSError:
-        pass
+    for root in _hf_cache_roots():
+        try:
+            for entry in root.iterdir():
+                repo_id = wanted.get(entry.name.lower())
+                if repo_id is None or repo_id in partial:
+                    continue
+                blobs_dir = entry / "blobs"
+                if blobs_dir.is_dir() and _blob_dir_is_partial(blobs_dir):
+                    partial.add(repo_id)
+        except OSError:
+            continue
     return partial
 
 

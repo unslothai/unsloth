@@ -16,10 +16,14 @@ import {
   getModelTransportStatus,
   startDatasetDownload,
   startModelDownload,
-} from "@/features/chat/api/chat-api";
+} from "@/features/chat";
 import { getHfToken } from "@/stores/hf-token-store";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  type StateStorage,
+  createJSONStorage,
+  persist,
+} from "zustand/middleware";
 import type { TransportConflictInfo } from "../components/transport-conflict-dialog";
 import { bumpInventoryVersion } from "../inventory-events";
 import { getTransportMode } from "../lib/transport-preference";
@@ -89,6 +93,15 @@ const CANCELLED_LINGER_MS = 6_000;
 const ERROR_LINGER_MS = 12_000;
 
 const PERSIST_KEY = "unsloth.studio.downloads";
+
+// Fallback when there is no DOM (tests, non-browser tooling). The getter must
+// return a real store, not `undefined`: createJSONStorage wraps whatever it
+// gets, so `undefined` would make hydration throw on the first write.
+const noopStorage: StateStorage = {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+};
 const ACTIVE_STATES: ReadonlySet<DownloadJobState> = new Set([
   "running",
   "cancelling",
@@ -129,6 +142,36 @@ interface ProgressLike {
   downloaded_bytes: number;
   expected_bytes: number;
   progress: number;
+}
+
+// AbortSignal.any is unavailable on older WebView engines (WebKitGTK < 2.44,
+// Safari < 17.4) while AbortSignal.timeout is not, so combine the abort signal
+// with the request deadline by hand there; without this every poll throws and
+// downloads fail with a misleading "lost contact" error.
+function pollSignal(parent: AbortSignal, timeoutMs: number): AbortSignal {
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([parent, AbortSignal.timeout(timeoutMs)]);
+  }
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parent.reason);
+  if (parent.aborted) {
+    controller.abort(parent.reason);
+  } else {
+    parent.addEventListener("abort", onParentAbort, { once: true });
+  }
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("Request timed out.", "TimeoutError")),
+    timeoutMs,
+  );
+  controller.signal.addEventListener(
+    "abort",
+    () => {
+      clearTimeout(timer);
+      parent.removeEventListener("abort", onParentAbort);
+    },
+    { once: true },
+  );
+  return controller.signal;
 }
 
 function apiGetStatus(job: ManagedDownload, signal: AbortSignal) {
@@ -208,7 +251,9 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     }),
     {
       name: PERSIST_KEY,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() =>
+        typeof window === "undefined" ? noopStorage : window.localStorage,
+      ),
       // Only in-flight jobs are worth restoring; everything else is transient
       // UI that should not survive a reload. Conflicts are never persisted.
       partialize: (state) => ({
@@ -382,10 +427,7 @@ async function tick(key: string): Promise<void> {
   const abort = rt.abort;
   try {
     const signal = abort
-      ? AbortSignal.any([
-          abort.signal,
-          AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
-        ])
+      ? pollSignal(abort.signal, POLL_REQUEST_TIMEOUT_MS)
       : AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS);
     const [progressResp, status] = await Promise.all([
       apiGetProgress(job, signal),

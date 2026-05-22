@@ -25,7 +25,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
@@ -261,7 +261,7 @@ function ModelStatusChips({
   );
 }
 
-export function ModelInspector({
+export const ModelInspector = memo(function ModelInspector({
   model,
   isActive,
   activeGgufVariant,
@@ -302,21 +302,24 @@ export function ModelInspector({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const datasetRepoId =
     isDataset && model?.hubRepoId ? model.hubRepoId : null;
-  const [datasetSize, setDatasetSize] = useState<DatasetSizeInfo | null>(null);
+  const datasetSizeKey = datasetRepoId ?? "";
+  const [datasetSizeState, setDatasetSizeState] = useState<{
+    key: string;
+    value: DatasetSizeInfo | null;
+  }>(() => ({ key: datasetSizeKey, value: null }));
+  const datasetSize =
+    datasetSizeState.key === datasetSizeKey ? datasetSizeState.value : null;
   useEffect(() => {
-    if (!datasetRepoId) {
-      setDatasetSize(null);
-      return;
-    }
+    if (!datasetRepoId) return;
     let cancelled = false;
     void fetchDatasetSize(datasetRepoId).then((res) => {
       if (cancelled) return;
-      setDatasetSize(res);
+      setDatasetSizeState({ key: datasetSizeKey, value: res });
     });
     return () => {
       cancelled = true;
     };
-  }, [datasetRepoId]);
+  }, [datasetRepoId, datasetSizeKey]);
 
   const descScrollRef = useRef<HTMLDivElement | null>(null);
   const [descScrolled, setDescScrolled] = useState(false);
@@ -610,4 +613,4 @@ export function ModelInspector({
       <div aria-hidden="true" className="h-3 shrink-0" />
     </div>
   );
-}
+});

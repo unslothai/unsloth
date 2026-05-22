@@ -191,7 +191,7 @@ export function useHfPaginatedSearch<T>(
     setRetryNonce((n) => n + 1);
   }, []);
 
-  const fetchMore = useCallback(() => {
+  const fetchMore = useCallback(function fetchMoreInner() {
     // Synchronous in-flight gate. Runs before any setState so concurrent
     // fires from sibling observers all see the same truth and only one
     // proceeds — this closes the race window React's batched commit opens.
@@ -208,7 +208,7 @@ export function useHfPaginatedSearch<T>(
         trailingTimerRef.current = setTimeout(
           () => {
             trailingTimerRef.current = null;
-            fetchMore();
+            fetchMoreInner();
           },
           MIN_FETCH_INTERVAL_MS - elapsed,
         );

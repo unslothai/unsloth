@@ -7,7 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { deleteCachedModel } from "@/features/chat/api/chat-api";
+import { deleteCachedModel } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
@@ -56,23 +56,29 @@ export function SafetensorsDownloadCard({
   onChange?: (hint?: InventoryHint) => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const [modelTotalBytes, setModelTotalBytes] = useState<number | null>(null);
+  const sizeKey = `${repoId}::${hfToken ?? ""}`;
+  const [modelSize, setModelSize] = useState<{
+    key: string;
+    bytes: number | null;
+  }>(() => ({ key: sizeKey, bytes: null }));
+  const modelTotalBytes = modelSize.key === sizeKey ? modelSize.bytes : null;
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    setModelTotalBytes(null);
     if (!repoId) return;
     let cancelled = false;
     void fetchModelSize(repoId, hfToken || undefined).then((info) => {
       if (cancelled || !info) return;
       const upstream = info.weightsBytes ?? info.totalBytes;
-      if (upstream && upstream > 0) setModelTotalBytes(upstream);
+      if (upstream && upstream > 0) {
+        setModelSize({ key: sizeKey, bytes: upstream });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [repoId, hfToken]);
+  }, [repoId, hfToken, sizeKey]);
 
   const job = useRepoDownload({
     kind: "model",
@@ -202,14 +208,16 @@ export function SafetensorsDownloadCard({
       <CardDivider />
       {showActionPair ? (
         <div className="group/pair flex h-9 shrink-0 items-stretch gap-1.5">
-          <button
-            type="button"
-            onClick={() => onTrain?.()}
-            className="hub-action-btn w-24"
-          >
-            <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-            Train
-          </button>
+          {onTrain && (
+            <button
+              type="button"
+              onClick={onTrain}
+              className="hub-action-btn w-24"
+            >
+              <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
+              Train
+            </button>
+          )}
           <button
             type="button"
             disabled={isLoadingThisModel}

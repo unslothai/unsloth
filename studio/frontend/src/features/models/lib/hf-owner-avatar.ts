@@ -70,6 +70,12 @@ function readCache(name: string): AvatarCacheEntry | null {
   return entry;
 }
 
+function readCachedUrl(name: string): string | null {
+  if (!name) return null;
+  const entry = readCache(name);
+  return entry?.kind === "url" ? entry.url : null;
+}
+
 function transientMiss(name: string): AvatarCacheEntry {
   const prev = cache.get(name);
   const failures = prev?.kind === "miss-transient" ? prev.failures + 1 : 1;
@@ -153,17 +159,13 @@ export function invalidateOwnerAvatar(owner?: string): void {
 
 export function useHfOwnerAvatar(owner: string | null | undefined): string | null {
   const key = owner?.trim() ?? "";
-  const [url, setUrl] = useState<string | null>(() => {
-    if (!key) return null;
-    const entry = readCache(key);
-    return entry?.kind === "url" ? entry.url : null;
+  const [state, setState] = useState<{ key: string; url: string | null }>(() => {
+    return { key, url: readCachedUrl(key) };
   });
+  const url = state.key === key ? state.url : readCachedUrl(key);
 
   useEffect(() => {
-    if (!key) {
-      setUrl(null);
-      return;
-    }
+    if (!key) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -177,26 +179,26 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
     const attempt = async () => {
       const cached = readCache(key);
       if (cached?.kind === "url") {
-        if (!cancelled) setUrl(cached.url);
+        if (!cancelled) setState({ key, url: cached.url });
         if (cached.expiresAt <= Date.now()) {
           void loadAvatar(key).then((next) => {
-            if (!cancelled && next) setUrl(next);
+            if (!cancelled && next) setState({ key, url: next });
           });
         }
         return;
       }
       if (cached?.kind === "miss-permanent") {
-        if (!cancelled) setUrl(null);
+        if (!cancelled) setState({ key, url: null });
         return;
       }
       if (cached?.kind === "miss-transient") {
-        if (!cancelled) setUrl(null);
+        if (!cancelled) setState({ key, url: null });
         scheduleRetry(cached.until);
         return;
       }
       const next = await loadAvatar(key);
       if (cancelled) return;
-      setUrl(next);
+      setState({ key, url: next });
       if (next == null) {
         const post = readCache(key);
         if (post?.kind === "miss-transient") {

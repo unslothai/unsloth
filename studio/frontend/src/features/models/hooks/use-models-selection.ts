@@ -50,7 +50,21 @@ export function useModelsSelection({
   const [downloadedSelectedId, setDownloadedSelectedId] = useState<
     string | null
   >(null);
-  const selectedId = isDiscoverTab ? discoverSelectedId : downloadedSelectedId;
+  const effectiveDiscoverSelectedId =
+    discoverSelectedId &&
+    filteredDiscoverRows.some((row) => row.id === discoverSelectedId)
+      ? discoverSelectedId
+      : (filteredDiscoverRows[0]?.id ?? null);
+  const downloadedStillSelected =
+    downloadedSelectedId != null &&
+    (filteredCachedRows.some((row) => row.id === downloadedSelectedId) ||
+      filteredLocalRows.some((row) => row.id === downloadedSelectedId));
+  const effectiveDownloadedSelectedId = downloadedStillSelected
+    ? downloadedSelectedId
+    : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id ?? null);
+  const selectedId = isDiscoverTab
+    ? effectiveDiscoverSelectedId
+    : effectiveDownloadedSelectedId;
   const setSelected = useCallback(
     (id: string) => {
       if (isDiscoverTab) setDiscoverSelectedId(id);
@@ -59,38 +73,11 @@ export function useModelsSelection({
     [isDiscoverTab],
   );
 
-  const [selectedRepoMetadata, setSelectedRepoMetadata] =
-    useState<ReturnType<typeof toHfModelResult>>(null);
-  const [metadataErrorRepo, setMetadataErrorRepo] = useState<string | null>(
-    null,
-  );
-
-  useEffect(() => {
-    if (isDiscoverTab) {
-      if (
-        discoverSelectedId &&
-        filteredDiscoverRows.some((row) => row.id === discoverSelectedId)
-      )
-        return;
-      setDiscoverSelectedId(filteredDiscoverRows[0]?.id ?? null);
-      return;
-    }
-    const stillSelected =
-      downloadedSelectedId != null &&
-      (filteredCachedRows.some((row) => row.id === downloadedSelectedId) ||
-        filteredLocalRows.some((row) => row.id === downloadedSelectedId));
-    if (stillSelected) return;
-    setDownloadedSelectedId(
-      filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id ?? null,
-    );
-  }, [
-    isDiscoverTab,
-    filteredCachedRows,
-    filteredDiscoverRows,
-    filteredLocalRows,
-    discoverSelectedId,
-    downloadedSelectedId,
-  ]);
+  const [metadataState, setMetadataState] = useState<{
+    repoId: string;
+    result: ReturnType<typeof toHfModelResult>;
+    error: boolean;
+  }>(() => ({ repoId: "", result: null, error: false }));
 
   const selectedDiscoverRow = useMemo(
     () =>
@@ -135,44 +122,43 @@ export function useModelsSelection({
   useEffect(() => {
     let cancelled = false;
 
-    if (!selectedHubRepoId) {
-      setSelectedRepoMetadata(null);
-      return;
-    }
+    if (isDatasetMode || !selectedHubRepoId || selectedResultFromFeed) return;
 
-    if (selectedResultFromFeed) {
-      setSelectedRepoMetadata(selectedResultFromFeed);
-      return;
-    }
-
-    setSelectedRepoMetadata(null);
     void cachedModelInfo({
       name: selectedHubRepoId,
       ...(accessToken ? { accessToken } : {}),
     })
       .then((result) => {
         if (cancelled) return;
-        setSelectedRepoMetadata(toHfModelResult(result));
-        setMetadataErrorRepo((repo) =>
-          repo === selectedHubRepoId ? null : repo,
-        );
+        setMetadataState({
+          repoId: selectedHubRepoId,
+          result: toHfModelResult(result),
+          error: false,
+        });
       })
       .catch(() => {
         if (cancelled) return;
-        setMetadataErrorRepo(selectedHubRepoId);
+        setMetadataState({
+          repoId: selectedHubRepoId,
+          result: null,
+          error: true,
+        });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedHubRepoId, selectedResultFromFeed, accessToken]);
+  }, [isDatasetMode, selectedHubRepoId, selectedResultFromFeed, accessToken]);
 
+  const selectedRepoMetadata =
+    metadataState.repoId === selectedHubRepoId ? metadataState.result : null;
   const selectedHfResult = selectedResultFromFeed ?? selectedRepoMetadata;
   const metadataUnavailable =
     !isDatasetMode &&
     !selectedResultFromFeed &&
     !!selectedHubRepoId &&
-    metadataErrorRepo === selectedHubRepoId;
+    metadataState.repoId === selectedHubRepoId &&
+    metadataState.error;
 
   const selectedModel = useSelectedModelView({
     selectedDiscoverRow,

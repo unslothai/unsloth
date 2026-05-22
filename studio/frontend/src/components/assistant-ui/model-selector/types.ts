@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ReactNode } from "react";
-import type { PerModelConfig } from "@/features/chat/model-config/per-model-config";
+import type { PerModelConfig } from "@/features/chat";
 
 export interface ModelOption {
   id: string;

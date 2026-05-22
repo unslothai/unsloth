@@ -65,9 +65,7 @@ const PREFS_KEYS: string[] = [
 ];
 
 // Set to true from resetAllPrefs so the unmount-commit effect skips writing
-// back the in-memory draft. Otherwise the cleanup would re-persist the old
-// HF token into localStorage after it was just cleared, and the subsequent
-// reload would read the re-written value.
+// back the in-memory draft after local preferences were just cleared.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -79,6 +77,7 @@ function resetAllPrefs() {
       // ignore
     }
   }
+  useHfTokenStore.getState().clearToken();
   window.location.reload();
 }
 

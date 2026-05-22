@@ -13,8 +13,8 @@ import {
   type CachedDatasetRepo,
   listCachedDatasets,
   listLocalDatasets,
-} from "@/features/training/api/datasets-api";
-import type { LocalDatasetInfo } from "@/features/training/types/datasets";
+  type LocalDatasetInfo,
+} from "@/features/training";
 import {
   useDebouncedValue,
   useHfDatasetSearch,
@@ -345,6 +345,7 @@ export function TrainDatasetPicker() {
                 isLoading={isLoadingHf}
                 isLoadingMore={isLoadingHfMore}
                 value={dataset}
+                hasQuery={activeQuery.length > 0}
                 error={hfError}
                 onPick={(id) => {
                   selectHfDataset(id);
@@ -445,6 +446,7 @@ function HubList({
   isLoading,
   isLoadingMore,
   value,
+  hasQuery,
   error,
   onPick,
   onRetry,
@@ -454,6 +456,7 @@ function HubList({
   isLoading: boolean;
   isLoadingMore: boolean;
   value: string | null;
+  hasQuery: boolean;
   error: string | null;
   onPick: (id: string) => void;
   onRetry: () => void;
@@ -483,6 +486,7 @@ function HubList({
         </div>
       );
     }
+    if (hasQuery) return null;
     return (
       <div className="px-4 py-8 text-center text-xs text-muted-foreground">
         No datasets found.

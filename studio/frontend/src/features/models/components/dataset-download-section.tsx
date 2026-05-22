@@ -6,8 +6,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getDatasetDownloadProgress } from "@/features/chat/api/chat-api";
-import { deleteCachedDataset } from "@/features/training/api/datasets-api";
+import { getDatasetDownloadProgress } from "@/features/chat";
+import { deleteCachedDataset } from "@/features/training";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { TrainIcon } from "@/components/icons/train-icon";
 import { DotTag } from "./dot-tag";
@@ -42,8 +42,13 @@ export function DatasetDownloadSection({
   onTrain?: () => void;
   onChange?: (hint?: InventoryHint) => void;
 }) {
-  const [totalBytes, setTotalBytes] = useState<number | null>(null);
   const hfToken = useHfTokenStore((s) => s.token);
+  const sizeKey = `${repoId}::${hfToken ?? ""}`;
+  const [sizeState, setSizeState] = useState<{
+    key: string;
+    bytes: number | null;
+  }>(() => ({ key: sizeKey, bytes: null }));
+  const totalBytes = sizeState.key === sizeKey ? sizeState.bytes : null;
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -60,7 +65,6 @@ export function DatasetDownloadSection({
   const cancelling = job.cancelling;
 
   useEffect(() => {
-    setTotalBytes(null);
     const controller = new AbortController();
     const { signal } = controller;
 
@@ -68,7 +72,7 @@ export function DatasetDownloadSection({
       .then((res) => {
         if (signal.aborted) return;
         if (res.expected_bytes > 0) {
-          setTotalBytes(res.expected_bytes);
+          setSizeState({ key: sizeKey, bytes: res.expected_bytes });
         }
       })
       .catch(() => {});
@@ -77,14 +81,18 @@ export function DatasetDownloadSection({
       if (signal.aborted || !info) return;
       const upstream = info.numBytesParquet ?? info.numBytesOriginal;
       if (upstream && upstream > 0) {
-        setTotalBytes((prev) => prev ?? upstream);
+        setSizeState((prev) =>
+          prev.key === sizeKey && prev.bytes != null
+            ? prev
+            : { key: sizeKey, bytes: upstream },
+        );
       }
     });
 
     return () => {
       controller.abort();
     };
-  }, [repoId, hfToken]);
+  }, [repoId, hfToken, sizeKey]);
 
   const handleConfirmDelete = useCallback(async () => {
     setDeleting(true);

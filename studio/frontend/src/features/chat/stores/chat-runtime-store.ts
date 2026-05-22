@@ -317,11 +317,6 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
-  setKvCacheDtype: (dtype: string | null) => void;
-  setSpeculativeType: (type: string | null) => void;
-  setSpecDraftNMax: (value: number | null) => void;
-  setCustomContextLength: (v: number | null) => void;
-  setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
@@ -533,11 +528,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
       return { toolCallTimeout };
     }),
-  setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) => set({ speculativeType }),
-  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
-  setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>

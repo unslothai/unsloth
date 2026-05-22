@@ -17,8 +17,8 @@ import {
   getActiveModelDownloads,
   invalidateGgufVariantsCache,
   listGgufVariants,
-} from "@/features/chat/api/chat-api";
-import type { GgufVariantDetail } from "@/features/chat/types/api";
+  type GgufVariantDetail,
+} from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { classifyGgufFit, type GgufFitClass } from "@/lib/gguf-fit";
 import {
@@ -167,14 +167,33 @@ export function GgufDownloadCard({
   onUseInChat?: () => void;
   onChange?: (hint?: InventoryHint) => void;
 }) {
-  const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedQuant, setSelectedQuant] = useState<string | null>(null);
+  const hfToken = useHfTokenStore((s) => s.token);
+  const variantKey = `${repoId}::${hfToken ?? ""}`;
+  const [variantState, setVariantState] = useState<{
+    key: string;
+    variants: GgufVariantDetail[] | null;
+    loading: boolean;
+    error: string | null;
+  }>(() => ({
+    key: variantKey,
+    variants: null,
+    loading: true,
+    error: null,
+  }));
+  const currentVariantState =
+    variantState.key === variantKey
+      ? variantState
+      : { key: variantKey, variants: null, loading: true, error: null };
+  const { variants, loading, error } = currentVariantState;
+  const [selectedQuantState, setSelectedQuantState] = useState<{
+    repoId: string;
+    quant: string | null;
+  }>(() => ({ repoId, quant: null }));
+  const selectedQuantOverride =
+    selectedQuantState.repoId === repoId ? selectedQuantState.quant : null;
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const hfToken = useHfTokenStore((s) => s.token);
 
   const mountedRef = useRef(false);
   useEffect(() => {
@@ -186,30 +205,56 @@ export function GgufDownloadCard({
 
   const refresh = useCallback(
     async (silent = false): Promise<void> => {
-      if (!silent) {
-        setLoading(true);
-        setError(null);
-      }
       if (silent) {
         invalidateGgufVariantsCache(repoId);
       }
       try {
         const res = await listGgufVariants(repoId, hfToken || undefined);
         if (!mountedRef.current) return;
-        setVariants(res.variants);
+        setVariantState({
+          key: variantKey,
+          variants: res.variants,
+          loading: false,
+          error: null,
+        });
       } catch (err) {
         if (!mountedRef.current || silent) return;
-        setError(err instanceof Error ? err.message : "Failed to load variants");
-      } finally {
-        if (mountedRef.current && !silent) setLoading(false);
+        setVariantState({
+          key: variantKey,
+          variants: null,
+          loading: false,
+          error: err instanceof Error ? err.message : "Failed to load variants",
+        });
       }
     },
-    [repoId, hfToken],
+    [repoId, hfToken, variantKey],
   );
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    let cancelled = false;
+    void listGgufVariants(repoId, hfToken || undefined)
+      .then((res) => {
+        if (cancelled) return;
+        setVariantState({
+          key: variantKey,
+          variants: res.variants,
+          loading: false,
+          error: null,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setVariantState({
+          key: variantKey,
+          variants: null,
+          loading: false,
+          error: err instanceof Error ? err.message : "Failed to load variants",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, hfToken, variantKey]);
 
   const job = useRepoDownload({
     kind: "model",
@@ -252,7 +297,9 @@ export function GgufDownloadCard({
           (d) => d.state === "running" || d.state === "cancelling",
         );
         if (!active) return;
-        if (active.variant) setSelectedQuant(active.variant);
+        if (active.variant) {
+          setSelectedQuantState({ repoId, quant: active.variant });
+        }
         const knownSize = active.variant
           ? (variants.find((v) => v.quant === active.variant)?.size_bytes ?? 0)
           : 0;
@@ -266,8 +313,6 @@ export function GgufDownloadCard({
   useEffect(() => {
     adoptAbortRef.current?.abort();
     adoptCheckedRepoRef.current = null;
-    setSelectedQuant(null);
-    setVariants(null);
   }, [repoId]);
 
   const sortedVariants = useMemo(() => {
@@ -303,13 +348,11 @@ export function GgufDownloadCard({
     });
   }, [variants, gpuGb, systemRamGb]);
 
-  useEffect(() => {
-    if (!sortedVariants || sortedVariants.length === 0) return;
-    if (selectedQuant && sortedVariants.some((v) => v.quant === selectedQuant)) {
-      return;
-    }
-    setSelectedQuant(sortedVariants[0].quant);
-  }, [sortedVariants, selectedQuant]);
+  const selectedQuant =
+    selectedQuantOverride &&
+    sortedVariants?.some((v) => v.quant === selectedQuantOverride)
+      ? selectedQuantOverride
+      : (sortedVariants?.[0]?.quant ?? null);
 
   const selected =
     sortedVariants?.find((v) => v.quant === selectedQuant) ?? null;
@@ -463,7 +506,7 @@ export function GgufDownloadCard({
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedQuant(v.quant);
+                      setSelectedQuantState({ repoId, quant: v.quant });
                       setOpen(false);
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"

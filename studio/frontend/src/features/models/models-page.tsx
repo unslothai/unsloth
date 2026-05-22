@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useChatModelRuntime, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
@@ -77,13 +77,12 @@ export function ModelsPage() {
     (state) => state.activeGgufVariant,
   );
 
-  // Local state, not router state: switching is instant instead of awaiting the
-  // /models beforeLoad auth round-trip. The URL is mirrored below for deep links.
-  const [tab, setTab] = useState<ModelsTab>(() => search.tab ?? "discover");
-  useEffect(() => {
-    const urlTab: ModelsTab = search.tab ?? "discover";
-    setTab((cur) => (cur === urlTab ? cur : urlTab));
-  }, [search.tab]);
+  const urlTab: ModelsTab = search.tab ?? "discover";
+  const [tabState, setTabState] = useState<{
+    urlTab: ModelsTab;
+    tab: ModelsTab;
+  }>(() => ({ urlTab, tab: urlTab }));
+  const tab = tabState.urlTab === urlTab ? tabState.tab : urlTab;
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<HfSortKey>("trendingScore");
   const [direction, setDirection] = useState<HfSortDirection>("desc");
@@ -125,14 +124,14 @@ export function ModelsPage() {
     (next: ModelsTab) => {
       setMobileInspectorOpen(false);
       if (next === "downloaded") setActiveChannelId(null);
-      setTab(next);
+      setTabState({ urlTab, tab: next });
       void navigate({
         to: "/models",
         search: (prev) => ({ ...prev, tab: next }),
         replace: true,
       });
     },
-    [navigate],
+    [navigate, urlTab],
   );
 
   const handleResourceTypeChange = useCallback(
@@ -371,35 +370,35 @@ export function ModelsPage() {
     ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
     : "Unavailable";
 
-  async function handleLoad(opts: {
-    ggufVariant?: string;
-    expectedBytes?: number;
-  }) {
+  const handleLoad = useCallback(
+    async (opts: { ggufVariant?: string; expectedBytes?: number }) => {
+      if (!selectedModel) return;
+      await selectModel({
+        id: selectedModel.id,
+        ggufVariant: opts.ggufVariant,
+        isLora: false,
+        isDownloaded: true,
+        expectedBytes: opts.expectedBytes,
+      });
+      refreshInventory();
+    },
+    [selectedModel, selectModel, refreshInventory],
+  );
+
+  const handleLoadLocal = useCallback(async () => {
     if (!selectedModel) return;
     await selectModel({
       id: selectedModel.id,
-      ggufVariant: opts.ggufVariant,
-      isLora: false,
-      isDownloaded: true,
-      expectedBytes: opts.expectedBytes,
-    });
-    refreshInventory();
-  }
-
-  async function handleLoadLocal() {
-    if (!selectedModel) return;
-    await selectModel({
-      id: selectedModel.id,
       isLora: false,
       isDownloaded: true,
     });
-  }
+  }, [selectedModel, selectModel]);
 
-  function handleUseInChat() {
+  const handleUseInChat = useCallback(() => {
     void navigate({ to: "/chat" });
-  }
+  }, [navigate]);
 
-  function handleTrain() {
+  const handleTrain = useCallback(() => {
     if (!selectedModel) return;
     const repoId = selectedModel.hubRepoId ?? selectedModel.id;
     const store = useTrainingConfigStore.getState();
@@ -407,7 +406,9 @@ export function ModelsPage() {
       if (selectedModel.kind === "local" && selectedModel.path) {
         store.selectLocalDataset(selectedModel.path);
       } else {
-        store.selectHfDataset(repoId);
+        store.selectHfDataset(repoId, {
+          knownCached: selectedModel.isDownloaded,
+        });
       }
     } else {
       const caps = selectedModel.capabilities.map((c) => c.key);
@@ -424,7 +425,7 @@ export function ModelsPage() {
       store.setSelectedModel(repoId);
     }
     void navigate({ to: "/studio" });
-  }
+  }, [selectedModel, isDatasetMode, navigate]);
 
   return (
     <div className="hub-page flex h-full min-h-0 flex-col bg-background">
@@ -536,7 +537,7 @@ export function ModelsPage() {
                   gpu.available ? gpu.systemRamAvailableGb : undefined
                 }
                 onLoad={handleLoad}
-                onLoadLocal={() => void handleLoadLocal()}
+                onLoadLocal={handleLoadLocal}
                 onUseInChat={handleUseInChat}
                 onTrain={handleTrain}
                 onInventoryChange={refreshInventory}

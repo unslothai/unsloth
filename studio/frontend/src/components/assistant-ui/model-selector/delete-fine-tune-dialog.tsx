@@ -11,10 +11,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { deleteFineTunedModel } from "@/features/chat/api/chat-api";
+import { deleteFineTunedModel } from "@/features/chat";
 import { bumpInventoryVersion } from "@/features/models";
 import { emitTrainingRunsChanged } from "@/features/training";
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 
 export interface DeleteFineTuneTarget {
@@ -36,13 +36,17 @@ export function DeleteFineTuneDialog({
   onOpenChange,
   onDeleted,
 }: DeleteFineTuneDialogProps) {
-  const [deleteRunRecord, setDeleteRunRecord] = useState(false);
+  const targetKey = target?.id ?? "";
+  const [deleteRunRecordState, setDeleteRunRecordState] = useState({
+    targetKey,
+    value: false,
+  });
+  const deleteRunRecord =
+    deleteRunRecordState.targetKey === targetKey
+      ? deleteRunRecordState.value
+      : false;
   const [inFlight, setInFlight] = useState(false);
   const deleteRunRecordId = useId();
-
-  useEffect(() => {
-    if (target) setDeleteRunRecord(false);
-  }, [target]);
 
   async function confirm() {
     if (!target) return;
@@ -98,7 +102,10 @@ export function DeleteFineTuneDialog({
               id={deleteRunRecordId}
               checked={deleteRunRecord}
               onCheckedChange={(checked) =>
-                setDeleteRunRecord(checked === true)
+                setDeleteRunRecordState({
+                  targetKey,
+                  value: checked === true,
+                })
               }
               disabled={inFlight}
               className="mt-0.5"

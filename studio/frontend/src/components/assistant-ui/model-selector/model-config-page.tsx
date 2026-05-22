@@ -19,6 +19,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  fetchModelDefaults,
+  isAbortError,
+  useChatRuntimeStore,
+  useModelDefaults,
+} from "@/features/chat";
+import {
   DEFAULT_PER_MODEL_CONFIG,
   KV_CACHE_DTYPES,
   MAX_CHAT_TEMPLATE_LENGTH,
@@ -30,12 +36,6 @@ import {
   isDefaultConfig,
   resolveInitialConfig,
 } from "@/features/chat/model-config/per-model-config";
-import { fetchModelDefaults } from "@/features/chat/model-config/model-defaults-fetch";
-import {
-  isAbortError,
-  useModelDefaults,
-} from "@/features/chat/model-config/use-model-defaults";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   ArrowDown01Icon,
   ArrowLeft01Icon,
@@ -56,6 +56,13 @@ import type { DeletedModelRef, ModelPickTarget } from "./types";
 
 const DEFAULT_CONTEXT_FALLBACK = 131072;
 const MIN_CONTEXT_LENGTH = 1024;
+
+interface ConfigState {
+  key: string;
+  config: PerModelConfig;
+  remember: boolean;
+  advancedOpen: boolean;
+}
 
 const SPECULATIVE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> = {
   auto: "Auto",
@@ -161,9 +168,18 @@ export function ModelConfigPage({
     [target.id, target.meta.ggufVariant],
   );
   const initialIsDefault = isDefaultConfig(initial.config);
-  const [config, setConfig] = useState<PerModelConfig>(initial.config);
-  const [remember, setRemember] = useState(initial.remembered);
-  const [advancedOpen, setAdvancedOpen] = useState(!initialIsDefault);
+  const configKey = `${target.id}::${target.meta.ggufVariant ?? ""}`;
+  const defaultConfigState = (): ConfigState => ({
+    key: configKey,
+    config: initial.config,
+    remember: initial.remembered,
+    advancedOpen: !initialIsDefault,
+  });
+  const [configState, setConfigState] =
+    useState<ConfigState>(defaultConfigState);
+  const activeConfigState =
+    configState.key === configKey ? configState : defaultConfigState();
+  const { config, remember, advancedOpen } = activeConfigState;
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState("");
   const [templateInitialDraft, setTemplateInitialDraft] = useState("");
@@ -194,12 +210,6 @@ export function ModelConfigPage({
     ? defaultTemplateFromStore
     : fetchedChatTemplate;
 
-  useEffect(() => {
-    setConfig(initial.config);
-    setRemember(initial.remembered);
-    setAdvancedOpen(!initialIsDefault);
-  }, [initial, initialIsDefault]);
-
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -223,11 +233,17 @@ export function ModelConfigPage({
     key: K,
     value: PerModelConfig[K],
   ) {
-    setConfig((prev) => ({ ...prev, [key]: value }));
+    setConfigState((prev) => {
+      const base = prev.key === configKey ? prev : defaultConfigState();
+      return { ...base, config: { ...base.config, [key]: value } };
+    });
   }
 
   function resetToDefaults() {
-    setConfig({ ...DEFAULT_PER_MODEL_CONFIG });
+    setConfigState((prev) => {
+      const base = prev.key === configKey ? prev : defaultConfigState();
+      return { ...base, config: { ...DEFAULT_PER_MODEL_CONFIG } };
+    });
   }
 
   async function openTemplateEditor() {
@@ -416,7 +432,12 @@ export function ModelConfigPage({
 
         <button
           type="button"
-          onClick={() => setAdvancedOpen((v) => !v)}
+          onClick={() =>
+            setConfigState((prev) => {
+              const base = prev.key === configKey ? prev : defaultConfigState();
+              return { ...base, advancedOpen: !base.advancedOpen };
+            })
+          }
           aria-expanded={advancedOpen}
           className="mt-1.5 flex h-8 w-full shrink-0 items-center justify-between gap-2 rounded-[8px] bg-transparent px-2 text-left transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
         >
@@ -674,7 +695,13 @@ export function ModelConfigPage({
         <label className="flex cursor-pointer items-start gap-2.5">
           <Checkbox
             checked={remember}
-            onCheckedChange={(v) => setRemember(v === true)}
+            onCheckedChange={(v) =>
+              setConfigState((prev) => {
+                const base =
+                  prev.key === configKey ? prev : defaultConfigState();
+                return { ...base, remember: v === true };
+              })
+            }
             className="mt-0.5 size-[18px] rounded-[5px] border-border bg-foreground/[0.06] dark:border-white/15 dark:bg-white/[0.08] [&_svg]:size-3!"
           />
           <div className="flex min-w-0 flex-1 flex-col leading-tight">

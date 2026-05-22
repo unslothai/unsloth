@@ -34,7 +34,9 @@ function persist(value: string): void {
   if (!canUseStorage()) return;
   try {
     window.localStorage.setItem(HF_TOKEN_KEY, value);
-  } catch {}
+  } catch {
+    void 0;
+  }
 }
 
 function normalize(raw: string): string {

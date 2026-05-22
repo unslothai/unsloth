@@ -26,6 +26,10 @@ import {
 } from "@/config/training";
 import {
   type LocalModelInfo,
+  TRAINING_METHOD_DESCRIPTIONS,
+  TRAINING_METHOD_DOTS,
+  TRAINING_METHOD_HINTS,
+  TRAINING_METHOD_LABELS,
   listLocalModels,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -51,12 +55,6 @@ import {
 } from "@/lib/vram";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import type { TrainingMethod } from "@/types/training";
-import {
-  TRAINING_METHOD_DESCRIPTIONS,
-  TRAINING_METHOD_DOTS,
-  TRAINING_METHOD_HINTS,
-  TRAINING_METHOD_LABELS,
-} from "@/features/training/lib/training-method-meta";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,

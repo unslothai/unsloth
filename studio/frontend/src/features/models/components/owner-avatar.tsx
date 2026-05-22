@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useHfOwnerAvatar } from "../lib/hf-owner-avatar";
 import {
   type ProviderLogo,
@@ -149,17 +149,8 @@ function DefaultAvatar({
   const initial = owned[0]?.toUpperCase() ?? "?";
   const color = PALETTE[hashOwner(owned) % PALETTE.length];
   const remoteUrl = useHfOwnerAvatar(owned);
-  const [errored, setErrored] = useState(false);
-
-  // Reset img-error state whenever the resolved URL changes — when the
-  // owner-avatar hook re-fetches after a transient failure, we want the new
-  // img element to load fresh instead of staying pinned to the previous
-  // broken state.
-  useEffect(() => {
-    setErrored(false);
-  }, [remoteUrl]);
-
-  const showImage = Boolean(remoteUrl) && !errored;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImage = Boolean(remoteUrl) && failedUrl !== remoteUrl;
 
   return (
     <span
@@ -177,7 +168,7 @@ function DefaultAvatar({
           alt=""
           loading="lazy"
           className="size-full object-cover"
-          onError={() => setErrored(true)}
+          onError={() => setFailedUrl(remoteUrl)}
         />
       ) : (
         initial

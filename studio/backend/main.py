@@ -328,16 +328,42 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
+_GOOGLE_IMAGE_SOURCES = (
+    "https://t0.gstatic.com",
+    "https://t1.gstatic.com",
+    "https://t2.gstatic.com",
+    "https://t3.gstatic.com",
+    "https://www.google.com",
+)
+
+_HF_MEDIA_SOURCES = (
+    "https://huggingface.co",
+    "https://cdn-avatars.huggingface.co",
+    "https://cdn-uploads.huggingface.co",
+    "https://cdn-thumbnails.huggingface.co",
+    "https://cdn-media.huggingface.co",
+    "https://cdn-lfs.huggingface.co",
+    "https://cdn-lfs-us-1.huggingface.co",
+    "https://cdn-lfs.hf.co",
+    "https://cdn-lfs-us-1.hf.co",
+    "https://cdn-lfs-eu-1.hf.co",
+    "https://cas-bridge.xethub.hf.co",
+    "https://cas-server.xethub.hf.co",
+    "https://transfer.xethub.hf.co",
+    "https://us.gcp.cdn.hf.co",
+)
+
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
+    image_sources = " ".join((*_GOOGLE_IMAGE_SOURCES, *_HF_MEDIA_SOURCES))
+    media_sources = " ".join(_HF_MEDIA_SOURCES)
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https://t0.gstatic.com "
-        "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com https://www.google.com; "
+        f"img-src 'self' data: blob: {image_sources}; "
+        f"media-src 'self' data: blob: {media_sources}; "
         "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "

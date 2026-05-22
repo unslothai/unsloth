@@ -8,13 +8,13 @@ import {
   listCachedGguf,
   listCachedModels,
   listLocalModels,
-} from "@/features/chat/api/chat-api";
+} from "@/features/chat";
 import {
   type CachedDatasetRepo,
   listCachedDatasets,
   listLocalDatasets,
-} from "@/features/training/api/datasets-api";
-import type { LocalDatasetInfo } from "@/features/training/types/datasets";
+  type LocalDatasetInfo,
+} from "@/features/training";
 import { getHfToken } from "@/stores/hf-token-store";
 import type { InventoryHint } from "../components/download-section";
 import {

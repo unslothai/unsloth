@@ -218,6 +218,30 @@ class TestSecurityHeadersMiddleware:
         ):
             assert any(src == host for src in img_sources)
 
+    def test_hub_media_sources_are_allowlisted_without_broad_https(self, main_module):
+        csp = main_module._build_csp()
+        directives = {
+            chunk.strip().split(" ", 1)[0]: chunk.strip().split()
+            for chunk in csp.split(";")
+            if chunk.strip()
+        }
+        img_sources = directives["img-src"]
+        media_sources = directives["media-src"]
+        for host in (
+            "https://huggingface.co",
+            "https://cdn-avatars.huggingface.co",
+            "https://cdn-uploads.huggingface.co",
+            "https://cdn-lfs.hf.co",
+            "https://cdn-lfs-us-1.hf.co",
+            "https://cdn-lfs-eu-1.hf.co",
+            "https://cas-bridge.xethub.hf.co",
+            "https://us.gcp.cdn.hf.co",
+        ):
+            assert any(src == host for src in img_sources)
+            assert any(src == host for src in media_sources)
+        assert all(src != "https:" for src in img_sources)
+        assert all(src != "https:" for src in media_sources)
+
 
 # =====================================================================
 # /api/health auth gate

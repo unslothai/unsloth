@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { LocalModelInfo } from "@/features/chat/api/chat-api";
+import type { LocalModelInfo } from "@/features/chat";
 import type { HfModelResult } from "@/hooks";
 import type {
   CapabilityFilter,

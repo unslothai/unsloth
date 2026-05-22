@@ -15,11 +15,11 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type BrowseFoldersResponse,
   browseFolders,
-} from "@/features/chat/api/chat-api";
+} from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { ArrowUp02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface FolderBrowserProps {
   open: boolean;
@@ -92,11 +92,11 @@ export function FolderBrowser({
   const abortRef = useRef<AbortController | null>(null);
 
   const navigate = useCallback(
-    (
+    function navigateInner(
       target: string | undefined,
       hidden: boolean,
       opts?: { fallbackOnError?: boolean },
-    ) => {
+    ) {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -123,7 +123,7 @@ export function FolderBrowser({
             // Re-issue without a target -> backend defaults to HOME.
             // Don't recurse if HOME itself fails (paranoia: shouldn't
             // happen since the sandbox allowlist always includes HOME).
-            queueMicrotask(() => navigate(undefined, hidden));
+            queueMicrotask(() => navigateInner(undefined, hidden));
           }
         })
         .finally(() => {
@@ -136,7 +136,6 @@ export function FolderBrowser({
   // Fetch when the dialog opens.  Only re-run when the dialog transitions
   // closed -> open; subsequent navigation is driven by `navigate()` so we
   // don't want `path` in the dependency list here.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
     // ``fallbackOnError``: if the user-supplied ``initialPath`` is bad
@@ -152,10 +151,7 @@ export function FolderBrowser({
     onOpenChange(false);
   }, [onSelect, onOpenChange, path]);
 
-  const crumbs = useMemo(
-    () => (data?.current ? splitBreadcrumb(data.current) : []),
-    [data?.current],
-  );
+  const crumbs = data?.current ? splitBreadcrumb(data.current) : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -14,8 +14,22 @@ export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export { uploadTrainingDataset } from "./api/datasets-api";
+export {
+  deleteCachedDataset,
+  listCachedDatasets,
+  listLocalDatasets,
+  type CachedDatasetRepo,
+} from "./api/datasets-api";
 export { listLocalModels } from "./api/models-api";
 export type { LocalModelInfo } from "./api/models-api";
+export type { LocalDatasetInfo } from "./types/datasets";
+export {
+  TRAINING_METHOD_DESCRIPTIONS,
+  TRAINING_METHOD_DOTS,
+  TRAINING_METHOD_HINTS,
+  TRAINING_METHOD_LABELS,
+  TRAINING_METHOD_NOTES,
+} from "./lib/training-method-meta";
 export type {
   TrainingPhase,
   TrainingViewData,

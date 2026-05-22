@@ -17,6 +17,15 @@ import {
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
+interface ReadmeState {
+  key: string;
+  body: string | null;
+  baseUrl: string | null;
+  loading: boolean;
+  error: string | null;
+  plugins: ReadmePlugins | null;
+}
+
 const README_ALLOWED_TAGS: NonNullable<
   ComponentProps<typeof Streamdown>["allowedTags"]
 > = {
@@ -82,58 +91,89 @@ export function ModelReadme({
   kind?: "model" | "dataset";
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const [body, setBody] = useState<string | null>(null);
-  const [baseUrl, setBaseUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [plugins, setPlugins] = useState<ReadmePlugins | null>(null);
+  const stateKey = `${kind}::${repoId}::${hfToken ?? ""}`;
+  const [state, setState] = useState<ReadmeState>(() => ({
+    key: stateKey,
+    body: null,
+    baseUrl: null,
+    loading: true,
+    error: null,
+    plugins: null,
+  }));
+  const current =
+    state.key === stateKey
+      ? state
+      : {
+          key: stateKey,
+          body: null,
+          baseUrl: null,
+          loading: true,
+          error: null,
+          plugins: null,
+        };
 
   const urlTransform = useMemo(
-    () => (baseUrl ? createReadmeUrlTransform(baseUrl) : undefined),
-    [baseUrl],
+    () =>
+      current.baseUrl ? createReadmeUrlTransform(current.baseUrl) : undefined,
+    [current.baseUrl],
   );
 
   useEffect(() => {
     let canceled = false;
-    setLoading(true);
-    setError(null);
-    setBody(null);
-    setBaseUrl(null);
-    setPlugins(null);
     fetchReadme(repoId, kind, hfToken || null)
       .then((fetched) => {
         if (canceled) return;
         if (fetched == null) {
-          setError("No model card available.");
+          setState({
+            key: stateKey,
+            body: null,
+            baseUrl: null,
+            loading: false,
+            error: "No model card available.",
+            plugins: null,
+          });
           return;
         }
         const { body } = stripFrontmatter(fetched.markdown);
         const cleaned = stripChromeHeadings(body).trim();
-        setBaseUrl(readmeBaseUrl(repoId, kind, fetched.branch));
-        setBody(cleaned);
+        setState({
+          key: stateKey,
+          body: cleaned,
+          baseUrl: readmeBaseUrl(repoId, kind, fetched.branch),
+          loading: false,
+          error: null,
+          plugins: null,
+        });
 
         void loadPlugins({
           math: READMEX_NEEDS_MATH.test(cleaned),
           mermaid: READMEX_NEEDS_MERMAID.test(cleaned),
         }).then((next) => {
-          if (!canceled) setPlugins(next);
+          if (!canceled) {
+            setState((prev) =>
+              prev.key === stateKey ? { ...prev, plugins: next } : prev,
+            );
+          }
         });
       })
       .catch((err) => {
         if (canceled) return;
-        setError(
-          err instanceof Error ? err.message : "Failed to load model card",
-        );
-      })
-      .finally(() => {
-        if (!canceled) setLoading(false);
+        setState({
+          key: stateKey,
+          body: null,
+          baseUrl: null,
+          loading: false,
+          error:
+            err instanceof Error ? err.message : "Failed to load model card",
+          plugins: null,
+        });
       });
     return () => {
       canceled = true;
     };
-  }, [repoId, kind, hfToken]);
+  }, [repoId, kind, hfToken, stateKey]);
 
-  if (loading) {
+  if (current.loading) {
     return (
       <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
         <Spinner className="size-3.5" />
@@ -142,13 +182,13 @@ export function ModelReadme({
     );
   }
 
-  if (error) {
+  if (current.error) {
     return (
-      <p className="text-[12.5px] text-muted-foreground">{error}</p>
+      <p className="text-[12.5px] text-muted-foreground">{current.error}</p>
     );
   }
 
-  if (!body) {
+  if (!current.body) {
     return (
       <p className="text-[12.5px] text-muted-foreground">
         This repository has no README.
@@ -160,12 +200,12 @@ export function ModelReadme({
     <div className={PROSE}>
       <Streamdown
         mode="static"
-        plugins={plugins ?? undefined}
+        plugins={current.plugins ?? undefined}
         controls={false}
         allowedTags={README_ALLOWED_TAGS}
         urlTransform={urlTransform}
       >
-        {body}
+        {current.body}
       </Streamdown>
     </div>
   );

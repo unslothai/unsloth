@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 const FILTER_STARVED_THRESHOLD = 100;
 
@@ -23,30 +23,23 @@ export function useFilterStarvedPause({
   // or filters changed). Pass a stable serialization, not a fresh array.
   resetSignature: string;
 }): FilterStarvedPause {
-  const [filterPaused, setFilterPaused] = useState(false);
-  const [pauseFloor, setPauseFloor] = useState(FILTER_STARVED_THRESHOLD);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resetSignature is a reset trigger, not read in the body
-  useEffect(() => {
-    setFilterPaused(false);
-    setPauseFloor(FILTER_STARVED_THRESHOLD);
-  }, [resetSignature]);
-
-  useEffect(() => {
-    if (
-      isDiscoverTab &&
-      !filterPaused &&
-      scannedCount >= pauseFloor &&
-      filteredCount === 0
-    ) {
-      setFilterPaused(true);
-    }
-  }, [isDiscoverTab, filterPaused, pauseFloor, scannedCount, filteredCount]);
+  const [pauseState, setPauseState] = useState({
+    resetSignature,
+    pauseFloor: FILTER_STARVED_THRESHOLD,
+  });
+  const pauseFloor =
+    pauseState.resetSignature === resetSignature
+      ? pauseState.pauseFloor
+      : FILTER_STARVED_THRESHOLD;
+  const filterPaused =
+    isDiscoverTab && scannedCount >= pauseFloor && filteredCount === 0;
 
   const handleKeepSearching = useCallback(() => {
-    setPauseFloor(scannedCount + FILTER_STARVED_THRESHOLD);
-    setFilterPaused(false);
-  }, [scannedCount]);
+    setPauseState({
+      resetSignature,
+      pauseFloor: scannedCount + FILTER_STARVED_THRESHOLD,
+    });
+  }, [resetSignature, scannedCount]);
 
   return { filterPaused, handleKeepSearching };
 }

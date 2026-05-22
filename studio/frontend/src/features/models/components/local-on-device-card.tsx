@@ -8,8 +8,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { LocalModelInfo } from "@/features/chat/api/chat-api";
-import { deleteCachedModel } from "@/features/chat/api/chat-api";
+import { deleteCachedModel, type LocalModelInfo } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import {

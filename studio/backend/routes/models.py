@@ -2966,6 +2966,10 @@ _CLASSIFY_TOTAL_BUDGET = 20.0
 # In-flight executor futures keyed by classification cache key. Coalesces the
 # same repo across overlapping polls onto a single HF request and keeps the
 # strong refs that let cache-warming finish past _CLASSIFY_TOTAL_BUDGET.
+# Mutated lock-free because it is loop-confined: the _schedule reads/writes
+# below run inside the coroutine on the server's single event loop, and the
+# add_done_callback pop is dispatched back onto that same loop. Any off-loop
+# writer (e.g. mutating this from an executor thread) would need a lock.
 _CLASSIFY_INFLIGHT: "dict[tuple[str, str], asyncio.Future]" = {}
 
 # Classification is best-effort cache-warming and runs on its own bounded pool

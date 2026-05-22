@@ -16,7 +16,7 @@
   "app": {
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: blob: https://huggingface.co https://cdn-avatars.huggingface.co https://cdn-uploads.huggingface.co https://cdn-thumbnails.huggingface.co https://cdn-media.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://cdn-lfs.hf.co https://cdn-lfs-us-1.hf.co https://cdn-lfs-eu-1.hf.co https://cas-bridge.xethub.hf.co https://cas-server.xethub.hf.co https://transfer.xethub.hf.co https://us.gcp.cdn.hf.co; media-src 'self' data: blob: https://huggingface.co https://cdn-avatars.huggingface.co https://cdn-uploads.huggingface.co https://cdn-thumbnails.huggingface.co https://cdn-media.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://cdn-lfs.hf.co https://cdn-lfs-us-1.hf.co https://cdn-lfs-eu-1.hf.co https://cas-bridge.xethub.hf.co https://cas-server.xethub.hf.co https://transfer.xethub.hf.co https://us.gcp.cdn.hf.co; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     },
     "windows": [
       {

@@ -15,13 +15,12 @@ import {
   listCachedModels,
   listGgufVariants,
   listLocalModels,
-} from "@/features/chat/api/chat-api";
-import type {
-  CachedGgufRepo,
-  CachedModelRepo,
-  LocalModelInfo,
-} from "@/features/chat/api/chat-api";
-import type { GgufVariantDetail } from "@/features/chat/types/api";
+  buildRecentRank,
+  type CachedGgufRepo,
+  type CachedModelRepo,
+  type GgufVariantDetail,
+  type LocalModelInfo,
+} from "@/features/chat";
 import { formatBytes, useInventoryVersion } from "@/features/models";
 import { classifyUnslothSupport, useGpuInfo } from "@/hooks";
 import { cn } from "@/lib/utils";
@@ -46,7 +45,6 @@ import type {
   ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./types";
-import { buildRecentRank } from "@/features/chat/model-config/recent-models";
 
 function ListLabel({ children }: { children: ReactNode }) {
   return (
@@ -228,42 +226,71 @@ function GgufVariantExpander({
   systemRamGb?: number;
   sourceOverride?: ModelSelectorChangeMeta["source"];
 }) {
-  const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
-  const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
-  const [hasVision, setHasVision] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const hfToken = useHfTokenStore((s) => s.token) || undefined;
+  const variantKey = `${repoId}::${hfToken ?? ""}`;
+  const [variantState, setVariantState] = useState<{
+    key: string;
+    variants: GgufVariantDetail[] | null;
+    defaultVariant: string | null;
+    hasVision: boolean;
+    loading: boolean;
+    error: string | null;
+  }>(() => ({
+    key: variantKey,
+    variants: null,
+    defaultVariant: null,
+    hasVision: false,
+    loading: true,
+    error: null,
+  }));
+  const currentVariantState =
+    variantState.key === variantKey
+      ? variantState
+      : {
+          key: variantKey,
+          variants: null,
+          defaultVariant: null,
+          hasVision: false,
+          loading: true,
+          error: null,
+        };
+  const { variants, defaultVariant, hasVision, loading, error } =
+    currentVariantState;
 
   useEffect(() => {
     let canceled = false;
-    setLoading(true);
-    setError(null);
 
     listGgufVariants(repoId, hfToken)
       .then((res) => {
         if (canceled) return;
-        setVariants(res.variants);
-        setDefaultVariant(res.default_variant);
-        setHasVision(res.has_vision);
+        setVariantState({
+          key: variantKey,
+          variants: res.variants,
+          defaultVariant: res.default_variant,
+          hasVision: res.has_vision,
+          loading: false,
+          error: null,
+        });
       })
       .catch((err) => {
         if (canceled) return;
-        setError(
-          err instanceof Error ? err.message : "Failed to load variants",
-        );
-      })
-      .finally(() => {
-        if (!canceled) setLoading(false);
+        setVariantState({
+          key: variantKey,
+          variants: null,
+          defaultVariant: null,
+          hasVision: false,
+          loading: false,
+          error: err instanceof Error ? err.message : "Failed to load variants",
+        });
       });
 
     return () => {
       canceled = true;
     };
-  }, [repoId, hfToken]);
+  }, [repoId, hfToken, variantKey]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
-  const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
+  const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
 

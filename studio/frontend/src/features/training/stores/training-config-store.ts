@@ -395,30 +395,36 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             set({
               isLoadingModelDefaults: false,
-              isEmbeddingModel: false,
-              isAudioModel: false,
               modelDefaultsError:
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
             });
 
-            // Fallback vision check if config endpoint fails.
+            // Fallback vision check if config endpoint fails; the probe only
+            // resolves vision-vs-not, so a user-selected audio/embeddings
+            // modality is preserved rather than flattened to text.
             void checkVisionModel(modelName)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
+                const priorType = get().modelType;
+                const fallbackType: ModelType = isVision
+                  ? "vision"
+                  : priorType === "audio" || priorType === "embeddings"
+                    ? priorType
+                    : "text";
                 set({
-                  modelType: isVision ? "vision" : "text",
+                  modelType: fallbackType,
                   isVisionModel: isVision,
-                  isEmbeddingModel: false,
-                  isAudioModel: false,
+                  isEmbeddingModel: fallbackType === "embeddings",
+                  isAudioModel: fallbackType === "audio",
                   isCheckingVision: false,
                 });
                 recheckSelectedDataset();
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
-                set({ isCheckingVision: false, isEmbeddingModel: false, isAudioModel: false });
+                set({ isCheckingVision: false });
               });
           });
       };
