@@ -698,11 +698,22 @@ def ensure_transformers_version(model_name: str) -> None:
             )
         logger.info("Activating transformers %s…", target_version)
         _activate_venv(venv_dir, f"transformers {target_version}")
+        # Propagate to child processes (e.g. GGUF converter subprocess)
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = venv_dir + (os.pathsep + _pp if _pp else "")
     else:
         logger.info(
             "Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION
         )
         _deactivate_5x()
+        # Clear venv dirs from PYTHONPATH so child processes revert to default
+        _pp = os.environ.get("PYTHONPATH", "")
+        for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR):
+            _pp = _pp.replace(d + os.pathsep, "").replace(d, "")
+        if _pp:
+            os.environ["PYTHONPATH"] = _pp
+        elif "PYTHONPATH" in os.environ:
+            del os.environ["PYTHONPATH"]
 
     final = _get_in_memory_version()
     logger.info("✓ transformers version is now %s", final)
