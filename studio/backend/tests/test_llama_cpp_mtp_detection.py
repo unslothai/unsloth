@@ -1265,9 +1265,9 @@ def test_build_ngram_mod_flags_legacy_chained_omits_draft_max():
     ngram-mod --draft-max so MTP's draft length wins."""
     caps = {"ngram_mod_flavor": "legacy"}
     chained = _build_ngram_mod_flags(caps, chain_with_mtp = True)
-    assert "--draft-max" not in chained, (
-        f"chain_with_mtp=True must drop --draft-max on legacy; got {chained}"
-    )
+    assert (
+        "--draft-max" not in chained
+    ), f"chain_with_mtp=True must drop --draft-max on legacy; got {chained}"
     # The other two knobs must still be present so ngram-mod actually
     # tunes the chain.
     assert "--spec-ngram-size-n" in chained
@@ -1435,6 +1435,7 @@ def test_already_in_target_state_set_n_max_from_default_forces_reload():
 
 class _FakeLoadRequest:
     """Minimal LoadRequest stand-in for the route guard test."""
+
     def __init__(self, **kw):
         self.max_seq_length = kw.get("max_seq_length", 8192)
         self.cache_type_kv = kw.get("cache_type_kv", None)
