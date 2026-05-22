@@ -67,6 +67,30 @@ class TestLoadInferenceConfig:
         assert cfg["top_p"] == 1.0
         assert cfg["top_k"] == 0
 
+    def test_repeated_calls_reuse_cached_result(self):
+        """The passthrough request path calls ``load_inference_config``
+        on every chat-completion / Responses request. Cache the heavy
+        work (YAML reads + recursive ``rglob`` inside
+        ``_has_specific_yaml``) so the hot path doesn't pay the full
+        scan each time."""
+        from utils.inference.inference_config import (
+            _has_specific_yaml,
+            _load_inference_config_cached,
+        )
+
+        _load_inference_config_cached.cache_clear()
+        _has_specific_yaml.cache_clear()
+
+        ident = "unsloth/gpt-oss-120b-GGUF"
+        load_inference_config(ident)
+        load_inference_config(ident)
+        load_inference_config(ident)
+
+        # Three calls, one underlying miss; the rest served from cache.
+        info = _load_inference_config_cached.cache_info()
+        assert info.misses == 1, info
+        assert info.hits >= 2, info
+
 
 class TestTemperatureBumps:
     def test_devstral_temperature_lowered_to_card_value(self):

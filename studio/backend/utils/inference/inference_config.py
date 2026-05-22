@@ -9,6 +9,8 @@ from model YAML configuration files, with fallback to default.yaml.
 Includes family-based lookup from inference_defaults.json for GGUF models.
 """
 
+from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, Optional
 import json
@@ -83,8 +85,16 @@ def get_family_inference_params(model_id: str) -> Dict[str, Any]:
     return {}
 
 
+@lru_cache(maxsize = 256)
 def _has_specific_yaml(model_identifier: str) -> bool:
-    """Check if a model has its own YAML config (not just default.yaml)."""
+    """Check if a model has its own YAML config (not just default.yaml).
+
+    Cached because the lookup walks ``defaults_dir`` recursively via
+    ``rglob`` on every miss, and every chat-completion / Responses
+    passthrough request asks the same question for the same loaded
+    model. The defaults directory is shipped with the package and does
+    not mutate at runtime, so an LRU cache is safe.
+    """
     from utils.models.model_config import _REVERSE_MODEL_MAPPING
 
     script_dir = Path(__file__).parent.parent.parent
@@ -144,6 +154,17 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
             "min_p": float
         }
     """
+    # The heavy work (YAML reads + recursive scan inside
+    # `_has_specific_yaml`) is memoised on the model identifier; this
+    # function is called from the hot path of every passthrough
+    # request. Callers are documented to treat the returned dict as
+    # immutable, but tests historically mutate it — so deepcopy the
+    # snapshot before returning to preserve that contract.
+    return deepcopy(_load_inference_config_cached(model_identifier))
+
+
+@lru_cache(maxsize = 256)
+def _load_inference_config_cached(model_identifier: str) -> Dict[str, Any]:
     # Load model defaults to get inference parameters
     model_defaults = load_model_defaults(model_identifier)
 
