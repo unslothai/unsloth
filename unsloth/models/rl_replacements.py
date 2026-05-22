@@ -949,7 +949,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if "tool_mask" in function and 'output["tool_mask"]' not in function:
         function = function.replace(
             "        return output",
-            '        if tool_mask is not None:\n'
+            "        if tool_mask is not None:\n"
             '            output["tool_mask"] = tool_mask\n'
             "        return output",
         )
