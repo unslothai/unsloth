@@ -47,7 +47,7 @@ def _install_mock(monkeypatch, *, sse_payload: bytes | None = None) -> dict:
         return httpx.Response(
             200,
             content = sse_payload
-            or (b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            or (b'event: message_stop\ndata: {"type":"message_stop"}\n\n'),
             headers = {"content-type": "text/event-stream"},
         )
 
@@ -111,7 +111,9 @@ def test_anthropic_service_tier_forwarded_when_valid(monkeypatch):
     assert body.get("service_tier") == "standard_only", body
 
 
-@pytest.mark.parametrize("bogus", ["flex", "priority", "scale", "default", "", "auto-foo"])
+@pytest.mark.parametrize(
+    "bogus", ["flex", "priority", "scale", "default", "", "auto-foo"]
+)
 def test_anthropic_service_tier_unsupported_values_dropped(monkeypatch, bogus):
     captured = _install_mock(monkeypatch)
     body = _drive_anthropic(captured, service_tier = bogus)
@@ -212,9 +214,7 @@ def test_openai_compat_forwards_stop_array(monkeypatch):
 
 def test_openai_compat_truncates_stop_to_four(monkeypatch):
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
-    body = _drive_openai_compat(
-        captured, stop = ["a", "b", "c", "d", "e", "f"]
-    )
+    body = _drive_openai_compat(captured, stop = ["a", "b", "c", "d", "e", "f"])
     assert body.get("stop") == ["a", "b", "c", "d"], body
 
 
@@ -253,7 +253,7 @@ def test_openai_compat_omits_unset_optionals(monkeypatch):
 def _responses_done_payload() -> bytes:
     return (
         b"event: response.completed\n"
-        b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{}}}\n\n"
+        b'data: {"type":"response.completed","response":{"usage":{}}}\n\n'
     )
 
 
