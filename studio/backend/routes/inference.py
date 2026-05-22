@@ -1701,6 +1701,9 @@ def _build_external_messages(
       see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
       part is stripped so the unknown content type doesn't reach generic
       /chat/completions passthrough and 400 the request.
+    - `reasoning`: OpenAI-only Responses reasoning item paired with a
+      prior tool output. Forwarded ONLY when provider_type=="openai"
+      so follow-up image edits can replay the required reasoning item.
     - `image_generation_call`: OpenAI-only Responses image reference.
       Forwarded ONLY when provider_type=="openai" so follow-up image
       edits can reference prior generated images.
@@ -1733,6 +1736,15 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "reasoning" and openai:
+                        reasoning: dict[str, Any] = {
+                            "type": "reasoning",
+                            "id": part.id,
+                            "summary": part.summary,
+                        }
+                        if part.status:
+                            reasoning["status"] = part.status
+                        parts.append(reasoning)
                     elif part.type == "image_generation_call" and openai:
                         # ExternalProviderClient maps this onto a top-level
                         # Responses input item after the current user prompt.
@@ -1769,6 +1781,15 @@ def _build_external_messages(
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "reasoning" and openai:
+                        reasoning: dict[str, Any] = {
+                            "type": "reasoning",
+                            "id": p.id,
+                            "summary": p.summary,
+                        }
+                        if p.status:
+                            reasoning["status"] = p.status
+                        preserved.append(reasoning)
                     elif p.type == "image_generation_call" and openai:
                         preserved.append({"type": "image_generation_call", "id": p.id})
                     elif p.type == "compaction" and anthropic:

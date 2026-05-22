@@ -67,6 +67,44 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+
+
+def _sanitize_openai_reasoning_replay_item(
+    item: Any,
+) -> Optional[dict[str, Any]]:
+    """Return a Responses input-safe reasoning item, if ``item`` is one.
+
+    OpenAI's image-generation docs allow follow-up edits by sending the
+    previous ``image_generation_call`` id. Reasoning models can additionally
+    require the paired ``reasoning`` output item in manually managed context,
+    so keep the public replay fields only and drop everything else.
+    """
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    item_id = item.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    summary_parts: list[dict[str, str]] = []
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        for part in summary:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "summary_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                summary_parts.append({"type": "summary_text", "text": text})
+    replay_item: dict[str, Any] = {
+        "type": "reasoning",
+        "id": item_id,
+        "summary": summary_parts,
+    }
+    status = item.get("status")
+    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
+        replay_item["status"] = status
+    return replay_item
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -2576,7 +2614,7 @@ class ExternalProviderClient:
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
-        image_generation_call_refs: list[dict[str, Any]] = []
+        openai_replay_items: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2611,10 +2649,14 @@ class ExternalProviderClient:
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
                             )
+                    elif part_type == "reasoning":
+                        replay_item = _sanitize_openai_reasoning_replay_item(part)
+                        if replay_item:
+                            openai_replay_items.append(replay_item)
                     elif part_type == "image_generation_call":
                         call_id = part.get("id") or part.get("image_generation_call_id")
                         if isinstance(call_id, str) and call_id:
-                            image_generation_call_refs.append(
+                            openai_replay_items.append(
                                 {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
@@ -2657,7 +2699,7 @@ class ExternalProviderClient:
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
 
-        input_items.extend(image_generation_call_refs)
+        input_items.extend(openai_replay_items)
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
         # temperature and top_p with `Unsupported parameter` 400s on
@@ -2952,6 +2994,7 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
                         chunk = {
@@ -3166,6 +3209,9 @@ class ExternalProviderClient:
                                 if not isinstance(item, dict):
                                     continue
                                 if item.get("type") == "reasoning":
+                                    last_openai_reasoning_replay_item = (
+                                        _sanitize_openai_reasoning_replay_item(item)
+                                    )
                                     summary_text = _extract_reasoning_text(
                                         item.get("summary")
                                     )
@@ -3311,6 +3357,10 @@ class ExternalProviderClient:
                                     if isinstance(raw_item_id, str) and raw_item_id:
                                         arguments["openai_image_generation_call_id"] = (
                                             raw_item_id
+                                        )
+                                    if last_openai_reasoning_replay_item:
+                                        arguments["openai_reasoning_item"] = (
+                                            last_openai_reasoning_replay_item
                                         )
                                     yield _emit_tool_event(
                                         {

@@ -192,11 +192,24 @@ export interface AudioGenerationResponse {
   }>;
 }
 
+export type OpenAIReasoningSummaryPart = {
+  type: "summary_text";
+  text: string;
+};
+
+export type OpenAIReasoningContentPart = {
+  type: "reasoning";
+  id: string;
+  summary: OpenAIReasoningSummaryPart[];
+  status?: "in_progress" | "completed" | "incomplete";
+};
+
 export type OpenAIMessageContent =
   | string
   | Array<
       | { type: "text"; text: string }
       | { type: "image_url"; image_url: { url: string } }
+      | OpenAIReasoningContentPart
       | { type: "image_generation_call"; id: string }
     >;
 

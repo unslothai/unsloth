@@ -35,6 +35,7 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
   OpenAIMessageContent,
+  OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
@@ -340,19 +341,64 @@ function collectImageParts(
   return parts;
 }
 
+function normalizeOpenAIReasoningItem(
+  value: unknown,
+): OpenAIReasoningContentPart | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  if (item.type !== "reasoning" || typeof item.id !== "string" || !item.id) {
+    return null;
+  }
+  const summary = Array.isArray(item.summary)
+    ? item.summary.flatMap((part) => {
+        if (!part || typeof part !== "object") {
+          return [];
+        }
+        const summaryPart = part as Record<string, unknown>;
+        return summaryPart.type === "summary_text" &&
+          typeof summaryPart.text === "string"
+          ? [{ type: "summary_text" as const, text: summaryPart.text }]
+          : [];
+      })
+    : [];
+  const normalized: OpenAIReasoningContentPart = {
+    type: "reasoning",
+    id: item.id,
+    summary,
+  };
+  if (
+    item.status === "in_progress" ||
+    item.status === "completed" ||
+    item.status === "incomplete"
+  ) {
+    normalized.status = item.status;
+  }
+  return normalized;
+}
+
 function collectOpenAIImageGenerationCallParts(
   message: RunMessage,
-): Array<{ type: "image_generation_call"; id: string }> {
+): Array<
+  OpenAIReasoningContentPart | { type: "image_generation_call"; id: string }
+> {
   if (message.role !== "assistant") {
     return [];
   }
-  const parts: Array<{ type: "image_generation_call"; id: string }> = [];
+  const parts: Array<
+    OpenAIReasoningContentPart | { type: "image_generation_call"; id: string }
+  > = [];
+  const seenReasoningIds = new Set<string>();
   for (const part of message.content ?? []) {
     if (part.type !== "tool-call" || part.toolName !== "image_generation") {
       continue;
     }
     const args = part.args as
-      | { openai_image_generation_call_id?: unknown }
+      | {
+          openai_image_generation_call_id?: unknown;
+          openai_reasoning_item?: unknown;
+        }
       | undefined;
     const argsId =
       typeof args?.openai_image_generation_call_id === "string"
@@ -362,6 +408,13 @@ function collectOpenAIImageGenerationCallParts(
     const id =
       argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
     if (id) {
+      const reasoningItem = normalizeOpenAIReasoningItem(
+        args?.openai_reasoning_item,
+      );
+      if (reasoningItem && !seenReasoningIds.has(reasoningItem.id)) {
+        seenReasoningIds.add(reasoningItem.id);
+        parts.push(reasoningItem);
+      }
       parts.push({ type: "image_generation_call", id });
     }
   }

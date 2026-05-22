@@ -471,6 +471,21 @@ class InputDocumentContentPart(BaseModel):
     )
 
 
+class OpenAIReasoningContentPart(BaseModel):
+    """OpenAI Responses reasoning item paired with a tool output.
+
+    Reasoning models can require the previous ``reasoning`` output item
+    to be replayed immediately before an ``image_generation_call`` id
+    when manually managing Responses context. This part is OpenAI-only;
+    routes strip it for every other provider before proxying.
+    """
+
+    type: Literal["reasoning"]
+    id: str = Field(..., description = "OpenAI reasoning output item id.")
+    summary: list[dict[str, Any]] = Field(default_factory = list)
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ImageGenerationCallContentPart(BaseModel):
     """OpenAI Responses image_generation call reference.
 
@@ -519,6 +534,7 @@ ContentPart = Annotated[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
         Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],

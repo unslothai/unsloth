@@ -92,6 +92,12 @@ def _collect_tool_events(monkeypatch) -> list[dict]:
     sse = (
         b"event: response.output_item.done\n"
         b'data: {"type":"response.output_item.done",'
+        b'"item":{"type":"reasoning",'
+        b'"id":"rs_abc",'
+        b'"summary":[{"type":"summary_text","text":"Need to draw a cat."}],'
+        b'"status":"completed"}}\n\n'
+        b"event: response.output_item.done\n"
+        b'data: {"type":"response.output_item.done",'
         b'"item":{"type":"image_generation_call",'
         b'"id":"img_abc",'
         b'"revised_prompt":"A photorealistic cat sitting",'
@@ -215,6 +221,13 @@ def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
             {
                 "role": "assistant",
                 "content": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_abc",
+                        "summary": [
+                            {"type": "summary_text", "text": "Need to edit."},
+                        ],
+                    },
                     {"type": "image_generation_call", "id": "img_abc"},
                 ],
             },
@@ -222,8 +235,13 @@ def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
         ],
     )
     input_items = captured["body"].get("input") or []
-    assert input_items[-2:] == [
+    assert input_items[-3:] == [
         {"role": "user", "content": "make it more realistic"},
+        {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "summary": [{"type": "summary_text", "text": "Need to edit."}],
+        },
         {"type": "image_generation_call", "id": "img_abc"},
     ]
 
@@ -235,6 +253,12 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
         SimpleNamespace(
             role = "assistant",
             content = [
+                SimpleNamespace(
+                    type = "reasoning",
+                    id = "rs_abc",
+                    summary = [{"type": "summary_text", "text": "Need to edit."}],
+                    status = "completed",
+                ),
                 SimpleNamespace(type = "image_generation_call", id = "img_abc"),
             ],
         ),
@@ -248,8 +272,25 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
     ) == [
         {
             "role": "assistant",
-            "content": [{"type": "image_generation_call", "id": "img_abc"}],
+            "content": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_abc",
+                    "summary": [{"type": "summary_text", "text": "Need to edit."}],
+                    "status": "completed",
+                },
+                {"type": "image_generation_call", "id": "img_abc"},
+            ],
         },
+        {"role": "user", "content": "make it more realistic"},
+    ]
+
+    assert _build_external_messages(
+        messages,
+        supports_vision = True,
+        provider_type = "anthropic",
+    ) == [
+        {"role": "assistant", "content": []},
         {"role": "user", "content": "make it more realistic"},
     ]
 
@@ -273,6 +314,14 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
         "openai_image_generation_call_id": "img_abc",
+        "openai_reasoning_item": {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "summary": [
+                {"type": "summary_text", "text": "Need to draw a cat."},
+            ],
+            "status": "completed",
+        },
     }
     assert ends[0]["image_b64"] == "AAAA"
     assert ends[0]["image_mime"] == "image/png"
