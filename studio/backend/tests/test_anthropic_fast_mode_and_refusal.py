@@ -158,3 +158,16 @@ def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch)
     assert '"finish_reason": "content_filter"' in body, body
     # Original deltas preserved before the refusal supplement.
     assert "Hello." in body, body
+
+
+def test_refusal_emits_hidden_sentinel_for_chat_adapter_drop(monkeypatch):
+    """Refused turns embed a hidden sentinel the chat-adapter matches on.
+
+    The frontend drops any assistant message containing this sentinel
+    from the next request's outbound history, per Anthropic's docs:
+    leaving the refused output in context causes the next call to keep
+    refusing.
+    """
+    _, lines = _capture(monkeypatch, sse = _refusal_sse())
+    body = "\n".join(lines)
+    assert "studio:anthropic-refusal" in body, body

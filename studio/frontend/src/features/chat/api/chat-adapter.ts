@@ -341,6 +341,13 @@ function collectImageParts(
   return parts;
 }
 
+// Sentinel emitted by the backend at the end of an assistant turn that
+// Anthropic ended with stop_reason="refusal". We drop the entire turn
+// from the next request body because Anthropic's guidance says leaving
+// the refused output in context causes the next call to keep refusing.
+// Keep in sync with studio/backend/core/inference/external_provider.py.
+const ANTHROPIC_REFUSAL_SENTINEL = "<!--studio:anthropic-refusal-->";
+
 function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
   content: OpenAIMessageContent;
@@ -361,6 +368,13 @@ function toOpenAIMessage(message: RunMessage): {
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
+    if (textContent.includes(ANTHROPIC_REFUSAL_SENTINEL)) {
+      // Drop refused assistant turns entirely so the next request does
+      // not re-trigger the same safety classifier. The user-visible
+      // notice stays in the rendered transcript; only the outbound
+      // history is pruned.
+      return null;
+    }
   }
 
   const imageParts = collectImageParts(message);

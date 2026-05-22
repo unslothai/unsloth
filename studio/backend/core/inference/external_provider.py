@@ -2466,11 +2466,20 @@ class ExternalProviderClient:
                                         "Anthropic refusal stop_reason (model=%s)",
                                         model,
                                     )
+                                    # Trailing HTML comment is a stable
+                                    # sentinel the chat-adapter matches
+                                    # to drop this assistant turn from
+                                    # the next request's outbound
+                                    # history. Anthropic's docs say
+                                    # the refused turn must be removed
+                                    # or updated before continuing or
+                                    # the next call will keep refusing.
                                     yield _content_chunk(
                                         "\n\n_The response was stopped by "
                                         "Anthropic's safety classifier. Edit "
                                         "or remove the previous turn and try "
                                         "again._"
+                                        "\n<!--studio:anthropic-refusal-->"
                                     )
                                 if mapped is not None:
                                     chunk = {
