@@ -605,12 +605,9 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
-                # Also require runtime settings to match so Apply changes
-                # aren't silently dropped (#5401).
+                # Match runtime settings too so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
-                # Fall through to load_model's fast path if the previous
-                # audio probe or codec init failed transiently, so the
-                # backend can retry under _serial_load_lock.
+                # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 logger.info(
@@ -864,9 +861,7 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Audio detection lives in LlamaCppBackend.load_model under
-            # _serial_load_lock (#5642): calling sync httpx probes from
-            # the async route blocked the event loop and froze the UI.
+            # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = (

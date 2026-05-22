@@ -683,8 +683,7 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
-        # _audio_probed distinguishes "probed, non-audio" (cached) from
-        # "not yet probed / transient probe error" (retry on next load).
+        # True once a probe has completed; cleared on transient failure.
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
@@ -2547,10 +2546,7 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
-                # Recover audio metadata only if no prior probe completed
-                # (transient failure). Detect outside _lock so /unload
-                # can interrupt; init inside _lock so it cannot race a
-                # concurrent /unload.
+                # Retry probe only if a prior attempt didn't complete.
                 if not self._audio_probed:
                     try:
                         detected = self._detect_audio_type_strict()
@@ -2575,8 +2571,7 @@ class LlamaCppBackend:
                                 self._audio_probed = False
                                 return False
                     elif detected:
-                        # Mirror fresh-load: guarded write so a racing
-                        # /unload cannot be silently overwritten.
+                        # Guarded write -- racing /unload must win.
                         with self._lock:
                             if not self._healthy:
                                 return False
@@ -3294,10 +3289,7 @@ class LlamaCppBackend:
                     f"for model '{model_identifier}'"
                 )
 
-            # Audio probe runs outside self._lock so /unload can
-            # interrupt; init runs inside self._lock so it cannot
-            # race a concurrent /unload. Probe stays inside
-            # _serial_load_lock so concurrent loads still serialise.
+            # Probe outside _lock (interruptible by /unload); init inside.
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False
@@ -3316,10 +3308,7 @@ class LlamaCppBackend:
                         self._is_audio = True
                         self._audio_type = detected
                     except Exception as exc:
-                        # Codec init failure must surface visibly: pre-PR
-                        # the route awaited init_audio_codec and any
-                        # exception failed /load. Returning False here
-                        # preserves that contract (route raises HTTP 500).
+                        # Surface as HTTP 500 -- matches pre-PR contract.
                         logger.warning(
                             "Failed to init audio codec '%s': %s",
                             detected,
@@ -3328,10 +3317,7 @@ class LlamaCppBackend:
                         self._audio_probed = False
                         return False
             elif detected:
-                # csm / whisper / audio_vlm: no codec init needed but
-                # the metadata write must still observe _healthy under
-                # _lock so a concurrent /unload cannot be silently
-                # repopulated after it cleared state.
+                # csm / whisper / audio_vlm: guarded write vs racing /unload.
                 with self._lock:
                     if not self._healthy:
                         return False
@@ -5257,12 +5243,7 @@ class LlamaCppBackend:
     # ── TTS support ────────────────────────────────────────────
 
     def detect_audio_type(self) -> Optional[str]:
-        """Detect audio/TTS codec by probing the loaded model's vocabulary.
-
-        Swallows transport/JSON errors and returns None. Callers that
-        need to distinguish "non-audio" from "transient probe failure"
-        should use ``_detect_audio_type_strict``.
-        """
+        """Detect audio/TTS codec; swallows errors (use _strict variant to distinguish)."""
         try:
             return self._detect_audio_type_strict()
         except Exception as e:
@@ -5270,8 +5251,7 @@ class LlamaCppBackend:
             return None
 
     def _detect_audio_type_strict(self) -> Optional[str]:
-        """Raises on transport/JSON errors; returns codec name or None
-        on definitive non-audio."""
+        """Codec name on match, None on definitive non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
         _auth_headers = (
@@ -5280,11 +5260,8 @@ class LlamaCppBackend:
         with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
             def _detok(tid: int) -> str:
-                # HTTP 4xx/5xx is itself a definitive non-match for this
-                # marker (e.g. token id out of vocab) -- keep probing the
-                # other codec families. Transport errors and malformed
-                # JSON still raise so the caller can leave _audio_probed
-                # cleared.
+                # Non-200 means "marker not in vocab" -- keep probing.
+                # Transport / JSON errors still raise.
                 r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
                 if r.status_code != 200:
                     return ""

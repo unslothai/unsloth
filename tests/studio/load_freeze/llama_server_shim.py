@@ -1,27 +1,9 @@
-"""Extended fake llama-server for simulation tests.
+"""Fake llama-server for simulation tests.
 
-Builds on the base shim used by tests/studio_load_freeze/. Adds these
-knobs for full failure-mode coverage:
-
-  - ``tok_status``      : HTTP status to return on /tokenize (default 200)
-  - ``tok_body``        : raw bytes to write as the /tokenize response
-                          (overrides JSON serialisation); use to inject
-                          malformed JSON, partial bodies, etc.
-  - ``tok_reset``       : if True, write a partial body then close the
-                          socket abruptly (simulates connection reset
-                          during recv)
-  - ``tok_response_map``: dict mapping a request body (``content`` field)
-                          to a token list (so the test can synthesise
-                          matches for snac / csm / bicodec / dac /
-                          whisper / audio_vlm)
-  - ``detok_status``    : same shape as tok_status but for /detokenize
-  - ``detok_body``      : raw bytes override for /detokenize
-  - ``detok_map``       : token-id -> string mapping for /detokenize
-                          responses (used by detect_audio_type to test
-                          for the "<custom_token_..." prefix that
-                          triggers the snac match)
-
-All other behaviour matches the base shim.
+Knobs: tok_status / tok_body / tok_reset / tok_response_map and the
+matching detok_* set let tests inject every failure mode for the
+audio-type probe (timeouts, partial bodies, malformed JSON, codec
+marker hits).
 """
 
 from __future__ import annotations
