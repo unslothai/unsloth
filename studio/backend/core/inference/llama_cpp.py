@@ -3043,9 +3043,7 @@ class LlamaCppBackend:
                             _hip_path, "bin", "rocblas", "library"
                         )
                         if os.path.isdir(_rocblas_lib):
-                            env.setdefault(
-                                "ROCBLAS_TENSILE_LIBPATH", _rocblas_lib
-                            )
+                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)
