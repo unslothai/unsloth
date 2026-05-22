@@ -331,10 +331,7 @@ def run_safetensors_tool_loop(
                             v_decoded = json.loads(v_raw)
                         except (json.JSONDecodeError, ValueError):
                             v_decoded = None
-                    if (
-                        not isinstance(v_decoded, dict)
-                        and not auto_heal_tool_calls
-                    ):
+                    if not isinstance(v_decoded, dict) and not auto_heal_tool_calls:
                         validation_problem = ("malformed_args", v_tc, v_name)
                         break
                 elif not isinstance(v_raw, dict):
@@ -348,39 +345,47 @@ def run_safetensors_tool_loop(
             v_call_id = v_tc.get("id")
             if v_kind == "unknown_tool" and v_call_id:
                 allowed_list = ", ".join(sorted(allowed_tool_names))
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": v_call_id,
-                    "name": v_name,
-                    "content": (
-                        f"Error: tool '{v_name}' is not available. "
-                        f"Available tools: {allowed_list}."
-                    ),
-                })
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": v_call_id,
+                        "name": v_name,
+                        "content": (
+                            f"Error: tool '{v_name}' is not available. "
+                            f"Available tools: {allowed_list}."
+                        ),
+                    }
+                )
             elif v_kind == "malformed_args" and v_call_id:
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": v_call_id,
-                    "name": v_name,
-                    "content": (
-                        f"Error: arguments to '{v_name}' could not be "
-                        "parsed as a JSON object. Call "
-                        f"'{v_name}' again with valid JSON object "
-                        "arguments."
-                    ),
-                })
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": v_call_id,
+                        "name": v_name,
+                        "content": (
+                            f"Error: arguments to '{v_name}' could not be "
+                            "parsed as a JSON object. Call "
+                            f"'{v_name}' again with valid JSON object "
+                            "arguments."
+                        ),
+                    }
+                )
             else:
-                conversation.append({
-                    "role": "user",
-                    "content": (
-                        "Your last tool call was malformed (missing id "
-                        "or function). Please re-issue it as a valid "
-                        "OpenAI function call."
-                    ),
-                })
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your last tool call was malformed (missing id "
+                            "or function). Please re-issue it as a valid "
+                            "OpenAI function call."
+                        ),
+                    }
+                )
             logger.info(
                 "validation_retry kind=%s retries=%d/%d",
-                v_kind, validation_retries, max_validation_retries,
+                v_kind,
+                validation_retries,
+                max_validation_retries,
             )
             yield {"type": "status", "text": ""}
             continue

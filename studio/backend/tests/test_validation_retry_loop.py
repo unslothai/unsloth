@@ -21,7 +21,9 @@ class FakeExecuteTool:
         self.results = list(results or [])
         self.calls = []
 
-    def __call__(self, name, arguments, *, cancel_event = None, timeout = None, session_id = None):
+    def __call__(
+        self, name, arguments, *, cancel_event = None, timeout = None, session_id = None
+    ):
         self.calls.append((name, arguments))
         return self.results.pop(0) if self.results else "OK"
 
@@ -62,11 +64,15 @@ class TestUnknownTool:
     def test_unknown_tool_triggers_retry(self):
         # Turn 1: hallucinated tool name "missing_tool".
         # Turn 2: valid call after the corrective nudge.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"missing_tool","arguments":{}}</tool_call>'],
-            ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-            ["Done."],
-        ])
+        single_turn = _multi_turn(
+            [
+                ['<tool_call>{"name":"missing_tool","arguments":{}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                ["Done."],
+            ]
+        )
         exec_fn = FakeExecuteTool(["result"])
         events = _collect(
             run_safetensors_tool_loop(
@@ -87,12 +93,14 @@ class TestUnknownTool:
         # the first two are retried; the third falls through to the
         # existing per-tool error path (which never executes a real
         # tool but emits an error result to the model).
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"missing_a","arguments":{}}</tool_call>'],
-            ['<tool_call>{"name":"missing_b","arguments":{}}</tool_call>'],
-            ['<tool_call>{"name":"missing_c","arguments":{}}</tool_call>'],
-            ["Sorry, I cannot proceed."],
-        ])
+        single_turn = _multi_turn(
+            [
+                ['<tool_call>{"name":"missing_a","arguments":{}}</tool_call>'],
+                ['<tool_call>{"name":"missing_b","arguments":{}}</tool_call>'],
+                ['<tool_call>{"name":"missing_c","arguments":{}}</tool_call>'],
+                ["Sorry, I cannot proceed."],
+            ]
+        )
         exec_fn = FakeExecuteTool([])
         events = _collect(
             run_safetensors_tool_loop(
@@ -115,10 +123,12 @@ class TestUnknownTool:
         # With max_validation_retries=0, the F3 arm never engages and
         # behavior matches the pre-F3 path: the existing per-tool
         # error message is emitted but no corrective re-entry happens.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"missing","arguments":{}}</tool_call>'],
-            ["bye"],
-        ])
+        single_turn = _multi_turn(
+            [
+                ['<tool_call>{"name":"missing","arguments":{}}</tool_call>'],
+                ["bye"],
+            ]
+        )
         exec_fn = FakeExecuteTool([])
         events = _collect(
             run_safetensors_tool_loop(
@@ -135,10 +145,7 @@ class TestUnknownTool:
         tool_ends = [e for e in events if e["type"] == "tool_end"]
         # Existing per-tool error path emits a tool_end with an Error
         # result so the model sees the failure.
-        assert any(
-            "not enabled" in str(e.get("result", ""))
-            for e in tool_ends
-        )
+        assert any("not enabled" in str(e.get("result", "")) for e in tool_ends)
 
 
 class TestMalformedArgs:
@@ -146,10 +153,14 @@ class TestMalformedArgs:
         # With auto_heal_tool_calls=True (the default), string args are
         # healed to {"query": "..."} for web_search. F3 leaves heal
         # behavior intact and only catches strictly-impossible shapes.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"web_search","arguments":"some text"}</tool_call>'],
-            ["all done"],
-        ])
+        single_turn = _multi_turn(
+            [
+                [
+                    '<tool_call>{"name":"web_search","arguments":"some text"}</tool_call>'
+                ],
+                ["all done"],
+            ]
+        )
         exec_fn = FakeExecuteTool(["ok"])
         events = _collect(
             run_safetensors_tool_loop(
@@ -168,11 +179,17 @@ class TestMalformedArgs:
     def test_malformed_args_caught_when_heal_off(self):
         # With auto_heal off, a non-dict arguments value is a hard
         # malformed-args failure and the F3 arm catches it.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"web_search","arguments":"not a dict"}</tool_call>'],
-            ['<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>'],
-            ["sunny"],
-        ])
+        single_turn = _multi_turn(
+            [
+                [
+                    '<tool_call>{"name":"web_search","arguments":"not a dict"}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>'
+                ],
+                ["sunny"],
+            ]
+        )
         exec_fn = FakeExecuteTool(["sunny in sf"])
         events = _collect(
             run_safetensors_tool_loop(
@@ -192,10 +209,12 @@ class TestNoOpCases:
     def test_no_tools_no_validation(self):
         # Empty tools list means allowed_tool_names is empty, so the
         # F3 arm never engages.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"anything","arguments":{}}</tool_call>'],
-            ["done"],
-        ])
+        single_turn = _multi_turn(
+            [
+                ['<tool_call>{"name":"anything","arguments":{}}</tool_call>'],
+                ["done"],
+            ]
+        )
         exec_fn = FakeExecuteTool([])
         events = _collect(
             run_safetensors_tool_loop(
@@ -211,10 +230,14 @@ class TestNoOpCases:
 
     def test_valid_call_no_retry_overhead(self):
         # A clean valid call does not trigger F3 at all.
-        single_turn = _multi_turn([
-            ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-            ["final"],
-        ])
+        single_turn = _multi_turn(
+            [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                ["final"],
+            ]
+        )
         exec_fn = FakeExecuteTool(["res"])
         events = _collect(
             run_safetensors_tool_loop(

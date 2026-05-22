@@ -5040,12 +5040,16 @@ class LlamaCppBackend:
                                 _vdec = None
                             if not isinstance(_vdec, dict):
                                 _validation_problem = (
-                                    "malformed_args", _vtc, _vname,
+                                    "malformed_args",
+                                    _vtc,
+                                    _vname,
                                 )
                                 break
                         elif not isinstance(_vraw, dict):
                             _validation_problem = (
-                                "malformed_args", _vtc, _vname,
+                                "malformed_args",
+                                _vtc,
+                                _vname,
                             )
                             break
 
@@ -5055,42 +5059,50 @@ class LlamaCppBackend:
                     _vcall_id = _vtc.get("id")
                     if _kind == "unknown_tool" and _vcall_id:
                         _allowed_list = ", ".join(sorted(_allowed_tool_names))
-                        conversation.append({
-                            "role": "tool",
-                            "tool_call_id": _vcall_id,
-                            "name": _vname,
-                            "content": (
-                                f"Error: tool '{_vname}' is not available. "
-                                f"Available tools: {_allowed_list}."
-                            ),
-                        })
+                        conversation.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": _vcall_id,
+                                "name": _vname,
+                                "content": (
+                                    f"Error: tool '{_vname}' is not available. "
+                                    f"Available tools: {_allowed_list}."
+                                ),
+                            }
+                        )
                     elif _kind == "malformed_args" and _vcall_id:
-                        conversation.append({
-                            "role": "tool",
-                            "tool_call_id": _vcall_id,
-                            "name": _vname,
-                            "content": (
-                                f"Error: arguments to '{_vname}' could not "
-                                "be parsed as a JSON object. Call "
-                                f"'{_vname}' again with valid JSON object "
-                                "arguments."
-                            ),
-                        })
+                        conversation.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": _vcall_id,
+                                "name": _vname,
+                                "content": (
+                                    f"Error: arguments to '{_vname}' could not "
+                                    "be parsed as a JSON object. Call "
+                                    f"'{_vname}' again with valid JSON object "
+                                    "arguments."
+                                ),
+                            }
+                        )
                     else:
                         # No usable call id: user-role correction since
                         # OpenAI tool messages require a matching id.
-                        conversation.append({
-                            "role": "user",
-                            "content": (
-                                "Your last tool call was malformed "
-                                "(missing id or function). Please "
-                                "re-issue it as a valid OpenAI "
-                                "function call."
-                            ),
-                        })
+                        conversation.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Your last tool call was malformed "
+                                    "(missing id or function). Please "
+                                    "re-issue it as a valid OpenAI "
+                                    "function call."
+                                ),
+                            }
+                        )
                     logger.info(
                         "validation_retry kind=%s retries=%d/%d",
-                        _kind, _validation_retries, max_validation_retries,
+                        _kind,
+                        _validation_retries,
+                        max_validation_retries,
                     )
                     yield {"type": "status", "text": ""}
                     continue
