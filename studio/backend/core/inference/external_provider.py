@@ -184,14 +184,18 @@ def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     https://platform.claude.com/docs/en/build-with-claude/citations
     and https://platform.claude.com/docs/en/build-with-claude/search-results :
 
-    * ``char_location``: ``document_index`` + ``start_char_index``
-    * ``page_location``: ``document_index`` + ``start_page_number``
-    * ``content_block_location``: ``document_index`` + ``start_block_index``
+    * ``char_location``: ``document_index`` + start/end char index
+    * ``page_location``: ``document_index`` + start/end page number
+    * ``content_block_location``: ``document_index`` + start/end block index
     * ``search_result_location``: ``search_result_index`` + ``source`` +
-      ``title`` + ``start_block_index`` + ``end_block_index``
+      ``title`` + start/end block index
       (search-result citations do NOT carry document_index /
       document_title -- using those would collapse distinct results
       with the same source into one footnote.)
+
+    The end anchor is part of the key for every variant: Anthropic
+    citation ranges are defined by start AND exclusive end indices,
+    so a same-start / different-end pair is two distinct citations.
 
     Anything unrecognised falls back to a stringified copy so a future
     shape still dedupes (worst case: more entries, never collisions).
@@ -200,11 +204,29 @@ def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     doc = citation.get("document_index")
     title = citation.get("document_title") or ""
     if ctype == "char_location":
-        return (ctype, doc, title, citation.get("start_char_index"))
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_char_index"),
+            citation.get("end_char_index"),
+        )
     if ctype == "page_location":
-        return (ctype, doc, title, citation.get("start_page_number"))
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_page_number"),
+            citation.get("end_page_number"),
+        )
     if ctype == "content_block_location":
-        return (ctype, doc, title, citation.get("start_block_index"))
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_block_index"),
+            citation.get("end_block_index"),
+        )
     if ctype == "search_result_location":
         return (
             ctype,

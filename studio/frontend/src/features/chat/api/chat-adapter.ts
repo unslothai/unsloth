@@ -164,19 +164,37 @@ function documentCitationToSource(
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
   // Use the search-result source URL when present; otherwise fall back
-  // to a stable doc anchor so the panel can still dedupe by id.
-  const url =
-    source || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  // to a stable doc anchor.
+  const url = source || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited =
     typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
   // Trim the cited snippet so the Sources panel stays scannable.
   const description =
     cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  // Anthropic numbers each inline [N] marker by citation, not by
+  // source URL: two distinct citations from the same document (or
+  // two search_result_locations with the same source but different
+  // search_result_index) must keep distinct entries. Fold the
+  // position-bearing fields into the id so the Sources panel
+  // preserves the 1:1 mapping with the inline footnotes.
+  const positionParts = [
+    cit.search_result_index,
+    cit.start_char_index,
+    cit.end_char_index,
+    cit.start_page_number,
+    cit.end_page_number,
+    cit.start_block_index,
+    cit.end_block_index,
+  ]
+    .filter((v) => typeof v === "number")
+    .map((v) => String(v))
+    .join(":");
+  const id = positionParts ? `${url}#${positionParts}` : `${url}#${fallbackIdx}`;
   return {
     type: "source" as const,
     sourceType: "url" as const,
-    id: url,
+    id,
     url,
     title,
     ...(description ? { metadata: { description } } : {}),

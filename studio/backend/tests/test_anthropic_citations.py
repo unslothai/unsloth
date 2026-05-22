@@ -285,6 +285,46 @@ def test_search_result_location_supported(monkeypatch):
     assert "example.com/doc.html" in body
 
 
+def test_same_start_different_end_offsets_get_distinct_numbers(monkeypatch):
+    """char_location citations sharing start_char_index but with
+    different end_char_index are distinct spans (Anthropic ranges
+    are defined by start AND exclusive end) and must get distinct
+    footnote numbers."""
+    cit_a = {
+        "type": "char_location",
+        "document_index": 0,
+        "document_title": "Doc",
+        "start_char_index": 100,
+        "end_char_index": 150,
+        "cited_text": "first half",
+    }
+    cit_b = {
+        "type": "char_location",
+        "document_index": 0,
+        "document_title": "Doc",
+        "start_char_index": 100,
+        "end_char_index": 250,
+        "cited_text": "wider span",
+    }
+    lines = _capture(
+        monkeypatch,
+        [
+            _message_start(),
+            _content_block_start_text(),
+            _text_delta("A "),
+            _citations_delta(cit_a),
+            _text_delta(" and B "),
+            _citations_delta(cit_b),
+            _content_block_stop(),
+            _message_delta_end(),
+            _message_stop(),
+        ],
+    )
+    body = _joined(lines)
+    assert "[1]" in body, body
+    assert "[2]" in body, body
+
+
 def test_search_result_location_different_indices_get_distinct_numbers(monkeypatch):
     """Two search_result_location citations with the same source but
     different ``search_result_index`` must dedupe as distinct footnotes,
