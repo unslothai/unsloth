@@ -486,20 +486,41 @@ export async function listChatImportLedger(): Promise<Set<string>> {
   return new Set(data.threadIds);
 }
 
+export interface RecordChatImportLedgerResult {
+  accepted: number;
+  inserted: number;
+  // false when the backend predates /api/chat/import-ledger (404/405/501)
+  // so the caller can avoid poisoning the localStorage perf hint -- the
+  // next launch will retry the (idempotent) import.
+  supported: boolean;
+}
+
 export async function recordChatImportLedger(
   threadIds: string[],
-): Promise<number> {
-  if (threadIds.length === 0) return 0;
+): Promise<RecordChatImportLedgerResult> {
+  if (threadIds.length === 0) {
+    return { accepted: 0, inserted: 0, supported: true };
+  }
   const response = await authFetch("/api/chat/import-ledger", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ threadIds }),
   });
-  // Older backend: noop on the client side; the next launch will just
-  // re-import (idempotent via UPSERT).
-  if (response.status === 404 || response.status === 405) return 0;
-  const data = await parseJsonOrThrow<{ recorded: number }>(response);
-  return data.recorded;
+  if (
+    response.status === 404 ||
+    response.status === 405 ||
+    response.status === 501
+  ) {
+    return { accepted: 0, inserted: 0, supported: false };
+  }
+  const data = await parseJsonOrThrow<{ accepted: number; inserted: number }>(
+    response,
+  );
+  return {
+    accepted: data.accepted,
+    inserted: data.inserted,
+    supported: true,
+  };
 }
 
 export interface BrowseEntry {

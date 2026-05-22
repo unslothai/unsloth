@@ -54,3 +54,56 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     assert exc_info.value.status_code == 400
     assert "Message threadId mismatch" in str(exc_info.value.detail)
     assert called is False
+
+
+# ---------------------------------------------------------------------------
+# /api/chat/import-ledger
+# ---------------------------------------------------------------------------
+
+
+def test_get_import_ledger_round_trips_through_storage(monkeypatch):
+    seen: list[str] = []
+
+    def fake_list():
+        return list(seen)
+
+    monkeypatch.setattr(chat_history, "list_chat_legacy_imports", fake_list)
+
+    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    assert response.threadIds == []
+
+    seen.extend(["legacy-a", "legacy-b"])
+    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    assert response.threadIds == ["legacy-a", "legacy-b"]
+
+
+def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
+    captured: list[list[str]] = []
+
+    def fake_upsert(thread_ids):
+        captured.append(list(thread_ids))
+        # Pretend two of the three were already in the ledger.
+        return (len(thread_ids), max(0, len(thread_ids) - 2))
+
+    monkeypatch.setattr(chat_history, "upsert_chat_legacy_imports", fake_upsert)
+
+    response = asyncio.run(
+        chat_history.record_import_ledger(
+            payload = chat_history.ChatImportLedgerRecordRequest(
+                threadIds = ["a", "b", "c"],
+            ),
+            current_subject = "test-user",
+        )
+    )
+    assert response.accepted == 3
+    assert response.inserted == 1
+    assert captured == [["a", "b", "c"]]
+
+
+def test_record_import_ledger_rejects_oversize_payload():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        chat_history.ChatImportLedgerRecordRequest(
+            threadIds = [f"id-{i}" for i in range(10_001)],
+        )

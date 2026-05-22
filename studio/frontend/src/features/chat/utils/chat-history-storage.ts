@@ -18,7 +18,7 @@ import {
   syncChatMessages,
   updateChatThread,
 } from "../api/chat-api";
-import { db } from "../db";
+import { db, DEXIE_DB_NAME } from "../db";
 import type { MessageRecord, ModelType, ThreadRecord } from "../types";
 import {
   isChatThreadDeleted,
@@ -32,14 +32,12 @@ type ThreadListArgs = {
 };
 
 // localStorage perf-hint that the Dexie -> studio.db import already
-// finished in a previous session. Authoritative source of truth lives
-// server-side in chat_legacy_import_log (studio.db); this hint just
-// lets us skip the cheap probes + ledger fetch on the warm path.
+// finished in a previous session. NOT consulted by the import gate
+// itself -- the server-side ledger (chat_legacy_imports) is the source
+// of truth so a studio.db wipe stays recoverable. The hint only short-
+// circuits the listing paths' "should I also surface Dexie threads?"
+// branches once the ledger has covered everything.
 const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
-// Dexie's database name (must match `new Dexie("unsloth-chat")` in db.ts).
-// Used by the fast-path that checks for the database's existence via
-// indexedDB.databases() without opening it.
-const LEGACY_DEXIE_DB_NAME = "unsloth-chat";
 
 let legacyChatImportPromise: Promise<void> | null = null;
 
@@ -262,15 +260,15 @@ async function dexieDbAbsent(): Promise<boolean> {
   if (typeof dbs !== "function") return false;
   try {
     const list = await dbs.call(indexedDB);
-    return !list.some((entry) => entry.name === LEGACY_DEXIE_DB_NAME);
+    if (!Array.isArray(list)) return false;
+    return !list.some((entry) => entry?.name === DEXIE_DB_NAME);
   } catch {
     return false;
   }
 }
 
 // Fast-path: Dexie exists but is empty. count() reads the IndexedDB
-// store header, not the rows, so this stays O(1) regardless of how
-// many records a real user has.
+// store metadata, not the rows -- cheap regardless of record count.
 async function dexieIsEmpty(): Promise<boolean> {
   try {
     const [threadCount, messageCount] = await Promise.all([
@@ -279,35 +277,39 @@ async function dexieIsEmpty(): Promise<boolean> {
     ]);
     return threadCount === 0 && messageCount === 0;
   } catch {
+    // Dexie threw (corrupted DB / version mismatch / quota). Returning
+    // false forces the slow path, which uses the same Dexie under the
+    // hood; that path will throw too and the import promise gets reset
+    // so the next caller can retry rather than silently doing nothing.
     return false;
   }
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
-  // ── Fast-path A: localStorage perf hint says "imported earlier".
-  // The ledger is still the source of truth; this just keeps repeated
-  // sidebar mounts in the same session free.
-  if (isLegacyChatImportDone()) return;
+  // Session-level cache: same tab, repeated sidebar mounts share one
+  // import. localStorage is NOT consulted here -- the server-side ledger
+  // is the source of truth so a studio.db wipe still re-triggers the
+  // import even if the browser kept its old hint.
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // ── Fast-path B: no Dexie database at all. New user, never had the
-    // old browser-only Studio. ~1 ms, zero network.
+    // Fast-path: no Dexie database at all. New user, never had the
+    // browser-only Studio. ~0.1 ms, zero network.
     if (await dexieDbAbsent()) {
       markLegacyChatImportDone();
       return;
     }
 
-    // ── Fast-path C: Dexie exists but is empty (already migrated long
-    // ago and Dexie just hasn't been GC'd, or browser created an empty
-    // DB for some reason). count() is an O(1) index-header read.
+    // Fast-path: Dexie exists but is empty (already migrated long
+    // ago and Dexie just hasn't been GC'd, or the browser created an
+    // empty DB for some reason).
     if (await dexieIsEmpty()) {
       markLegacyChatImportDone();
       return;
     }
 
-    // ── Slow path: actually diff Dexie against the server-side ledger
-    // and import any threads not already recorded.
+    // Slow path: diff Dexie against the server-side ledger and import
+    // any threads not already recorded.
     const [legacyThreads, backendThreads, importedThreadIds] = await Promise.all([
       db.threads.toArray(),
       listChatThreads({ includeArchived: true }),
@@ -317,14 +319,43 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     const backendThreadsById = new Map(
       backendThreads.map((thread) => [thread.id, thread]),
     );
-    const newlyImportedIds: string[] = [];
+    const unimportedIds: string[] = [];
+    const unimportedThreads: ThreadRecord[] = [];
 
+    // "Unimported" = missing from the ledger. We also include threads
+    // already present in the backend (without a ledger row) so the ledger
+    // gets backfilled for old-FE-then-new-FE users -- otherwise the next
+    // launch would redo the diff for the same threads forever.
     for (const thread of legacyThreads) {
       if (isChatThreadDeleted(thread.id)) continue;
-      // Ledger hit: this thread has already been imported into the
-      // current studio.db. Skip without any backend round-trips.
       if (importedThreadIds.has(thread.id)) continue;
+      unimportedIds.push(thread.id);
+      unimportedThreads.push(thread);
+    }
 
+    if (unimportedIds.length === 0) {
+      markLegacyChatImportDone();
+      return;
+    }
+
+    // Two bulk reads instead of 2N per-thread round-trips.
+    const allLegacyMessages = await db.messages
+      .where("threadId")
+      .anyOf(unimportedIds)
+      .toArray()
+      .catch(() => [] as MessageRecord[]);
+    const legacyByThread = new Map<string, MessageRecord[]>();
+    for (const message of allLegacyMessages) {
+      const arr = legacyByThread.get(message.threadId);
+      if (arr) arr.push(message);
+      else legacyByThread.set(message.threadId, [message]);
+    }
+    const backendByThread = await batchListChatMessages(unimportedIds).catch(
+      () => new Map<string, MessageRecord[]>(),
+    );
+
+    const newlyImportedIds: string[] = [];
+    for (const thread of unimportedThreads) {
       const backendThread = backendThreadsById.get(thread.id);
       if (!backendThread) {
         await saveChatThread(thread);
@@ -336,17 +367,13 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
         );
       }
 
-      const legacyMessages = await db.messages
-        .where("threadId")
-        .equals(thread.id)
-        .toArray();
+      const legacyMessages = legacyByThread.get(thread.id) ?? [];
       if (legacyMessages.length === 0) {
-        // Thread metadata is in the backend; nothing else to copy.
         newlyImportedIds.push(thread.id);
         continue;
       }
 
-      const backendMessages = await listChatMessages(thread.id).catch(() => []);
+      const backendMessages = backendByThread.get(thread.id) ?? [];
       const merged = mergeMessages(backendMessages, legacyMessages);
       if (merged.shouldSync) {
         await syncChatMessages(thread.id, sortMessages(merged.messages), {
@@ -356,19 +383,26 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       newlyImportedIds.push(thread.id);
     }
 
-    // Best-effort ledger write. If the backend predates this endpoint
-    // (older deployment), the client helper returns 0 and we still mark
-    // the hint -- the next launch will redo the (idempotent) import.
-    if (newlyImportedIds.length > 0) {
-      try {
-        await recordChatImportLedger(newlyImportedIds);
-      } catch {
-        // Network error here is recoverable on next launch; do not
-        // poison the hint so we'll retry. Return without flipping it.
-        return;
-      }
+    if (newlyImportedIds.length === 0) {
+      markLegacyChatImportDone();
+      return;
     }
-    markLegacyChatImportDone();
+    let result: { supported: boolean };
+    try {
+      result = await recordChatImportLedger(newlyImportedIds);
+    } catch {
+      // Network error: leave the perf hint alone so the next launch
+      // retries. The import itself is idempotent via UPSERT, no
+      // duplicates.
+      return;
+    }
+    // Only flip the localStorage hint when the backend actually has the
+    // ledger. On older deployments (404/405/501) the hint would lie:
+    // "import done" while the ledger stays empty, defeating recovery
+    // when studio.db gets wiped later.
+    if (result.supported) {
+      markLegacyChatImportDone();
+    }
   })();
 
   try {

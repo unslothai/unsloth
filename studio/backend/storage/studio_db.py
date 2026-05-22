@@ -199,7 +199,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # is read-only after this PR (a thread's message set does not grow).
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS chat_legacy_import_log (
+        CREATE TABLE IF NOT EXISTS chat_legacy_imports (
             legacy_thread_id TEXT NOT NULL PRIMARY KEY,
             imported_at INTEGER NOT NULL
         ) WITHOUT ROWID
@@ -1183,17 +1183,10 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Legacy Dexie import ledger
 # ---------------------------------------------------------------------------
-#
-# Records which legacy Dexie thread ids have been imported into studio.db.
-# Replaces the per-browser localStorage sentinel
-# (`unsloth_chat_legacy_imported_to_studio_db`) as the source of truth so
-# the import becomes recoverable: deleting studio.db drops the ledger
-# rows together with the data they describe, which causes the next
-# importLegacyChatsIfNeeded call to re-import everything Dexie still
-# holds.
+# See the schema comment in _ensure_schema() for the recovery rationale.
 
 
-def list_chat_legacy_import_log() -> list[str]:
+def list_chat_legacy_imports() -> list[str]:
     """Return the legacy_thread_id of every thread already imported.
 
     Cheap: scans a single small PK-only table. The frontend stuffs the
@@ -1202,42 +1195,45 @@ def list_chat_legacy_import_log() -> list[str]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT legacy_thread_id FROM chat_legacy_import_log"
+            "SELECT legacy_thread_id FROM chat_legacy_imports"
         ).fetchall()
         return [row[0] for row in rows]
     finally:
         conn.close()
 
 
-def record_chat_legacy_import_log(
-    legacy_thread_ids: Iterable[str],
-    imported_at: Optional[int] = None,
-) -> int:
+def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
     """Mark each given legacy thread id as imported. Idempotent.
 
-    Returns the number of input ids (regardless of insert-vs-conflict)
-    so the caller can log "imported N threads". ON CONFLICT DO NOTHING
-    keeps the existing imported_at when an id is recorded twice.
+    Returns (accepted, inserted):
+      - accepted: number of non-empty deduped input ids
+      - inserted: number of rows that were actually new (not already in ledger)
+
+    ON CONFLICT DO NOTHING keeps the existing imported_at when an id is
+    recorded twice. INSERT...RETURNING reports only the rows that were
+    actually inserted, so callers can distinguish first-time imports
+    from idempotent re-runs without an extra SELECT.
     """
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
     if not ids:
-        return 0
-    ts = (
-        int(imported_at)
-        if imported_at is not None
-        else int(datetime.now(timezone.utc).timestamp() * 1000)
-    )
+        return 0, 0
+    ts = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn = get_connection()
     try:
-        conn.executemany(
-            """
-            INSERT INTO chat_legacy_import_log (legacy_thread_id, imported_at)
-            VALUES (?, ?)
-            ON CONFLICT(legacy_thread_id) DO NOTHING
-            """,
-            [(tid, ts) for tid in ids],
-        )
+        inserted = 0
+        for tid in ids:
+            row = conn.execute(
+                """
+                INSERT INTO chat_legacy_imports (legacy_thread_id, imported_at)
+                VALUES (?, ?)
+                ON CONFLICT(legacy_thread_id) DO NOTHING
+                RETURNING legacy_thread_id
+                """,
+                (tid, ts),
+            ).fetchone()
+            if row is not None:
+                inserted += 1
         conn.commit()
-        return len(ids)
+        return len(ids), inserted
     finally:
         conn.close()

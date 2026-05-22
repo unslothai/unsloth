@@ -19,14 +19,14 @@ from storage.studio_db import (
     delete_chat_threads,
     get_chat_thread,
     get_chat_message,
-    list_chat_legacy_import_log,
+    list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
-    record_chat_legacy_import_log,
     sync_chat_messages,
     update_chat_thread,
+    upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
     upsert_chat_thread,
@@ -158,11 +158,17 @@ class ChatImportLedgerResponse(BaseModel):
 
 
 class ChatImportLedgerRecordRequest(BaseModel):
-    threadIds: list[str]
+    # 10k cap keeps the request body bounded; real users have << 1k threads.
+    threadIds: list[str] = Field(default_factory = list, max_length = 10_000)
 
 
 class ChatImportLedgerRecordResponse(BaseModel):
-    recorded: int
+    # accepted: deduped non-empty input count. inserted: rows actually new
+    # (ON CONFLICT DO NOTHING skips already-recorded ids). The client uses
+    # `accepted >= 0` as the "endpoint exists" signal and ignores the split
+    # otherwise.
+    accepted: int
+    inserted: int
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -330,11 +336,10 @@ async def count_threads(current_subject: str = Depends(get_current_subject)):
 async def get_import_ledger(current_subject: str = Depends(get_current_subject)):
     """Legacy-Dexie import ledger. Returns the set of legacy thread ids
     already copied into chat_threads / chat_messages. The frontend
-    uses this to decide whether to re-run the Dexie -> studio.db
-    import on first sidebar mount. Source of truth lives inside
-    studio.db so a studio.db wipe makes the import recoverable
-    (the localStorage hint becomes a perf-only fast path)."""
-    return ChatImportLedgerResponse(threadIds = list_chat_legacy_import_log())
+    uses this on every fresh tab open to decide whether to re-run the
+    Dexie -> studio.db import. Source of truth lives inside studio.db
+    so a studio.db wipe makes the import recoverable."""
+    return ChatImportLedgerResponse(threadIds = list_chat_legacy_imports())
 
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
@@ -343,9 +348,8 @@ async def record_import_ledger(
     current_subject: str = Depends(get_current_subject),
 ):
     """Mark each legacy thread id as imported. Idempotent."""
-    return ChatImportLedgerRecordResponse(
-        recorded = record_chat_legacy_import_log(payload.threadIds),
-    )
+    accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
+    return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
 
 
 @router.delete("")
