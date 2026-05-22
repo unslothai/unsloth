@@ -65,7 +65,7 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
             </p>
             <div className="border-l-2 border-border/60 pl-3 mt-1">
               <p className="text-xs font-medium text-foreground mb-1">Activations</p>
-              <KatexDisplay latex="\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]" />
+              <KatexDisplay latex={String.raw`\bar{a}_c \equiv \frac{1}{N}\sum_{n=1}^{N}|x_{n,c}| \;\equiv\; \texttt{mean\_abs}[c]`} />
               <p className="text-xs text-muted-foreground leading-relaxed">
                 N = batch × seq tokens, x<sub>n,c</sub> = activation at token n, channel c.
                 The average absolute firing magnitude per channel.
@@ -83,19 +83,19 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
               {
                 label: "Dead",
                 color: "rgb(96,165,250)",
-                latex: "\\max_t(\\bar{a}_t) < \\varepsilon, \\quad \\varepsilon = 0.01",
+                latex: String.raw`\max_t(\bar{a}_t) < \varepsilon, \quad \varepsilon = 0.01`,
                 desc: "Channel never exceeded ε across all captured steps. Dead neurons contribute nothing to model output.",
               },
               {
                 label: "Constant",
                 color: "rgb(251,146,60)",
-                latex: "CV \\equiv \\frac{\\sigma}{\\mu} < 0.05",
+                latex: String.raw`CV \equiv \frac{\sigma}{\mu} < 0.05`,
                 desc: "Neuron fires but barely changes over training (CV < 5%). Limits the model's expressive capacity.",
               },
               {
                 label: "Onset Dead",
                 color: "rgb(147,51,234)",
-                latex: "\\bar{a}_0 \\geq \\varepsilon \\;\\wedge\\; \\max_{t>0}(\\bar{a}_t) < \\varepsilon",
+                latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
                 desc: "Was alive at step 0 but died mid-training — the critical red flag. Suggests unstable learning rate or corrupted batch.",
               },
             ].map(({ label, color, latex, desc }) => (

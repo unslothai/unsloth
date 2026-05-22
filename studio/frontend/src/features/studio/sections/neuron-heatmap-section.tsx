@@ -361,7 +361,7 @@ const VIEW_MODES: ViewModeConfig[] = [
   {
     key: "activations",
     label: "Activations",
-    latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
+    latex: String.raw`\bar{a}_c \equiv \frac{1}{N}\sum_{n=1}^{N}|x_{n,c}| \;\equiv\; \texttt{mean\_abs}[c]`,
     description: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value from the activation log — how strongly each channel fires on average.",
   },
 ];
@@ -379,21 +379,21 @@ const OVERLAY_CONFIGS: OverlayConfig[] = [
     key: "dead",
     label: "Dead",
     color: "rgb(96,165,250)",
-    latex: "\\max_t(\\bar{a}_t) < \\varepsilon,\\quad \\varepsilon = 0.01",
+    latex: String.raw`\max_t(\bar{a}_t) < \varepsilon,\quad \varepsilon = 0.01`,
     description: "Channel never exceeded ε — contributes nothing to model output.",
   },
   {
     key: "constant",
     label: "Constant",
     color: "rgb(251,146,60)",
-    latex: "CV \\equiv \\sigma/\\mu < 0.05",
+    latex: String.raw`CV \equiv \sigma/\mu < 0.05`,
     description: "Fires but barely changes over training. Limits expressive capacity.",
   },
   {
     key: "onset_dead",
     label: "Onset Dead",
     color: "rgb(147,51,234)",
-    latex: "\\bar{a}_0 \\geq \\varepsilon \\;\\wedge\\; \\max_{t>0}(\\bar{a}_t) < \\varepsilon",
+    latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
     description: "Was alive at step 0, died mid-training — the critical red flag.",
   },
 ];
