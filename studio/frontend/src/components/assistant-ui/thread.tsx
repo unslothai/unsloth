@@ -11,9 +11,14 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  thinkEffortAriaLabel,
+  thinkToggleAriaLabel,
+} from "@/components/assistant-ui/think-aria-label";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
+import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -64,6 +69,7 @@ import {
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
+  ImageIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -289,19 +295,31 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const composerText = useAuiState(({ composer }) => composer.text);
+  const hasAttachments = useAuiState(
+    ({ composer }) => composer.attachments.length > 0,
+  );
   const hasPendingAttachments = useAuiState(({ composer }) =>
     composer.attachments.some(
       (attachment) => attachment.status.type === "running",
     ),
   );
+  const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const hasSendableContent =
+    composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current || hasPendingAttachments) {
+      if (
+        disabled ||
+        !hasSendableContent ||
+        isComposingRef.current ||
+        hasPendingAttachments
+      ) {
         event.preventDefault();
       }
     },
-    [disabled, hasPendingAttachments, isComposingRef],
+    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
   const composerContent = (
@@ -323,8 +341,12 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing || hasPendingAttachments}
-        blockSend={() => isComposingRef.current || hasPendingAttachments}
+        disabled={
+          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+        }
+        blockSend={() =>
+          !hasSendableContent || isComposingRef.current || hasPendingAttachments
+        }
       />
     </>
   );
@@ -549,7 +571,11 @@ const ReasoningToggle: FC = () => {
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -620,7 +646,11 @@ const ReasoningToggle: FC = () => {
                   ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                   : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
             )}
-            aria-label={`Reasoning effort: ${reasoningEffort}`}
+            aria-label={thinkEffortAriaLabel({
+              modelLoaded,
+              reasoningDisabled: disabled,
+              reasoningEffort,
+            })}
           >
             {effectiveReasoningVisualEnabled ? (
               <LightbulbIcon className="size-3.5" />
@@ -696,13 +726,12 @@ const ReasoningToggle: FC = () => {
           ? "true"
           : "false"
       }
-      aria-label={
-        reasoningLockedOn
-          ? "Thinking is required for this model"
-          : effectiveReasoningEnabled
-            ? "Disable thinking"
-            : "Enable thinking"
-      }
+      aria-label={thinkToggleAriaLabel({
+        reasoningLockedOn,
+        modelLoaded,
+        reasoningDisabled: disabled,
+        effectiveReasoningEnabled,
+      })}
     >
       {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
         <LightbulbIcon className="size-3.5" />
@@ -768,7 +797,11 @@ const WebSearchToggle: FC = () => {
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -835,6 +868,42 @@ const CodeToolsToggle: FC = () => {
     >
       <CodeToggleIcon className="size-3.5" />
       <span>Code</span>
+    </button>
+  );
+};
+
+const ImagesToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  // OpenAI cloud Responses-API models advertise image_generation as a
+  // server-side tool; no local runtime fallback exists. Mirror of
+  // shared-composer's imageDisabled / showImagePill so the in-thread
+  // composer surfaces the same control as the empty-state composer.
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  if (!supportsBuiltinImageGeneration) {
+    return null;
+  }
+  const disabled = !modelLoaded;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+      className="composer-pill-btn"
+      data-active={imageToolsEnabled && !disabled ? "true" : "false"}
+      aria-label={
+        imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+      }
+    >
+      <ImageIcon className="size-3.5" />
+      <span>Images</span>
     </button>
   );
 };
@@ -910,12 +979,14 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
         <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <ImagesToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
               tooltip="Dictate"
+              aria-label="Dictate"
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -927,6 +998,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
               tooltip="Stop dictation"
+              aria-label="Stop dictation"
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
@@ -994,6 +1066,24 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
+// Placeholder when stop fires before any visible content (e.g. mid-think).
+const CancelledIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 &&
+      message.status?.type === "incomplete" &&
+      message.status?.reason === "cancelled",
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+      Cancelled.
+    </span>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -1002,6 +1092,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
+        <CancelledIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
@@ -1015,6 +1106,7 @@ const AssistantMessage: FC = () => {
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
+                image_generation: ImageGenerationToolUI,
               },
               Fallback: ToolFallback,
             },

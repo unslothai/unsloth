@@ -70,7 +70,28 @@ class LoadRequest(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+        description = (
+            "Speculative decoding mode for GGUF models. Canonical values: "
+            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
+            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
+            "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
+            "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
+            "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
+            "still accepted. Ignored for non-GGUF and vision models."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = (
+            "Max draft tokens per step for MTP speculative decoding "
+            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
+            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
+            "quants). Only applied when speculative_type resolves to "
+            "'mtp' or 'mtp+ngram'."
+        ),
     )
     llama_extra_args: Optional[List[str]] = Field(
         None,
@@ -218,7 +239,19 @@ class LoadResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest "
+            "via _canonicalize_spec_mode. None when no model is loaded."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
     )
 
 
@@ -340,7 +373,19 @@ class InferenceStatusResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest. "
+            "None when no model is loaded."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -395,6 +440,59 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class InputDocumentContentPart(BaseModel):
+    """Document (PDF / file) content part in a multimodal message.
+
+    Studio-normalised shape. The frontend sends either
+    ``{type:"input_document", file_data:"data:application/pdf;base64,..."}``
+    or ``{type:"input_document", file_url:"https://..."}``, plus optional
+    ``filename`` and ``media_type``. ``external_provider`` translates this
+    onto Anthropic's ``document`` block or OpenAI Responses' ``input_file``
+    block for vision-capable providers; non-vision providers drop the
+    part entirely (handled in ``_build_external_messages``).
+    """
+
+    type: Literal["input_document"]
+    file_data: Optional[str] = Field(
+        None,
+        description = "data:<media_type>;base64,<DATA> URI for inline payloads. Either file_data or file_url must be set; otherwise the part is dropped.",
+    )
+    file_url: Optional[str] = Field(
+        None,
+        description = "Remote URL pointing to the document (https://...).",
+    )
+    filename: Optional[str] = Field(
+        None,
+        description = "Display filename, forwarded to providers as `title`/`filename`.",
+    )
+    media_type: Optional[str] = Field(
+        None,
+        description = 'Override the media type sniffed from the data URI (e.g. "application/pdf").',
+    )
+
+
+class CompactionContentPart(BaseModel):
+    """Anthropic server-side compaction state, attached to an assistant
+    message for round-tripping on the next turn.
+
+    When Anthropic runs compaction during a request, the response
+    carries a ``{"type": "compaction", "content": "<summary>"}`` block
+    on the assistant message. The chat-adapter persists it onto the
+    stored message; the next turn's outbound request must forward it
+    back so Anthropic recognises the existing compaction state and
+    doesn't re-summarise the conversation from scratch. See
+    ``external_provider._stream_anthropic`` for the wire-side handling
+    and https://platform.claude.com/docs/en/build-with-claude/compaction
+    for the upstream contract.
+    """
+
+    type: Literal["compaction"]
+    content: str = Field(
+        ...,
+        description = "Anthropic-produced summary of the compacted-away conversation prefix.",
+    )
+
+
 def _content_part_discriminator(v):
     if isinstance(v, dict):
         return v.get("type")
@@ -405,6 +503,8 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
 ]
@@ -560,7 +660,13 @@ class ChatCompletionRequest(BaseModel):
     )
     enabled_tools: Optional[list[str]] = Field(
         None,
-        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+        description = (
+            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
+            "['web_search', 'python', 'terminal']. External providers accept "
+            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
+            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
+            "all local tools are enabled and no server-side tools are forwarded."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -615,6 +721,43 @@ class ChatCompletionRequest(BaseModel):
             "automatic for prompts >=1024 tokens and this flag is informational. "
             "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
             "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
+    prompt_cache_ttl: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
+            "pool instead -- 1h writes are billed at 2x base input vs 1.25x "
+            "for 5m, but reads stay at 0.1x for both, so 1h pays off the "
+            "moment a single extra read lands more than 5 minutes after the "
+            "write. Only `5m` and `1h` are forwarded; any other value is "
+            "silently ignored downstream so a stale frontend can't make the "
+            "API 422 on the request. No-op on every non-Anthropic provider."
+        ),
+    )
+    compaction_threshold: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 2_000_000,
+        description = (
+            "[x-unsloth] Server-side context compaction trigger, in tokens. "
+            "Per-provider routing:\n"
+            "  - Anthropic (Opus 4.6+, Sonnet 4.6, Mythos preview): attaches "
+            "the `compact_20260112` edit and the `compact-2026-01-12` beta "
+            "header. The upstream floor is 50k; `_stream_anthropic` clamps "
+            "lower values up.\n"
+            "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
+            "(*.openai.azure.com): attaches "
+            "`context_management:[{type:'compaction', compact_threshold:N}]` "
+            "to /v1/responses. Effective floor is around 200k (OpenAI's "
+            "canonical example); values below it surface "
+            "`compact_threshold is not enabled` 400s upstream.\n"
+            "Schema floor stays at ge=1 (any positive int) so the field is a "
+            "silent no-op on non-cloud OpenAI-compatible bases (ollama / "
+            "llama.cpp / vLLM) and every non-compaction-capable provider "
+            "rather than returning 422 at request validation time. Per-"
+            "provider floors are enforced in the corresponding stream helpers."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
@@ -1206,9 +1349,12 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    name: str
+    # Client tools have input_schema; server tools may only have type/name.
+    type: Optional[str] = None
+    name: Optional[str] = None
     description: Optional[str] = None
-    input_schema: dict
+    input_schema: Optional[dict] = None
+    model_config = {"extra": "allow"}
 
 
 class AnthropicMessagesRequest(BaseModel):

@@ -346,6 +346,26 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
+            # Forward chat_template_info so the parent can classify
+            # capabilities without re-entering the subprocess.
+            try:
+                _bm = getattr(backend, "models", {}) or {}
+                _entry = (
+                    _bm.get(mc.identifier)
+                    or _bm.get(getattr(backend, "active_model_name", None))
+                    or {}
+                )
+                _tpl_info = _entry.get("chat_template_info")
+                if isinstance(_tpl_info, dict):
+                    model_info["chat_template_info"] = {
+                        "has_template": bool(_tpl_info.get("has_template", False)),
+                        "template": _tpl_info.get("template"),
+                        "format_type": _tpl_info.get("format_type", "generic"),
+                        "template_name": _tpl_info.get("template_name"),
+                        "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                    }
+            except Exception as _tpl_exc:
+                logger.warning("chat_template_info forward failed: %s", _tpl_exc)
             _send_response(
                 resp_queue,
                 {
@@ -415,6 +435,18 @@ def _handle_generate(
             "repetition_penalty": cmd.get("repetition_penalty", 1.0),
             "cancel_event": cancel_event,
         }
+
+        # Optional template/tool plumbing: only forward keys that are
+        # actually present so the backend signature can evolve without
+        # breaking older command payloads.
+        for opt_key in (
+            "tools",
+            "enable_thinking",
+            "reasoning_effort",
+            "preserve_thinking",
+        ):
+            if opt_key in cmd:
+                gen_kwargs[opt_key] = cmd[opt_key]
 
         # Choose generation path
         use_adapter = cmd.get("use_adapter")
@@ -647,36 +679,6 @@ def run_inference_process(
     if config.get("disable_xet"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
-
-    # Offline auto-detect: skip 25s of hf_hub_download retries per file
-    # if DNS is dead; cached files resolve instantly under HF_HUB_OFFLINE=1.
-    # Scope is this subprocess only -- orchestrator spawns a fresh worker
-    # per load (see core/inference/orchestrator.py), so the env cannot
-    # persist across loads.
-    if "HF_HUB_OFFLINE" not in os.environ:
-        import socket as _socket
-        import threading as _threading
-
-        # Probe on a daemon thread so concurrent sockets in the parent
-        # interpreter are not affected by socket.setdefaulttimeout.
-        _result: list = [None]
-
-        def _probe() -> None:
-            try:
-                _socket.gethostbyname("huggingface.co")
-                _result[0] = False
-            except Exception:
-                _result[0] = True
-
-        _t = _threading.Thread(target = _probe, daemon = True)
-        _t.start()
-        _t.join(2.0)
-        if _result[0] is None or _result[0] is True:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-            logger.warning(
-                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker."
-            )
 
     import warnings
     from loggers.config import LogConfig
