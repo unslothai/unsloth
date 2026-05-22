@@ -52,9 +52,9 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
     if (!fire || !_sharedCanvas) return;
 
     // Honor `opts.zIndex` even though canvas-confetti's per-fire `zIndex`
-    // is ignored for caller-provided canvases (see note above).
-    const zIndex = opts.zIndex ?? DEFAULT_FIREWORKS_Z_INDEX;
-    _sharedCanvas.style.zIndex = String(zIndex);
+    // is ignored for caller-provided canvases (see note above): we drive
+    // stacking via the shared canvas's CSS instead of the per-fire option.
+    _sharedCanvas.style.zIndex = String(opts.zIndex ?? DEFAULT_FIREWORKS_Z_INDEX);
 
     const duration = opts.durationMs ?? 1200;
     const intervalMs = opts.intervalMs ?? 240;
@@ -63,7 +63,6 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
       startVelocity: 28,
       spread: 360,
       ticks: 58,
-      zIndex,
       disableForReducedMotion: true,
     } as const;
 
