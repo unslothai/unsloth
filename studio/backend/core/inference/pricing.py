@@ -221,9 +221,14 @@ def calculate_cost(
             input_tokens = max(0, prompt_tokens - cache_creation - cache_read)
         else:
             input_tokens = prompt_tokens
-    output_tokens = int(
-        usage.get("output_tokens") or usage.get("completion_tokens") or 0
-    )
+    # Prefer the raw upstream key when present, even when its value is
+    # explicitly 0 -- the ``or`` fallback would mistakenly pick a stale
+    # ``completion_tokens`` for an empty completion. Mirrors the
+    # has_input_tokens precedence above.
+    if "output_tokens" in usage and usage.get("output_tokens") is not None:
+        output_tokens = int(usage.get("output_tokens") or 0)
+    else:
+        output_tokens = int(usage.get("completion_tokens") or 0)
     if provider == "openai":
         details = usage.get("input_tokens_details") or {}
         if isinstance(details, dict):

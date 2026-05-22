@@ -552,3 +552,25 @@ def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
         },
     )
     assert _isclose(chat["total_usd"], raw["total_usd"]), (chat, raw)
+
+
+def test_explicit_zero_output_tokens_wins_over_stale_completion_tokens():
+    """``output_tokens: 0`` must beat a stale ``completion_tokens: 50``.
+
+    The previous ``or`` fallback treated 0 as missing and silently
+    re-priced the response against the stale chat-style count. The
+    raw upstream key now takes precedence even when its value is 0.
+    """
+    out = calculate_cost(
+        "openai",
+        "gpt-4o-mini",
+        {
+            "input_tokens": 100,
+            "output_tokens": 0,
+            # Mixed envelope: stale chat-style completion_tokens that
+            # the caller forgot to clear. We must NOT bill against it.
+            "completion_tokens": 50,
+        },
+    )
+    assert out["billable_output_tokens"] == 0, out
+    assert out["output_usd"] == 0.0, out
