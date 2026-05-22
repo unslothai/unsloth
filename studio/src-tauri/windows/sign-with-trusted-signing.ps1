@@ -48,9 +48,6 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     }
 
     Write-Warning "trusted-signing-cli failed with transient Azure auth error; retrying."
-    if (Get-Command az -ErrorAction SilentlyContinue) {
-        & az account clear 2>$null | Out-Null
-    }
     Start-Sleep -Seconds (5 * $attempt)
 }
 
