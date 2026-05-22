@@ -95,12 +95,25 @@ def _replace_openai_citation_markers(
     """
     if not text or "" not in text:
         return text
+    # Each citation may carry several source_id aliases (the upstream
+    # stream emits multiple inline markers for the same URL when the
+    # model cites different spans/locators). Accept both the singular
+    # ``source_id`` and plural ``source_ids`` shapes. First-seen wins
+    # on collision so an earlier citation keeps its number.
     by_source: dict[str, tuple[int, str]] = {}
     for idx, cit in enumerate(url_citations, start = 1):
-        sid = cit.get("source_id")
         url = cit.get("url")
-        if isinstance(sid, str) and sid and isinstance(url, str) and url:
-            by_source.setdefault(sid, (idx, url))
+        if not isinstance(url, str) or not url:
+            continue
+        aliases: list[str] = []
+        sid = cit.get("source_id")
+        if isinstance(sid, str) and sid:
+            aliases.append(sid)
+        sids = cit.get("source_ids")
+        if isinstance(sids, list):
+            aliases.extend(s for s in sids if isinstance(s, str) and s)
+        for alias in aliases:
+            by_source.setdefault(alias, (idx, url))
 
     def _sub(match: re.Match[str]) -> str:
         sid = match.group(1)
@@ -3044,11 +3057,12 @@ class ExternalProviderClient:
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
-                        list. Dedup by URL. We also capture the ``source_id``
-                        the upstream stream uses inside its inline
-                        ``\\ue200cite\\ue202SOURCE_ID\\ue201`` markers so the
-                        delta-text rewriter can resolve markers to
-                        ``[N](URL)`` links. The id may live under
+                        list. Dedup by URL — the same URL can be cited many
+                        times under different ``source_id`` aliases (one per
+                        span/locator), so collect every alias we see onto
+                        the matching entry's ``source_ids`` list. The
+                        delta-text rewriter resolves any of those aliases
+                        back to this entry's URL. The id may live under
                         ``source_id``, ``id``, or ``locator`` across the
                         Responses API revisions."""
                         if payload.get("type") != "url_citation":
@@ -3062,14 +3076,16 @@ class ExternalProviderClient:
                             or payload.get("locator")
                             or ""
                         )
-                        if any(c["url"] == url for c in all_url_citations):
-                            # Backfill source_id on the existing entry if
-                            # the first annotation event omitted it.
+                        # Single pass: either backfill aliases onto an
+                        # existing URL entry (and return) or fall through
+                        # to append a fresh one.
+                        for c in all_url_citations:
+                            if c["url"] != url:
+                                continue
                             if source_id:
-                                for c in all_url_citations:
-                                    if c["url"] == url and not c.get("source_id"):
-                                        c["source_id"] = source_id
-                                        break
+                                aliases = c.setdefault("source_ids", [])
+                                if source_id not in aliases:
+                                    aliases.append(source_id)
                             return
                         title = payload.get("title") or url
                         snippet = payload.get("snippet") or payload.get("quote") or ""
@@ -3078,7 +3094,7 @@ class ExternalProviderClient:
                                 "url": url,
                                 "title": title,
                                 "snippet": snippet,
-                                "source_id": source_id,
+                                "source_ids": [source_id] if source_id else [],
                             }
                         )
 

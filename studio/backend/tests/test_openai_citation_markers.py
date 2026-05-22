@@ -137,3 +137,44 @@ def test_citation_without_source_id_does_not_crash(citation):
     # No mapping, marker stripped. Crash-free is the contract.
     assert not _has_marker_codepoints(out)
     assert "turnXviewY" not in out
+
+
+def test_multiple_source_id_aliases_resolve_to_same_url():
+    """When the upstream stream emits several inline markers for the
+    same URL (one per span/locator), every alias must resolve back to
+    that URL rather than getting silently dropped after the first one.
+    Regression for the Codex P1 on the original PR."""
+    a = _marker("turn0view0")
+    b = _marker("turn0view0_span_1")
+    c = _marker("turn0view0_span_2")
+    text = f"Triple {a}{b}{c} cite."
+    citations = [
+        {
+            "source_ids": ["turn0view0", "turn0view0_span_1", "turn0view0_span_2"],
+            "url": "https://example.com/paris",
+            "title": "Paris",
+        },
+    ]
+    out = _replace_openai_citation_markers(text, citations)
+    # All three aliases collapse onto citation [1] -- the URL is the
+    # same so it would be misleading to show three different numbers.
+    assert out.count("[[1]](https://example.com/paris)") == 3
+    assert not _has_marker_codepoints(out)
+
+
+def test_source_ids_list_and_legacy_source_id_both_resolve():
+    """Mixed-shape citation: legacy ``source_id`` plus newer
+    ``source_ids`` aliases both resolve."""
+    legacy = _marker("legacy_id")
+    alias = _marker("alias_id")
+    text = f"Both {legacy} and {alias} work."
+    citations = [
+        {
+            "source_id": "legacy_id",
+            "source_ids": ["alias_id"],
+            "url": "https://example.com/doc",
+        },
+    ]
+    out = _replace_openai_citation_markers(text, citations)
+    assert out.count("[[1]](https://example.com/doc)") == 2
+    assert not _has_marker_codepoints(out)
