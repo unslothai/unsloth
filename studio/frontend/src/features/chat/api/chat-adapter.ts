@@ -408,6 +408,9 @@ function toOpenAIMessage(
     };
   }
 
+  if (!textContent) {
+    return null;
+  }
   return { role: message.role, content: textContent };
 }
 
@@ -984,24 +987,45 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        if (
+          !webSearchEnabledForThisTurn &&
+          !codeExecEnabledForThisTurn &&
+          !imageGenerationEnabledForThisTurn
+        ) {
+          disabledToolGuard =
+            `You do not have ${webLabel}, code execution, or image generation tools in this conversation. ` +
+            "Answer from your own knowledge. " +
+            "If a request genuinely requires tool use, live data fetch, running code, or image generation, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        } else if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
-            "Answer from your own knowledge. " +
-            "If a request genuinely requires tool use, live data fetch or running code, " +
+            "You may still use image generation tools when they are available and useful. " +
+            "If a request genuinely requires live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!webSearchEnabledForThisTurn) {
+          const availableTools = [
+            codeExecEnabledForThisTurn ? "code execution" : null,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
-            "You may still use code execution tools when they are available and useful. " +
+            (availableTools.length > 0
+              ? `You may still use ${availableTools.join(" and ")} tools when they are available and useful. `
+              : "") +
             "If a request genuinely requires live data fetch or web search tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!codeExecEnabledForThisTurn) {
+          const availableTools = [
+            webLabel,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
-            `You may still use ${webLabel} tools when they are available and useful. ` +
+            `You may still use ${availableTools.join(" and ")} tools when they are available and useful. ` +
             "If a request genuinely requires running code or code execution tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
