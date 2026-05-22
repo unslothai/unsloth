@@ -235,6 +235,30 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _load_allowlist(path: Path) -> set[str]:
+    """Read a file of newline-separated package names to skip.
+
+    Purely opt-in: an entry on its own line whitelists every version
+    of that package against the new-install-script gate. Lines
+    starting with ``#`` are comments; blank lines are ignored. The
+    intent is to triage well-known, eyeballed dev-only deps (vitest's
+    esbuild, sharp's libvips, etc.) without weakening the gate for
+    the long tail. Missing or unreadable file means empty allowlist.
+    """
+    if not path.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        for raw in path.read_text(encoding = "utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            out.add(line)
+    except OSError:
+        return set()
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description = (
@@ -252,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
         required = True,
         help = "Path to the HEAD package-lock.json (this PR).",
     )
+    parser.add_argument(
+        "--allowlist",
+        default = None,
+        help = (
+            "Path to a newline-separated allowlist of package names "
+            "to skip. Defaults to '<head dir>/.install-script-allowlist'."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -261,7 +293,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
         return 2
 
+    allowlist_path = (
+        Path(args.allowlist)
+        if args.allowlist
+        else Path(args.head).parent / ".install-script-allowlist"
+    )
+    allowlist = _load_allowlist(allowlist_path)
+
     findings = diff_new_install_scripts(base_lock, head_lock)
+    if allowlist:
+        skipped = [f for f in findings if f.name in allowlist]
+        findings = [f for f in findings if f.name not in allowlist]
+        for f in skipped:
+            print(
+                f"[install-script-diff] SKIP {f.name}@{f.version} "
+                f"(allowlisted via {allowlist_path.name})",
+                flush = True,
+            )
     if not findings:
         print(
             "[install-script-diff] OK: no newly-added install-script "

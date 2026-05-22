@@ -1,0 +1,15 @@
+# Packages whose npm install-script (postinstall) we have eyeballed and
+# accepted. The new-install-script gate (scripts/check_new_install_scripts.py)
+# refuses any newly-added install-script dep by default; entries listed here
+# are explicitly skipped.
+#
+# Add a package name on its own line, and a one-line comment above it
+# describing what the postinstall does and why it's safe. Pin to the
+# package name only -- the gate will skip every version under that name.
+#
+# DO NOT add packages here without reading the actual install script body.
+
+# evanw/esbuild downloads the platform-specific native binary
+# (esbuild-linux-x64, etc.) in its postinstall. Used transitively by
+# vitest for dev-only test transforms; no runtime exposure.
+esbuild
