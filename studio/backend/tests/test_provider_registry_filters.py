@@ -77,27 +77,39 @@ def test_openai_keeps_every_known_chat_family():
     assert surviving == live, surviving
 
 
-def test_openai_audio_family_is_chat_capable_and_kept():
+def test_openai_audio_and_realtime_families_are_chat_capable_and_kept():
     # Pin the chat/non-chat split that lives in the regex comment:
-    # gpt-audio is kept (chat completions accept it), gpt-realtime is
-    # dropped (separate /v1/realtime endpoint), gpt-4o-transcribe is
-    # dropped (audio-only input via /v1/audio/transcriptions).
+    # gpt-audio AND gpt-realtime are kept (both accept text in via
+    # /v1/chat/completions and /v1/responses, not only their
+    # specialised transports); gpt-4o-transcribe etc. are dropped
+    # (audio-only input via /v1/audio/transcriptions).
     kept = _apply(
         "openai",
         [
             "gpt-audio",
             "gpt-audio-1.5",
             "gpt-audio-mini",
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-realtime-1.5",
+            "gpt-realtime-2",
+            "gpt-4o-realtime-preview",
         ],
     )
-    assert kept == ["gpt-audio", "gpt-audio-1.5", "gpt-audio-mini"], kept
+    assert kept == [
+        "gpt-audio",
+        "gpt-audio-1.5",
+        "gpt-audio-mini",
+        "gpt-realtime",
+        "gpt-realtime-mini",
+        "gpt-realtime-1.5",
+        "gpt-realtime-2",
+        "gpt-4o-realtime-preview",
+    ], kept
 
     dropped = _apply(
         "openai",
         [
-            "gpt-realtime",
-            "gpt-realtime-mini",
-            "gpt-4o-realtime-preview",
             "gpt-4o-transcribe",
             "gpt-4o-mini-transcribe",
         ],
@@ -108,8 +120,9 @@ def test_openai_audio_family_is_chat_capable_and_kept():
 def test_openai_drops_non_chat_ids():
     noise = [
         # Embeddings / TTS / image / moderation / whisper / etc.
-        # gpt-audio* is intentionally OMITTED from this list -- it is
-        # chat-capable. See test_openai_audio_family_is_chat_capable_and_kept.
+        # gpt-audio* and gpt-realtime* are intentionally OMITTED from
+        # this list -- both are chat-capable. See
+        # test_openai_audio_and_realtime_families_are_chat_capable_and_kept.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -125,8 +138,6 @@ def test_openai_drops_non_chat_ids():
         "gpt-image-2",
         "gpt-image-1-mini",
         "chatgpt-image-latest",
-        "gpt-realtime-2",
-        "gpt-4o-realtime-preview",
         "gpt-4o-transcribe",
         "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",

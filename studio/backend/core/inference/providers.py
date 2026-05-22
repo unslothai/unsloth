@@ -36,22 +36,21 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         #
         # Pattern strategy:
         # - Unambiguous *feature* indicators (tts/whisper/transcribe/
-        #   realtime/image/embedding/moderation/sora) match anywhere
-        #   in the id with `(?:^|-)` because OpenAI uses them as the
-        #   primary qualifier on every variant -- e.g. canonical
-        #   `tts-1` AND family variants `gpt-4o-tts`, `gpt-4o-mini-tts`.
-        #   These words don't appear in legitimate chat model ids
-        #   mid-string, so the mid-id match is intentional and safe.
-        # - `audio` is INTENTIONALLY NOT in the mid-id set: the
-        #   `gpt-audio` / `gpt-audio-mini` / `gpt-audio-1.5` family is
-        #   chat-completion-capable (text in / text or audio out via
-        #   /v1/chat/completions and /v1/responses), so dropping them
-        #   would hide supported chat models from the picker. The
+        #   image/embedding/moderation/sora) match anywhere in the id
+        #   with `(?:^|-)` because OpenAI uses them as the primary
+        #   qualifier on every variant -- e.g. canonical `tts-1` AND
+        #   family variants `gpt-4o-tts`, `gpt-4o-mini-tts`. These
+        #   words don't appear in legitimate chat model ids mid-string,
+        #   so the mid-id match is intentional and safe.
+        # - `audio` and `realtime` are INTENTIONALLY NOT in the
+        #   mid-id set. Both the `gpt-audio*` and `gpt-realtime*`
+        #   families are chat/responses-capable today -- per OpenAI's
+        #   audio and realtime guides they accept text in via
+        #   /v1/chat/completions and /v1/responses, not only the
+        #   specialised /v1/realtime WebSocket transport. Dropping
+        #   them hid supported chat models from the picker. The
         #   audio-only endpoint families (`tts-*`, `whisper-*`,
-        #   `*-transcribe`) ARE caught above.
-        # - `realtime` keeps the mid-id match because the
-        #   `gpt-realtime*` family is a separate /v1/realtime
-        #   (WebSocket) endpoint, not chat-completions.
+        #   `*-transcribe`) are still caught above.
         # - `search` is INTENTIONALLY NOT in the mid-id set because
         #   `gpt-4o-search-preview` and `gpt-4o-mini-search-preview` are
         #   chat-with-retrieval models that absolutely belong in the
@@ -69,9 +68,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Verified against the live /v1/models listing 2026-05-22.
         "model_id_denylist": re.compile(
             # Feature suffixes that mark a non-chat variant on any base.
-            # Note: `audio` is omitted on purpose -- see docstring above.
+            # Note: `audio` and `realtime` are omitted on purpose --
+            # see docstring above.
             r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
-            r"realtime|transcribe|sora)\b"
+            r"transcribe|sora)\b"
             # Legacy completion bases -- ^-anchored to avoid false
             # positives on hypothetical future chat ids containing
             # those words mid-string.
