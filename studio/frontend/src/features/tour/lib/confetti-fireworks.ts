@@ -25,19 +25,32 @@ type FireworksOpts = {
 const DEFAULT_FIREWORKS_Z_INDEX = 99999;
 let _sharedCanvas: HTMLCanvasElement | null = null;
 let _sharedFire: ConfettiInstance | null = null;
-async function getSharedFire(): Promise<ConfettiInstance | null> {
-  if (typeof document === "undefined") return null;
-  if (_sharedFire) return _sharedFire;
-  const confetti = (await import("canvas-confetti")).default;
-  _sharedCanvas = document.createElement("canvas");
-  _sharedCanvas.style.cssText =
-    `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:${DEFAULT_FIREWORKS_Z_INDEX}`;
-  document.body.appendChild(_sharedCanvas);
-  _sharedFire = confetti.create(_sharedCanvas, {
-    resize: true,
-    useWorker: false,
-  });
-  return _sharedFire;
+// Cache the in-flight init promise so two same-tick calls don't both await
+// `import("canvas-confetti")` and append a second orphan canvas.
+let _sharedFirePromise: Promise<ConfettiInstance | null> | null = null;
+function getSharedFire(): Promise<ConfettiInstance | null> {
+  if (typeof document === "undefined") return Promise.resolve(null);
+  if (_sharedFire) return Promise.resolve(_sharedFire);
+  if (_sharedFirePromise) return _sharedFirePromise;
+  _sharedFirePromise = (async () => {
+    try {
+      const confetti = (await import("canvas-confetti")).default;
+      const canvas = document.createElement("canvas");
+      canvas.style.cssText =
+        `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:${DEFAULT_FIREWORKS_Z_INDEX}`;
+      document.body.appendChild(canvas);
+      _sharedCanvas = canvas;
+      _sharedFire = confetti.create(canvas, {
+        resize: true,
+        useWorker: false,
+      });
+      return _sharedFire;
+    } catch (err) {
+      _sharedFirePromise = null;
+      throw err;
+    }
+  })();
+  return _sharedFirePromise;
 }
 
 export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
