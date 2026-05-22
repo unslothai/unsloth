@@ -457,6 +457,104 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     assert fc_part["functionCall"]["args"] == {"location": "Paris"}
 
 
+def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatch):
+    """executableCode + codeExecutionResult parts emit code_execution events."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "executableCode": {
+                                    "language": "PYTHON",
+                                    "code": "print(2+2)",
+                                }
+                            },
+                            {
+                                "codeExecutionResult": {
+                                    "outcome": "OUTCOME_OK",
+                                    "output": "4\n",
+                                }
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 4,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    code_starts = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_start"
+        and e.get("tool_name") == "code_execution"
+    ]
+    code_ends = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and "4" in str(e.get("result", ""))
+    ]
+    assert len(code_starts) == 1, tool_events
+    assert code_starts[0]["arguments"]["code"] == "print(2+2)"
+    assert code_starts[0]["arguments"]["language"] == "python"
+    assert len(code_ends) == 1, tool_events
+    # tool_start and tool_end must share the same tool_call_id so the
+    # frontend pairs them onto a single CodeExecutionToolUI block.
+    assert code_starts[0]["tool_call_id"] == code_ends[0]["tool_call_id"]
+
+
+def test_code_execution_failure_outcome_surfaces_in_result(monkeypatch):
+    """OUTCOME_FAILED is prefixed onto the result text so the UI shows it."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "executableCode": {
+                                    "language": "PYTHON",
+                                    "code": "1/0",
+                                }
+                            },
+                            {
+                                "codeExecutionResult": {
+                                    "outcome": "OUTCOME_FAILED",
+                                    "output": "ZeroDivisionError",
+                                }
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 2,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    result_text = next(
+        (e["result"] for e in tool_events if e.get("type") == "tool_end"),
+        "",
+    )
+    assert "OUTCOME_FAILED" in result_text
+    assert "ZeroDivisionError" in result_text
+
+
 def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
     """When name is omitted, recover it from the matching tool_call_id."""
     messages = [

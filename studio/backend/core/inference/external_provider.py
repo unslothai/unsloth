@@ -2884,6 +2884,10 @@ class ExternalProviderClient:
         web_search_tool_started = False
         web_search_tool_ended = False
         web_search_citations: list[dict[str, str]] = []
+        # Tracks the tool_call_id minted on the most recent
+        # executableCode part so the matching codeExecutionResult can
+        # close out the same envelope. None between rounds.
+        gemini_code_exec_pending_id: Optional[str] = None
 
         try:
             async with _http_client.stream(
@@ -3040,6 +3044,87 @@ class ExternalProviderClient:
                                             ],
                                         }
                                         yield f"data: {_json.dumps(tool_chunk)}"
+                                    # executableCode + codeExecutionResult
+                                    # parts surface as the standard
+                                    # code_execution tool_start/tool_end
+                                    # envelope (same shape OpenAI and
+                                    # Anthropic emit) so the chat
+                                    # adapter can render Gemini sandbox
+                                    # output through CodeExecutionToolUI.
+                                    # https://ai.google.dev/gemini-api/docs/code-execution
+                                    exec_code = part.get("executableCode")
+                                    if isinstance(exec_code, dict):
+                                        code_str = exec_code.get("code") or ""
+                                        if code_str:
+                                            code_tool_id = (
+                                                f"gemini_code_exec_{time.time_ns()}"
+                                            )
+                                            gemini_code_exec_pending_id = code_tool_id
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_start",
+                                                    "tool_name": "code_execution",
+                                                    "tool_call_id": code_tool_id,
+                                                    "arguments": {
+                                                        "kind": "code_execution",
+                                                        "language": (
+                                                            (
+                                                                exec_code.get(
+                                                                    "language"
+                                                                )
+                                                                or "PYTHON"
+                                                            ).lower()
+                                                        ),
+                                                        "code": code_str,
+                                                    },
+                                                }
+                                            )
+                                    exec_result = part.get("codeExecutionResult")
+                                    if isinstance(exec_result, dict):
+                                        outcome = (
+                                            exec_result.get("outcome") or ""
+                                        )
+                                        output = exec_result.get("output") or ""
+                                        # Gemini returns
+                                        # OUTCOME_OK / OUTCOME_FAILED /
+                                        # OUTCOME_DEADLINE_EXCEEDED. Treat
+                                        # non-OK outcomes as stderr so the
+                                        # UI surfaces the error.
+                                        if outcome and outcome != "OUTCOME_OK":
+                                            result_text = (
+                                                f"[{outcome}]\n{output}".rstrip()
+                                            )
+                                        else:
+                                            result_text = output
+                                        # Pair with the most recent
+                                        # executableCode tool_start when
+                                        # present; otherwise mint a fresh
+                                        # id so the UI still renders the
+                                        # output as a code_execution event.
+                                        pair_id = (
+                                            gemini_code_exec_pending_id
+                                            or f"gemini_code_exec_{time.time_ns()}"
+                                        )
+                                        if gemini_code_exec_pending_id is None:
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_start",
+                                                    "tool_name": "code_execution",
+                                                    "tool_call_id": pair_id,
+                                                    "arguments": {
+                                                        "kind": "code_execution",
+                                                        "code": "",
+                                                    },
+                                                }
+                                            )
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_end",
+                                                "tool_call_id": pair_id,
+                                                "result": result_text,
+                                            }
+                                        )
+                                        gemini_code_exec_pending_id = None
                                     # inlineData -> Nano Banana image
                                     # output. Same tool_start/tool_end
                                     # envelope as the OpenAI image
