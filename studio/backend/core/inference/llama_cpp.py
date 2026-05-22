@@ -4453,11 +4453,13 @@ class LlamaCppBackend:
                 return text
             return strip_tool_call_markup(text, final = final)
 
-        # XML prefixes that signal a tool call in content.
-        # Empty when auto_heal is disabled so the buffer never
-        # speculatively holds content for XML detection.
+        # Prefixes that signal a tool call in content. Empty when
+        # auto_heal is disabled. Keep in sync with TOOL_XML_SIGNALS in
+        # core/inference/tool_call_parser.py.
         _TOOL_XML_SIGNALS = (
-            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
+            ("<tool_call>", "<function=", "[TOOL_CALLS]", "[ARGS]")
+            if auto_heal_tool_calls
+            else ()
         )
         _MAX_BUFFER_CHARS = 32
 
