@@ -858,6 +858,7 @@ class InferenceBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        max_validation_retries: int = 2,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -905,6 +906,7 @@ class InferenceBackend:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            max_validation_retries = max_validation_retries,
         )
 
     def generate_chat_response(

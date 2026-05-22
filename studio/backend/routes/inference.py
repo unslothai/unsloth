@@ -2483,6 +2483,11 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    max_validation_retries = (
+                        payload.max_validation_retries
+                        if payload.max_validation_retries is not None
+                        else 2
+                    ),
                 )
 
             _tool_sentinel = object()
@@ -2972,6 +2977,11 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                max_validation_retries = (
+                    payload.max_validation_retries
+                    if payload.max_validation_retries is not None
+                    else 2
+                ),
             )
 
         _sf_tool_sentinel = object()

@@ -4428,6 +4428,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        max_validation_retries: int = 2,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4475,6 +4476,21 @@ class LlamaCppBackend:
         # direct answer like "4" or "Hello!" will not match.
         # Pattern is compiled once at module level (_INTENT_SIGNAL).
         _reprompt_count = 0
+
+        # ── Validation retry budget (F3) ─────────────────────
+        # Catches tool calls to unknown names or with malformed args
+        # (e.g. arguments that don't decode to a JSON object). On a
+        # caught call, append a corrective tool-result message tied to
+        # the hallucinated call id and re-enter the model. Bounded by
+        # max_validation_retries to avoid retry storms; on exhaustion
+        # the call falls through to the existing error-handling path
+        # so behavior matches today.
+        _validation_retries = 0
+        _allowed_tool_names = {
+            (_t.get("function") or {}).get("name")
+            for _t in (tools or [])
+            if (_t.get("function") or {}).get("name")
+        }
 
         # Reserve extra iterations for re-prompts so they don't
         # consume the caller's tool-call budget.  Only add the
@@ -4998,6 +5014,86 @@ class LlamaCppBackend:
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 conversation.append(assistant_msg)
+
+                # ── F3: Validate tool calls before dispatch ──
+                # On unknown name or malformed args, append a corrective
+                # tool-result tied to the hallucinated call id and
+                # re-enter the model. Skips when the budget is spent so
+                # the existing error path still runs.
+                _validation_problem = None
+                if (
+                    tool_calls
+                    and _allowed_tool_names
+                    and _validation_retries < max_validation_retries
+                ):
+                    for _vtc in tool_calls:
+                        _vfn = _vtc.get("function", {}) or {}
+                        _vname = _vfn.get("name", "")
+                        if _vname not in _allowed_tool_names:
+                            _validation_problem = ("unknown_tool", _vtc, _vname)
+                            break
+                        _vraw = _vfn.get("arguments", "")
+                        if isinstance(_vraw, str):
+                            try:
+                                _vdec = json.loads(_vraw) if _vraw else {}
+                            except (json.JSONDecodeError, ValueError):
+                                _vdec = None
+                            if not isinstance(_vdec, dict):
+                                _validation_problem = (
+                                    "malformed_args", _vtc, _vname,
+                                )
+                                break
+                        elif not isinstance(_vraw, dict):
+                            _validation_problem = (
+                                "malformed_args", _vtc, _vname,
+                            )
+                            break
+
+                if _validation_problem is not None:
+                    _kind, _vtc, _vname = _validation_problem
+                    _validation_retries += 1
+                    _vcall_id = _vtc.get("id")
+                    if _kind == "unknown_tool" and _vcall_id:
+                        _allowed_list = ", ".join(sorted(_allowed_tool_names))
+                        conversation.append({
+                            "role": "tool",
+                            "tool_call_id": _vcall_id,
+                            "name": _vname,
+                            "content": (
+                                f"Error: tool '{_vname}' is not available. "
+                                f"Available tools: {_allowed_list}."
+                            ),
+                        })
+                    elif _kind == "malformed_args" and _vcall_id:
+                        conversation.append({
+                            "role": "tool",
+                            "tool_call_id": _vcall_id,
+                            "name": _vname,
+                            "content": (
+                                f"Error: arguments to '{_vname}' could not "
+                                "be parsed as a JSON object. Call "
+                                f"'{_vname}' again with valid JSON object "
+                                "arguments."
+                            ),
+                        })
+                    else:
+                        # No usable call id: user-role correction since
+                        # OpenAI tool messages require a matching id.
+                        conversation.append({
+                            "role": "user",
+                            "content": (
+                                "Your last tool call was malformed "
+                                "(missing id or function). Please "
+                                "re-issue it as a valid OpenAI "
+                                "function call."
+                            ),
+                        })
+                    logger.info(
+                        "validation_retry kind=%s retries=%d/%d",
+                        _kind, _validation_retries, max_validation_retries,
+                    )
+                    yield {"type": "status", "text": ""}
+                    continue
 
                 for tc in tool_calls or []:
                     func = tc.get("function", {})

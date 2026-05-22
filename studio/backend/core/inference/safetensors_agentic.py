@@ -105,6 +105,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    max_validation_retries: int = 2,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -142,6 +143,10 @@ def run_safetensors_tool_loop(
         if (tool.get("function") or {}).get("name")
     }
     next_call_id = 0
+    # F3: bound how many times the loop will rewrite a corrective
+    # tool-result and re-enter the model. Past the cap, fall through to
+    # the existing per-tool error path so we don't loop forever.
+    validation_retries = 0
 
     if max_tool_iterations <= 0:
         # 0 = disabled (same contract as the GGUF loop).
@@ -298,6 +303,87 @@ def run_safetensors_tool_loop(
             assistant_msg["tool_calls"] = tool_calls
             next_call_id += len(tool_calls)
         conversation.append(assistant_msg)
+
+        # F3: pre-dispatch validation. On unknown name or non-decodable
+        # arguments, append a corrective tool-result tied to the call
+        # id and re-enter the model. ``auto_heal_tool_calls`` semantics
+        # are preserved: when heal is on, a string-args coercion path
+        # still runs in the dispatch loop below; the validation here
+        # catches the strict-shape failures the coercer cannot heal.
+        validation_problem = None
+        if (
+            tool_calls
+            and allowed_tool_names
+            and validation_retries < max_validation_retries
+        ):
+            for v_tc in tool_calls:
+                v_fn = v_tc.get("function", {}) or {}
+                v_name = v_fn.get("name", "") or ""
+                if v_name not in allowed_tool_names:
+                    validation_problem = ("unknown_tool", v_tc, v_name)
+                    break
+                v_raw = v_fn.get("arguments", "")
+                if isinstance(v_raw, str):
+                    if v_raw == "":
+                        v_decoded = {}
+                    else:
+                        try:
+                            v_decoded = json.loads(v_raw)
+                        except (json.JSONDecodeError, ValueError):
+                            v_decoded = None
+                    if (
+                        not isinstance(v_decoded, dict)
+                        and not auto_heal_tool_calls
+                    ):
+                        validation_problem = ("malformed_args", v_tc, v_name)
+                        break
+                elif not isinstance(v_raw, dict):
+                    if not auto_heal_tool_calls:
+                        validation_problem = ("malformed_args", v_tc, v_name)
+                        break
+
+        if validation_problem is not None:
+            v_kind, v_tc, v_name = validation_problem
+            validation_retries += 1
+            v_call_id = v_tc.get("id")
+            if v_kind == "unknown_tool" and v_call_id:
+                allowed_list = ", ".join(sorted(allowed_tool_names))
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": v_call_id,
+                    "name": v_name,
+                    "content": (
+                        f"Error: tool '{v_name}' is not available. "
+                        f"Available tools: {allowed_list}."
+                    ),
+                })
+            elif v_kind == "malformed_args" and v_call_id:
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": v_call_id,
+                    "name": v_name,
+                    "content": (
+                        f"Error: arguments to '{v_name}' could not be "
+                        "parsed as a JSON object. Call "
+                        f"'{v_name}' again with valid JSON object "
+                        "arguments."
+                    ),
+                })
+            else:
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        "Your last tool call was malformed (missing id "
+                        "or function). Please re-issue it as a valid "
+                        "OpenAI function call."
+                    ),
+                })
+            logger.info(
+                "validation_retry kind=%s retries=%d/%d",
+                v_kind, validation_retries, max_validation_retries,
+            )
+            yield {"type": "status", "text": ""}
+            continue
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}

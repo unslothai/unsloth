@@ -677,6 +677,11 @@ class ChatCompletionRequest(BaseModel):
         ge = 0,
         description = "[x-unsloth] Maximum number of tool call iterations per message (0 = disabled, 9999 = unlimited).",
     )
+    max_validation_retries: Optional[int] = Field(
+        2,
+        ge = 0,
+        description = "[x-unsloth] Maximum corrective retries when the model emits a tool call to an unknown name or with malformed arguments. 0 disables the retry pass.",
+    )
     tool_call_timeout: Optional[int] = Field(
         300,
         ge = 1,
