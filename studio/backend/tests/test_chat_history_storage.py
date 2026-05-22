@@ -245,3 +245,56 @@ def test_list_chat_messages_for_threads_chunks_over_900_ids(tmp_path, monkeypatc
     out = studio_db.list_chat_messages_for_threads([f"t-{i}" for i in range(n)])
     assert len(out) == n
     assert {m["threadId"] for m in out} == {f"t-{i}" for i in range(n)}
+
+
+# ---------------------------------------------------------------------------
+# Legacy Dexie import ledger
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_import_log_empty_by_default(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.list_chat_legacy_import_log() == []
+
+
+def test_legacy_import_log_records_and_lists(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    recorded = studio_db.record_chat_legacy_import_log(
+        ["legacy-a", "legacy-b", "legacy-c"],
+        imported_at = 1_700_000_000_000,
+    )
+    assert recorded == 3
+    assert set(studio_db.list_chat_legacy_import_log()) == {
+        "legacy-a",
+        "legacy-b",
+        "legacy-c",
+    }
+
+
+def test_legacy_import_log_is_idempotent(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.record_chat_legacy_import_log(["legacy-a", "legacy-b"])
+    studio_db.record_chat_legacy_import_log(["legacy-b", "legacy-c"])
+    assert set(studio_db.list_chat_legacy_import_log()) == {
+        "legacy-a",
+        "legacy-b",
+        "legacy-c",
+    }
+
+
+def test_legacy_import_log_dedups_input(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    recorded = studio_db.record_chat_legacy_import_log(
+        ["x", "x", "y", "x"]
+    )
+    # Returned count is the deduped input size, not the number of new rows
+    # inserted -- callers use it to log "asked to record N".
+    assert recorded == 2
+    assert set(studio_db.list_chat_legacy_import_log()) == {"x", "y"}
+
+
+def test_legacy_import_log_ignores_empty(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.record_chat_legacy_import_log([]) == 0
+    assert studio_db.record_chat_legacy_import_log(["", None]) == 0  # type: ignore[list-item]
+    assert studio_db.list_chat_legacy_import_log() == []

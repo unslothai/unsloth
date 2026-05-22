@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 
 from utils.paths import studio_db_path, ensure_dir
@@ -186,6 +186,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             reason TEXT NOT NULL,
             quarantined_at TEXT NOT NULL
         )
+        """
+    )
+    # Server-side import ledger so a studio.db wipe correctly re-triggers
+    # the legacy Dexie import. The previous boolean localStorage sentinel
+    # (`unsloth_chat_legacy_imported_to_studio_db`) is non-recoverable:
+    # if studio.db is recreated while the browser keeps the flag, legacy
+    # Dexie threads are silently hidden from the sidebar. The ledger
+    # lives inside studio.db so it disappears together with the data it
+    # is supposed to track, which is the recovery the boolean lacked.
+    # Keyed by legacy thread id; per-thread is sufficient because Dexie
+    # is read-only after this PR (a thread's message set does not grow).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_legacy_import_log (
+            legacy_thread_id TEXT NOT NULL PRIMARY KEY,
+            imported_at INTEGER NOT NULL
+        ) WITHOUT ROWID
         """
     )
 
@@ -1159,5 +1176,65 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Legacy Dexie import ledger
+# ---------------------------------------------------------------------------
+#
+# Records which legacy Dexie thread ids have been imported into studio.db.
+# Replaces the per-browser localStorage sentinel
+# (`unsloth_chat_legacy_imported_to_studio_db`) as the source of truth so
+# the import becomes recoverable: deleting studio.db drops the ledger
+# rows together with the data they describe, which causes the next
+# importLegacyChatsIfNeeded call to re-import everything Dexie still
+# holds.
+
+def list_chat_legacy_import_log() -> list[str]:
+    """Return the legacy_thread_id of every thread already imported.
+
+    Cheap: scans a single small PK-only table. The frontend stuffs the
+    result into a Set before walking Dexie, so the diff is O(|Dexie|).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT legacy_thread_id FROM chat_legacy_import_log"
+        ).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        conn.close()
+
+
+def record_chat_legacy_import_log(
+    legacy_thread_ids: Iterable[str],
+    imported_at: Optional[int] = None,
+) -> int:
+    """Mark each given legacy thread id as imported. Idempotent.
+
+    Returns the number of input ids (regardless of insert-vs-conflict)
+    so the caller can log "imported N threads". ON CONFLICT DO NOTHING
+    keeps the existing imported_at when an id is recorded twice.
+    """
+    ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
+    if not ids:
+        return 0
+    ts = int(imported_at) if imported_at is not None else int(
+        datetime.now(timezone.utc).timestamp() * 1000
+    )
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO chat_legacy_import_log (legacy_thread_id, imported_at)
+            VALUES (?, ?)
+            ON CONFLICT(legacy_thread_id) DO NOTHING
+            """,
+            [(tid, ts) for tid in ids],
+        )
+        conn.commit()
+        return len(ids)
     finally:
         conn.close()

@@ -19,10 +19,12 @@ from storage.studio_db import (
     delete_chat_threads,
     get_chat_thread,
     get_chat_message,
+    list_chat_legacy_import_log,
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
+    record_chat_legacy_import_log,
     sync_chat_messages,
     update_chat_thread,
     upsert_chat_message,
@@ -147,6 +149,20 @@ class ChatMessagesBatchRequest(BaseModel):
 
 class ChatMessagesBatchResponse(BaseModel):
     messagesByThreadId: dict[str, list[ChatMessage]]
+
+
+class ChatImportLedgerResponse(BaseModel):
+    # Plain list of legacy thread ids. Keeping the payload key-less keeps
+    # the client diff to a single Set construction.
+    threadIds: list[str]
+
+
+class ChatImportLedgerRecordRequest(BaseModel):
+    threadIds: list[str]
+
+
+class ChatImportLedgerRecordResponse(BaseModel):
+    recorded: int
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -308,6 +324,28 @@ async def replace_thread_messages(
 @router.get("/count", response_model = ChatCountResponse)
 async def count_threads(current_subject: str = Depends(get_current_subject)):
     return ChatCountResponse(count = count_chat_threads())
+
+
+@router.get("/import-ledger", response_model = ChatImportLedgerResponse)
+async def get_import_ledger(current_subject: str = Depends(get_current_subject)):
+    """Legacy-Dexie import ledger. Returns the set of legacy thread ids
+    already copied into chat_threads / chat_messages. The frontend
+    uses this to decide whether to re-run the Dexie -> studio.db
+    import on first sidebar mount. Source of truth lives inside
+    studio.db so a studio.db wipe makes the import recoverable
+    (the localStorage hint becomes a perf-only fast path)."""
+    return ChatImportLedgerResponse(threadIds = list_chat_legacy_import_log())
+
+
+@router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
+async def record_import_ledger(
+    payload: ChatImportLedgerRecordRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Mark each legacy thread id as imported. Idempotent."""
+    return ChatImportLedgerRecordResponse(
+        recorded = record_chat_legacy_import_log(payload.threadIds),
+    )
 
 
 @router.delete("")

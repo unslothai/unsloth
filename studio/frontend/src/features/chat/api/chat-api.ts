@@ -471,6 +471,37 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
+// Legacy-Dexie import ledger. The server-side source of truth that
+// replaces the boolean localStorage sentinel
+// (`unsloth_chat_legacy_imported_to_studio_db`) so a studio.db wipe
+// makes the import recoverable.
+export async function listChatImportLedger(): Promise<Set<string>> {
+  const response = await authFetch("/api/chat/import-ledger");
+  // Backend deployments that don't have this endpoint yet behave the
+  // same as an empty ledger -- caller treats every legacy thread as
+  // un-imported and tries to import. The UPSERT semantics in
+  // syncChatMessages prevent duplicates, so this fallback is safe.
+  if (response.status === 404 || response.status === 405) return new Set();
+  const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
+  return new Set(data.threadIds);
+}
+
+export async function recordChatImportLedger(
+  threadIds: string[],
+): Promise<number> {
+  if (threadIds.length === 0) return 0;
+  const response = await authFetch("/api/chat/import-ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  // Older backend: noop on the client side; the next launch will just
+  // re-import (idempotent via UPSERT).
+  if (response.status === 404 || response.status === 405) return 0;
+  const data = await parseJsonOrThrow<{ recorded: number }>(response);
+  return data.recorded;
+}
+
 export interface BrowseEntry {
   name: string;
   has_models: boolean;
