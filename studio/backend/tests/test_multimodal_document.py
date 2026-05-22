@@ -299,3 +299,89 @@ def test_openai_empty_document_part_is_dropped(monkeypatch):
     parts = captured["body"]["input"][0]["content"]
     types = [p.get("type") for p in parts]
     assert "input_file" not in types, parts
+
+
+# ── Pydantic schema + builder pass-through ──────────────────────────
+#
+# The translation tests above call the external-provider client directly
+# with hand-built dicts, which bypasses BOTH ChatCompletionRequest's
+# discriminated Union AND routes/inference._build_external_messages. The
+# tests below close that gap: parse an input_document part through the
+# real request schema, run the builder, and assert the part survives to
+# the dict the client would receive.
+
+
+def test_chat_message_accepts_input_document_part():
+    from models.inference import ChatMessage
+
+    msg = ChatMessage.model_validate(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {
+                    "type": "input_document",
+                    "file_data": _PDF_DATA_URI,
+                    "filename": "paper.pdf",
+                    "media_type": "application/pdf",
+                },
+            ],
+        }
+    )
+    assert isinstance(msg.content, list)
+    assert msg.content[1].type == "input_document"
+    assert msg.content[1].file_data == _PDF_DATA_URI
+    assert msg.content[1].filename == "paper.pdf"
+    assert msg.content[1].media_type == "application/pdf"
+
+
+def test_build_external_messages_passes_input_document_for_vision_provider():
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    msgs = [
+        ChatMessage.model_validate(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarise"},
+                    {
+                        "type": "input_document",
+                        "file_url": "https://example.com/doc.pdf",
+                        "filename": "doc.pdf",
+                    },
+                ],
+            }
+        )
+    ]
+    out = _build_external_messages(msgs, supports_vision = True)
+    assert len(out) == 1
+    parts = out[0]["content"]
+    assert parts[0] == {"type": "text", "text": "summarise"}
+    assert parts[1] == {
+        "type": "input_document",
+        "file_url": "https://example.com/doc.pdf",
+        "filename": "doc.pdf",
+    }
+
+
+def test_build_external_messages_drops_input_document_for_non_vision_provider():
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    msgs = [
+        ChatMessage.model_validate(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarise"},
+                    {
+                        "type": "input_document",
+                        "file_data": _PDF_DATA_URI,
+                    },
+                ],
+            }
+        )
+    ]
+    out = _build_external_messages(msgs, supports_vision = False)
+    assert out == [{"role": "user", "content": "summarise"}]

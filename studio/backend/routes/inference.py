@@ -1686,8 +1686,10 @@ def _build_external_messages(
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url parts intact).
-    - Non-vision providers: flatten to text-only (images silently dropped).
+    - Vision providers: preserve multimodal content arrays (image_url and
+      input_document parts intact for downstream translation).
+    - Non-vision providers: flatten to text-only (images and documents
+      silently dropped).
     """
     result = []
     for msg in messages:
@@ -1709,9 +1711,23 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "input_document":
+                        # Pass through; ExternalProviderClient maps this
+                        # onto Anthropic's `document` or OpenAI Responses'
+                        # `input_file` block per provider.
+                        doc: dict[str, Any] = {"type": "input_document"}
+                        if part.file_data:
+                            doc["file_data"] = part.file_data
+                        if part.file_url:
+                            doc["file_url"] = part.file_url
+                        if part.filename:
+                            doc["filename"] = part.filename
+                        if part.media_type:
+                            doc["media_type"] = part.media_type
+                        parts.append(doc)
                 result.append({"role": msg.role, "content": parts})
             else:
-                # Non-vision provider — strip images, keep text only
+                # Non-vision provider — strip images / documents, keep text only
                 text = "\n".join(p.text for p in msg.content if p.type == "text")
                 result.append({"role": msg.role, "content": text})
     return result
