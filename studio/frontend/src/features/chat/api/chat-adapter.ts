@@ -45,6 +45,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -1269,6 +1270,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       )
                         ? ["web_search"]
                         : []),
+                      // Pair web_fetch with the Search pill on any
+                      // provider that ships it (Anthropic today). The
+                      // common workflow is "search returns URLs, fetch
+                      // reads them"; without web_fetch the model can
+                      // surface a citation but cannot quote from the
+                      // page body, which is the whole point of the
+                      // tool. There is no separate UI toggle yet.
+                      ...(toolsEnabled &&
+                      providerSupportsBuiltinWebFetch(
+                        externalProvider.providerType,
+                      )
+                        ? ["web_fetch"]
+                        : []),
                       ...(codeToolsEnabled &&
                       providerSupportsBuiltinCodeExecution(
                         externalProvider.providerType,
@@ -1646,9 +1660,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         settleFirstTokenOk();
 
-        // Extract source parts from completed web_search tool calls
+        // Extract source parts from completed web_search and web_fetch
+        // tool calls. Both emit the same `Title:` / `URL:` / `Snippet:`
+        // block shape from the Anthropic backend, so the parser does
+        // not need to branch on tool name.
         const sourceParts = toolCallParts.flatMap((tc) => {
-          if (tc.toolName !== "web_search" || !tc.result) return [];
+          if (
+            (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
+            !tc.result
+          ) {
+            return [];
+          }
           return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
         });
 
