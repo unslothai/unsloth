@@ -483,9 +483,7 @@ class ImageGenerationCallContentPart(BaseModel):
     """
 
     type: Literal["image_generation_call"]
-    id: str = Field(
-        ..., description = "OpenAI image_generation_call output item id."
-    )
+    id: str = Field(..., description = "OpenAI image_generation_call output item id.")
 
 
 class CompactionContentPart(BaseModel):

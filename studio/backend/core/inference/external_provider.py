@@ -2611,9 +2611,7 @@ class ExternalProviderClient:
                                 {"type": "input_image", "image_url": url}
                             )
                     elif part_type == "image_generation_call":
-                        call_id = part.get("id") or part.get(
-                            "image_generation_call_id"
-                        )
+                        call_id = part.get("id") or part.get("image_generation_call_id")
                         if isinstance(call_id, str) and call_id:
                             if translated_parts:
                                 input_items.append(
@@ -3313,9 +3311,9 @@ class ExternalProviderClient:
                                         "prompt": prompt_in,
                                     }
                                     if isinstance(raw_item_id, str) and raw_item_id:
-                                        arguments[
-                                            "openai_image_generation_call_id"
-                                        ] = raw_item_id
+                                        arguments["openai_image_generation_call_id"] = (
+                                            raw_item_id
+                                        )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
