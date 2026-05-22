@@ -283,3 +283,44 @@ def test_search_result_location_supported(monkeypatch):
     assert "[1]" in body
     assert "search_result_location" in body
     assert "example.com/doc.html" in body
+
+
+def test_search_result_location_different_indices_get_distinct_numbers(monkeypatch):
+    """Two search_result_location citations with the same source but
+    different ``search_result_index`` must dedupe as distinct footnotes,
+    matching the Anthropic search-result citation contract."""
+    cit_a = {
+        "type": "search_result_location",
+        "search_result_index": 0,
+        "source": "https://example.com/result.html",
+        "title": "Result",
+        "start_block_index": 0,
+        "end_block_index": 1,
+        "cited_text": "first",
+    }
+    cit_b = {
+        "type": "search_result_location",
+        "search_result_index": 1,
+        "source": "https://example.com/result.html",
+        "title": "Result",
+        "start_block_index": 0,
+        "end_block_index": 1,
+        "cited_text": "second",
+    }
+    lines = _capture(
+        monkeypatch,
+        [
+            _message_start(),
+            _content_block_start_text(),
+            _text_delta("A "),
+            _citations_delta(cit_a),
+            _text_delta(" and B "),
+            _citations_delta(cit_b),
+            _content_block_stop(),
+            _message_delta_end(),
+            _message_stop(),
+        ],
+    )
+    body = _joined(lines)
+    assert "[1]" in body, body
+    assert "[2]" in body, body

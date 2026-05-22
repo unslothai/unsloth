@@ -187,8 +187,11 @@ def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     * ``char_location``: ``document_index`` + ``start_char_index``
     * ``page_location``: ``document_index`` + ``start_page_number``
     * ``content_block_location``: ``document_index`` + ``start_block_index``
-    * ``search_result_location``: ``document_index`` + ``source`` +
-      ``start_block_index``
+    * ``search_result_location``: ``search_result_index`` + ``source`` +
+      ``title`` + ``start_block_index`` + ``end_block_index``
+      (search-result citations do NOT carry document_index /
+      document_title -- using those would collapse distinct results
+      with the same source into one footnote.)
 
     Anything unrecognised falls back to a stringified copy so a future
     shape still dedupes (worst case: more entries, never collisions).
@@ -205,10 +208,11 @@ def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     if ctype == "search_result_location":
         return (
             ctype,
-            doc,
-            title,
+            citation.get("search_result_index"),
             citation.get("source"),
+            citation.get("title") or "",
             citation.get("start_block_index"),
+            citation.get("end_block_index"),
         )
     return (ctype, _json.dumps(citation, sort_keys = True))
 
