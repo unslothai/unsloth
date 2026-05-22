@@ -284,9 +284,7 @@ def test_legacy_import_log_is_idempotent(tmp_path, monkeypatch):
 
 def test_legacy_import_log_dedups_input(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    recorded = studio_db.record_chat_legacy_import_log(
-        ["x", "x", "y", "x"]
-    )
+    recorded = studio_db.record_chat_legacy_import_log(["x", "x", "y", "x"])
     # Returned count is the deduped input size, not the number of new rows
     # inserted -- callers use it to log "asked to record N".
     assert recorded == 2

@@ -1192,6 +1192,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
 # importLegacyChatsIfNeeded call to re-import everything Dexie still
 # holds.
 
+
 def list_chat_legacy_import_log() -> list[str]:
     """Return the legacy_thread_id of every thread already imported.
 
@@ -1221,8 +1222,10 @@ def record_chat_legacy_import_log(
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
     if not ids:
         return 0
-    ts = int(imported_at) if imported_at is not None else int(
-        datetime.now(timezone.utc).timestamp() * 1000
+    ts = (
+        int(imported_at)
+        if imported_at is not None
+        else int(datetime.now(timezone.utc).timestamp() * 1000)
     )
     conn = get_connection()
     try:
