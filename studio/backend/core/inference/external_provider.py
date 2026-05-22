@@ -1154,6 +1154,12 @@ class ExternalProviderClient:
                         title = part.get("filename")
                         if data_uri.startswith("data:"):
                             header, _, b64data = data_uri.partition(",")
+                            # An empty payload ("data:application/pdf;base64,"
+                            # or a comma-less URI) would produce an empty
+                            # source.data string that Anthropic rejects with
+                            # a 400. Skip those instead of forwarding garbage.
+                            if not b64data.strip():
+                                continue
                             media_type = (
                                 part.get("media_type")
                                 or header.split(";")[0].replace("data:", "")
@@ -1181,7 +1187,14 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
-                filtered.append({"role": msg["role"], "content": anthropic_parts})
+                # Skip whole-message append when nothing usable survived.
+                # An empty content array (e.g. user dropped only an unparseable
+                # `input_document`) would 400 the Anthropic API with
+                # "messages.N.content: at least one block is required".
+                if anthropic_parts:
+                    filtered.append(
+                        {"role": msg["role"], "content": anthropic_parts}
+                    )
             else:
                 filtered.append(msg)
 

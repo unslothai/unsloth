@@ -174,6 +174,55 @@ def test_anthropic_empty_document_part_is_dropped(monkeypatch):
     assert "document" not in types, parts
 
 
+def test_anthropic_empty_only_document_drops_whole_message(monkeypatch):
+    # If the ONLY part in a user message is an unparseable input_document,
+    # the helper must NOT append an empty-content message to the outbound
+    # body (Anthropic 400s on "at least one block is required").
+    captured = _capture(
+        monkeypatch,
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
+            {"role": "user", "content": [{"type": "input_document"}]},
+            {"role": "user", "content": "but THIS one is fine"},
+        ],
+    )
+    msgs = captured["body"]["messages"]
+    # The empty-content message must be skipped; only the second remains.
+    assert len(msgs) == 1, msgs
+
+
+def test_anthropic_empty_data_uri_payload_is_dropped(monkeypatch):
+    # Codex P2: `data:application/pdf;base64,` with no payload (or
+    # whitespace-only) would create an empty `source.data` that
+    # Anthropic 400s on. Must be filtered before the wire.
+    captured = _capture(
+        monkeypatch,
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "still here"},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,",
+                        "filename": "empty.pdf",
+                    },
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,   ",
+                        "filename": "whitespace.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["messages"][0]["content"]
+    assert all(p.get("type") != "document" for p in parts), parts
+
+
 # ── OpenAI Responses translation ────────────────────────────────────
 
 
