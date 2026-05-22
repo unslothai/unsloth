@@ -47,6 +47,17 @@ class TestEstimateTokens:
         msgs = [_msg("user", "abcd")]
         assert estimate_tokens(msgs) == 1
 
+    def test_non_multiple_of_4_rounds_up(self):
+        # Regression: floor (`// 4`) would estimate 1 for "abcde" and
+        # let an over-budget message slip past the threshold check.
+        # Ceil keeps the heuristic conservative.
+        msgs = [_msg("user", "abcde")]  # 5 chars
+        assert estimate_tokens(msgs) == 2
+
+    def test_single_char_rounds_up_to_one_token(self):
+        msgs = [_msg("user", "a")]
+        assert estimate_tokens(msgs) == 1
+
     def test_multimodal_text_part_counts(self):
         msgs = [
             {

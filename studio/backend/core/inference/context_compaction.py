@@ -65,7 +65,12 @@ def estimate_tokens(messages: list[dict]) -> int:
                 args = (tc.get("function") or {}).get("arguments")
                 if isinstance(args, str):
                     total_chars += len(args)
-    return total_chars // _CHARS_PER_TOKEN
+    # Ceil-style division: floor (`// 4`) would systematically
+    # underestimate non-multiple-of-4 lengths, letting just-over-budget
+    # prompts appear under threshold and bypass compaction — the exact
+    # failure this module exists to prevent. Round up so the heuristic
+    # stays on the conservative side described above.
+    return -(-total_chars // _CHARS_PER_TOKEN)
 
 
 def _is_multimodal(msg: dict) -> bool:
