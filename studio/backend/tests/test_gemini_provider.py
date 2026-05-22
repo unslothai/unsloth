@@ -239,6 +239,16 @@ def test_top_k_forwarded_only_when_positive(monkeypatch):
     assert "topK" not in captured["body"]["generationConfig"]
 
 
+def test_presence_penalty_forwarded_to_generation_config(monkeypatch):
+    """A non-zero presence_penalty reaches generationConfig.presencePenalty."""
+    captured = _capture_body(monkeypatch, presence_penalty = 0.7)
+    assert captured["body"]["generationConfig"]["presencePenalty"] == 0.7
+
+    # And the default of zero is omitted, matching top_k semantics.
+    captured = _capture_body(monkeypatch, presence_penalty = 0.0)
+    assert "presencePenalty" not in captured["body"]["generationConfig"]
+
+
 # ── web_search forwarded as googleSearch tool ────────────────────────
 
 
@@ -445,6 +455,40 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     assert fc_part is not None, assistant_turn
     assert fc_part["functionCall"]["name"] == "get_weather"
     assert fc_part["functionCall"]["args"] == {"location": "Paris"}
+
+
+def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
+    """When name is omitted, recover it from the matching tool_call_id."""
+    messages = [
+        {"role": "user", "content": "Weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_xyz",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": json.dumps({"location": "Paris"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_xyz",
+            "content": json.dumps({"temp_c": 18}),
+        },
+    ]
+    captured = _capture_body(monkeypatch, messages = messages)
+    contents = captured["body"]["contents"]
+    last = contents[-1]
+    fr = last["parts"][0].get("functionResponse")
+    assert fr is not None, last
+    assert fr["name"] == "get_weather", (
+        "name should fall back to the prior tool_call's function name"
+    )
 
 
 # ── usage chunk surfaces promptTokenCount / candidatesTokenCount ─────

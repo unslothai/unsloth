@@ -374,6 +374,7 @@ class ExternalProviderClient:
                     top_p,
                     max_tokens,
                     top_k,
+                    presence_penalty,
                     enabled_tools,
                     enable_prompt_caching,
                 ):
@@ -2570,6 +2571,7 @@ class ExternalProviderClient:
         top_p: float,
         max_tokens: Optional[int],
         top_k: Optional[int] = None,
+        presence_penalty: float = 0.0,
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
@@ -2622,6 +2624,12 @@ class ExternalProviderClient:
         # `inlineData`).
         system_text_parts: list[str] = []
         contents: list[dict[str, Any]] = []
+        # OpenAI sometimes drops ``name`` from the role="tool" follow-up
+        # and only carries ``tool_call_id``. Remember the function names
+        # we emitted on prior assistant turns so the matching response
+        # can recover its name (Gemini rejects an empty functionResponse
+        # name with HTTP 400).
+        tool_call_names: dict[str, str] = {}
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2703,10 +2711,14 @@ class ExternalProviderClient:
                         args = args_raw
                     else:
                         args = {}
+                    fn_name = fn.get("name", "")
+                    tc_id = tc.get("id")
+                    if fn_name and isinstance(tc_id, str) and tc_id:
+                        tool_call_names[tc_id] = fn_name
                     parts.append(
                         {
                             "functionCall": {
-                                "name": fn.get("name", ""),
+                                "name": fn_name,
                                 "args": args,
                             }
                         }
@@ -2714,8 +2726,14 @@ class ExternalProviderClient:
             if role == "tool":
                 # OpenAI's role="tool" follow-up carries the function
                 # result. Gemini's matching shape is a role="user" turn
-                # with a functionResponse part.
+                # with a functionResponse part. When the caller dropped
+                # ``name``, recover it from the matching assistant
+                # tool_call so Gemini doesn't 400 on an empty name.
                 tool_name = msg.get("name") or msg.get("tool_name") or ""
+                if not tool_name:
+                    tc_id = msg.get("tool_call_id")
+                    if isinstance(tc_id, str) and tc_id in tool_call_names:
+                        tool_name = tool_call_names[tc_id]
                 response_payload: Any
                 if isinstance(content, str):
                     try:
@@ -2756,6 +2774,11 @@ class ExternalProviderClient:
             gen_config["topP"] = top_p
         if top_k is not None and top_k > 0:
             gen_config["topK"] = top_k
+        # Gemini accepts ``presencePenalty`` on generationConfig with the
+        # same sign convention as the OpenAI knob (positive discourages
+        # repetition). Forward when the caller bothers to set it.
+        if presence_penalty:
+            gen_config["presencePenalty"] = presence_penalty
         if max_tokens is not None:
             gen_config["maxOutputTokens"] = max_tokens
 
