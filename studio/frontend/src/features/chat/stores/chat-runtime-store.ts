@@ -14,6 +14,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import { isExternalModelId } from "../external-providers";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -23,6 +24,40 @@ const HF_TOKEN_KEY = "unsloth_hf_token";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
+// External provider selection is encoded into `params.checkpoint` as
+// `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
+// Omits `checkpoint` because the local-model side is mirrored by the
+// backend's `/api/inference/status.active_model` response. External
+// selections have no such backend mirror, so without explicit
+// localStorage persistence here the user's external pick is silently
+// reset to the default on every page refresh.
+const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
+
+function loadLastExternalCheckpoint(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(LAST_EXTERNAL_CHECKPOINT_KEY);
+    return isExternalModelId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastExternalCheckpoint(value: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value && isExternalModelId(value)) {
+      window.localStorage.setItem(LAST_EXTERNAL_CHECKPOINT_KEY, value);
+    } else {
+      // Clearing on a switch to a local / empty checkpoint means the
+      // next refresh won't override the now-active local selection.
+      window.localStorage.removeItem(LAST_EXTERNAL_CHECKPOINT_KEY);
+    }
+  } catch {
+    // Storage quota / private-mode failures are non-fatal -- the
+    // selection just won't survive the refresh.
+  }
+}
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort =
@@ -479,7 +514,16 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
-  params: DEFAULT_INFERENCE_PARAMS,
+  // Hydrate the last external checkpoint into params.checkpoint so the
+  // external picker selection survives a page refresh. Local model
+  // checkpoints are re-derived from the backend in useChatModelRuntime
+  // and intentionally NOT persisted here.
+  params: (() => {
+    const persistedExternal = loadLastExternalCheckpoint();
+    return persistedExternal
+      ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
+      : DEFAULT_INFERENCE_PARAMS;
+  })(),
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
@@ -640,18 +684,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
-    set((state) => ({
-      params: {
-        ...state.params,
-        checkpoint: modelId,
-      },
-      activeGgufVariant: ggufVariant ?? null,
-    })),
+    set((state) => {
+      // Persist external selections so they survive a page refresh.
+      // Local model ids are NOT persisted here -- they get re-derived
+      // from the backend's `/api/inference/status.active_model` on
+      // mount, and a stale persisted local id would race against the
+      // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
+      saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      return {
+        params: {
+          ...state.params,
+          checkpoint: modelId,
+        },
+        activeGgufVariant: ggufVariant ?? null,
+      };
+    }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
-  clearCheckpoint: () =>
-    set((state) => ({
+  clearCheckpoint: () => {
+    // Mirror setCheckpoint's persistence behavior: dropping the
+    // checkpoint must also clear any stored external selection so
+    // the next refresh doesn't snap back to a model the user
+    // intentionally cleared.
+    saveLastExternalCheckpoint(null);
+    return set((state) => ({
       params: {
         ...state.params,
         checkpoint: "",
@@ -687,7 +744,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
-    })),
+    }));
+  },
   setReasoningEnabled: (reasoningEnabled, options) =>
     set(() => {
       if (options?.persist !== false) {
