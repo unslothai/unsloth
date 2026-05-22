@@ -15,6 +15,7 @@ export type ChatSearch = {
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chat",
+  staticData: { title: "Chat" },
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>): ChatSearch => ({
     thread: typeof search.thread === "string" ? search.thread : undefined,
