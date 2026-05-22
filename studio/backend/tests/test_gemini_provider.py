@@ -506,8 +506,7 @@ def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
     ]
     assert len(tool_call_chunks) == 2, tool_call_chunks
     indices = [
-        c["choices"][0]["delta"]["tool_calls"][0]["index"]
-        for c in tool_call_chunks
+        c["choices"][0]["delta"]["tool_calls"][0]["index"] for c in tool_call_chunks
     ]
     assert indices == [0, 1], indices
 
