@@ -32,7 +32,6 @@ from unsloth_zoo.rl_replacements import (
     chunked_selective_log_softmax,
     _unsloth_get_mm_token_id,
     _unsloth_fix_mm_token_type_ids,
-    _unsloth_clear_stateful_mrope,
 )
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
@@ -54,6 +53,23 @@ from ._utils import _get_inference_mode_context_manager
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
 RL_PRE_ITEMS = defaultdict(list)
+
+
+def _unsloth_clear_stateful_mrope(model):
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return False
+
+    cleared = False
+    for module in modules():
+        if (
+            hasattr(module, "compute_3d_position_ids")
+            and hasattr(module, "rope_deltas")
+        ):
+            module.rope_deltas = None
+            cleared = True
+    return cleared
+pass
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
