@@ -534,10 +534,12 @@ export async function ensureThreadRecord({
   threadId,
   modelType,
   pairId,
+  projectId,
 }: {
   threadId: string;
   modelType: ModelType;
   pairId?: string;
+  projectId?: string | null;
 }): Promise<void> {
   if (isChatThreadDeleted(threadId)) {
     return;
@@ -556,6 +558,7 @@ export async function ensureThreadRecord({
     modelType,
     modelId: currentModelId,
     pairId,
+    projectId: projectId ?? null,
     archived: false,
     createdAt: Date.now(),
   };
@@ -579,6 +582,7 @@ export async function ensureThreadRecord({
 function createStudioDbAdapter(
   modelType: ModelType,
   pairId?: string,
+  projectId?: string | null,
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
@@ -615,7 +619,7 @@ function createStudioDbAdapter(
     },
 
     async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId });
+      await ensureThreadRecord({ threadId, modelType, pairId, projectId });
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -696,7 +700,7 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId).generateTitle(
+              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
                 remoteId,
                 messages,
               );
@@ -1126,6 +1130,7 @@ export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
+  projectId,
   initialThreadId,
   newThreadNonce,
   syncActiveThreadId = true,
@@ -1133,13 +1138,14 @@ export function ChatRuntimeProvider({
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
+  projectId?: string | null;
   initialThreadId?: string;
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId),
+    adapter: createStudioDbAdapter(modelType, pairId, projectId),
   });
 
   const aui = useAui({});

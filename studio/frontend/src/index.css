@@ -485,6 +485,10 @@
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
+	.group\/project-item:hover .sidebar-nav-btn,
+	.group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.group\/project-chat-item:hover .sidebar-nav-btn,
+	.group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.group\/recent-item:hover .sidebar-nav-btn,
 	.group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.group\/run-item:hover .sidebar-nav-btn,
@@ -495,6 +499,10 @@
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
+	.dark .group\/project-item:hover .sidebar-nav-btn,
+	.dark .group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.dark .group\/project-chat-item:hover .sidebar-nav-btn,
+	.dark .group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover .sidebar-nav-btn,
 	.dark .group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
 	.dark .group\/run-item:hover .sidebar-nav-btn,
@@ -529,7 +537,11 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
+		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
+		letter-spacing: 0.015em;
+	}
+	.dark .sidebar-sticky-label {
+		letter-spacing: 0.03em;
 	}
 	.sidebar-sticky-label.is-scrolled {
 		@apply shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)];

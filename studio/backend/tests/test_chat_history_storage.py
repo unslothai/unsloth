@@ -41,6 +41,17 @@ def _message(
     }
 
 
+def _project(project_id: str = "project-1") -> dict:
+    return {
+        "id": project_id,
+        "name": "Research",
+        "instructions": "Use terse answers.",
+        "archived": False,
+        "createdAt": 1_700_000_000_000,
+        "updatedAt": 1_700_000_000_000,
+    }
+
+
 def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
@@ -61,6 +72,28 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     by_id = {message["id"]: message for message in messages}
     assert set(by_id) == {"msg-1", "msg-2"}
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
+
+
+def test_chat_projects_delete_cascades_threads_and_messages(
+    tmp_path,
+    monkeypatch,
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_project(_project())
+    studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
+    studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
+
+    [thread] = studio_db.list_chat_threads(project_id = "project-1")
+    assert thread["projectId"] == "project-1"
+
+    deleted = studio_db.delete_chat_project("project-1")
+
+    assert deleted is not None
+    assert deleted["id"] == "project-1"
+    assert studio_db.get_chat_project("project-1") is None
+    assert studio_db.list_chat_threads(project_id = "project-1") == []
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert studio_db.list_chat_messages("thread-1") == []
 
 
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):

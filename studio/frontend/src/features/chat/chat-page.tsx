@@ -154,12 +154,18 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
-}: { threadId?: string; newThreadNonce?: string }): ReactElement {
+  projectId,
+}: {
+  threadId?: string;
+  newThreadNonce?: string;
+  projectId?: string | null;
+}): ReactElement {
   return (
     <ChatRuntimeProvider
       modelType="base"
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
+      projectId={projectId}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
@@ -200,6 +206,7 @@ function useIsLoraCompare(): boolean {
 
 const CompareContent = memo(function CompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
   onFoldersChange,
@@ -207,6 +214,7 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
@@ -216,10 +224,11 @@ const CompareContent = memo(function CompareContent({
   const isLoraCompare = useIsLoraCompare();
 
   return isLoraCompare ? (
-    <LoraCompareContent pairId={pairId} />
+    <LoraCompareContent pairId={pairId} projectId={projectId} />
   ) : (
     <GeneralCompareContent
       pairId={pairId}
+      projectId={projectId}
       models={models}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
@@ -243,6 +252,7 @@ const CompareContent = memo(function CompareContent({
 function ComparePane({
   modelType,
   pairId,
+  projectId,
   initialThreadId,
   handleName,
   header,
@@ -250,6 +260,7 @@ function ComparePane({
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
+  projectId?: string | null;
   initialThreadId: string | undefined;
   handleName: string;
   header: ReactElement;
@@ -267,6 +278,7 @@ function ComparePane({
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
         >
@@ -322,7 +334,8 @@ function CompareShell({
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
-}: { pairId: string }): ReactElement {
+  projectId,
+}: { pairId: string; projectId?: string | null }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -352,6 +365,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <ComparePane
           modelType="base"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
           header={
@@ -365,6 +379,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <ComparePane
           modelType="lora"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
@@ -434,6 +449,7 @@ function GeneralCompareHeader({
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
   onFoldersChange,
@@ -441,6 +457,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   deleteDisabled,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
@@ -513,6 +530,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model1"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
           header={
@@ -537,6 +555,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model2"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
@@ -631,6 +650,9 @@ export function ChatPage(): ReactElement {
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
+    search.project ?? null,
+  );
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -847,25 +869,87 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
 
+  useEffect(() => {
+    let canceled = false;
+
+    async function resolveProjectId(): Promise<void> {
+      if (search.project) {
+        setCurrentProjectId(search.project);
+        useChatRuntimeStore.getState().setActiveProjectId(search.project);
+        return;
+      }
+
+      if (search.thread) {
+        const thread = await getStoredChatThread(search.thread).catch(() => null);
+        if (!canceled) {
+          const projectId = thread?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      if (search.compare) {
+        const threads = await listStoredChatThreads({
+          pairId: search.compare,
+          includeArchived: true,
+        }).catch(() => []);
+        if (!canceled) {
+          const projectId = threads[0]?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      setCurrentProjectId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(null);
+    }
+
+    void resolveProjectId();
+    return () => {
+      canceled = true;
+    };
+  }, [search.compare, search.project, search.thread]);
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
       return {
         mode: "compare",
         pairId: search.compare,
+        projectId: currentProjectId,
       };
     }
     if (search.thread) {
-      return { mode: "single", threadId: search.thread };
+      return {
+        mode: "single",
+        threadId: search.thread,
+        projectId: currentProjectId,
+      };
     }
     if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
-      return { mode: "single", threadId: activeThreadId };
+      return {
+        mode: "single",
+        threadId: activeThreadId,
+        projectId: currentProjectId,
+      };
     }
     if (search.new) {
-      return { mode: "single", newThreadNonce: search.new };
+      return {
+        mode: "single",
+        newThreadNonce: search.new,
+        projectId: currentProjectId,
+      };
     }
-    return { mode: "single" };
-  }, [search.thread, search.compare, search.new, activeThreadId]);
+    return { mode: "single", projectId: currentProjectId };
+  }, [
+    search.thread,
+    search.compare,
+    search.new,
+    activeThreadId,
+    currentProjectId,
+  ]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
@@ -1153,8 +1237,14 @@ export function ChatPage(): ReactElement {
     viewBeforeCompareRef.current = { ...search };
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-  }, [navigate, search]);
+    navigate({
+      to: "/chat",
+      search: {
+        compare: crypto.randomUUID(),
+        ...(currentProjectId ? { project: currentProjectId } : {}),
+      },
+    });
+  }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
     const saved = viewBeforeCompareRef.current;
@@ -1535,11 +1625,13 @@ export function ChatPage(): ReactElement {
             key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            projectId={view.projectId}
           />
         ) : (
           <CompareContent
             key={view.pairId}
             pairId={view.pairId}
+            projectId={view.projectId}
             models={models}
             loraModels={loraModels}
             onFoldersChange={refreshLocalModels}

@@ -121,22 +121,41 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_projects (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            instructions TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_threads (
             id TEXT NOT NULL PRIMARY KEY,
             title TEXT NOT NULL,
             model_type TEXT NOT NULL,
             model_id TEXT,
             pair_id TEXT,
+            project_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             openai_code_exec_container_id TEXT,
-            anthropic_code_exec_container_id TEXT
+            anthropic_code_exec_container_id TEXT,
+            FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
     )
     chat_thread_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
     }
+    if "project_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
         conn.execute(
             "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
@@ -164,6 +183,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
@@ -681,10 +703,23 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "modelType": data["model_type"],
         "modelId": data.get("model_id") or "",
         "pairId": data.get("pair_id") or None,
+        "projectId": data.get("project_id") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
+    }
+
+
+def _chat_project_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "name": data["name"],
+        "instructions": data.get("instructions") or "",
+        "archived": bool(data["archived"]),
+        "createdAt": data["created_at"],
+        "updatedAt": data["updated_at"],
     }
 
 
@@ -713,13 +748,14 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
                 model_id = excluded.model_id,
                 pair_id = excluded.pair_id,
+                project_id = excluded.project_id,
                 archived = excluded.archived,
                 created_at = excluded.created_at,
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
@@ -731,6 +767,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread["modelType"],
                 thread.get("modelId") or "",
                 thread.get("pairId"),
+                thread.get("projectId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
                 thread.get("openaiCodeExecContainerId"),
@@ -749,6 +786,7 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "modelType": ("model_type", patch.get("modelType")),
         "modelId": ("model_id", patch.get("modelId")),
         "pairId": ("pair_id", patch.get("pairId")),
+        "projectId": ("project_id", patch.get("projectId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "openaiCodeExecContainerId": (
@@ -794,6 +832,7 @@ def get_chat_thread(id: str) -> Optional[dict]:
 def list_chat_threads(
     model_type: str | None = None,
     pair_id: str | None = None,
+    project_id: str | None = None,
     include_archived: bool = True,
 ) -> list[dict]:
     clauses = []
@@ -804,6 +843,9 @@ def list_chat_threads(
     if pair_id is not None:
         clauses.append("pair_id = ?")
         values.append(pair_id)
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        values.append(project_id)
     if not include_archived:
         clauses.append("archived = 0")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -842,6 +884,107 @@ def count_chat_threads() -> int:
     conn = get_connection()
     try:
         return int(conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def upsert_chat_project(project: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO chat_projects
+                (id, name, instructions, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                instructions = excluded.instructions,
+                archived = excluded.archived,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                project["id"],
+                project["name"],
+                project.get("instructions") or "",
+                1 if project.get("archived") else 0,
+                int(project["createdAt"]),
+                int(project["updatedAt"]),
+            ),
+        )
+        conn.commit()
+        return get_chat_project(project["id"]) or project
+    finally:
+        conn.close()
+
+
+def update_chat_project(id: str, patch: dict) -> Optional[dict]:
+    allowed = {
+        "name": ("name", patch.get("name")),
+        "instructions": ("instructions", patch.get("instructions")),
+        "archived": ("archived", 1 if patch.get("archived") else 0),
+        "createdAt": ("created_at", patch.get("createdAt")),
+        "updatedAt": ("updated_at", patch.get("updatedAt")),
+    }
+    assignments = []
+    values = []
+    for key, (column, value) in allowed.items():
+        if key in patch:
+            assignments.append(f"{column} = ?")
+            values.append(value)
+    if not assignments:
+        return get_chat_project(id)
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE chat_projects SET {', '.join(assignments)} WHERE id = ?",
+            (*values, id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_chat_project(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    conn = get_connection()
+    try:
+        where = "" if include_archived else "WHERE archived = 0"
+        rows = conn.execute(
+            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+        ).fetchall()
+        return [_chat_project_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_chat_project(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        project = _chat_project_from_row(row)
+        conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
+        conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
+        conn.commit()
+        return project
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -15,6 +15,7 @@ export interface ChatSearchItem {
   title: string;
   preview: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 const THREAD_LIMIT = 200;
@@ -68,6 +69,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.pairId,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });
@@ -78,6 +80,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.id,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });

@@ -4,22 +4,32 @@
 import {
   buildBackendChatExport,
   clearBackendChats,
+  deleteChatProject,
   deleteChatThreads,
+  getChatProject,
   getChatMessage,
   getChatThread,
   batchListChatMessages,
+  listChatProjects,
   listChatImportLedger,
   listChatMessages,
   listChatThreads,
   notifyChatHistoryUpdated,
   recordChatImportLedger,
+  saveChatProject,
   saveChatMessage,
   saveChatThread,
   syncChatMessages,
+  updateChatProject,
   updateChatThread,
 } from "../api/chat-api";
 import { db, DEXIE_DB_NAME } from "../db";
-import type { MessageRecord, ModelType, ThreadRecord } from "../types";
+import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
@@ -28,6 +38,7 @@ import {
 type ThreadListArgs = {
   modelType?: ModelType;
   pairId?: string;
+  projectId?: string | null;
   includeArchived?: boolean;
 };
 
@@ -45,6 +56,7 @@ interface ExportedChat {
   exportedAt: string;
   version: 1;
   threadCount: number;
+  projects?: unknown[];
   threads: unknown[];
   messages: unknown[];
 }
@@ -82,6 +94,8 @@ function matchesThreadListArgs(
   return (
     !isChatThreadDeleted(thread.id) &&
     (!args.pairId || thread.pairId === args.pairId) &&
+    (args.projectId === undefined ||
+      (thread.projectId ?? null) === args.projectId) &&
     (!args.modelType || thread.modelType === args.modelType) &&
     (args.includeArchived !== false || !thread.archived)
   );
@@ -584,6 +598,69 @@ export async function listStoredChatThreadsWithMessages(
   return entries.filter((e) => e.hasContent).map((e) => e.thread);
 }
 
+export async function listStoredChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  return listChatProjects(args);
+}
+
+export async function getStoredChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  return getChatProject(projectId);
+}
+
+export async function createStoredChatProject(
+  name: string,
+): Promise<ProjectRecord> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Project name is required.");
+  }
+  const now = Date.now();
+  return saveChatProject({
+    id: crypto.randomUUID(),
+    name: trimmed,
+    instructions: "",
+    archived: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+export async function updateStoredChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  return updateChatProject(projectId, {
+    ...patch,
+    updatedAt: patch.updatedAt ?? Date.now(),
+  });
+}
+
+export async function deleteStoredChatProject(projectId: string): Promise<void> {
+  await deleteChatProject(projectId);
+}
+
+export async function moveStoredChatItemToProject(
+  item: { type: "single" | "compare"; id: string },
+  projectId: string | null,
+): Promise<void> {
+  const threadIds =
+    item.type === "single"
+      ? [item.id]
+      : (await listStoredChatThreads({
+          pairId: item.id,
+          includeArchived: true,
+        })).map((thread) => thread.id);
+
+  await Promise.all(
+    Array.from(new Set(threadIds)).map((threadId) =>
+      updateStoredChatThread(threadId, { projectId }),
+    ),
+  );
+}
+
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
@@ -767,6 +844,7 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     exportedAt: new Date().toISOString(),
     version: 1,
     threadCount: threads.length,
+    projects: backend?.projects ?? [],
     threads,
     messages,
   };
