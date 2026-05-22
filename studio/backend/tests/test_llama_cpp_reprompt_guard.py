@@ -87,9 +87,9 @@ def test_intent_signal_ignores_direct_answers():
 def test_artifact_regex_detects_closed_code_fence():
     """Closed Python code fence is an answer artifact."""
     text = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
-    assert _HAS_ANSWER_ARTIFACT.search(text), (
-        "Closed code fence must be detected as an answer artifact"
-    )
+    assert _HAS_ANSWER_ARTIFACT.search(
+        text
+    ), "Closed code fence must be detected as an answer artifact"
 
 
 def test_artifact_regex_detects_html_page():
@@ -126,9 +126,9 @@ def test_artifact_regex_detects_numbered_list():
 def test_artifact_regex_ignores_open_code_fence():
     """An UNCLOSED code fence is not yet a complete artifact."""
     text = "Let me set up pygame.\n```python\nimport pygame"
-    assert not _HAS_ANSWER_ARTIFACT.search(text), (
-        "Open code fence must not satisfy the artifact guard"
-    )
+    assert not _HAS_ANSWER_ARTIFACT.search(
+        text
+    ), "Open code fence must not satisfy the artifact guard"
 
 
 def test_artifact_regex_ignores_plain_text():
@@ -143,6 +143,7 @@ def test_artifact_regex_ignores_plain_text():
 def _would_reprompt(content: str) -> bool:
     """Return True if the re-prompt block at llama_cpp.py would fire."""
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
+
     stripped = content.strip()
     return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
@@ -164,9 +165,9 @@ def test_no_reprompt_on_complete_python_game():
         "        if e.type == pygame.QUIT: break\n"
         "```"
     )
-    assert not _would_reprompt(content), (
-        "Re-prompt must not fire after a complete code block was produced"
-    )
+    assert not _would_reprompt(
+        content
+    ), "Re-prompt must not fire after a complete code block was produced"
 
 
 def test_no_reprompt_on_complete_svg():
@@ -197,9 +198,7 @@ def test_no_reprompt_on_numbered_list_answer():
 def test_reprompts_on_plan_only_stall():
     """Response that is purely a plan and no artifact STILL re-prompts."""
     content = "I'll search the web for the answer."
-    assert _would_reprompt(content), (
-        "Plan-only stalls must still trigger the re-prompt"
-    )
+    assert _would_reprompt(content), "Plan-only stalls must still trigger the re-prompt"
 
 
 def test_reprompts_on_intent_with_open_fence():

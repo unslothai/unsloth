@@ -80,11 +80,11 @@ _MAX_REPROMPTS = 3
 # require ALL of (intent signal, length < _REPROMPT_MAX_CHARS, no
 # answer artifact) to fire.
 _HAS_ANSWER_ARTIFACT = re.compile(
-    r"```[a-zA-Z]*\n[\s\S]+?\n```"            # closed code fence
-    r"|<!doctype\b"                            # HTML page
+    r"```[a-zA-Z]*\n[\s\S]+?\n```"  # closed code fence
+    r"|<!doctype\b"  # HTML page
     r"|<html\b"
-    r"|<svg\b[\s\S]*?</svg>"                   # complete SVG
-    r"|(?:^|\n)\s*\d+\.\s+\S.*?\n\s*\d+\.",   # 2+ numbered list items
+    r"|<svg\b[\s\S]*?</svg>"  # complete SVG
+    r"|(?:^|\n)\s*\d+\.\s+\S.*?\n\s*\d+\.",  # 2+ numbered list items
     re.IGNORECASE,
 )
 
