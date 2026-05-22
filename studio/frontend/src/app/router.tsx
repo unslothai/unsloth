@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Link, createRouter } from "@tanstack/react-router";
+import { Link, createRouter, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Route as rootRoute } from "./routes/__root";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
@@ -31,10 +31,11 @@ const routeTree = rootRoute.addChildren([
 ]);
 
 function DefaultNotFound() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
       <img
-        src="/Sloth emojis/sloth shy large.png"
+        src="/Sloth%20emojis/sloth%20shy%20large.png"
         alt="Sloth mascot"
         className="size-24"
       />
@@ -42,8 +43,8 @@ function DefaultNotFound() {
         <h1 className="font-heading font-semibold text-2xl tracking-tight">
           Page not found
         </h1>
-        <p className="text-muted-foreground text-sm">
-          {typeof window !== "undefined" ? window.location.pathname : ""} does not exist.
+        <p className="text-muted-foreground text-sm break-all">
+          {pathname} does not exist.
         </p>
       </div>
       <Button asChild>
