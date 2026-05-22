@@ -440,6 +440,27 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class CompactionContentPart(BaseModel):
+    """Anthropic server-side compaction state, attached to an assistant
+    message for round-tripping on the next turn.
+
+    When Anthropic runs compaction during a request, the response
+    carries a ``{"type": "compaction", "content": "<summary>"}`` block
+    on the assistant message. The chat-adapter persists it onto the
+    stored message; the next turn's outbound request must forward it
+    back so Anthropic recognises the existing compaction state and
+    doesn't re-summarise the conversation from scratch. See
+    ``external_provider._stream_anthropic`` for the wire-side handling
+    and https://platform.claude.com/docs/en/build-with-claude/compaction
+    for the upstream contract.
+    """
+
+    type: Literal["compaction"]
+    content: str = Field(
+        ..., description = "Anthropic-produced summary of the compacted-away conversation prefix."
+    )
+
+
 def _content_part_discriminator(v):
     if isinstance(v, dict):
         return v.get("type")
@@ -450,6 +471,7 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
 ]

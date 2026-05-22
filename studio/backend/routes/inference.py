@@ -1686,8 +1686,11 @@ def _build_external_messages(
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url parts intact).
-    - Non-vision providers: flatten to text-only (images silently dropped).
+    - Vision providers: preserve multimodal content arrays (image_url
+      and compaction parts intact for downstream translation).
+    - Non-vision providers: flatten to text-only (images dropped;
+      compaction parts forwarded so Anthropic-style compaction state
+      survives the round-trip even on a non-vision pipeline).
     """
     result = []
     for msg in messages:
@@ -1709,11 +1712,33 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "compaction":
+                        # Pass through; the Anthropic stream helper
+                        # forwards it as a native `compaction` block.
+                        parts.append(
+                            {"type": "compaction", "content": part.content}
+                        )
                 result.append({"role": msg.role, "content": parts})
             else:
-                # Non-vision provider — strip images, keep text only
-                text = "\n".join(p.text for p in msg.content if p.type == "text")
-                result.append({"role": msg.role, "content": text})
+                # Non-vision provider — strip images but preserve
+                # text AND compaction parts. Compaction is Anthropic-
+                # specific; the OpenAI / kimi / etc. external_provider
+                # translator will pass them through (their stream
+                # helpers ignore unknown content_part types).
+                preserved = []
+                for p in msg.content:
+                    if p.type == "text":
+                        preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "compaction":
+                        preserved.append(
+                            {"type": "compaction", "content": p.content}
+                        )
+                if len(preserved) == 1 and preserved[0]["type"] == "text":
+                    # Single text part collapses back to a string for
+                    # providers that don't accept content arrays.
+                    result.append({"role": msg.role, "content": preserved[0]["text"]})
+                else:
+                    result.append({"role": msg.role, "content": preserved})
     return result
 
 
