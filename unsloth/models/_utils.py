@@ -227,14 +227,14 @@ def apply_unsloth_gradient_checkpointing(
 
 
 # Models that don't work with flex_attention:
-# GPT-OSS: left padding issues cause incorrect outputs.
 # Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
 # NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
 # Gemma3N: timm vision wrappers don't support flex_attention.
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
-_FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
-_FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
+_FLEX_EXCLUDED_MODELS = ("mllama", "nemotron_h", "modernbert")
+_FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "gpt_oss", "shieldgemma2")
+_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -242,6 +242,10 @@ _FLASH_ATTENTION_DISABLED_WARNED = set()
 
 def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
+
+
+def _is_sdpa_excluded(model_type):
+    return model_type in _SDPA_EXCLUDED_MODELS
 
 
 def _config_prefers_flex_attention(config):
@@ -489,6 +493,8 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(
             model_class, "_supports_sdpa", False
         )
+    if _is_sdpa_excluded(model_type):
+        supports_sdpa = False
     supports_flash_attention = model_class is not None and (
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
