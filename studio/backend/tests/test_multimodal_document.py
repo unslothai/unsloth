@@ -281,6 +281,90 @@ def test_openai_url_pdf_becomes_input_file(monkeypatch):
     }
 
 
+def test_openai_empty_data_uri_falls_back_to_file_url(monkeypatch):
+    # Codex P2 follow-up: an empty `data:application/pdf;base64,`
+    # payload was being preferred over a perfectly valid `file_url`
+    # in the same part, sending `file_data=""` to OpenAI and 400ing
+    # the whole turn. The translator must treat empty data URIs as
+    # missing and recover via file_url.
+    captured = _capture(
+        monkeypatch,
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read this."},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,",
+                        "file_url": "https://example.com/doc.pdf",
+                        "filename": "doc.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["input"][0]["content"]
+    fileblk = next(p for p in parts if p.get("type") == "input_file")
+    # file_data MUST NOT be on the wire; file_url survives.
+    assert "file_data" not in fileblk, fileblk
+    assert fileblk["file_url"] == "https://example.com/doc.pdf"
+    assert fileblk["filename"] == "doc.pdf"
+
+
+def test_openai_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
+    captured = _capture(
+        monkeypatch,
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read this."},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,    ",
+                        "file_url": "https://example.com/doc.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["input"][0]["content"]
+    fileblk = next(p for p in parts if p.get("type") == "input_file")
+    assert "file_data" not in fileblk, fileblk
+    assert fileblk["file_url"] == "https://example.com/doc.pdf"
+
+
+def test_openai_empty_data_uri_without_fallback_is_dropped(monkeypatch):
+    # If the only signal is an empty data URI (no file_url), the
+    # whole part is skipped rather than sent as `file_data=""`.
+    captured = _capture(
+        monkeypatch,
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hi."},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,",
+                        "filename": "empty.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["input"][0]["content"]
+    types = [p.get("type") for p in parts]
+    assert "input_file" not in types, parts
+
+
 def test_openai_empty_document_part_is_dropped(monkeypatch):
     captured = _capture(
         monkeypatch,

@@ -2126,8 +2126,24 @@ class ExternalProviderClient:
                         file_url = part.get("file_url")
                         file_data = part.get("file_data")
                         filename = part.get("filename")
+                        # Mirror the Anthropic-side guard: any "data:" URI
+                        # without an actual base64 payload (`data:application/pdf;base64,`
+                        # or whitespace-only) would otherwise be forwarded
+                        # to OpenAI as `file_data=""`, which 400s the whole
+                        # turn. Treat such payloads as missing AND fall
+                        # back to file_url if one is also present, so a
+                        # recoverable remote URL doesn't get discarded in
+                        # favour of a malformed inline payload.
+                        file_data_valid = bool(
+                            isinstance(file_data, str)
+                            and file_data
+                            and (
+                                not file_data.startswith("data:")
+                                or file_data.partition(",")[2].strip()
+                            )
+                        )
                         block: dict[str, Any] = {"type": "input_file"}
-                        if file_data:
+                        if file_data_valid:
                             block["file_data"] = file_data
                         elif file_url:
                             block["file_url"] = file_url
