@@ -1152,14 +1152,19 @@ class ExternalProviderClient:
                         url = part.get("file_url") or ""
                         data_uri = part.get("file_data") or ""
                         title = part.get("filename")
+                        # Treat any "data:" URI with no actual base64
+                        # payload (`data:application/pdf;base64,` or
+                        # whitespace-only) as missing so the file_url
+                        # branch below can take over. Matches the
+                        # OpenAI-side fallback so a malformed inline
+                        # payload + valid remote URL still attaches.
+                        data_uri_valid = False
+                        b64data = ""
+                        header = ""
                         if data_uri.startswith("data:"):
                             header, _, b64data = data_uri.partition(",")
-                            # An empty payload ("data:application/pdf;base64,"
-                            # or a comma-less URI) would produce an empty
-                            # source.data string that Anthropic rejects with
-                            # a 400. Skip those instead of forwarding garbage.
-                            if not b64data.strip():
-                                continue
+                            data_uri_valid = bool(b64data.strip())
+                        if data_uri_valid:
                             media_type = (
                                 part.get("media_type")
                                 or header.split(";")[0].replace("data:", "")

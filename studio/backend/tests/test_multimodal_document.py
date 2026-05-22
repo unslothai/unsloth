@@ -223,6 +223,69 @@ def test_anthropic_empty_data_uri_payload_is_dropped(monkeypatch):
     assert all(p.get("type") != "document" for p in parts), parts
 
 
+def test_anthropic_empty_data_uri_falls_back_to_file_url(monkeypatch):
+    # Codex P2 follow-up: my previous fix added the empty-data-URI ->
+    # file_url fallback to the OpenAI side but missed the Anthropic
+    # side, where the empty-payload branch did `continue` and discarded
+    # an otherwise-valid file_url on the same part. Mirror the OpenAI
+    # behavior so a malformed inline payload + remote URL still
+    # attaches.
+    captured = _capture(
+        monkeypatch,
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read this."},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,",
+                        "file_url": "https://example.com/doc.pdf",
+                        "filename": "doc.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["messages"][0]["content"]
+    doc = _strip_cache(next(p for p in parts if p.get("type") == "document"))
+    # base64 source MUST NOT have landed on the wire; URL source survived.
+    assert doc == {
+        "type": "document",
+        "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+        "title": "doc.pdf",
+    }
+
+
+def test_anthropic_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
+    captured = _capture(
+        monkeypatch,
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read this."},
+                    {
+                        "type": "input_document",
+                        "file_data": "data:application/pdf;base64,    ",
+                        "file_url": "https://example.com/doc.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["messages"][0]["content"]
+    doc = _strip_cache(next(p for p in parts if p.get("type") == "document"))
+    assert doc == {
+        "type": "document",
+        "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+    }
+
+
 # ── OpenAI Responses translation ────────────────────────────────────
 
 
