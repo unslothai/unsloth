@@ -259,11 +259,21 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
+export const ProjectComposer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
+  return <ComposerAnimated disabled={disabled} placeholder={placeholder} />;
+};
+
+const ComposerAnimated: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} />
+        <Composer disabled={disabled} placeholder={placeholder} />
       </div>
     </div>
   );
@@ -293,7 +303,10 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const Composer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder = "Send a message..." }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
   const hasAttachments = useAuiState(
@@ -328,7 +341,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       <PendingAudioChip />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
-        placeholder="Send a message..."
+        placeholder={placeholder}
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={12}

@@ -583,6 +583,7 @@ function createStudioDbAdapter(
   modelType: ModelType,
   pairId?: string,
   projectId?: string | null,
+  listThreads = true,
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
@@ -598,9 +599,16 @@ function createStudioDbAdapter(
     },
 
     async list() {
+      if (!listThreads) {
+        return { threads: [] };
+      }
       let threads: ThreadRecord[];
       try {
-        threads = await listStoredChatThreads({ modelType, pairId });
+        threads = await listStoredChatThreads({
+          modelType,
+          pairId,
+          ...(projectId !== undefined ? { projectId } : {}),
+        });
       } catch (error) {
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
@@ -1134,6 +1142,7 @@ export function ChatRuntimeProvider({
   initialThreadId,
   newThreadNonce,
   syncActiveThreadId = true,
+  listThreads = true,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -1142,10 +1151,11 @@ export function ChatRuntimeProvider({
   initialThreadId?: string;
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
+  listThreads?: boolean;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId, projectId),
+    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
 
   const aui = useAui({});

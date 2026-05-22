@@ -9,7 +9,7 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
-import { Thread } from "@/components/assistant-ui/thread";
+import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
@@ -22,11 +22,12 @@ import { useNativePathLeasesSupported } from "@/features/native-intents/use-nati
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { CustomizeIcon } from "@hugeicons/core-free-icons";
+import { CustomizeIcon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
+  type CSSProperties,
   type ReactElement,
   memo,
   useCallback,
@@ -47,6 +48,11 @@ import {
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import { useChatProjects } from "./hooks/use-chat-projects";
+import {
+  type SidebarItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -166,6 +172,7 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
       projectId={projectId}
+      listThreads={false}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
@@ -583,6 +590,203 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 });
 
+function formatProjectChatDate(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function extractMessageText(content: MessageRecord["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (part.type === "text") {
+        return part.text;
+      }
+      if (part.type === "image") {
+        return "Image";
+      }
+      if (part.type === "audio") {
+        return "Audio";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function ProjectLanding({
+  projectId,
+  projectName,
+  items,
+}: {
+  projectId: string;
+  projectName: string;
+  items: SidebarItem[];
+}): ReactElement {
+  const navigate = useNavigate();
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const initialActiveThreadRef = useRef<string | null>(null);
+  const [newThreadNonce, setNewThreadNonce] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [previews, setPreviews] = useState<
+    Record<string, { snippet: string; date: string }>
+  >({});
+
+  useEffect(() => {
+    initialActiveThreadRef.current =
+      useChatRuntimeStore.getState().activeThreadId;
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    useChatRuntimeStore.getState().setContextUsage(null);
+    setNewThreadNonce(crypto.randomUUID());
+  }, [projectId]);
+
+  useEffect(() => {
+    if (
+      !activeThreadId ||
+      activeThreadId === initialActiveThreadRef.current
+    ) {
+      return;
+    }
+    navigate({
+      to: "/chat",
+      search: { thread: activeThreadId, project: projectId },
+      replace: true,
+    });
+  }, [activeThreadId, navigate, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreviews(): Promise<void> {
+      const entries = await Promise.all(
+        items.map(async (item) => {
+          if (item.type !== "single") {
+            return [
+              item.id,
+              {
+                snippet: "Compare chat",
+                date: formatProjectChatDate(item.createdAt),
+              },
+            ] as const;
+          }
+          const messages = await listStoredChatMessages(item.id).catch(() => []);
+          const firstUserMessage =
+            messages.find((message) => message.role === "user") ?? messages[0];
+          return [
+            item.id,
+            {
+              snippet: firstUserMessage
+                ? extractMessageText(firstUserMessage.content)
+                : "",
+              date: formatProjectChatDate(item.createdAt),
+            },
+          ] as const;
+        }),
+      );
+      if (!cancelled) {
+        setPreviews(Object.fromEntries(entries));
+      }
+    }
+
+    void loadPreviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  return (
+    <ChatRuntimeProvider
+      key={projectId}
+      projectId={projectId}
+      newThreadNonce={newThreadNonce}
+      listThreads={false}
+    >
+      <div
+        className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+        style={
+          {
+            ["--thread-max-width" as string]: "48rem",
+          } as CSSProperties
+        }
+      >
+        <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
+          <div className="mb-12 flex items-center gap-3">
+            <HugeiconsIcon
+              icon={Folder02Icon}
+              strokeWidth={1.75}
+              className="size-9 shrink-0 text-foreground"
+            />
+            <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+              {projectName}
+            </h1>
+          </div>
+
+          <ProjectComposer placeholder={`New chat in ${projectName}`} />
+
+          <div className="mt-9 flex items-center gap-2">
+            <button
+              type="button"
+              className="h-10 rounded-full border border-border bg-muted px-5 text-[14px] font-semibold text-foreground"
+            >
+              Chats
+            </button>
+            <button
+              type="button"
+              className="h-10 rounded-full px-5 text-[14px] font-semibold text-muted-foreground"
+            >
+              Sources
+            </button>
+          </div>
+
+          <div className="mt-8 flex flex-col gap-1">
+            {items.map((item) => {
+              const preview = previews[item.id];
+              return (
+                <button
+                  key={`${item.type}:${item.id}`}
+                  type="button"
+                  onClick={() => {
+                    navigate({
+                      to: "/chat",
+                      search:
+                        item.type === "single"
+                          ? { thread: item.id, project: projectId }
+                          : { compare: item.id, project: projectId },
+                    });
+                  }}
+                  className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                      {item.title}
+                    </div>
+                    {preview?.snippet ? (
+                      <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                        {preview.snippet}
+                      </div>
+                    ) : null}
+                  </div>
+                  <span className="shrink-0 text-[14px] text-muted-foreground">
+                    {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </ChatRuntimeProvider>
+  );
+}
+
 export function ChatPage(): ReactElement {
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
@@ -653,6 +857,13 @@ export function ChatPage(): ReactElement {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
   );
+  const { projects } = useChatProjects();
+  const currentProject = currentProjectId
+    ? (projects.find((project) => project.id === currentProjectId) ?? null)
+    : null;
+  const { items: currentProjectItems } = useChatSidebarItems({
+    projectId: currentProjectId ?? "__no_project_selected__",
+  });
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -928,17 +1139,23 @@ export function ChatPage(): ReactElement {
         projectId: currentProjectId,
       };
     }
-    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
-      return {
-        mode: "single",
-        threadId: activeThreadId,
-        projectId: currentProjectId,
-      };
-    }
     if (search.new) {
       return {
         mode: "single",
         newThreadNonce: search.new,
+        projectId: currentProjectId,
+      };
+    }
+    if (search.project) {
+      return {
+        mode: "project",
+        projectId: search.project,
+      };
+    }
+    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
+      return {
+        mode: "single",
+        threadId: activeThreadId,
         projectId: currentProjectId,
       };
     }
@@ -947,6 +1164,7 @@ export function ChatPage(): ReactElement {
     search.thread,
     search.compare,
     search.new,
+    search.project,
     activeThreadId,
     currentProjectId,
   ]);
@@ -1620,7 +1838,14 @@ export function ChatPage(): ReactElement {
           </div>
         </div>
 
-        {view.mode === "single" ? (
+        {view.mode === "project" ? (
+          <ProjectLanding
+            key={view.projectId}
+            projectId={view.projectId}
+            projectName={currentProject?.name ?? "Project"}
+            items={currentProjectItems}
+          />
+        ) : view.mode === "single" ? (
           <SingleContent
             key={view.threadId ?? "single"}
             threadId={view.threadId}

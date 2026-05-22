@@ -220,7 +220,6 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
   const [projectsOpen, setProjectsOpen] = useState(true);
-  const [projectChatsOpen, setProjectChatsOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
@@ -244,18 +243,10 @@ export function AppSidebar() {
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
-  const activeProject =
-    activeProjectId !== null
-      ? (projects.find((project) => project.id === activeProjectId) ?? null)
-      : null;
-  useEffect(() => { if (activeProjectId) setProjectChatsOpen(true); }, [activeProjectId]);
-  const { items: activeScopeChatItems } = useChatSidebarItems({
-    projectId: activeProjectId,
-  });
   const { items: recentChatItems } = useChatSidebarItems({
     projectId: null,
   });
-  const chatItems = activeProjectId ? activeScopeChatItems : recentChatItems;
+  const chatItems = recentChatItems;
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -287,6 +278,14 @@ export function AppSidebar() {
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
+    closeMobileIfOpen();
+  }
+
+  function openProject(projectId: string) {
+    if (chatDisabled) return;
+    setActiveThreadId(null);
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
     closeMobileIfOpen();
   }
 
@@ -438,7 +437,7 @@ export function AppSidebar() {
       const project = await createChatProject(name);
       setCreatingProject(false);
       setProjectNameDraft("");
-      openNewChat(project.id);
+      openProject(project.id);
     } catch (err) {
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
@@ -765,7 +764,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       isActive={activeProjectId === project.id}
                       className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 group-hover/project-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-item:pr-10 text-[14.5px] leading-[19px] font-medium tracking-nav"
-                      onClick={() => openNewChat(project.id)}
+                      onClick={() => openProject(project.id)}
                     >
                       <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon shrink-0 text-current opacity-80" />
                       <span className="truncate">{project.name}</span>
@@ -814,32 +813,6 @@ export function AppSidebar() {
                 ))}
               </SidebarMenu>
             </SidebarGroupContent>
-            </CollapsibleContent>
-          </SidebarGroup>
-          </Collapsible>
-        )}
-
-        {!isStudioRoute && activeProject && activeScopeChatItems.length > 0 && (
-          <Collapsible
-            open={projectChatsOpen}
-            onOpenChange={setProjectChatsOpen}
-            asChild
-          >
-          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
-              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                {activeProject.name}
-                <ChevronDown className="size-4 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
-              </CollapsibleTrigger>
-            </SidebarGroupLabel>
-            <CollapsibleContent>
-              <SidebarGroupContent className="px-2">
-                <SidebarMenu>
-                  {activeScopeChatItems.map((item) =>
-                    renderChatSidebarItem(item, "project"),
-                  )}
-                </SidebarMenu>
-              </SidebarGroupContent>
             </CollapsibleContent>
           </SidebarGroup>
           </Collapsible>

@@ -5,6 +5,10 @@ export type ModelType = "base" | "lora" | "model1" | "model2";
 
 export type ChatView =
   | {
+      mode: "project";
+      projectId: string;
+    }
+  | {
       mode: "single";
       threadId?: string;
       newThreadNonce?: string;
