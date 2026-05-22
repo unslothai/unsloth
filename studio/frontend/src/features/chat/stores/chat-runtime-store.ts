@@ -377,6 +377,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxTokens",
   "systemPrompt",
   "trustRemoteCode",
+  "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
 const SCALAR_SETTING_KEYS = [

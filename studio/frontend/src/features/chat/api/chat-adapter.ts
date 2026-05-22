@@ -28,6 +28,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1477,6 +1478,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
+                : {}),
+              // Anthropic-only fast mode (Opus 4.6 / 4.7 only). The
+              // capability gate hides the toggle on other models so
+              // this branch only fires when the field is meaningful.
+              // Backend silently drops on unsupported models as a
+              // second line of defence.
+              ...(params.fastMode &&
+              providerSupportsFastMode(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+                ? { fast_mode: true }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"

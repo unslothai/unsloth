@@ -786,6 +786,19 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic fast-mode toggle. When True and the "
+            "selected model is Claude Opus 4.6 or 4.7, the backend adds "
+            "the `fast-mode-2026-02-01` beta header and sends "
+            "`speed: 'fast'` on /v1/messages for up to 2.5x faster output "
+            "tokens per second at premium pricing. Silently ignored on "
+            "every other model and provider so a stale frontend cannot "
+            "make Anthropic 400 the request. See "
+            "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
+        ),
+    )
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":

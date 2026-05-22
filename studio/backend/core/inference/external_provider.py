@@ -173,8 +173,25 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
+# Anthropic fast-mode beta. Only Claude Opus 4.6 / 4.7 are listed in the
+# docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Sending `speed: "fast"` against any other model 400s upstream so we
+# silently drop the flag for unsupported models rather than letting the
+# user hit a confusing error in the chat. Mutually exclusive with the
+# Priority service tier (also per the upstream docs).
+_ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
+_ANTHROPIC_FAST_MODE_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+)
+
+
 def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
+
+
+def _anthropic_supports_fast_mode(model: str) -> bool:
+    return model.startswith(_ANTHROPIC_FAST_MODE_PREFIXES)
 
 
 class _MistralThinkingSpec(NamedTuple):
@@ -348,6 +365,7 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        fast_mode: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -360,6 +378,10 @@ class ExternalProviderClient:
         supplies a value the provider accepts — the frontend's
         provider-capability map already filters these per provider, so we
         treat them as opt-in here.
+
+        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
+        dropped elsewhere); the helper adds the beta header and the
+        top-level ``speed: "fast"`` field per the upstream docs.
         """
         if not self._is_openai_compatible():
             async for line in self._stream_anthropic(
@@ -376,6 +398,7 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                fast_mode = fast_mode,
             ):
                 yield line
             return
@@ -1186,6 +1209,8 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        *,
+        fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1611,6 +1636,18 @@ class ExternalProviderClient:
                 ]
             }
 
+        # Anthropic fast_mode — only emit ``speed: "fast"`` for Opus
+        # 4.6/4.7. Sending it on Sonnet / Haiku / older Opus 400s
+        # upstream, so silently drop for unsupported models per our
+        # standard provider-knob policy. Note the upstream docs flag
+        # fast_mode as incompatible with the Priority service_tier;
+        # the frontend capability gate already keeps users from
+        # picking both at once, and the backend lets Anthropic 400
+        # the request if they do reach the API together.
+        fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
+        if fast_mode_active:
+            body["speed"] = "fast"
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -1669,6 +1706,8 @@ class ExternalProviderClient:
             beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
         if compaction_active and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
+        if fast_mode_active and _ANTHROPIC_FAST_MODE_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_FAST_MODE_BETA)
         if beta_parts:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
@@ -2410,6 +2449,29 @@ class ExternalProviderClient:
                                 # finish_reason="stop" chunk that would
                                 # truncate the rendered message in the UI.
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
+                                # Streaming refusal: surface a user-facing
+                                # marker so the chat bubble isn't silently
+                                # empty when Anthropic's safety classifier
+                                # truncates the response. The mapped
+                                # finish_reason is "content_filter" which
+                                # the OpenAI spec already documents; this
+                                # extra content delta is purely cosmetic.
+                                # Per the upstream docs the conversation
+                                # must be reset before continuing, so we
+                                # also log so a future client-side reset
+                                # path can be wired without ambiguity.
+                                # https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
+                                if stop_reason == "refusal":
+                                    logger.warning(
+                                        "Anthropic refusal stop_reason (model=%s)",
+                                        model,
+                                    )
+                                    yield _content_chunk(
+                                        "\n\n_The response was stopped by "
+                                        "Anthropic's safety classifier. Edit "
+                                        "or remove the previous turn and try "
+                                        "again._"
+                                    )
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,

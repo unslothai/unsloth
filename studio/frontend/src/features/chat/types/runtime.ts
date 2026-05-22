@@ -14,6 +14,14 @@ export interface InferenceParams {
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
+  /**
+   * Anthropic fast-mode toggle. Only active on Claude Opus 4.6 and 4.7;
+   * silently dropped on every other model + provider. Higher OTPS at
+   * premium pricing -- see
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   * Default false because pricing is 6x standard Opus.
+   */
+  fastMode?: boolean;
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
@@ -28,6 +36,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   systemPrompt: "",
   checkpoint: "",
   trustRemoteCode: false,
+  fastMode: false,
 };
 
 export interface ChatModelSummary {

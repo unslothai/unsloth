@@ -136,6 +136,31 @@ export function providerSupportsBuiltinWebFetch(
 }
 
 /**
+ * Whether the active provider + model combination supports Anthropic's
+ * fast-mode beta (`speed: "fast"` + `fast-mode-2026-02-01` header).
+ * Per https://platform.claude.com/docs/en/build-with-claude/fast-mode
+ * the docs only list Claude Opus 4.6 and 4.7. Sonnet / Haiku / older
+ * Opus would 400 on the body so the picker hides the toggle entirely.
+ * The backend silently drops the flag on unsupported models as a
+ * second line of defence, so a stale frontend cannot regress.
+ */
+const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+] as const;
+
+export function providerSupportsFastMode(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerType !== "anthropic") return false;
+  if (!modelId) return false;
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some((prefix) =>
+    modelId.startsWith(prefix),
+  );
+}
+
+/**
  * Whether the selected external provider/model exposes a server-side
  * code-execution tool. Two providers ship one today:
  *

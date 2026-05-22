@@ -1868,6 +1868,7 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            fast_mode = payload.fast_mode,
             stream = payload.stream,
         )
         try:
