@@ -12,6 +12,7 @@ import {
   Outlet,
   createRootRoute,
   redirect,
+  useMatches,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -55,23 +56,9 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
-const ROUTE_TITLES: Array<[string, string]> = [
-  ["/chat", "Chat"],
-  ["/studio", "Train"],
-  ["/data-recipes", "Data Recipes"],
-  ["/export", "Export"],
-  ["/settings", "Settings"],
-  ["/login", "Login"],
-  ["/onboarding", "Onboarding"],
-  ["/change-password", "Change Password"],
-];
-
-function routeTitle(pathname: string): string {
-  const match = ROUTE_TITLES.find(
-    ([p]) => pathname === p || pathname.startsWith(`${p}/`),
-  );
-  return match ? `${match[1]} - Unsloth Studio` : "Unsloth Studio";
-}
+// Title shown when no matched route declares its own `staticData.title`
+// (e.g. the bare `/` redirect or an unknown path).
+const DEFAULT_DOCUMENT_TITLE = "Unsloth Studio";
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -81,9 +68,26 @@ function RootLayout() {
 
   useTrainingUnloadGuard();
 
+  // Read the deepest matched route's `staticData.title` instead of carrying
+  // a centralized pathname -> title map in this file. Each route declares
+  // its own title in its `createRoute({ staticData: { title: "..." } })`
+  // so the layout stays decoupled from individual route names.
+  const matchedTitle = useMatches({
+    select: (matches) => {
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const title = (matches[i] as { staticData?: { title?: string } })
+          .staticData?.title;
+        if (title) return title;
+      }
+      return null;
+    },
+  });
+
   useEffect(() => {
-    document.title = routeTitle(pathname);
-  }, [pathname]);
+    document.title = matchedTitle
+      ? `${matchedTitle} - ${DEFAULT_DOCUMENT_TITLE}`
+      : DEFAULT_DOCUMENT_TITLE;
+  }, [matchedTitle]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
