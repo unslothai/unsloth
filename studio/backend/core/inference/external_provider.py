@@ -2186,9 +2186,7 @@ class ExternalProviderClient:
                                             idx_for_marker = idx
                                             break
                                     if idx_for_marker is None:
-                                        document_citations.append(
-                                            {**cit, "_key": key}
-                                        )
+                                        document_citations.append({**cit, "_key": key})
                                         idx_for_marker = len(document_citations)
                                     yield _content_chunk(f"[{idx_for_marker}]")
                             elif delta_type == "input_json_delta":
