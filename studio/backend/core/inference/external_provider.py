@@ -465,22 +465,26 @@ class ExternalProviderClient:
             body["frequency_penalty"] = frequency_penalty
         if seed is not None:
             body["seed"] = seed
-        if stop is not None:
-            # OpenAI Chat caps the list at 4 entries. Truncate with a
-            # warning rather than letting the upstream 400; users editing
-            # chips in the picker shouldn't get a cryptic API error.
-            if isinstance(stop, list) and len(stop) > 4:
-                logger.warning(
-                    "stop sequences truncated to 4 entries "
-                    "(received %d, OpenAI's hard cap is 4)",
-                    len(stop),
-                )
-                body["stop"] = stop[:4]
-            elif isinstance(stop, list) and len(stop) == 0:
-                # Empty list = unset; don't ship `stop: []`.
-                pass
-            else:
+        if stop:
+            # OpenAI Chat caps the list at 4 entries. Dedupe + drop
+            # empties first so users entering chips with whitespace or
+            # accidental repeats don't waste budget against the cap or
+            # trip a 400.
+            if isinstance(stop, str):
                 body["stop"] = stop
+            elif isinstance(stop, list):
+                sequences = list(
+                    dict.fromkeys(s for s in stop if isinstance(s, str) and s)
+                )
+                if len(sequences) > 4:
+                    logger.warning(
+                        "stop sequences truncated to 4 entries "
+                        "(received %d, OpenAI's hard cap is 4)",
+                        len(sequences),
+                    )
+                    body["stop"] = sequences[:4]
+                elif sequences:
+                    body["stop"] = sequences
         if service_tier is not None:
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
@@ -1408,12 +1412,23 @@ class ExternalProviderClient:
         #   stop                  → stop_sequences (renamed)
         #   service_tier          → service_tier (auto|standard_only only)
         #   parallel_tool_calls   → disable_parallel_tool_use (inverted)
-        if stop is not None:
+        if stop:
             sequences: list[str]
             if isinstance(stop, str):
-                sequences = [stop] if stop else []
+                sequences = [stop]
             else:
-                sequences = [s for s in stop if isinstance(s, str) and s]
+                # Dedupe + drop empties first; Anthropic 400s on empty
+                # entries and the docs cap stop_sequences at 16 entries.
+                sequences = list(
+                    dict.fromkeys(s for s in stop if isinstance(s, str) and s)
+                )
+            if len(sequences) > 16:
+                logger.warning(
+                    "stop_sequences truncated to 16 entries "
+                    "(received %d, Anthropic's hard cap is 16)",
+                    len(sequences),
+                )
+                sequences = sequences[:16]
             if sequences:
                 body["stop_sequences"] = sequences
         if service_tier in ("auto", "standard_only"):

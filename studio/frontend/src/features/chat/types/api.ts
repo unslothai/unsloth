@@ -288,7 +288,6 @@ export interface OpenAIChatCompletionsRequest {
     | "default"
     | "flex"
     | "priority"
-    | "scale"
     | "standard_only";
   /**
    * Whether the provider may dispatch tool calls in parallel.

@@ -65,13 +65,15 @@ export type ServiceTierOption =
   | "default"
   | "flex"
   | "priority"
-  | "scale"
   | "standard_only";
 
 /**
  * Legal `service_tier` values per provider, sourced from each upstream's
- * docs. Anthropic exposes only `auto` and `standard_only`; OpenAI Chat
- * Completions adds `scale` on top of the Responses-family set. Other
+ * docs. Anthropic exposes only `auto` and `standard_only`. OpenAI in
+ * Studio is routed through `/v1/responses` (not Chat Completions), and
+ * the Responses endpoint only accepts `auto` / `default` / `flex` /
+ * `priority` — `scale` is Chat-only and would be silently dropped here,
+ * so the option list omits it to avoid misleading the user. Other
  * providers fall through to a permissive `auto` / `default` pair so the
  * picker stays usable for OpenAI-compat backends.
  */
@@ -82,7 +84,7 @@ export function getServiceTierOptions(
     return ["auto", "standard_only"] as const;
   }
   if (providerType === "openai") {
-    return ["auto", "default", "flex", "priority", "scale"] as const;
+    return ["auto", "default", "flex", "priority"] as const;
   }
   return ["auto", "default"] as const;
 }

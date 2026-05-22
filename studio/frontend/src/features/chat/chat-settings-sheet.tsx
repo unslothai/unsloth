@@ -1406,11 +1406,7 @@ export function ChatSettingsPanel({
                   className="panel-switch shrink-0"
                   checked={params.parallelToolCalls}
                   onCheckedChange={set("parallelToolCalls")}
-                  aria-label={
-                    params.parallelToolCalls
-                      ? "Disable parallel tool calls"
-                      : "Enable parallel tool calls"
-                  }
+                  aria-label="Parallel tool calls"
                 />
               </div>
             ) : null}

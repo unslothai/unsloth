@@ -107,6 +107,7 @@ export function StopSequencesInput({
         onBlur={commitDraft}
         placeholder={atCap ? `Max ${maxEntries} stops` : placeholder}
         disabled={disabled || atCap}
+        aria-label={ariaLabel || placeholder}
         className={cn(
           "h-6 min-w-[8ch] flex-1 border-0 bg-transparent p-0 text-sm shadow-none",
           "focus-visible:ring-0 focus-visible:border-0",

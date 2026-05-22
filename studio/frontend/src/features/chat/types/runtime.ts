@@ -6,7 +6,6 @@ export type ServiceTier =
   | "default"
   | "flex"
   | "priority"
-  | "scale"
   | "standard_only";
 
 export interface InferenceParams {
