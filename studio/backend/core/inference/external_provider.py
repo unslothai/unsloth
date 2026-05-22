@@ -12,6 +12,7 @@ import json as _json
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -25,6 +26,7 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
+
 # Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
 # the API returns 400 "<param> is deprecated for this model" if any of
 # them is set to a non-default value. The "Sampling parameters removed"
@@ -33,6 +35,34 @@ logger = structlog.get_logger(__name__)
 # 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
 # the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
 # anchor keeps future versions (e.g. claude-opus-5) unaffected.
+def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
+    """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
+
+    Anchored to the URL host so an attacker can't bypass the gate with a
+    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
+    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
+    substring-sanitization). Used to scope cloud-only Responses-API
+    extensions (prompt_cache_retention, context_management compaction,
+    container shell tool) that 400 on non-cloud OpenAI-compatible
+    servers (ollama / llama.cpp / vLLM).
+
+    Azure Foundry resources are scoped to
+    ``<resource-name>.openai.azure.com``; match any subdomain via an
+    `endswith` on the lowercased hostname, with the leading dot so
+    `openai.azure.com` itself doesn't slip through (there is no
+    apex-hosted Azure Foundry endpoint).
+    """
+    if not base_url:
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+
+
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
@@ -122,6 +152,29 @@ def _anthropic_code_execution_version(model: str) -> str:
 # the tool version -- both `_20250825` and `_20260120` are unlocked by
 # the same `code-execution-2025-08-25` header per the upstream docs.
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
+
+
+# Anthropic server-side context compaction (beta as of compact-2026-01-12).
+# Per the docs, the compaction tool is currently supported on Opus 4.6,
+# Opus 4.7, Sonnet 4.6 and Mythos Preview. The beta header is the same
+# for every supported model; the dated `compact_20260112` type lives in
+# the body's `context_management.edits` array. Anything sent to a model
+# outside this prefix list is silently ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-mythos-preview",
+)
+_ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
+_ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
+# The docs require the threshold to be at least 50K tokens; lower values
+# would 400. We clamp on the way out so a UI slider can't underflow.
+_ANTHROPIC_COMPACTION_MIN = 50_000
+
+
+def _anthropic_supports_compaction(model: str) -> bool:
+    return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
 class _MistralThinkingSpec(NamedTuple):
@@ -294,6 +347,7 @@ class ExternalProviderClient:
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -321,6 +375,7 @@ class ExternalProviderClient:
                 enable_prompt_caching,
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -342,6 +397,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 openai_code_exec_container_id,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -1129,6 +1185,7 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1168,6 +1225,20 @@ class ExternalProviderClient:
                 for part in content:
                     if part.get("type") == "text":
                         anthropic_parts.append({"type": "text", "text": part["text"]})
+                    elif part.get("type") == "compaction":
+                        # Round-trip the compaction block. When the
+                        # prior assistant turn ran server-side
+                        # compaction, that block must land back on this
+                        # turn's assistant message so Anthropic skips
+                        # re-compaction from scratch. Forward verbatim
+                        # under the {type:"compaction", content:"..."}
+                        # shape the API expects. See
+                        #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                        summary = part.get("content") or ""
+                        if isinstance(summary, str) and summary:
+                            anthropic_parts.append(
+                                {"type": "compaction", "content": summary}
+                            )
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
@@ -1506,6 +1577,40 @@ class ExternalProviderClient:
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
 
+        # Server-side context compaction — see
+        #   https://platform.claude.com/docs/en/build-with-claude/compaction
+        # Beta as of `compact-2026-01-12`. When `compaction_threshold` is
+        # provided AND the model accepts compaction (Opus 4.6+ / 4.7,
+        # Sonnet 4.6, Mythos preview), attach
+        # `context_management.edits[{type:"compact_20260112", trigger:
+        # {type:"input_tokens", value:N}}]` to the body. Anthropic runs
+        # the compaction step server-side once the rendered prompt
+        # crosses the threshold and replies with a top-level
+        # `context_management` block plus `usage.iterations[]` so we can
+        # account per-iteration. Below-min thresholds get clamped up to
+        # 50K so the request doesn't 400.
+        compaction_active = (
+            compaction_threshold is not None
+            and compaction_threshold > 0
+            and _anthropic_supports_compaction(model)
+        )
+        if compaction_active:
+            trigger_value = max(
+                int(compaction_threshold),
+                _ANTHROPIC_COMPACTION_MIN,
+            )
+            body["context_management"] = {
+                "edits": [
+                    {
+                        "type": _ANTHROPIC_COMPACTION_TYPE,
+                        "trigger": {
+                            "type": "input_tokens",
+                            "value": trigger_value,
+                        },
+                    }
+                ]
+            }
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -1549,20 +1654,22 @@ class ExternalProviderClient:
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         request_headers = self._auth_headers()
-        if code_execution_enabled:
-            # Anthropic accepts comma-separated beta features in a single
-            # `anthropic-beta` header. Merge our flag onto whatever the
-            # registry's extra_headers contributed (currently nothing on
-            # the beta axis, just anthropic-version) so future betas
-            # added at the registry level keep working.
-            existing_beta = request_headers.get("anthropic-beta", "").strip()
-            beta_parts = (
-                [p.strip() for p in existing_beta.split(",") if p.strip()]
-                if existing_beta
-                else []
-            )
-            if _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
-                beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
+        # Anthropic accepts comma-separated beta features in a single
+        # `anthropic-beta` header. Merge our flags onto whatever the
+        # registry's extra_headers contributed (currently nothing on
+        # the beta axis, just anthropic-version) so future betas
+        # added at the registry level keep working.
+        existing_beta = request_headers.get("anthropic-beta", "").strip()
+        beta_parts = (
+            [p.strip() for p in existing_beta.split(",") if p.strip()]
+            if existing_beta
+            else []
+        )
+        if code_execution_enabled and _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
+        if compaction_active and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
+        if beta_parts:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
         try:
@@ -1649,6 +1756,17 @@ class ExternalProviderClient:
                 current_web_fetch_use: Optional[dict[str, Any]] = None
                 current_web_fetch_result: Optional[dict[str, Any]] = None
                 web_fetch_calls: dict[str, dict[str, Any]] = {}
+                # Compaction state. Server-side compaction emits a
+                # `{type:"compaction", content:"..."}` content block
+                # whenever it runs. The summary text can land on the
+                # start event AND/OR via text_delta events on the same
+                # block (Anthropic's wire format is permissive here).
+                # Accumulate in `current_compaction["content"]` and emit
+                # on content_block_stop so the chat-adapter can persist
+                # it onto the assistant message for round-tripping on
+                # the next turn.
+                current_compaction: Optional[dict[str, Any]] = None
+                compaction_blocks_seen = 0
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -1944,6 +2062,23 @@ class ExternalProviderClient:
                                     "tool_use_id": tool_use_id,
                                     "inner": inner if isinstance(inner, dict) else {},
                                 }
+                            elif block_type == "compaction":
+                                # Server-side compaction emits a `compaction`
+                                # content block on the assistant message.
+                                # Anthropic may include the summary text on
+                                # this start event AND/OR stream it via
+                                # text_delta events on the same block. See
+                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                                # Capture either form; finalize and emit
+                                # on content_block_stop. The chat-adapter
+                                # persists the block onto the assistant
+                                # message so the next turn's request
+                                # carries it back -- Anthropic then skips
+                                # re-compaction from scratch.
+                                seed = content_block.get("content") or ""
+                                current_compaction = {
+                                    "content": seed if isinstance(seed, str) else "",
+                                }
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -1962,21 +2097,31 @@ class ExternalProviderClient:
                                         thinking_open = True
                                     yield _content_chunk(thinking_text)
                             elif delta_type == "text_delta":
-                                # First text after a thinking block closes the
-                                # <think> tag we opened above. Anthropic emits
-                                # a content_block_stop between blocks, but
-                                # closing on the text_delta transition is more
-                                # forgiving if events arrive out of order.
-                                if thinking_open:
-                                    yield _content_chunk("</think>")
-                                    thinking_open = False
                                 text = delta.get("text", "")
-                                if text:
-                                    yield _content_chunk(text)
-                                # Citations on text deltas are attached
-                                # per-call by Anthropic via the
-                                # `web_search_tool_result` block; we don't
-                                # need to scrape them off the text events.
+                                # text_deltas inside a compaction block
+                                # carry the summary chunks; route them
+                                # into the compaction buffer and DON'T
+                                # yield them to the user-visible stream
+                                # -- the summary is opaque internal
+                                # state, not assistant prose.
+                                if current_compaction is not None:
+                                    if text:
+                                        current_compaction["content"] += text
+                                else:
+                                    # First text after a thinking block closes the
+                                    # <think> tag we opened above. Anthropic emits
+                                    # a content_block_stop between blocks, but
+                                    # closing on the text_delta transition is more
+                                    # forgiving if events arrive out of order.
+                                    if thinking_open:
+                                        yield _content_chunk("</think>")
+                                        thinking_open = False
+                                    if text:
+                                        yield _content_chunk(text)
+                                    # Citations on text deltas are attached
+                                    # per-call by Anthropic via the
+                                    # `web_search_tool_result` block; we don't
+                                    # need to scrape them off the text events.
                             elif delta_type == "input_json_delta":
                                 # Streamed partial_json carrying tool inputs
                                 # — the search query for web_search, or the
@@ -2079,6 +2224,23 @@ class ExternalProviderClient:
                                     }
                                 )
                                 current_code_exec_use = None
+                            elif current_compaction is not None:
+                                # End of a compaction block. Emit it as a
+                                # synthetic tool_event so the chat-adapter
+                                # can persist the {type:"compaction",
+                                # content:"..."} payload onto the
+                                # assistant message. The next turn's
+                                # request body forwards the content_part
+                                # verbatim and Anthropic recognises it
+                                # as the prior compaction state.
+                                compaction_blocks_seen += 1
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "compaction_block",
+                                        "content": current_compaction["content"],
+                                    }
+                                )
+                                current_compaction = None
                             elif current_code_exec_result is not None:
                                 # End of a code-execution result block —
                                 # format the inner result into the text
@@ -2180,6 +2342,33 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
+                                # When a fresh compaction has run, Anthropic
+                                # publishes per-iteration token counts in
+                                # `usage.iterations[]`. The top-level
+                                # input_tokens / output_tokens only cover the
+                                # `message` iteration, NOT the compaction
+                                # passes — billing has to sum the whole
+                                # array. See
+                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                                # Fold the compaction iterations into
+                                # `compaction_input_tokens` / `compaction_output_tokens`
+                                # so the cost surface can add them without
+                                # re-walking the array (and so the closing
+                                # log line names the figures).
+                                iterations = delta_usage.get("iterations")
+                                if isinstance(iterations, list):
+                                    c_in = 0
+                                    c_out = 0
+                                    for it in iterations:
+                                        if (
+                                            isinstance(it, dict)
+                                            and it.get("type") == "compaction"
+                                        ):
+                                            c_in += int(it.get("input_tokens") or 0)
+                                            c_out += int(it.get("output_tokens") or 0)
+                                    if c_in or c_out:
+                                        last_usage["compaction_input_tokens"] = c_in
+                                        last_usage["compaction_output_tokens"] = c_out
                             # Anthropic reports the code_execution container
                             # id on `message_delta.delta.container.{id,
                             # expires_at}` (NOT on message_start — at start
@@ -2304,7 +2493,10 @@ class ExternalProviderClient:
                         "container_id_in=%s, container_id_out=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cache_creation_input_tokens=%s, "
-                        "cache_read_input_tokens=%s, events=%s)",
+                        "cache_read_input_tokens=%s, "
+                        "compaction_input_tokens=%s, "
+                        "compaction_output_tokens=%s, "
+                        "compaction_blocks_seen=%s, events=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
@@ -2323,6 +2515,9 @@ class ExternalProviderClient:
                         last_usage.get("output_tokens"),
                         last_usage.get("cache_creation_input_tokens"),
                         last_usage.get("cache_read_input_tokens"),
+                        last_usage.get("compaction_input_tokens"),
+                        last_usage.get("compaction_output_tokens"),
+                        compaction_blocks_seen,
                         event_counts,
                     )
                     await response.aclose()
@@ -2362,6 +2557,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2517,9 +2713,39 @@ class ExternalProviderClient:
         # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
         # accept this parameter (gpt-5.5+ already defaults to "24h" and
         # rejects "in_memory", so it's a safe no-op there).
-        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        # OpenAI-family cloud: api.openai.com OR Azure OpenAI Foundry
+        # (*.openai.azure.com). Both expose the same Responses-API
+        # extensions used below -- prompt_cache_retention,
+        # context_management compaction, container shell tool -- so
+        # treat them uniformly. Non-cloud OpenAI-compatible servers
+        # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
+        # without these extensions and would 400 on the unknown body
+        # fields, so they intentionally fall outside this gate.
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
+
+        # OpenAI server-side context compaction — see
+        #   https://developers.openai.com/api/docs/guides/compaction
+        # When `compaction_threshold` is provided on a cloud OpenAI
+        # request, attach `context_management: [{type:"compaction",
+        # compact_threshold:N}]` so the API runs server-side
+        # compaction when the rendered prompt crosses the threshold.
+        # No beta header is required; no dated version pin. The field
+        # is silently dropped for non-cloud backends because ollama /
+        # llama.cpp / "custom" presets land in this helper and would
+        # 400 on an unknown body field.
+        if (
+            is_openai_cloud
+            and compaction_threshold is not None
+            and compaction_threshold > 0
+        ):
+            body["context_management"] = [
+                {
+                    "type": "compaction",
+                    "compact_threshold": int(compaction_threshold),
+                }
+            ]
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools
