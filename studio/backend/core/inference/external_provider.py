@@ -70,6 +70,59 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
+# Anthropic ships date-pinned tool versions per model family. Per the
+# tool-reference docs (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference)
+# the newer `_20260209` / `_20260120` variants only run on Opus 4.6/4.7
+# and Sonnet 4.6 (web_search / web_fetch) or Opus 4.5+ and Sonnet 4.5+
+# (code_execution). Sending the new versions to an older model returns
+# 400 "tool not supported", and sending the old versions on a new model
+# misses the dynamic-filtering and free-with-search pricing path. Pick
+# the newest combination the model accepts, falling back to the GA
+# (`_20250305` / `_20250910` / `_20250825`) defaults for everything else.
+_ANTHROPIC_NEW_WEB_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+)
+_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+)
+
+
+def _anthropic_web_search_version(model: str) -> str:
+    return (
+        "web_search_20260209"
+        if model.startswith(_ANTHROPIC_NEW_WEB_PREFIXES)
+        else "web_search_20250305"
+    )
+
+
+def _anthropic_web_fetch_version(model: str) -> str:
+    return (
+        "web_fetch_20260209"
+        if model.startswith(_ANTHROPIC_NEW_WEB_PREFIXES)
+        else "web_fetch_20250910"
+    )
+
+
+def _anthropic_code_execution_version(model: str) -> str:
+    return (
+        "code_execution_20260120"
+        if model.startswith(_ANTHROPIC_NEW_CODE_EXEC_PREFIXES)
+        else "code_execution_20250825"
+    )
+
+
+# Anthropic's beta-header flag for code execution does NOT change with
+# the tool version -- both `_20250825` and `_20260120` are unlocked by
+# the same `code-execution-2025-08-25` header per the upstream docs.
+_ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
+
+
 class _MistralThinkingSpec(NamedTuple):
     models: tuple[str, ...]
     style: Literal["prompt_mode", "reasoning_effort", "disabled"]
@@ -1278,18 +1331,22 @@ class ExternalProviderClient:
                     body["max_tokens"] = budget_tokens + 1024
 
         # Anthropic server-side web_search — see
-        #   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
-        # The tool type is date-pinned (web_search_20250305 today) and
-        # Anthropic dispatches search calls server-side, returning
-        # server_tool_use + web_search_tool_result blocks in the SSE
-        # stream, plus url-citation annotations on text deltas. We
-        # translate all of that into our local _toolEvent shape so the
-        # chat UI renders web_search exactly like OpenAI's path.
+        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+        # The tool type is date-pinned per model family. Newer Opus /
+        # Sonnet 4.6 + 4.7 accept `web_search_20260209` with dynamic
+        # filtering (Claude writes code to filter results before they
+        # reach context); everything else uses `web_search_20250305`.
+        # `_anthropic_web_search_version` picks the right one. Anthropic
+        # dispatches search calls server-side, returning server_tool_use
+        # + web_search_tool_result blocks in the SSE stream, plus
+        # url-citation annotations on text deltas. We translate all of
+        # that into our local _toolEvent shape so the chat UI renders
+        # web_search exactly like OpenAI's path.
         if enabled_tools and "web_search" in enabled_tools:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "web_search_20250305",
+                    "type": _anthropic_web_search_version(model),
                     "name": "web_search",
                     "max_uses": 5,
                 }
@@ -1298,15 +1355,18 @@ class ExternalProviderClient:
 
         # Anthropic server-side code execution — see
         #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
-        # `code_execution_20250825` runs Python + bash + str_replace
-        # file edits inside a 5 GB sandboxed container per request, with
-        # no internet access. The tool entry itself takes no extra
-        # parameters; on the SSE stream Anthropic emits two sub-tool
-        # names — `bash_code_execution` and
-        # `text_editor_code_execution` — wrapped in the standard
-        # server_tool_use / *_tool_result block shape. The matching
-        # beta header (`code-execution-2025-08-25`) is set further down
-        # in this function alongside the request headers.
+        # The tool type is date-pinned per model family.
+        # `_anthropic_code_execution_version` picks `code_execution_20260120`
+        # for Opus 4.5+ / Sonnet 4.5+ / Opus 4.7 / Sonnet 4.6 (adds REPL
+        # state persistence + programmatic tool calling) and falls back
+        # to `code_execution_20250825` everywhere else. Both versions
+        # run Python + bash + str_replace file edits inside a 5 GB
+        # sandboxed container per request, with no internet access, and
+        # both are unlocked by the same `code-execution-2025-08-25`
+        # `anthropic-beta` header set further down. On the SSE stream
+        # Anthropic emits two sub-tool names -- `bash_code_execution`
+        # and `text_editor_code_execution` -- wrapped in the standard
+        # server_tool_use / *_tool_result block shape.
         # v1 wires the tool only; file uploads (container_upload
         # content blocks and generated-file retrieval via the Files
         # API) are a deliberate follow-up.
@@ -1317,7 +1377,7 @@ class ExternalProviderClient:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "code_execution_20250825",
+                    "type": _anthropic_code_execution_version(model),
                     "name": "code_execution",
                 }
             )
@@ -1378,8 +1438,8 @@ class ExternalProviderClient:
                 if existing_beta
                 else []
             )
-            if "code-execution-2025-08-25" not in beta_parts:
-                beta_parts.append("code-execution-2025-08-25")
+            if _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
+                beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
         try:
