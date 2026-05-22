@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { createElement, useCallback, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
@@ -178,10 +178,24 @@ function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort
   return "low";
 }
 
+const ANOTHER_MODEL_TOAST_ID = "another-model-generating" as const;
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
   const loras = useChatRuntimeStore((state) => state.loras);
+  const anotherModelRunning = useChatRuntimeStore((s) => {
+    const anyRunning = Object.values(s.runningByThreadId).some(Boolean);
+    if (!anyRunning) return false;
+    // activeThreadId may be null during navigation or for new (unsaved) threads.
+    // When null, we conservatively treat any running thread as "another" — it's
+    // better to show the toast briefly than to miss it. Avoid the DEFAULT_THREAD_KEY
+    // fallback: that caused false negatives when the generating thread also mapped
+    // to DEFAULT_THREAD_KEY (same key → looked like "this thread is running").
+    const activeId = s.activeThreadId;
+    if (!activeId) return true;
+    return !s.runningByThreadId[activeId];
+  });
   const setModels = useChatRuntimeStore((state) => state.setModels);
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
@@ -243,6 +257,21 @@ export function useChatModelRuntime() {
       }),
     [],
   );
+
+  // When no model is loading, show a standalone toast for "another model generating".
+  // When model loading IS active, the note is merged into the loading toast via
+  // renderLoadDescription reading store state at each progress update.
+  useEffect(() => {
+    if (anotherModelRunning && !loadingModel) {
+      toast("Another model is generating", {
+        id: ANOTHER_MODEL_TOAST_ID,
+        description: "You can send a message once it finishes.",
+        duration: Infinity,
+      });
+    } else {
+      toast.dismiss(ANOTHER_MODEL_TOAST_ID);
+    }
+  }, [anotherModelRunning, loadingModel]);
 
   const refresh = useCallback(async () => {
     setModelsError(null);

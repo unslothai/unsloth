@@ -308,18 +308,27 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
+  // thread.isRunning is the AUI-authoritative flag for the current thread.
+  // anyRunning tells us if *any* thread has an active generation in the store.
+  // We don't match thread IDs here — the two sources use different ID schemes
+  // (AUI internal vs backend remoteId), so ID-based matching is unreliable.
+  const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
+  const anotherThreadRunning = !thisThreadIsRunning && anyRunning;
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       if (
         disabled ||
         !hasSendableContent ||
         isComposingRef.current ||
-        hasPendingAttachments
+        hasPendingAttachments ||
+        anotherThreadRunning
       ) {
         event.preventDefault();
       }
     },
-    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
+    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef, anotherThreadRunning],
   );
 
   const composerContent = (
@@ -342,10 +351,10 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       />
       <ComposerAction
         disabled={
-          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+          disabled || !hasSendableContent || isComposing || hasPendingAttachments || anotherThreadRunning
         }
         blockSend={() =>
-          !hasSendableContent || isComposingRef.current || hasPendingAttachments
+          !hasSendableContent || isComposingRef.current || hasPendingAttachments || anotherThreadRunning
         }
       />
     </>

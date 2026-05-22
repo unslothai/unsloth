@@ -91,6 +91,9 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+/** Thread key used in runningByThreadId before a new thread is persisted to the DB. */
+export const DEFAULT_THREAD_KEY = "__default" as const;
+
 /**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
@@ -798,12 +801,31 @@ async function autoLoadSmallestModel(): Promise<{
 export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
+      // Capture and claim the thread slot BEFORE any awaits so that
+      // runningByThreadId is populated immediately. This closes the race
+      // window where switching to a new chat and sending could slip through
+      // while the current thread is still in async setup.
+      const earlyRuntime = useChatRuntimeStore.getState();
+      const resolvedThreadId =
+        (unstable_threadId ?? earlyRuntime.activeThreadId) || undefined;
+      const threadKey = resolvedThreadId || DEFAULT_THREAD_KEY;
+
+      // Block if any OTHER thread already holds the running slot.
+      const existingRunners = Object.entries(earlyRuntime.runningByThreadId)
+        .filter(([key, val]) => val && key !== threadKey);
+      if (existingRunners.length > 0) {
+        // Toast is already shown by the useChatModelRuntime effect; just bail.
+        return;
+      }
+
+      // Claim the slot immediately so concurrent run() calls from other
+      // threads see it before we even start awaiting.
+      earlyRuntime.setThreadRunning(threadKey, true);
+      try {
+
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
-      // Capture the thread ID once at the start so it stays stable even if
-      // the user switches chats while waiting for model load / auto-load.
-      const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      // Keep resolvedThreadId stable across awaits (already captured above).
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -1015,7 +1037,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           // waitForRunEnd resolves instead of hanging. This gate fires
           // before the streaming path's setThreadRunning(true), so the
           // wait promise would otherwise never settle.
-          const gatedThreadKey = resolvedThreadId || "__default";
+          const gatedThreadKey = resolvedThreadId || DEFAULT_THREAD_KEY;
           runtime.setThreadRunning(gatedThreadKey, true);
           runtime.setThreadRunning(gatedThreadKey, false);
           throw new Error(imageGateReason);
@@ -1039,8 +1061,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = resolvedThreadId || "__default";
-        runtime.setThreadRunning(threadKey, true);
+        runtime.setThreadRunning(threadKey, true); // threadKey already declared above
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -1085,7 +1106,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         return;
       }
 
-      const threadKey = resolvedThreadId || "__default";
+      // threadKey already declared in the outer scope above.
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -1970,6 +1991,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         runtime.setThreadRunning(threadKey, false);
+      }
+
+      } finally {
+        // Outer safety net: release the slot if we exit before reaching the
+        // inner try/finally (e.g., exception or abort during setup awaits).
+        // If the inner finally already released it, this is a no-op.
+        earlyRuntime.setThreadRunning(threadKey, false);
       }
     },
   };
