@@ -165,32 +165,40 @@ def test_omitted_threshold_no_body_field(monkeypatch):
 # ── schema floor matches what the upstream API actually accepts ────
 
 
-def test_chat_completion_request_rejects_sub_10k_compaction_threshold():
-    # The upstream Responses API surfaces a `compact_threshold is not
-    # enabled` 400 below the model's effective floor (per
-    # langchain-ai/langchain#35464 on Azure with 100k -- the real
-    # floor on cloud is similar). Reject obvious typos at the schema
-    # layer so the user sees a clean 422 instead of an opaque
-    # upstream 400.
+def test_chat_completion_request_accepts_any_positive_compaction_threshold():
+    # Codex follow-up: the field is documented as a no-op for non-cloud
+    # OpenAI bases and every non-OpenAI provider, so a cross-provider
+    # schema floor would 422 perfectly valid Anthropic / ollama /
+    # llama.cpp requests that happen to carry the field. Keep schema
+    # floor at ge=1 (any positive int) and rely on per-provider
+    # helpers (_stream_openai_responses / _stream_anthropic) to
+    # enforce or clamp the real floor.
     import pytest as _pytest
 
     from models.inference import ChatCompletionRequest
 
+    # Non-positive values still rejected so blank-string posts don't
+    # sneak through.
     with _pytest.raises(Exception):
         ChatCompletionRequest.model_validate(
             {
                 "model": "default",
                 "messages": [{"role": "user", "content": "hi"}],
-                "compaction_threshold": 9_999,
+                "compaction_threshold": 0,
             }
         )
 
-    # 10k is the inclusive floor.
-    req = ChatCompletionRequest.model_validate(
-        {
-            "model": "default",
-            "messages": [{"role": "user", "content": "hi"}],
-            "compaction_threshold": 10_000,
-        }
-    )
-    assert req.compaction_threshold == 10_000
+    # Any positive int passes schema validation, including values that
+    # would be no-ops on the OpenAI cloud path. This is intentional --
+    # the OpenAI helper drops the field on non-cloud bases and
+    # forwards-as-is on cloud bases; if the value is below the model's
+    # effective floor, the upstream API surfaces the error.
+    for v in (1, 5_000, 9_999, 10_000, 200_000):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [{"role": "user", "content": "hi"}],
+                "compaction_threshold": v,
+            }
+        )
+        assert req.compaction_threshold == v
