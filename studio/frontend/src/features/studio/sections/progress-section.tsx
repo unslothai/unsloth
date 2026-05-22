@@ -31,6 +31,11 @@ import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
 import { cn } from "@/lib/utils";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ChartAverageIcon,
   Clock01Icon,
   DashboardSpeed01Icon,
@@ -269,12 +274,25 @@ export function ProgressSection({
           )}
 
           <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_minmax(0,1fr)_auto]">
-            <MetricStat
-              label="Loss"
-              valueClassName="text-2xl font-bold tracking-tight"
-            >
-              {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
-            </MetricStat>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="cursor-help min-w-0">
+                  <MetricStat
+                    label="Loss"
+                    valueClassName="text-2xl font-bold tracking-tight"
+                  >
+                    {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
+                  </MetricStat>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[260px] p-3">
+                <p className="font-medium mb-1 text-xs">Training Loss</p>
+                <p className="text-xs/relaxed font-normal text-muted-foreground">
+                  Cross-entropy loss over the current training batch. Lower is better.
+                  A sudden spike may indicate a bad batch, an unstable learning rate, or a data quality issue.
+                </p>
+              </TooltipContent>
+            </Tooltip>
             <div className="hidden xl:block w-px self-stretch bg-border/40" />
             <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
             <MetricStat label="Grad Norm">
@@ -283,6 +301,11 @@ export function ProgressSection({
             <MetricStat label="Model" valueClassName="truncate" title={data.modelName || "--"}>
               {data.modelName || "--"}
             </MetricStat>
+            {data.datasetName && (
+              <MetricStat label="Dataset" valueClassName="truncate" title={data.datasetName}>
+                {data.datasetName}
+              </MetricStat>
+            )}
             <MetricStat label="Method">
               {trainingMethodLabel}
             </MetricStat>
