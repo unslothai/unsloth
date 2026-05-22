@@ -3948,7 +3948,9 @@ async def _responses_stream(
         )
 
     body = _build_openai_passthrough_body(
-        chat_req, backend_ctx = llama_backend.context_length
+        chat_req,
+        backend_ctx = llama_backend.context_length,
+        model_identifier = llama_backend.model_identifier,
     )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
@@ -5315,21 +5317,51 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
-def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
+def _build_openai_passthrough_body(
+    payload, backend_ctx = None, model_identifier: str | None = None,
+) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
     Only explicitly-known OpenAI / llama-server fields are forwarded so that
     Studio-specific extensions (``enable_tools``, ``enabled_tools``,
     ``session_id``, ...) never leak to the backend.
+
+    ``model_identifier`` (when supplied) gates a registry lookup so the
+    family default ``chat_template_kwargs`` (e.g. gpt-oss
+    ``reasoning_effort=medium``) reaches llama-server even when the
+    inbound request did not set the keys explicitly. Per-request keys
+    still win on conflict.
     """
     messages = _openai_messages_for_passthrough(payload)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    # When the caller asked for a specific reasoning mode, forward it to
-    # llama-server via chat_template_kwargs so the Jinja template renders
-    # with (or without) the reasoning preamble.
-    tpl_kwargs = None
+    # Merge family-default chat_template_kwargs (base) with per-request
+    # overrides. Per-request always wins.
+    tpl_kwargs: dict = {}
+    if model_identifier:
+        try:
+            family_defaults = load_inference_config(model_identifier)
+            family_kw = family_defaults.get("chat_template_kwargs")
+            if isinstance(family_kw, dict):
+                tpl_kwargs.update(family_kw)
+        except Exception as exc:
+            logger.warning(
+                "openai_passthrough.family_defaults_lookup_failed model=%s err=%s",
+                model_identifier, exc,
+            )
+    # Per-request enable_thinking already lifted from extra_body upstream.
     if payload.enable_thinking is not None:
-        tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
+        tpl_kwargs["enable_thinking"] = bool(payload.enable_thinking)
+    if payload.reasoning_effort is not None:
+        tpl_kwargs["reasoning_effort"] = payload.reasoning_effort
+    # Inbound extra_body chat_template_kwargs win outright (highest priority).
+    _extra = getattr(payload, "model_extra", None)
+    if isinstance(_extra, dict):
+        inbound_kw = _extra.get("chat_template_kwargs")
+        if isinstance(inbound_kw, dict):
+            tpl_kwargs.update(inbound_kw)
+    # Collapse empty dict to None so we don't emit an empty
+    # ``chat_template_kwargs`` field to llama-server.
+    tpl_kwargs = tpl_kwargs or None
     return _build_passthrough_payload(
         messages,
         payload.tools,
@@ -5367,7 +5399,9 @@ async def _openai_passthrough_stream(
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
-        payload, backend_ctx = llama_backend.context_length
+        payload,
+        backend_ctx = llama_backend.context_length,
+        model_identifier = llama_backend.model_identifier,
     )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
@@ -5525,7 +5559,9 @@ async def _openai_passthrough_non_streaming(
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
-        payload, backend_ctx = llama_backend.context_length
+        payload,
+        backend_ctx = llama_backend.context_length,
+        model_identifier = llama_backend.model_identifier,
     )
 
     try:

@@ -185,12 +185,29 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
                 return family_params[key]
             return default_inference.get(key, hardcoded_default)
 
+    def _get_dict_param(key):
+        # Dict-valued defaults (e.g. ``chat_template_kwargs``). Same
+        # priority chain as _get_param but with type-safe dict checks.
+        # Returns None when nothing is configured anywhere.
+        if has_own_yaml:
+            val = model_inference.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+        fam = family_params.get(key)
+        if isinstance(fam, dict) and fam:
+            return dict(fam)
+        dfl = default_inference.get(key)
+        if isinstance(dfl, dict) and dfl:
+            return dict(dfl)
+        return None
+
     inference_config = {
         "temperature": _get_param("temperature", 0.7),
         "top_p": _get_param("top_p", 0.95),
         "top_k": _get_param("top_k", -1),
         "min_p": _get_param("min_p", 0.01),
         "presence_penalty": _get_param("presence_penalty", 0.0),
+        "chat_template_kwargs": _get_dict_param("chat_template_kwargs"),
         "trust_remote_code": model_inference.get(
             "trust_remote_code", default_inference.get("trust_remote_code", False)
         ),

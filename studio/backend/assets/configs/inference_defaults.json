@@ -215,14 +215,14 @@
       "repetition_penalty": 1.0
     },
     "ministral": {
-      "temperature": 0.15,
+      "temperature": 0.05,
       "top_p": 0.95,
       "top_k": -1,
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
     "devstral": {
-      "temperature": 0.7,
+      "temperature": 0.15,
       "top_p": 0.95,
       "top_k": -1,
       "min_p": 0.01,
@@ -275,7 +275,10 @@
       "top_p": 1.0,
       "top_k": -1,
       "min_p": 0.01,
-      "repetition_penalty": 1.0
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "enable_thinking": true
+      }
     },
     "minimax-m2.5": {
       "temperature": 1.0,
@@ -296,7 +299,10 @@
       "top_p": 1.0,
       "top_k": 0,
       "min_p": 0.01,
-      "repetition_penalty": 1.0
+      "repetition_penalty": 1.0,
+      "chat_template_kwargs": {
+        "reasoning_effort": "medium"
+      }
     },
     "granite-4": {
       "temperature": 0.0,
