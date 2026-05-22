@@ -69,9 +69,16 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_id_denylist": re.compile(
             # Feature suffixes that mark a non-chat variant on any base.
             # Note: `audio` and `realtime` are omitted on purpose --
-            # see docstring above.
+            # see docstring above. `translate` is here so the audio
+            # translation variants `gpt-realtime-translate*` /
+            # `gpt-audio-translate*` are dropped even though we keep
+            # the parent `gpt-realtime` / `gpt-audio` chat families.
+            # `instruct` catches the legacy completion-only suffix
+            # used by `gpt-3.5-turbo-instruct*`; that family is wired
+            # to /v1/completions and would 4xx on our chat/responses
+            # transport, so it should not surface in the chat picker.
             r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
-            r"transcribe|sora)\b"
+            r"transcribe|translate|instruct|sora)\b"
             # Legacy completion bases -- ^-anchored to avoid false
             # positives on hypothetical future chat ids containing
             # those words mid-string.

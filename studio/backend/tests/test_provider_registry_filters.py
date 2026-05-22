@@ -168,6 +168,56 @@ def test_openai_drops_non_chat_ids():
     assert surviving == [], surviving
 
 
+def test_openai_realtime_translate_variants_are_dropped_but_parent_chat_family_survives():
+    """gpt-realtime / gpt-realtime-mini are chat-capable and stay,
+    but the audio-translation variants share the chat picker's
+    transport and would 4xx, so they must be filtered. Pin both
+    behaviours so a future regex tweak cannot collapse one into
+    the other."""
+    kept = _apply(
+        "openai",
+        [
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-audio",
+            "gpt-audio-mini",
+        ],
+    )
+    assert kept == [
+        "gpt-realtime",
+        "gpt-realtime-mini",
+        "gpt-audio",
+        "gpt-audio-mini",
+    ], kept
+
+    dropped = _apply(
+        "openai",
+        [
+            "gpt-realtime-translate",
+            "gpt-realtime-translate-mini",
+            "gpt-audio-translate",
+            "gpt-4o-realtime-translate-preview",
+        ],
+    )
+    assert dropped == [], dropped
+
+
+def test_openai_legacy_instruct_completion_ids_are_dropped():
+    """Legacy `*-instruct` completion-only ids (gpt-3.5-turbo-instruct
+    and friends) speak /v1/completions, not chat/responses. Our OpenAI
+    bridge only knows the chat/responses transport, so admitting them
+    into the picker would 4xx every selection."""
+    dropped = _apply(
+        "openai",
+        [
+            "gpt-3.5-turbo-instruct",
+            "gpt-3.5-turbo-instruct-0914",
+            "davinci-002-instruct",
+        ],
+    )
+    assert dropped == [], dropped
+
+
 def test_openai_search_preview_is_kept_search_api_is_dropped():
     # Pin the search-vs-search-api distinction so a future regex tweak
     # doesn't silently regress to dropping chat-with-search models.
