@@ -26,43 +26,54 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-    "HTTPError",
-    "HTTPStatusError",
-    "RequestError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-# AsyncClient instantiated at module load time in
-# core/inference/external_provider.py; tests that import routes.inference
-# need this stub. The methods do not have to work -- nothing in the
-# route reload guard exercises them.
-_httpx_stub.AsyncClient = type(
-    "AC",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__aenter__": lambda s: s,
-        "__aexit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Prefer real httpx when it is installed: route-guard tests import
+# ``routes.inference`` which transitively pulls ``huggingface_hub``
+# (uses ``from httpx import Response``) and a stub that lacks
+# ``Response`` would break that import chain. Fall back to the stub
+# only when httpx is genuinely missing (keeps the legacy local-dev
+# fast path for the unit-level tests that never touch the route module).
+try:
+    import httpx as _real_httpx  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "HTTPStatusError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("R", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Request = type("Req", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    # AsyncClient instantiated at module load time in
+    # core/inference/external_provider.py; tests that import routes.inference
+    # need this stub. The methods do not have to work -- nothing in the
+    # route reload guard exercises them.
+    _httpx_stub.AsyncClient = type(
+        "AC",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__aenter__": lambda s: s,
+            "__aexit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
