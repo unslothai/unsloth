@@ -71,6 +71,23 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
+# Substantive answer artifacts. Re-prompt fires when the model emits
+# intent-only language ("first I'll ...", "let me ...") without a tool
+# call, but the same intent words appear in long explanations that
+# accompany REAL code or markup. Without this guard, a complete reply
+# like "First, let me set up pygame. ```python ... ```" trips the
+# re-prompt and the next user-visible message wipes the code. We
+# require ALL of (intent signal, length < _REPROMPT_MAX_CHARS, no
+# answer artifact) to fire.
+_HAS_ANSWER_ARTIFACT = re.compile(
+    r"```[a-zA-Z]*\n[\s\S]+?\n```"            # closed code fence
+    r"|<!doctype\b"                            # HTML page
+    r"|<html\b"
+    r"|<svg\b[\s\S]*?</svg>"                   # complete SVG
+    r"|(?:^|\n)\s*\d+\.\s+\S.*?\n\s*\d+\.",   # 2+ numbered list items
+    re.IGNORECASE,
+)
+
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
 # fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
@@ -4818,6 +4835,7 @@ class LlamaCppBackend:
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped)
+                            and not _HAS_ANSWER_ARTIFACT.search(_stripped)
                         ):
                             _reprompt_count += 1
                             logger.info(
