@@ -24,7 +24,7 @@ def _set_flex_available(monkeypatch, available):
         import_utils,
         "is_torch_flex_attn_available",
         lambda: available,
-        raising=False,
+        raising = False,
     )
 
 
@@ -35,7 +35,7 @@ def test_gpt_oss_prefers_flex_attention_over_sdpa(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlexAndSdpa,
         config,
-        supports_sdpa=True,
+        supports_sdpa = True,
     )
 
     assert impl == "flex_attention"
@@ -49,7 +49,7 @@ def test_gpt_oss_falls_back_to_eager_when_flex_unavailable(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlexAndSdpa,
         config,
-        supports_sdpa=True,
+        supports_sdpa = True,
     )
 
     assert impl == "eager"
