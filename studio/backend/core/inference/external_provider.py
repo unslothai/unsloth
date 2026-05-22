@@ -11,7 +11,7 @@ Anthropic uses native Messages API with translation in this client.
 import json as _json
 import re
 import time
-from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -348,6 +348,11 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        stop: Optional[Union[str, list[str]]] = None,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -360,6 +365,12 @@ class ExternalProviderClient:
         supplies a value the provider accepts — the frontend's
         provider-capability map already filters these per provider, so we
         treat them as opt-in here.
+
+        ``frequency_penalty``, ``seed``, ``stop``, ``service_tier``,
+        ``parallel_tool_calls`` follow the same rule: the per-provider
+        stream helpers silently drop fields the upstream API does not
+        accept (e.g. Responses rejects all of seed / frequency / stop;
+        Anthropic does not implement seed / frequency / logprobs).
         """
         if not self._is_openai_compatible():
             async for line in self._stream_anthropic(
@@ -376,6 +387,9 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                stop = stop,
+                service_tier = service_tier,
+                parallel_tool_calls = parallel_tool_calls,
             ):
                 yield line
             return
@@ -398,6 +412,8 @@ class ExternalProviderClient:
                 enable_prompt_caching,
                 openai_code_exec_container_id,
                 compaction_threshold,
+                service_tier = service_tier,
+                parallel_tool_calls = parallel_tool_calls,
             ):
                 yield line
             return
@@ -437,6 +453,38 @@ class ExternalProviderClient:
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
+
+        # Optional sampling extensions (added in #5XXX). Only forwarded
+        # when the caller passed a value. Each upstream provider that
+        # 400s on the field appears in `body_omit` (see providers.py)
+        # so the registry-driven drop loop below removes them before
+        # the request hits the wire. The Responses path
+        # (_stream_openai_responses) drops these explicitly because it
+        # never reaches this body construction.
+        if frequency_penalty is not None:
+            body["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            body["seed"] = seed
+        if stop is not None:
+            # OpenAI Chat caps the list at 4 entries. Truncate with a
+            # warning rather than letting the upstream 400; users editing
+            # chips in the picker shouldn't get a cryptic API error.
+            if isinstance(stop, list) and len(stop) > 4:
+                logger.warning(
+                    "stop sequences truncated to 4 entries "
+                    "(received %d, OpenAI's hard cap is 4)",
+                    len(stop),
+                )
+                body["stop"] = stop[:4]
+            elif isinstance(stop, list) and len(stop) == 0:
+                # Empty list = unset; don't ship `stop: []`.
+                pass
+            else:
+                body["stop"] = stop
+        if service_tier is not None:
+            body["service_tier"] = service_tier
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         # Strip body fields a provider's registry entry declares unusable —
         # reasoning-class models that lock these to fixed defaults (e.g.
@@ -1186,6 +1234,10 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        *,
+        stop: Optional[Union[str, list[str]]] = None,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1347,6 +1399,29 @@ class ExternalProviderClient:
             body["temperature"] = temperature
         if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
+
+        # Optional sampling extensions. Anthropic has no
+        # frequency_penalty / seed / logprobs equivalents, so those are
+        # silently dropped by virtue of not being forwarded from
+        # stream_chat_completion. The three knobs Anthropic does accept
+        # land here:
+        #   stop                  → stop_sequences (renamed)
+        #   service_tier          → service_tier (auto|standard_only only)
+        #   parallel_tool_calls   → disable_parallel_tool_use (inverted)
+        if stop is not None:
+            sequences: list[str]
+            if isinstance(stop, str):
+                sequences = [stop] if stop else []
+            else:
+                sequences = [s for s in stop if isinstance(s, str) and s]
+            if sequences:
+                body["stop_sequences"] = sequences
+        if service_tier in ("auto", "standard_only"):
+            body["service_tier"] = service_tier
+        if parallel_tool_calls is False:
+            # Default upstream behavior is parallel-allowed; only
+            # forward when the user explicitly disabled it.
+            body["disable_parallel_tool_use"] = True
         # Anthropic only caches a prefix when at least one cache_control
         # marker is attached to it — the frontend defaults
         # enable_prompt_caching to True for Anthropic, so treat `None` the
@@ -2558,6 +2633,9 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        *,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2665,6 +2743,15 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        # Responses accepts service_tier on the same enum set as Chat
+        # Completions minus `scale`. parallel_tool_calls follows the
+        # same shape (default true). The frontend capability gate
+        # (provider-capabilities.ts) already filters the option lists
+        # per provider, so we just forward what we got.
+        if service_tier in ("auto", "default", "flex", "priority"):
+            body["service_tier"] = service_tier
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = bool(parallel_tool_calls)
         # `summary: "auto"` is what makes /v1/responses emit reasoning
         # summary events — without it OpenAI returns no thinking text on
         # most reasoning models, the SSE handler has no <think>…</think>

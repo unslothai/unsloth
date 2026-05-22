@@ -1403,6 +1403,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
+              // Optional sampling extensions. Each gate is per-provider
+              // (see provider-capabilities.ts); the backend additionally
+              // drops fields the upstream API does not accept, so a
+              // stale frontend cannot 400 the request.
+              ...(externalCapabilities?.frequencyPenalty
+                ? { frequency_penalty: params.frequencyPenalty }
+                : {}),
+              ...(externalCapabilities?.seed && params.seed !== null
+                ? { seed: params.seed }
+                : {}),
+              ...(externalCapabilities?.stop && params.stop.length > 0
+                ? { stop: params.stop }
+                : {}),
+              ...(externalCapabilities?.serviceTier && params.serviceTier
+                ? { service_tier: params.serviceTier }
+                : {}),
+              // Forward parallel_tool_calls when the user explicitly
+              // turned it off (the upstream default is `true` on every
+              // provider we ship, so default true is a no-op).
+              ...(externalCapabilities?.parallelToolCalls &&
+              params.parallelToolCalls === false
+                ? { parallel_tool_calls: false }
+                : {}),
               // Built-in tools: Search pill maps to provider-side
               // web_search (currently OpenAI / Anthropic / OpenRouter /
               // Kimi); Code pill maps to Anthropic's server-side
@@ -1503,6 +1526,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // Optional sampling extensions; local llama-server already
+            // accepts `stop` / `seed` / `frequency_penalty` via
+            // _build_passthrough_payload (routes/inference.py:4884) and
+            // silently ignores fields it does not recognise.
+            ...(params.frequencyPenalty !== 0
+              ? { frequency_penalty: params.frequencyPenalty }
+              : {}),
+            ...(params.seed !== null ? { seed: params.seed } : {}),
+            ...(params.stop.length > 0 ? { stop: params.stop } : {}),
+            ...(params.parallelToolCalls === false
+              ? { parallel_tool_calls: false }
+              : {}),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,

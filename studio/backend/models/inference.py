@@ -786,6 +786,48 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+    frequency_penalty: Optional[float] = Field(
+        None,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "OpenAI Chat Completions frequency penalty (-2.0 to 2.0). "
+            "Forwarded only on providers that accept it; Anthropic "
+            "Messages and the OpenAI Responses family silently drop it."
+        ),
+    )
+    seed: Optional[int] = Field(
+        None,
+        description = (
+            "Best-effort determinism seed. Forwarded to OpenAI Chat "
+            "Completions and OpenAI-compatible local backends. The "
+            "Responses family rejects it server-side and Anthropic does "
+            "not implement it, so it is silently dropped on those routes."
+        ),
+    )
+    service_tier: Optional[
+        Literal["auto", "default", "flex", "priority", "scale", "standard_only"]
+    ] = Field(
+        None,
+        description = (
+            "Provider service tier. Anthropic accepts only `auto` and "
+            "`standard_only`; OpenAI Chat accepts "
+            "`auto|default|flex|priority|scale`; OpenAI Responses accepts "
+            "`auto|default|flex|priority`. Unsupported values per provider "
+            "are dropped in the per-provider stream helper instead of "
+            "422'ing here so a stale frontend never breaks a request."
+        ),
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether the provider may dispatch tool calls in parallel. "
+            "OpenAI: forwarded as `parallel_tool_calls`. Anthropic: "
+            "inverted into `disable_parallel_tool_use` on the Messages "
+            "body. Default `None` preserves each provider's upstream "
+            "default (which is `true` everywhere today)."
+        ),
+    )
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":

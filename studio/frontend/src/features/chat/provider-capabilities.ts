@@ -29,6 +29,62 @@ export interface ProviderCapabilities {
   repetitionPenalty: boolean;
   /** OpenAI-style presence penalty. */
   presencePenalty: boolean;
+  /**
+   * OpenAI-style frequency penalty. Accepted by Chat Completions only.
+   * Anthropic and the OpenAI Responses family both reject it (the latter
+   * with `Unsupported parameter`).
+   */
+  frequencyPenalty: boolean;
+  /**
+   * Best-effort determinism seed. Accepted by OpenAI Chat Completions and
+   * most OpenAI-compatible local backends (vLLM, llama.cpp). Rejected by
+   * the Responses family and silently dropped by Anthropic.
+   */
+  seed: boolean;
+  /**
+   * Custom stop sequences. Maps to `stop` (OpenAI Chat) or `stop_sequences`
+   * (Anthropic). Not accepted by the Responses family.
+   */
+  stop: boolean;
+  /**
+   * Provider service tier (`auto` / `standard_only` for Anthropic,
+   * `auto`/`default`/`flex`/`priority`(+`scale`) for OpenAI). See
+   * {@link getServiceTierOptions} for the legal values per provider.
+   */
+  serviceTier: boolean;
+  /**
+   * Whether the provider supports turning off parallel tool dispatch.
+   * Maps to `parallel_tool_calls: false` on both OpenAI APIs and
+   * `disable_parallel_tool_use: true` on Anthropic (inverted).
+   */
+  parallelToolCalls: boolean;
+}
+
+export type ServiceTierOption =
+  | "auto"
+  | "default"
+  | "flex"
+  | "priority"
+  | "scale"
+  | "standard_only";
+
+/**
+ * Legal `service_tier` values per provider, sourced from each upstream's
+ * docs. Anthropic exposes only `auto` and `standard_only`; OpenAI Chat
+ * Completions adds `scale` on top of the Responses-family set. Other
+ * providers fall through to a permissive `auto` / `default` pair so the
+ * picker stays usable for OpenAI-compat backends.
+ */
+export function getServiceTierOptions(
+  providerType: string | null | undefined,
+): readonly ServiceTierOption[] {
+  if (providerType === "anthropic") {
+    return ["auto", "standard_only"] as const;
+  }
+  if (providerType === "openai") {
+    return ["auto", "default", "flex", "priority", "scale"] as const;
+  }
+  return ["auto", "default"] as const;
 }
 
 export type ExternalReasoningCapabilities = {
@@ -286,6 +342,11 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   minP: false,
   repetitionPenalty: false,
   presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
 };
 
 const ALL_SUPPORTED: ProviderCapabilities = {
@@ -295,6 +356,11 @@ const ALL_SUPPORTED: ProviderCapabilities = {
   minP: true,
   repetitionPenalty: true,
   presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
 };
 
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
@@ -302,6 +368,8 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // models served via /v1/responses, which rejects temperature, top_p, and
   // presence/frequency penalty. See backend
   // external_provider._stream_openai_responses for the proxy.
+  // service_tier and parallel_tool_calls are accepted on /v1/responses;
+  // seed / stop / frequency_penalty are 400'd alongside temperature/top_p.
   openai: {
     temperature: false,
     topP: false,
@@ -309,14 +377,22 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: false,
+    frequencyPenalty: false,
+    seed: false,
+    stop: false,
+    serviceTier: true,
+    parallelToolCalls: true,
   },
   // Anthropic's Messages API accepts top_k on 3.x and 4.5/4.6, but Claude
   // 4.7 (Opus/Sonnet/Haiku) deprecated it and returns 400 if it is set.
   // We surface top_k in the panel for all Anthropic providers and let the
   // backend strip it per-model — see _stream_anthropic in
   // studio/backend/core/inference/external_provider.py.
-  // Presence/frequency penalty is not part of the Messages API on any
-  // Claude generation.
+  // Presence/frequency penalty / seed / logprobs are not part of the
+  // Messages API on any Claude generation. stop_sequences (Anthropic name
+  // for `stop`), service_tier (auto|standard_only), and
+  // disable_parallel_tool_use (inverse of parallel_tool_calls) ARE
+  // supported.
   anthropic: {
     temperature: true,
     topP: true,
@@ -324,6 +400,11 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: false,
+    frequencyPenalty: false,
+    seed: false,
+    stop: true,
+    serviceTier: true,
+    parallelToolCalls: true,
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
@@ -340,6 +421,11 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: true,
+    frequencyPenalty: true,
+    seed: true,
+    stop: true,
+    serviceTier: false,
+    parallelToolCalls: true,
   },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
   deepseek: {
@@ -349,6 +435,11 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: false,
+    frequencyPenalty: false,
+    seed: true,
+    stop: true,
+    serviceTier: false,
+    parallelToolCalls: true,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,

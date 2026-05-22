@@ -262,6 +262,41 @@ export interface OpenAIChatCompletionsRequest {
    * the Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
+  /**
+   * OpenAI Chat Completions only; rejected by the Responses family and
+   * silently dropped by Anthropic. Range -2.0 .. 2.0.
+   */
+  frequency_penalty?: number;
+  /**
+   * Best-effort determinism seed. OpenAI Chat / OpenAI-compat backends
+   * forward it; Responses + Anthropic drop it server-side.
+   */
+  seed?: number;
+  /**
+   * Custom stop sequences. Backend translates to `stop_sequences` for
+   * Anthropic; OpenAI Chat caps at 4 entries (server-side truncates
+   * with a warning). Empty arrays are omitted.
+   */
+  stop?: string[];
+  /**
+   * Provider service tier. Anthropic accepts `auto|standard_only`;
+   * OpenAI Chat accepts `auto|default|flex|priority|scale`; OpenAI
+   * Responses accepts `auto|default|flex|priority`.
+   */
+  service_tier?:
+    | "auto"
+    | "default"
+    | "flex"
+    | "priority"
+    | "scale"
+    | "standard_only";
+  /**
+   * Whether the provider may dispatch tool calls in parallel.
+   * OpenAI: forwarded as `parallel_tool_calls`. Anthropic: inverted
+   * into `disable_parallel_tool_use` server-side. Default `undefined`
+   * keeps each provider's upstream default.
+   */
+  parallel_tool_calls?: boolean;
 }
 
 export interface OpenAIChatDelta {

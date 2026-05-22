@@ -86,10 +86,13 @@ import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
   getExternalMinOutputTokens,
+  getServiceTierOptions,
   providerSupportsBuiltinCodeExecution,
 } from "./provider-capabilities";
+import { StopSequencesInput } from "@/components/ui/stop-sequences-input";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { InferenceParams } from "./types/runtime";
+import type { InferenceParams, ServiceTier } from "./types/runtime";
+import { Input } from "@/components/ui/input";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -416,6 +419,19 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
+  const showFrequencyPenalty =
+    !isExternalModel || Boolean(providerCapabilities?.frequencyPenalty);
+  const showSeed = !isExternalModel || Boolean(providerCapabilities?.seed);
+  const showStop = !isExternalModel || Boolean(providerCapabilities?.stop);
+  const showServiceTier =
+    isExternalModel && Boolean(providerCapabilities?.serviceTier);
+  const showParallelToolCalls =
+    !isExternalModel || Boolean(providerCapabilities?.parallelToolCalls);
+  // OpenAI Chat docs cap `stop` at 4 entries; Anthropic accepts more.
+  // Pick the right ceiling per active connection so the chips editor's
+  // placeholder doesn't lie.
+  const stopMaxEntries = externalProviderType === "anthropic" ? 16 : 4;
+  const serviceTierOptions = getServiceTierOptions(externalProviderType);
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const hasModelContent =
@@ -1258,6 +1274,145 @@ export function ChatSettingsPanel({
                 displayValue={params.presencePenalty === 0 ? "Off" : undefined}
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
+            ) : null}
+            {showFrequencyPenalty ? (
+              <ParamSlider
+                label="Frequency Penalty"
+                value={params.frequencyPenalty}
+                min={-2}
+                max={2}
+                step={0.1}
+                onChange={set("frequencyPenalty")}
+                displayValue={
+                  params.frequencyPenalty === 0 ? "Off" : undefined
+                }
+                info="Down-weights tokens proportionally to how often they have already appeared. Negative values encourage repetition. 0 = off. OpenAI Chat Completions only; Anthropic and the OpenAI Responses family ignore it."
+              />
+            ) : null}
+            {showSeed ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Seed
+                  </span>
+                  <InfoHint>
+                    Best-effort determinism seed. Same seed + prompt =
+                    same output (approximately). OpenAI Chat Completions
+                    and OpenAI-compat local backends honor it; OpenAI
+                    Responses and Anthropic silently drop it.
+                  </InfoHint>
+                </div>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  value={params.seed ?? ""}
+                  placeholder="Random"
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    if (raw === "") {
+                      set("seed")(null);
+                      return;
+                    }
+                    const parsed = Number.parseInt(raw, 10);
+                    if (Number.isFinite(parsed)) {
+                      set("seed")(parsed);
+                    }
+                  }}
+                  className="h-8 w-[124px] shrink-0 text-right font-mono text-xs"
+                  aria-label="Seed"
+                />
+              </div>
+            ) : null}
+            {showStop ? (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Stop sequences
+                  </span>
+                  <InfoHint>
+                    Strings that halt generation as soon as the model
+                    emits them. Enter a value and press Enter or comma
+                    to commit a chip. Backend translates to
+                    `stop_sequences` on Anthropic and `stop` on OpenAI
+                    Chat (capped at 4 entries).
+                  </InfoHint>
+                </div>
+                <StopSequencesInput
+                  value={params.stop}
+                  onChange={set("stop")}
+                  maxEntries={stopMaxEntries}
+                  aria-label="Stop sequences"
+                />
+              </div>
+            ) : null}
+            {showServiceTier ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Service tier
+                  </span>
+                  <InfoHint>
+                    Provider routing tier. `auto` (default) lets the
+                    provider choose. `flex` / `priority` / `scale` route
+                    to higher-latency-tolerant or premium queues on
+                    OpenAI; `standard_only` opts out of Anthropic's
+                    priority tier.
+                  </InfoHint>
+                </div>
+                <Select
+                  value={params.serviceTier ?? "auto"}
+                  onValueChange={(value) => {
+                    if (value === "auto") {
+                      set("serviceTier")(null);
+                      return;
+                    }
+                    const allowed: readonly ServiceTier[] = serviceTierOptions;
+                    if (allowed.includes(value as ServiceTier)) {
+                      set("serviceTier")(value as ServiceTier);
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    className="panel-select-trigger h-8 w-[140px] shrink-0"
+                    aria-label="Service tier"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {serviceTierOptions.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {showParallelToolCalls ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Parallel tool calls
+                  </span>
+                  <InfoHint>
+                    When on, the model may dispatch multiple tool calls
+                    in a single turn (default). Turn off to force one
+                    tool call at a time. Anthropic implements this as
+                    `disable_parallel_tool_use`; OpenAI as
+                    `parallel_tool_calls`.
+                  </InfoHint>
+                </div>
+                <Switch
+                  className="panel-switch shrink-0"
+                  checked={params.parallelToolCalls}
+                  onCheckedChange={set("parallelToolCalls")}
+                  aria-label={
+                    params.parallelToolCalls
+                      ? "Disable parallel tool calls"
+                      : "Enable parallel tool calls"
+                  }
+                />
+              </div>
             ) : null}
             {!isExternalModel && !isGguf && (
               <ParamSlider

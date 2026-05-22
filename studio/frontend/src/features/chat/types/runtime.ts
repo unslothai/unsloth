@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export type ServiceTier =
+  | "auto"
+  | "default"
+  | "flex"
+  | "priority"
+  | "scale"
+  | "standard_only";
+
 export interface InferenceParams {
   temperature: number;
   topP: number;
@@ -8,6 +16,34 @@ export interface InferenceParams {
   minP: number;
   repetitionPenalty: number;
   presencePenalty: number;
+  /** OpenAI Chat Completions only; rejected by Responses + Anthropic. */
+  frequencyPenalty: number;
+  /**
+   * Best-effort determinism seed. OpenAI Chat Completions only; the
+   * Responses family and Anthropic reject it (silently dropped server-side).
+   * `null` = unset (no `seed` field on the wire).
+   */
+  seed: number | null;
+  /**
+   * Custom stop sequences. Maps to `stop` on OpenAI Chat Completions and
+   * `stop_sequences` on Anthropic Messages. OpenAI caps the array at 4
+   * entries; backend truncates with a warning. Empty array = unset.
+   */
+  stop: string[];
+  /**
+   * Provider service tier. Each provider accepts a different enum set;
+   * `getServiceTierOptions(providerType)` resolves the legal values. `null`
+   * means "let the provider pick its default" and is the safe choice on
+   * provider switch.
+   */
+  serviceTier: ServiceTier | null;
+  /**
+   * Whether the provider may dispatch tool calls in parallel. Maps to
+   * `parallel_tool_calls` on both OpenAI APIs and is inverted into
+   * `disable_parallel_tool_use` for Anthropic. Default true matches the
+   * upstream defaults across all three.
+   */
+  parallelToolCalls: boolean;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
@@ -23,6 +59,11 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   minP: 0.01,
   repetitionPenalty: 1.0,
   presencePenalty: 0.0,
+  frequencyPenalty: 0.0,
+  seed: null,
+  stop: [],
+  serviceTier: null,
+  parallelToolCalls: true,
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",

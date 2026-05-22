@@ -1868,6 +1868,11 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            frequency_penalty = payload.frequency_penalty,
+            seed = payload.seed,
+            stop = payload.stop,
+            service_tier = payload.service_tier,
+            parallel_tool_calls = payload.parallel_tool_calls,
             stream = payload.stream,
         )
         try:
