@@ -19,10 +19,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { Suspense, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
 
-// Augment TanStack Router's empty `StaticDataRouteOption` interface so
-// `createRoute({ staticData: { title: "..." } })` is typed at every leaf
-// route and the layout below can read `match.staticData.title` without
-// an `as { staticData?: { title?: string } }` escape hatch.
+// Type `staticData.title` on every route so the matched-title selector
+// below stays type-safe without an inline cast.
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
     title?: string;
@@ -66,8 +64,7 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
-// Title shown when no matched route declares its own `staticData.title`
-// (e.g. the bare `/` redirect or an unknown path).
+// Fallback when no matched route declares a `staticData.title`.
 const DEFAULT_DOCUMENT_TITLE = "Unsloth Studio";
 
 function RootLayout() {
@@ -78,10 +75,7 @@ function RootLayout() {
 
   useTrainingUnloadGuard();
 
-  // Read the deepest matched route's `staticData.title` instead of carrying
-  // a centralized pathname -> title map in this file. Each route declares
-  // its own title in its `createRoute({ staticData: { title: "..." } })`
-  // so the layout stays decoupled from individual route names.
+  // Walk matches deepest-first; each route declares its own title.
   const matchedTitle = useMatches({
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
@@ -92,16 +86,13 @@ function RootLayout() {
     },
   });
 
-  // `/settings` is a modal deep link: its route throws `redirect` in
-  // `beforeLoad`, so by the time `useMatches` resolves we're on the
-  // post-auth route (usually `/chat`). Prefer "Settings" while the
-  // dialog is open so the tab title matches what the user sees.
+  // `/settings` redirects in `beforeLoad`, so its route never stays
+  // matched; surface the modal's title via the store instead.
   const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
   const documentTitle = settingsDialogOpen ? "Settings" : matchedTitle;
 
-  // `useLayoutEffect` so the tab title is updated synchronously before the
-  // browser paints the new route. Using `useEffect` here let the previous
-  // route's title flash for one frame during in-app navigation.
+  // useLayoutEffect updates the tab title before paint, avoiding a
+  // one-frame flash of the previous route's title on navigation.
   useLayoutEffect(() => {
     document.title = documentTitle
       ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
