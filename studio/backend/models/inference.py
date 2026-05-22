@@ -440,6 +440,28 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class CompactionContentPart(BaseModel):
+    """Anthropic server-side compaction state, attached to an assistant
+    message for round-tripping on the next turn.
+
+    When Anthropic runs compaction during a request, the response
+    carries a ``{"type": "compaction", "content": "<summary>"}`` block
+    on the assistant message. The chat-adapter persists it onto the
+    stored message; the next turn's outbound request must forward it
+    back so Anthropic recognises the existing compaction state and
+    doesn't re-summarise the conversation from scratch. See
+    ``external_provider._stream_anthropic`` for the wire-side handling
+    and https://platform.claude.com/docs/en/build-with-claude/compaction
+    for the upstream contract.
+    """
+
+    type: Literal["compaction"]
+    content: str = Field(
+        ...,
+        description = "Anthropic-produced summary of the compacted-away conversation prefix.",
+    )
+
+
 def _content_part_discriminator(v):
     if isinstance(v, dict):
         return v.get("type")
@@ -450,6 +472,7 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
 ]
@@ -679,6 +702,23 @@ class ChatCompletionRequest(BaseModel):
             "write. Only `5m` and `1h` are forwarded; any other value is "
             "silently ignored downstream so a stale frontend can't make the "
             "API 422 on the request. No-op on every non-Anthropic provider."
+        ),
+    )
+    compaction_threshold: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 2_000_000,
+        description = (
+            "[x-unsloth] Anthropic server-side context compaction trigger, in "
+            "input tokens. When set on a compaction-capable model (Opus 4.6+, "
+            "Opus 4.7, Sonnet 4.6, Mythos preview), Studio attaches the "
+            "`compact_20260112` edit and the `compact-2026-01-12` beta header. "
+            "The minimum upstream-accepted threshold is 50k input tokens; "
+            "any value below that is clamped UP server-side in "
+            "`_stream_anthropic`. Kept permissive at the schema layer so the "
+            "in-helper clamp can run instead of returning 422 on a sub-50k "
+            "value the frontend may have stashed in localStorage. No-op on "
+            "any other provider or unsupported model."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
