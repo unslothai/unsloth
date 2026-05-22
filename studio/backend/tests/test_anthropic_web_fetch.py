@@ -157,9 +157,14 @@ def test_web_fetch_combined_with_web_search_and_code_execution(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     tool_types = [t.get("type") for t in tools]
-    assert "web_search_20250305" in tool_types
-    assert "web_fetch_20250910" in tool_types
-    assert "code_execution_20250825" in tool_types
+    # After PR 5679's per-model tool version dispatch landed,
+    # claude-opus-4-7 routes web_search to the _20260209 variant and
+    # code_execution to _20260120. web_fetch still hardcodes
+    # _20250910 today; see follow-up to thread it through
+    # _anthropic_web_fetch_version.
+    assert "web_search_20260209" in tool_types, tool_types
+    assert "web_fetch_20250910" in tool_types, tool_types
+    assert "code_execution_20260120" in tool_types, tool_types
     # Code-execution still adds its beta flag; web_fetch must not
     # have accidentally stripped it.
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
