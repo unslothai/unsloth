@@ -1913,6 +1913,33 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
+                                # When a fresh compaction has run, Anthropic
+                                # publishes per-iteration token counts in
+                                # `usage.iterations[]`. The top-level
+                                # input_tokens / output_tokens only cover the
+                                # `message` iteration, NOT the compaction
+                                # passes — billing has to sum the whole
+                                # array. See
+                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                                # Fold the compaction iterations into
+                                # `compaction_input_tokens` / `compaction_output_tokens`
+                                # so the cost surface can add them without
+                                # re-walking the array (and so the closing
+                                # log line names the figures).
+                                iterations = delta_usage.get("iterations")
+                                if isinstance(iterations, list):
+                                    c_in = 0
+                                    c_out = 0
+                                    for it in iterations:
+                                        if (
+                                            isinstance(it, dict)
+                                            and it.get("type") == "compaction"
+                                        ):
+                                            c_in += int(it.get("input_tokens") or 0)
+                                            c_out += int(it.get("output_tokens") or 0)
+                                    if c_in or c_out:
+                                        last_usage["compaction_input_tokens"] = c_in
+                                        last_usage["compaction_output_tokens"] = c_out
                             # Anthropic reports the code_execution container
                             # id on `message_delta.delta.container.{id,
                             # expires_at}` (NOT on message_start — at start
@@ -2015,7 +2042,9 @@ class ExternalProviderClient:
                         "container_id_in=%s, container_id_out=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cache_creation_input_tokens=%s, "
-                        "cache_read_input_tokens=%s, events=%s)",
+                        "cache_read_input_tokens=%s, "
+                        "compaction_input_tokens=%s, "
+                        "compaction_output_tokens=%s, events=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
@@ -2031,6 +2060,8 @@ class ExternalProviderClient:
                         last_usage.get("output_tokens"),
                         last_usage.get("cache_creation_input_tokens"),
                         last_usage.get("cache_read_input_tokens"),
+                        last_usage.get("compaction_input_tokens"),
+                        last_usage.get("compaction_output_tokens"),
                         event_counts,
                     )
                     await response.aclose()
