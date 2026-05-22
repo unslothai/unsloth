@@ -56,6 +56,13 @@ def test_openai_keeps_every_known_chat_family():
         # search-api suffix.
         "gpt-4o-search-preview",
         "gpt-4o-mini-search-preview",
+        # gpt-audio family: chat-completion-capable (text in / text or
+        # audio out) per OpenAI's audio guide. Earlier revisions of
+        # this denylist dropped them via `(?:^|-)audio`; the regex
+        # comment block now keeps them.
+        "gpt-audio",
+        "gpt-audio-mini",
+        "gpt-audio-1.5",
         # Hypothetical future families that the old allowlist would have
         # silently dropped -- they MUST surface under the new denylist.
         "gpt-5.6",
@@ -70,9 +77,39 @@ def test_openai_keeps_every_known_chat_family():
     assert surviving == live, surviving
 
 
+def test_openai_audio_family_is_chat_capable_and_kept():
+    # Pin the chat/non-chat split that lives in the regex comment:
+    # gpt-audio is kept (chat completions accept it), gpt-realtime is
+    # dropped (separate /v1/realtime endpoint), gpt-4o-transcribe is
+    # dropped (audio-only input via /v1/audio/transcriptions).
+    kept = _apply(
+        "openai",
+        [
+            "gpt-audio",
+            "gpt-audio-1.5",
+            "gpt-audio-mini",
+        ],
+    )
+    assert kept == ["gpt-audio", "gpt-audio-1.5", "gpt-audio-mini"], kept
+
+    dropped = _apply(
+        "openai",
+        [
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe",
+        ],
+    )
+    assert dropped == [], dropped
+
+
 def test_openai_drops_non_chat_ids():
     noise = [
-        # Embeddings / TTS / image / moderation / whisper / audio etc.
+        # Embeddings / TTS / image / moderation / whisper / etc.
+        # gpt-audio* is intentionally OMITTED from this list -- it is
+        # chat-capable. See test_openai_audio_family_is_chat_capable_and_kept.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -88,7 +125,6 @@ def test_openai_drops_non_chat_ids():
         "gpt-image-2",
         "gpt-image-1-mini",
         "chatgpt-image-latest",
-        "gpt-audio-1.5",
         "gpt-realtime-2",
         "gpt-4o-realtime-preview",
         "gpt-4o-transcribe",
