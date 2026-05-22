@@ -2569,7 +2569,8 @@ class LlamaCppBackend:
                             except Exception as exc:
                                 logger.warning(
                                     "Failed to init audio codec '%s': %s",
-                                    detected, exc,
+                                    detected,
+                                    exc,
                                 )
                                 self._audio_probed = False
                     elif detected:
@@ -3309,7 +3310,9 @@ class LlamaCppBackend:
                         self._audio_type = detected
                     except Exception as exc:
                         logger.warning(
-                            "Failed to init audio codec '%s': %s", detected, exc,
+                            "Failed to init audio codec '%s': %s",
+                            detected,
+                            exc,
                         )
                         # Clear probe cache so next load retries init.
                         self._audio_probed = False
