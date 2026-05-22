@@ -144,6 +144,7 @@ def run_safetensors_tool_loop(
         inject_respond_tool,
         is_respond_call,
     )
+
     tools, _respond_injected = inject_respond_tool(tools)
 
     tool_call_history: list[tuple[str, bool]] = []

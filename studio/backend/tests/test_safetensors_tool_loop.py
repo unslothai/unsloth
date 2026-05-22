@@ -537,9 +537,7 @@ class TestRespondToolHelpers:
         assert out is base
 
     def test_is_respond_call(self):
-        assert is_respond_call(
-            {"function": {"name": "respond", "arguments": "{}"}}
-        )
+        assert is_respond_call({"function": {"name": "respond", "arguments": "{}"}})
         assert not is_respond_call(
             {"function": {"name": "web_search", "arguments": "{}"}}
         )
@@ -625,13 +623,15 @@ class TestRespondToolUnwrap:
         # When the caller supplies a real "respond" tool, the synthetic
         # one is NOT injected and the call goes through execute_tool
         # like any other tool, preserving the client's semantics.
-        turn_iter = iter([
+        turn_iter = iter(
             [
-                '<tool_call>{"name":"respond",'
-                '"arguments":{"message":"hi"}}</tool_call>'
-            ],
-            ["thanks"],
-        ])
+                [
+                    '<tool_call>{"name":"respond",'
+                    '"arguments":{"message":"hi"}}</tool_call>'
+                ],
+                ["thanks"],
+            ]
+        )
 
         def _gen(_messages):
             try:
