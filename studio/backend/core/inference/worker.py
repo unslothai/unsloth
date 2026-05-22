@@ -90,6 +90,10 @@ def _build_model_config(config: dict):
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
+    if getattr(mc, "is_gguf", False):
+        raise ValueError(
+            "Local GGUF models must be loaded through the llama.cpp backend."
+        )
     return mc
 
 

@@ -81,6 +81,15 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
+_httpx_stub.AsyncClient = type(
+    "AsyncClient",
+    (),
+    {
+        "__init__": lambda self, **kw: None,
+        "__aenter__": lambda self: self,
+        "__aexit__": lambda self, *a: None,
+    },
+)
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend

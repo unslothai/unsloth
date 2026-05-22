@@ -619,9 +619,16 @@ class InferenceOrchestrator:
         a clean Python interpreter — no stale unsloth patches, torch.compile
         caches, or inspect.getsource() failures from a previous model.
         """
+        model_name = config.identifier
+        from utils.models import is_local_gguf_path
+
+        if getattr(config, "is_gguf", False) or is_local_gguf_path(model_name):
+            raise ValueError(
+                "Local GGUF models must be loaded through the llama.cpp backend."
+            )
+
         from utils.transformers_version import needs_transformers_5
 
-        model_name = config.identifier
         self.loading_models.add(model_name)
 
         try:

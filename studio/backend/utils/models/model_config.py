@@ -468,6 +468,23 @@ for canonical_file, model_names in MODEL_NAME_MAPPING.items():
         _REVERSE_MODEL_MAPPING[model_name.lower()] = canonical_file
 
 
+def is_local_gguf_path(model_id: str) -> bool:
+    """True for local filesystem identifiers ending in ``.gguf``.
+
+    This intentionally returns True even when the file is missing so callers
+    can avoid sending a binary GGUF path through HuggingFace/Transformers
+    config and tokenizer probes.
+    """
+    if not model_id or not str(model_id).strip():
+        return False
+    value = str(model_id).strip()
+    if "://" in value:
+        return False
+    if Path(normalize_path(value)).suffix.lower() != ".gguf":
+        return False
+    return is_local_path(value)
+
+
 def load_model_config(
     model_name: str,
     use_auth: bool = False,
@@ -477,6 +494,12 @@ def load_model_config(
     """
     Load model config with optional authentication control.
     """
+    if is_local_gguf_path(model_name):
+        raise ValueError(
+            "Local GGUF models must be loaded through the llama.cpp backend; "
+            "Transformers cannot parse GGUF files as model configs."
+        )
+
     from transformers import AutoConfig
 
     if token:
@@ -677,6 +700,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
     """
+    if is_local_gguf_path(model_name):
+        return False
+
     # Normalize model name for cache key to avoid duplicate entries for
     # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
     try:
@@ -837,6 +863,9 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
 
     Returns: audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm') or None.
     """
+    if is_local_gguf_path(model_name):
+        return None
+
     if model_name in _audio_detection_cache:
         return _audio_detection_cache[model_name]
 
@@ -2259,6 +2288,36 @@ class ModelConfig:
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
+
+        if is_local and is_local_gguf_path(identifier):
+            gguf_path = Path(path)
+            if not gguf_path.is_file():
+                logger.error(f"GGUF file does not exist: {path}")
+                return None
+            if _is_mmproj(gguf_path.name):
+                logger.error(f"GGUF mmproj file cannot be loaded as model weights: {path}")
+                return None
+
+            gguf_file = str(gguf_path.absolute())
+            display_name = gguf_path.stem
+            mmproj_file = detect_mmproj_file(gguf_file, search_root = str(gguf_path.parent))
+            gguf_is_vision = bool(mmproj_file)
+            if mmproj_file:
+                logger.info(f"Detected mmproj for vision: {mmproj_file}")
+
+            logger.info(f"Detected local GGUF model: {gguf_file}")
+            return cls(
+                identifier = identifier,
+                display_name = display_name,
+                path = path,
+                is_local = True,
+                is_cached = True,
+                is_vision = gguf_is_vision,
+                is_lora = False,
+                is_gguf = True,
+                gguf_file = gguf_file,
+                gguf_mmproj_file = mmproj_file,
+            )
 
         # Preserve requested casing, but if a case-variant already exists in local HF cache,
         # reuse that exact repo_id spelling to avoid one-time re-downloads after #2592.

@@ -527,6 +527,34 @@ def _request_matches_loaded_settings(
     return True
 
 
+def _loaded_gguf_model_matches(
+    config: ModelConfig, model_identifier: str, llama_backend: LlamaCppBackend
+) -> bool:
+    """True iff the live llama-server is serving the requested GGUF model."""
+    if not llama_backend.is_loaded:
+        return False
+
+    loaded_identifier = (llama_backend.model_identifier or "").lower()
+    if loaded_identifier != (config.identifier or model_identifier or "").lower():
+        return False
+
+    if config.gguf_file:
+        loaded_path = getattr(llama_backend, "_gguf_path", None)
+        if not loaded_path:
+            return False
+        try:
+            return Path(loaded_path).resolve() == Path(config.gguf_file).resolve()
+        except OSError:
+            return False
+
+    if config.gguf_hf_repo:
+        return (llama_backend.hf_variant or "").lower() == (
+            config.gguf_variant or ""
+        ).lower()
+
+    return False
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -594,23 +622,35 @@ async def load_model(
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
+        # is_lora auto-detected from adapter_config.json on disk/HF.
+        # DNS-probe wrap so offline loads skip 30-60s of soft-failed
+        # network checks before the worker starts.
+        with _hf_offline_if_dns_dead():
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
+
+        if not config:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid model identifier: {model_log_label}",
+            )
+
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
-        if request.gguf_variant:
+        if config.is_gguf:
             if (
-                llama_backend.is_loaded
-                and llama_backend.hf_variant
-                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
-                and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == model_identifier.lower()
+                _loaded_gguf_model_matches(config, model_identifier, llama_backend)
                 # Also require runtime settings to match so Apply changes
                 # aren't silently dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
             ):
                 logger.info(
-                    f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
+                    f"Model already loaded (GGUF): {model_log_label} variant={config.gguf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
 
@@ -697,22 +737,6 @@ async def load_model(
                     supports_tools = _sf_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
-
-        # is_lora auto-detected from adapter_config.json on disk/HF.
-        # DNS-probe wrap so offline loads skip 30-60s of soft-failed
-        # network checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
-
-        if not config:
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Invalid model identifier: {model_log_label}",
-            )
 
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
