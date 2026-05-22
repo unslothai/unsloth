@@ -239,6 +239,7 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        prompt_cache_ttl: Optional[str] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -265,6 +266,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 anthropic_code_exec_container_id,
+                prompt_cache_ttl,
             ):
                 yield line
             return
@@ -1072,6 +1074,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        prompt_cache_ttl: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1165,6 +1168,18 @@ class ExternalProviderClient:
         # same as True here (callers that don't set the flag still get
         # caching). Pass False explicitly to opt out.
         prompt_caching_enabled = enable_prompt_caching is not False
+        # Anthropic accepts an optional `ttl` on each cache_control marker
+        # (default is the 5m ephemeral pool; set "1h" to land in the 1h
+        # pool instead). Per the prompt-caching docs, 1h cache writes are
+        # billed at 2x base input vs 1.25x for 5m, but reads are 0.1x for
+        # both. The 1h pool is the right pick when conversations span
+        # multiple short bursts more than 5 minutes apart -- the read
+        # discount makes up for the 1.6x write premium after a single
+        # additional hit. Anything other than the known TTL strings is
+        # dropped to avoid sending a malformed marker.
+        cache_marker: dict[str, Any] = {"type": "ephemeral"}
+        if prompt_cache_ttl in ("5m", "1h"):
+            cache_marker["ttl"] = prompt_cache_ttl
 
         if system:
             if prompt_caching_enabled:
@@ -1176,7 +1191,7 @@ class ExternalProviderClient:
                     {
                         "type": "text",
                         "text": system,
-                        "cache_control": {"type": "ephemeral"},
+                        "cache_control": dict(cache_marker),
                     }
                 ]
             else:
@@ -1199,7 +1214,7 @@ class ExternalProviderClient:
                     {
                         "type": "text",
                         "text": content,
-                        "cache_control": {"type": "ephemeral"},
+                        "cache_control": dict(cache_marker),
                     }
                 ]
             elif isinstance(content, list) and content:
@@ -1210,7 +1225,7 @@ class ExternalProviderClient:
                 head = list(content[:-1])
                 tail = content[-1]
                 if isinstance(tail, dict):
-                    head.append({**tail, "cache_control": {"type": "ephemeral"}})
+                    head.append({**tail, "cache_control": dict(cache_marker)})
                 else:
                     head.append(tail)
                 last_msg["content"] = head

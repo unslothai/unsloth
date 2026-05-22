@@ -662,6 +662,18 @@ class ChatCompletionRequest(BaseModel):
             "vllm, local, etc.). Treated as enabled when omitted."
         ),
     )
+    prompt_cache_ttl: Optional[Literal["5m", "1h"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
+            "pool instead — 1h writes are billed at 2x base input vs 1.25x for "
+            "5m, but reads stay at 0.1x for both, so 1h pays off the moment a "
+            "single extra read lands more than 5 minutes after the write. "
+            "Anything other than `5m` or `1h` is ignored. No-op on every "
+            "non-Anthropic provider."
+        ),
+    )
     openai_code_exec_container_id: Optional[str] = Field(
         None,
         description = (
