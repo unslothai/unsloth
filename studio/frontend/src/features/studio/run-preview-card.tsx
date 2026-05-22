@@ -1,37 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { datasetShortName, modelShortName, ownerOf } from "@/features/models";
 import { useTrainingConfigStore } from "@/features/training";
+import {
+  TRAINING_METHOD_LABELS,
+  TRAINING_METHOD_NOTES,
+} from "@/features/training/lib/training-method-meta";
 import { useGpuInfo } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import type { TrainingMethod } from "@/types/training";
 import type { ReactElement, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-const METHOD_LABEL: Record<TrainingMethod, string> = {
-  qlora: "QLoRA",
-  lora: "LoRA",
-  full: "Full fine-tune",
-  cpt: "Continued pretraining",
-};
-
-const METHOD_NOTE: Record<TrainingMethod, string> = {
-  qlora: "4-bit",
-  lora: "16-bit",
-  full: "fp16",
-  cpt: "continued",
-};
-
-function ownerOf(value: string): string | null {
-  if (!value.includes("/")) return null;
-  const [owner] = value.split("/");
-  return owner ?? null;
-}
-
-function shortName(value: string): string {
-  return value.split("/").pop() ?? value;
-}
 
 function MetaRow({
   label,
@@ -103,21 +83,21 @@ export function RunPreviewCard({
     datasetSource === "upload" ? !!uploadedFile : !!dataset;
 
   const modelOwner = selectedModel ? ownerOf(selectedModel) : null;
-  const modelName = selectedModel ? shortName(selectedModel) : null;
+  const modelName = selectedModel ? modelShortName(selectedModel) : null;
   const datasetName =
     datasetSource === "upload"
       ? uploadedFile
-        ? shortName(uploadedFile)
+        ? datasetShortName(uploadedFile)
         : null
       : dataset
-        ? shortName(dataset)
+        ? datasetShortName(dataset)
         : null;
   const datasetOwner =
     hasDataset && datasetSource !== "upload" && dataset
       ? ownerOf(dataset)
       : null;
-  const methodLabel = METHOD_LABEL[trainingMethod];
-  const methodNote = METHOD_NOTE[trainingMethod];
+  const methodLabel = TRAINING_METHOD_LABELS[trainingMethod];
+  const methodNote = TRAINING_METHOD_NOTES[trainingMethod];
   const lengthLabel =
     maxSteps && maxSteps > 0
       ? `${maxSteps.toLocaleString()} steps`

@@ -6,13 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  cancelDatasetDownload,
-  getDatasetTransportStatus,
-  getDatasetDownloadProgress,
-  getDatasetDownloadStatus,
-  startDatasetDownload,
-} from "@/features/chat/api/chat-api";
+import { getDatasetDownloadProgress } from "@/features/chat/api/chat-api";
 import { deleteCachedDataset } from "@/features/training/api/datasets-api";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { TrainIcon } from "@/components/icons/train-icon";
@@ -24,7 +18,7 @@ import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { fetchDatasetSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
-import { useDownloadJob } from "../hooks/use-download-job";
+import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -53,22 +47,10 @@ export function DatasetDownloadSection({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const job = useDownloadJob({
+  const job = useRepoDownload({
+    kind: "dataset",
     repoId,
-    label: () => repoId,
-    toastId: () => `dataset-download-${repoId}`,
-    startErrorTitle: "Failed to start dataset download",
-    errorTitle: "Dataset download failed",
-    getProgress: () => getDatasetDownloadProgress(repoId),
-    getStatus: () => getDatasetDownloadStatus(repoId),
-    start: (_variant, useXet) =>
-      startDatasetDownload({
-        repo_id: repoId,
-        hf_token: hfToken || undefined,
-        use_xet: useXet,
-      }),
-    cancel: () => cancelDatasetDownload({ repo_id: repoId }),
-    getTransportStatus: () => getDatasetTransportStatus(repoId),
+    autoAdopt: true,
     onComplete: (_variant, bytes) =>
       onChange?.({ kind: "dataset", repoId, bytes: bytes || undefined }),
     onCancelled: () => onChange?.(),
@@ -79,11 +61,12 @@ export function DatasetDownloadSection({
 
   useEffect(() => {
     setTotalBytes(null);
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
 
-    void getDatasetDownloadProgress(repoId)
+    void getDatasetDownloadProgress(repoId, signal, hfToken || undefined)
       .then((res) => {
-        if (cancelled) return;
+        if (signal.aborted) return;
         if (res.expected_bytes > 0) {
           setTotalBytes(res.expected_bytes);
         }
@@ -91,7 +74,7 @@ export function DatasetDownloadSection({
       .catch(() => {});
 
     void fetchDatasetSize(repoId).then((info) => {
-      if (cancelled || !info) return;
+      if (signal.aborted || !info) return;
       const upstream = info.numBytesParquet ?? info.numBytesOriginal;
       if (upstream && upstream > 0) {
         setTotalBytes((prev) => prev ?? upstream);
@@ -99,9 +82,9 @@ export function DatasetDownloadSection({
     });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [repoId]);
+  }, [repoId, hfToken]);
 
   const handleConfirmDelete = useCallback(async () => {
     setDeleting(true);

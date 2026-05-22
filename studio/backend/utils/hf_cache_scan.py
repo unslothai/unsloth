@@ -337,19 +337,25 @@ def _cancellation_return_codes() -> frozenset[int]:
 _CANCELLATION_RETURN_CODES = _cancellation_return_codes()
 
 
-def classify_exit(rc: int) -> str:
+def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     """Map a worker process exit code to a job state.
 
     - rc == 0: clean completion.
-    - rc == EXIT_CANCELLED (130), or rc killed by a cancellation signal
-      (SIGKILL/SIGTERM/SIGINT): cancelled by the user or shutdown.
+    - rc == EXIT_CANCELLED (130): the worker trapped a stop signal and exited
+      its own cancellation path, so this is unambiguously a cancel.
+    - rc killed by a cancellation signal (SIGKILL/SIGTERM/SIGINT): a cancel
+      only when *we* asked for it. The OOM killer also sends SIGKILL, so an
+      unrequested signal kill is surfaced as an error rather than masquerading
+      as a user cancel.
     - any other non-zero rc, including crash signals (SIGSEGV, SIGABRT):
       worker errored out.
     """
     if rc == 0:
         return "complete"
-    if rc == EXIT_CANCELLED or rc in _CANCELLATION_RETURN_CODES:
+    if rc == EXIT_CANCELLED:
         return "cancelled"
+    if rc in _CANCELLATION_RETURN_CODES:
+        return "cancelled" if cancel_requested else "error"
     return "error"
 
 
@@ -390,7 +396,7 @@ def finalize_worker_exit(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
     )
-    state = classify_exit(rc)
+    state = classify_exit(rc, cancel_requested = registry.cancel_requested(key))
     if state == "complete":
         registry.set_job(key, "complete")
         logger.info(f"{log_prefix} complete: {label}")
@@ -516,6 +522,16 @@ class DownloadRegistry:
             self._jobs[key] = DownloadState("cancelling")
             return True
 
+    def cancel_requested(self, key: str) -> bool:
+        """True when *we* initiated a stop for *key* (a pending cancel armed
+        before the worker registered, or the job already moved to
+        ``cancelling``). Lets exit classification tell an intentional kill
+        apart from an OOM/external SIGKILL."""
+        with self._lock:
+            if key in self._pending_cancel:
+                return True
+            return self._jobs.get(key, DownloadState("idle")).state == "cancelling"
+
     def get_process(self, key: str) -> Optional[subprocess.Popen]:
         with self._lock:
             return self._processes.get(key)
@@ -556,6 +572,15 @@ class DownloadRegistry:
             self._repo_active.setdefault(repo, active)[key] = transport
             return True, "running"
 
+    def adoptable(self, key: str) -> bool:
+        """True when *key* itself has a live job a client can attach to.
+
+        Lets a rejected claim distinguish a collision with this key's own
+        in-flight job (pollable) from one blocked by a different repo job
+        or an in-progress delete, where no job exists for this key."""
+        with self._lock:
+            return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
+
     def has_active(self, repo_id: str) -> bool:
         with self._lock:
             return self._has_active_locked(repo_id)
@@ -567,6 +592,16 @@ class DownloadRegistry:
             if job is not None and job.state in _ACTIVE_STATES:
                 return True
         return False
+
+    def active_jobs(self, repo_id: str) -> dict[str, str]:
+        """Map of every active job key for *repo_id* to its state."""
+        with self._lock:
+            result: dict[str, str] = {}
+            for key in self._repo_active.get(repo_id, {}):
+                job = self._jobs.get(key)
+                if job is not None and job.state in _ACTIVE_STATES:
+                    result[key] = job.state
+            return result
 
     def begin_delete(self, repo_id: str) -> bool:
         """Reserve *repo_id* for deletion. Returns ``False`` when a download
@@ -585,10 +620,13 @@ class DownloadRegistry:
             self._deleting.discard(repo_id)
 
     def request_cancel(self, key: str, proc: subprocess.Popen) -> bool:
+        """Authorize a SIGKILL for the registered *proc*. Idempotent across an
+        active job's lifetime: a repeated cancel while already ``cancelling``
+        still returns ``True`` so a kill that raced and lost can be re-sent."""
         with self._lock:
             if self._processes.get(key) is not proc:
                 return False
-            if self._jobs.get(key, DownloadState("idle")).state != "running":
+            if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
                 return False
             self._jobs[key] = DownloadState("cancelling")
             return True
@@ -600,10 +638,28 @@ class DownloadRegistry:
                 for key, proc in self._processes.items()
                 if proc.poll() is None
             ]
+            # Flag these as an intentional stop so the per-worker watcher's
+            # exit classification reports them as cancelled rather than as an
+            # OOM/crash error once the SIGKILL lands.
+            for key, _proc in live:
+                if self._jobs.get(key, DownloadState("idle")).state == "running":
+                    self._jobs[key] = DownloadState("cancelling")
         for key, proc in live:
             try:
                 proc.kill()
             except ProcessLookupError:
-                continue
+                pass
             except Exception as e:
                 logger.warning(f"shutdown: failed to kill {kind} worker for {key}: {e}")
+                continue
+            # Reap synchronously: the per-worker watcher that calls wait() is a
+            # daemon thread that may not run at interpreter shutdown, so without
+            # this the killed child leaks as a zombie holding its stdio FDs.
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"shutdown: {kind} worker for {key} did not exit after kill"
+                )
+            except Exception:
+                pass

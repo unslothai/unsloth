@@ -30,10 +30,12 @@ import type {
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { toast } from "sonner";
 import { ModelConfigPage } from "./model-selector/model-config-page";
 import type { PerModelConfig } from "@/features/chat/model-config/per-model-config";
 import { savePerModelConfig } from "@/features/chat/model-config/per-model-config";
 import { touchRecentModel } from "@/features/chat/model-config/recent-models";
+import { normalizeForSearch } from "@/lib/search-text";
 import { Input } from "../ui/input";
 
 const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
@@ -481,7 +483,17 @@ export function ModelSelector({
     (config: PerModelConfig, remember: boolean) => {
       if (!target) return;
       if (remember) {
-        savePerModelConfig(target.id, target.meta.ggufVariant ?? null, config);
+        const saved = savePerModelConfig(
+          target.id,
+          target.meta.ggufVariant ?? null,
+          config,
+        );
+        if (!saved) {
+          toast.error("Couldn't save these settings", {
+            description:
+              "Browser storage may be full. The model still loads with them now, but they won't persist.",
+          });
+        }
       }
       touchRecentModel({
         id: target.id,
@@ -557,10 +569,6 @@ export function ModelSelector({
 }
 
 ModelSelector.Trigger = ModelSelectorTrigger;
-
-function normalizeForSearch(value: string): string {
-  return value.toLowerCase().replace(/[\s_.-]/g, "");
-}
 
 function ExternalModelPicker({
   externalModels,

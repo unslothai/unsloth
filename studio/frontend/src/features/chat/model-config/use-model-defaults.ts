@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import {
   fetchModelDefaults,
   readCachedModelDefaults,
@@ -23,19 +24,21 @@ export function useModelDefaults(
   options: { skip?: boolean } = {},
 ): ModelDefaults {
   const { skip = false } = options;
+  const hfToken = useHfTokenStore((s) => s.token);
   const [maxContext, setMaxContext] = useState<number | null>(
-    () => readCachedModelDefaults(modelId)?.maxPositionEmbeddings ?? null,
+    () => readCachedModelDefaults(modelId, hfToken)?.maxPositionEmbeddings ?? null,
   );
   const [chatTemplate, setChatTemplate] = useState<string | null>(
-    () => readCachedModelDefaults(modelId)?.chatTemplate ?? null,
+    () => readCachedModelDefaults(modelId, hfToken)?.chatTemplate ?? null,
   );
   const fetchedForRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const cached = readCachedModelDefaults(modelId);
+    fetchedForRef.current = null;
+    const cached = readCachedModelDefaults(modelId, hfToken);
     setMaxContext(cached?.maxPositionEmbeddings ?? null);
     setChatTemplate(cached?.chatTemplate ?? null);
-  }, [modelId]);
+  }, [modelId, hfToken]);
 
   useEffect(() => {
     if (skip) return;
@@ -56,7 +59,7 @@ export function useModelDefaults(
         });
       });
     return () => controller.abort();
-  }, [chatTemplate, maxContext, skip, modelId]);
+  }, [chatTemplate, maxContext, skip, modelId, hfToken]);
 
   return { maxContext, chatTemplate, setChatTemplate };
 }

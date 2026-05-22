@@ -6,6 +6,7 @@ Path utilities for model and dataset handling
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,29 @@ import structlog
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+_VALID_REPO_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def is_valid_repo_id(repo_id: str) -> bool:
+    """Reject anything that isn't ``owner/name`` or that smuggles a path-traversal
+    segment, before the value reaches a filesystem or URL consumer."""
+    if not _VALID_REPO_ID.fullmatch(repo_id):
+        return False
+    # The character class admits "." and ".." segments; reject them so this
+    # gate never lets a path-traversal token reach a filesystem/URL consumer.
+    return all(segment not in (".", "..") for segment in repo_id.split("/"))
+
+
+_VALID_GGUF_VARIANT = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def is_valid_gguf_variant(variant: str) -> bool:
+    """Reject GGUF quantization labels that aren't a short token of safe
+    characters before the value becomes a download-registry key or an
+    allow-pattern fed to huggingface_hub. Real labels (e.g. ``Q4_K_M``,
+    ``UD-TQ1_0``, ``IQ2_XXS``, ``BF16``) all pass."""
+    return bool(_VALID_GGUF_VARIANT.fullmatch(variant))
 
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 # Key is (repo_type, model_name) so model and dataset lookups don't collide.

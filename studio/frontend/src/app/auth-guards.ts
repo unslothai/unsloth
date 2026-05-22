@@ -4,6 +4,7 @@
 import { redirect } from "@tanstack/react-router";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
+  getAuthToken,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
@@ -23,7 +24,24 @@ interface AuthStatus {
   requires_password_change: boolean;
 }
 
+// beforeLoad runs this on every navigation. A short TTL keeps rapid in-app
+// navigation from waiting on a round-trip each time. The key folds in the auth
+// token and the must-change flag, so login/logout/refresh/password-change all
+// invalidate it automatically; only successful responses are cached, so a
+// stopped backend is retried on the next navigation instead of masked.
+const AUTH_STATUS_TTL_MS = 30_000;
+let authStatusCache: { key: string; status: AuthStatus; expiresAt: number } | null =
+  null;
+
+function authStatusKey(): string {
+  return `${getAuthToken() ?? ""}|${mustChangePassword() ? 1 : 0}`;
+}
+
 async function fetchAuthStatus(): Promise<AuthStatus> {
+  const cached = authStatusCache;
+  if (cached && cached.key === authStatusKey() && Date.now() < cached.expiresAt) {
+    return cached.status;
+  }
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
@@ -32,6 +50,11 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
     if (status.requires_password_change !== mustChangePassword()) {
       setMustChangePassword(status.requires_password_change);
     }
+    authStatusCache = {
+      key: authStatusKey(),
+      status,
+      expiresAt: Date.now() + AUTH_STATUS_TTL_MS,
+    };
     return status;
   } catch {
     return { initialized: true, requires_password_change: mustChangePassword() };

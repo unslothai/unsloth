@@ -5,6 +5,7 @@
 Model and LoRA configuration handling
 """
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from utils.paths import (
@@ -1017,16 +1018,43 @@ def _is_gguf_filename(filename: str) -> bool:
 # ── Chat template reader (no model load required) ────────────────────────────
 
 
-_CHAT_TEMPLATE_CACHE: Dict[str, Optional[str]] = {}
+_CHAT_TEMPLATE_CACHE: "OrderedDict[Tuple[str, str], Optional[str]]" = OrderedDict()
+_CHAT_TEMPLATE_CACHE_LOCK = threading.Lock()
+_CHAT_TEMPLATE_CACHE_MAX = 256
 
 
-def _gguf_skip_kv_value(f, vtype: int) -> None:
+def _chat_template_token_fp(hf_token: Optional[str]) -> str:
+    if not hf_token:
+        return ""
+    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+
+
+def invalidate_chat_template_cache(model_name: str) -> None:
+    """Drop the cached template so a post-download read isn't a stale None."""
+    if not model_name:
+        return
+    with _CHAT_TEMPLATE_CACHE_LOCK:
+        for key in [k for k in _CHAT_TEMPLATE_CACHE if k[1] == model_name]:
+            _CHAT_TEMPLATE_CACHE.pop(key, None)
+
+
+_GGUF_MAX_ARRAY_DEPTH = 64
+_GGUF_MAX_KEY_BYTES = 1 << 20
+_GGUF_MAX_TEMPLATE_BYTES = 1 << 24
+
+
+def _gguf_skip_kv_value(f, vtype: int, _depth: int = 0) -> None:
     """Skip a GGUF KV value of a given type without reading it.
 
     Mirrors LlamaCppBackend._gguf_skip_value but kept standalone so we can
     parse a GGUF header without instantiating the inference backend.
     """
     import struct
+
+    # Bound the array-of-arrays recursion so a malformed header can't drive a
+    # RecursionError (legit GGUF metadata nests at most one level deep).
+    if _depth > _GGUF_MAX_ARRAY_DEPTH:
+        raise ValueError("GGUF array nesting exceeds supported depth")
 
     type_sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
     sz = type_sizes.get(vtype)
@@ -1049,7 +1077,7 @@ def _gguf_skip_kv_value(f, vtype: int) -> None:
                 f.seek(slen, 1)
         else:
             for _ in range(alen):
-                _gguf_skip_kv_value(f, atype)
+                _gguf_skip_kv_value(f, atype, _depth + 1)
 
 
 def read_chat_template_from_gguf(gguf_path: str | Path) -> Optional[str]:
@@ -1074,6 +1102,8 @@ def read_chat_template_from_gguf(gguf_path: str | Path) -> Optional[str]:
                     if len(key_len_bytes) < 8:
                         return None
                     key_len = struct.unpack("<Q", key_len_bytes)[0]
+                    if key_len > _GGUF_MAX_KEY_BYTES:
+                        return None
                     key_bytes = f.read(key_len)
                     if len(key_bytes) < key_len:
                         return None
@@ -1084,6 +1114,8 @@ def read_chat_template_from_gguf(gguf_path: str | Path) -> Optional[str]:
 
                 if key == "tokenizer.chat_template" and vtype == 8:
                     slen = struct.unpack("<Q", f.read(8))[0]
+                    if slen > _GGUF_MAX_TEMPLATE_BYTES:
+                        return None
                     return f.read(slen).decode("utf-8", errors = "replace")
                 try:
                     _gguf_skip_kv_value(f, vtype)
@@ -1201,8 +1233,11 @@ def read_model_chat_template(
     if not model_name:
         return None
 
-    if model_name in _CHAT_TEMPLATE_CACHE:
-        return _CHAT_TEMPLATE_CACHE[model_name]
+    cache_key = (_chat_template_token_fp(hf_token), model_name)
+    with _CHAT_TEMPLATE_CACHE_LOCK:
+        if cache_key in _CHAT_TEMPLATE_CACHE:
+            _CHAT_TEMPLATE_CACHE.move_to_end(cache_key)
+            return _CHAT_TEMPLATE_CACHE[cache_key]
 
     template: Optional[str] = None
 
@@ -1226,7 +1261,11 @@ def read_model_chat_template(
     if not template and not is_local_path(model_name):
         template = _read_chat_template_from_tokenizer_config(model_name, hf_token)
 
-    _CHAT_TEMPLATE_CACHE[model_name] = template
+    with _CHAT_TEMPLATE_CACHE_LOCK:
+        _CHAT_TEMPLATE_CACHE[cache_key] = template
+        _CHAT_TEMPLATE_CACHE.move_to_end(cache_key)
+        while len(_CHAT_TEMPLATE_CACHE) > _CHAT_TEMPLATE_CACHE_MAX:
+            _CHAT_TEMPLATE_CACHE.popitem(last=False)
     return template
 
 

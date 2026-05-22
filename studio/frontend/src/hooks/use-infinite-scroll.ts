@@ -45,7 +45,9 @@ export function useInfiniteScroll(
   const prevSignalRef = useRef(signal);
   const wasEnabledRef = useRef(false);
 
-  // IntersectionObserver: fires when the sentinel scrolls into view.
+  // IntersectionObserver: fires when the sentinel scrolls into view. The
+  // sentinel is stable, so this deliberately omits `signal` — rebuilding per
+  // batch could drop an intersection. Refills fall to the auto-fire effect.
   useEffect(() => {
     if (!enabled) return;
     const sentinel = sentinelRef.current;
@@ -67,7 +69,7 @@ export function useInfiniteScroll(
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [enabled, signal]);
+  }, [enabled]);
 
   // Auto-fire fallback: keep requesting batches while the scroll container
   // doesn't overflow, including the case where every fetched row was filtered

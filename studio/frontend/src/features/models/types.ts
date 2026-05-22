@@ -9,6 +9,8 @@ export type ModelsTab = "discover" | "downloaded";
 
 export type ResourceTypeFilter = "models" | "datasets";
 
+export type LocalSource = LocalModelInfo["source"];
+
 export type ModelFormatFilter = "all" | "gguf" | "checkpoint";
 
 export type CapabilityFilter = "all" | CapabilityKey;
@@ -37,6 +39,7 @@ export interface CachedInventoryRow {
   pipelineTag?: string | null;
   tags?: string[];
   libraryName?: string | null;
+  quantMethod?: string | null;
 }
 
 export interface LocalInventoryRow {
@@ -45,7 +48,7 @@ export interface LocalInventoryRow {
   repoId: string | null;
   owner: string;
   title: string;
-  source: LocalModelInfo["source"];
+  source: LocalSource;
   sourceLabel: string;
   path: string;
   isGguf: boolean;
@@ -65,7 +68,7 @@ export interface SelectedModelView {
   summary: string;
   sourceLabel: string;
   path: string | null;
-  localSource?: LocalModelInfo["source"];
+  localSource?: LocalSource;
   isLocal: boolean;
   isGguf: boolean;
   isDownloaded: boolean;

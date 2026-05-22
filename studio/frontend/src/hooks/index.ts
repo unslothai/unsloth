@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { useDebouncedValue } from "./use-debounced-value";
-export { useGpuInfo } from "./use-gpu-info";
+export { type GpuInfo, useGpuInfo } from "./use-gpu-info";
 export { useGpuUtilization } from "./use-gpu-utilization";
 export { useHardwareInfo } from "./use-hardware-info";
 export {
@@ -15,7 +15,10 @@ export {
   useHfModelSearch,
 } from "./use-hf-model-search";
 export { useRecommendedModelVram } from "./use-recommended-model-vram";
-export { useHfDatasetSearch } from "./use-hf-dataset-search";
+export {
+  type HfDatasetResult,
+  useHfDatasetSearch,
+} from "./use-hf-dataset-search";
 export { useHfDatasetSplits } from "./use-hf-dataset-splits";
 export { useHfTokenValidation } from "./use-hf-token-validation";
 export { useInfiniteScroll } from "./use-infinite-scroll";

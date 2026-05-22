@@ -16,7 +16,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { DownloadJob, DownloadJobProgress } from "../hooks/use-download-job";
+import type { DownloadJob, DownloadJobProgress } from "../download-manager";
 import { DownloadCancelIndicator } from "./download-cancel-indicator";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { TransportConflictDialog } from "./transport-conflict-dialog";

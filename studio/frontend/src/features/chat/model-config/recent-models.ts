@@ -49,15 +49,15 @@ function writeAll(entries: StoredEntry[]): void {
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(0, MAX_ENTRIES)));
-  } catch {
-    return;
+  } catch (err) {
+    console.warn("Failed to persist recent models:", err);
   }
 }
 
 export function touchRecentModel(key: RecentModelKey): void {
-  const entries = readAll().filter(
-    (entry) => entryKey(entry.id, entry.variant) !== entryKey(key.id, key.ggufVariant),
-  );
+  // Dedupe per repo id, not per id::variant: recency is ranked by repo, so
+  // cycling a repo's quant variants must not evict other repos from the list.
+  const entries = readAll().filter((entry) => entry.id !== key.id);
   entries.unshift({
     id: key.id,
     variant: key.ggufVariant ?? "",

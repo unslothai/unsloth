@@ -6,6 +6,7 @@ Model Management API routes
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -22,15 +23,6 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 import structlog
 from loggers import get_logger
-
-import re as _re
-
-_VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
-
-
-def _is_valid_repo_id(repo_id: str) -> bool:
-    return bool(_VALID_REPO_ID.fullmatch(repo_id))
-
 
 def _safe_is_dir(path) -> bool:
     """``Path.is_dir()`` that returns ``False`` instead of raising.
@@ -54,6 +46,10 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
+from utils.paths import (
+    is_valid_repo_id as _is_valid_repo_id,
+    is_valid_gguf_variant as _is_valid_gguf_variant,
+)
 
 # Import backend functions
 try:
@@ -74,6 +70,7 @@ try:
         _extract_quant_label,
         is_audio_input_type,
         read_model_chat_template,
+        invalidate_chat_template_cache,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -107,6 +104,7 @@ except ImportError:
         _extract_quant_label,
         is_audio_input_type,
         read_model_chat_template,
+        invalidate_chat_template_cache,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -1621,6 +1619,10 @@ def _build_model_details(model_name: str, hf_token: Optional[str]) -> "ModelDeta
     requests, AutoConfig downloads, cache scans), so it must be called from a
     worker thread rather than directly on the event loop."""
     if not is_local_path(model_name):
+        if not _is_valid_repo_id(model_name):
+            raise HTTPException(
+                status_code = 400, detail = f"Invalid repo_id: {model_name!r}",
+            )
         resolved = resolve_cached_repo_id_case(model_name)
         if resolved != model_name:
             logger.info(
@@ -2226,7 +2228,8 @@ async def get_gguf_variants(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
-    try:
+
+    def _compute() -> GgufVariantsResponse:
         from utils.models.model_config import is_local_path, list_local_gguf_variants
 
         # Local directory path (e.g. LM Studio models) — scan filesystem
@@ -2343,6 +2346,8 @@ async def get_gguf_variants(
             default_variant = default_variant,
         )
 
+    try:
+        return await asyncio.to_thread(_compute)
     except Exception as e:
         logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info = True)
         raise HTTPException(
@@ -2421,6 +2426,11 @@ async def download_model(
     repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
 
     variant = (body.gguf_variant or "").strip() or None
+    if variant is not None and not _is_valid_gguf_variant(variant):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid gguf_variant: {variant!r}",
+        )
     key = _download_job_key(repo_id, variant)
     transport = (
         hf_cache_scan.TRANSPORT_XET if body.use_xet else hf_cache_scan.TRANSPORT_HTTP
@@ -2428,7 +2438,15 @@ async def download_model(
 
     claimed, claim_state = _registry.claim(key, transport)
     if not claimed:
-        return {"job_key": key, "state": claim_state}
+        # claim_state is the state of the job blocking this one. When the
+        # blocker is this key's own in-flight job the client can attach and
+        # poll it; a cross-variant transport conflict or an in-progress
+        # delete leaves no job for this key, so flag it as not accepted.
+        return {
+            "job_key": key,
+            "state": claim_state,
+            "accepted": _registry.adoptable(key),
+        }
 
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
     try:
@@ -2462,6 +2480,8 @@ async def download_model(
             log_prefix = "Download",
             logger = logger,
         )
+        if _registry.get_job(key).state == "complete":
+            invalidate_chat_template_cache(repo_id)
 
     threading.Thread(
         target = _watch,
@@ -2469,7 +2489,7 @@ async def download_model(
         daemon = True,
     ).start()
 
-    return {"job_key": key, "state": _registry.get_job(key).state}
+    return {"job_key": key, "state": _registry.get_job(key).state, "accepted": True}
 
 
 class CancelDownloadRequest(BaseModel):
@@ -2492,6 +2512,11 @@ async def cancel_download_model(
         )
     repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
     variant = (body.gguf_variant or "").strip() or None
+    if variant is not None and not _is_valid_gguf_variant(variant):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid gguf_variant: {variant!r}",
+        )
     key = _download_job_key(repo_id, variant)
 
     proc = _registry.get_process(key)
@@ -2529,9 +2554,40 @@ async def get_download_status(
     current_subject: str = Depends(get_current_subject),
 ):
     """Return the latest state of a background download job."""
-    repo_id = resolve_cached_repo_id_case(repo_id.strip(), repo_type = "model")
+    repo_id = repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        return DownloadJobStatus(state = "idle")
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
     key = _download_job_key(repo_id, gguf_variant or None)
     return _job_status(key)
+
+
+class ActiveDownload(BaseModel):
+    """One in-flight download for a repo. ``variant`` is null for safetensors."""
+
+    variant: Optional[str] = None
+    state: str
+
+
+class ActiveDownloadsResponse(BaseModel):
+    downloads: List[ActiveDownload]
+
+
+@router.get("/active-downloads", response_model = ActiveDownloadsResponse)
+async def get_active_downloads(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return every in-flight download for a repo in a single call."""
+    repo_id = repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        return ActiveDownloadsResponse(downloads = [])
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    downloads = [
+        ActiveDownload(variant = key.split("::", 1)[1] or None, state = state)
+        for key, state in _registry.active_jobs(repo_id).items()
+    ]
+    return ActiveDownloadsResponse(downloads = downloads)
 
 
 @router.get("/transport-status")
@@ -2547,6 +2603,9 @@ async def get_model_transport_status(
     because ``hf_xet`` rewrites the destination from scratch on every
     call (network resume happens transparently via its chunk cache).
     """
+    repo_id = repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        return {"has_partial": False, "last_transport": None, "resumable": False}
     return {
         "has_partial": hf_cache_scan.has_incomplete_blobs("model", repo_id),
         "last_transport": hf_cache_scan.read_transport_marker("model", repo_id),
@@ -2567,24 +2626,22 @@ async def get_gguf_download_progress(
     Tracks completed shard downloads in snapshots and in-progress downloads
     in the blobs directory (incomplete files).
     """
-    try:
+    _empty = {
+        "downloaded_bytes": 0,
+        "expected_bytes": expected_bytes,
+        "progress": 0,
+    }
+
+    def _compute():
         if not _is_valid_repo_id(repo_id):
-            return {
-                "downloaded_bytes": 0,
-                "expected_bytes": expected_bytes,
-                "progress": 0,
-            }
+            return _empty
 
         from huggingface_hub import constants as hf_constants
 
         cache_dir = Path(hf_constants.HF_HUB_CACHE)
         target = f"models--{repo_id.replace('/', '--')}".lower()
-        variant_lower = variant.lower().replace("-", "").replace("_", "")
         if variant:
-            import asyncio
-            variant_hashes = await asyncio.to_thread(
-                _gguf_variant_blob_hashes, repo_id, variant, hf_token,
-            )
+            variant_hashes = _gguf_variant_blob_hashes(repo_id, variant, hf_token)
         else:
             variant_hashes = frozenset()
         downloaded_bytes = 0
@@ -2592,19 +2649,34 @@ async def get_gguf_download_progress(
         for entry in cache_dir.iterdir():
             if entry.name.lower() != target:
                 continue
-            for f in _iter_gguf_paths(entry):
-                fname = f.name.lower().replace("-", "").replace("_", "")
-                if not variant_lower or variant_lower in fname:
-                    downloaded_bytes += f.stat().st_size
+            try:
+                gguf_paths = list(_iter_gguf_paths(entry))
+            except OSError:
+                gguf_paths = []
+            for f in gguf_paths:
+                try:
+                    if not variant or _extract_quant_label(f.name).lower() == variant.lower():
+                        downloaded_bytes += f.stat().st_size
+                except OSError:
+                    continue
             blobs_dir = entry / "blobs"
             if blobs_dir.is_dir():
-                for f in blobs_dir.iterdir():
-                    if not f.is_file() or not f.name.endswith(".incomplete"):
+                try:
+                    blob_entries = list(blobs_dir.iterdir())
+                except OSError:
+                    blob_entries = []
+                for f in blob_entries:
+                    # Skip a blob that vanished mid-poll rather than zeroing
+                    # the whole reading.
+                    try:
+                        if not f.is_file() or not f.name.endswith(".incomplete"):
+                            continue
+                        blob_hash = f.name[: -len(".incomplete")]
+                        if variant_hashes and blob_hash not in variant_hashes:
+                            continue
+                        in_progress_bytes += f.stat().st_size
+                    except OSError:
                         continue
-                    blob_hash = f.name[: -len(".incomplete")]
-                    if variant_hashes and blob_hash not in variant_hashes:
-                        continue
-                    in_progress_bytes += f.stat().st_size
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
         progress = (
@@ -2620,6 +2692,9 @@ async def get_gguf_download_progress(
             "expected_bytes": expected_bytes,
             "progress": round(progress, 3),
         }
+
+    try:
+        return await asyncio.to_thread(_compute)
     except Exception:
         return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
 
@@ -2646,6 +2721,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for any HuggingFace model repo.
@@ -2687,20 +2763,29 @@ async def get_download_progress(
             blobs_dir = entry / "blobs"
             if not blobs_dir.is_dir():
                 continue
-            for f in blobs_dir.iterdir():
-                if not f.is_file():
+            try:
+                blob_entries = list(blobs_dir.iterdir())
+            except OSError:
+                continue
+            for f in blob_entries:
+                # Skip a blob that vanished mid-poll (renamed out of
+                # *.incomplete) rather than zeroing the whole reading.
+                try:
+                    if not f.is_file():
+                        continue
+                    if f.name.endswith(".incomplete"):
+                        in_progress_bytes += f.stat().st_size
+                    else:
+                        completed_bytes += f.stat().st_size
+                except OSError:
                     continue
-                if f.name.endswith(".incomplete"):
-                    in_progress_bytes += f.stat().st_size
-                else:
-                    completed_bytes += f.stat().st_size
 
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
             return {**_empty, "cache_path": cache_path}
 
         # Get expected size from HF API (cached per repo_id)
-        expected_bytes = _get_repo_size_cached(repo_id)
+        expected_bytes = _get_repo_size_cached(repo_id, hf_token)
         if expected_bytes <= 0:
             # Cannot determine total; report bytes only, no percentage
             return {
@@ -2733,27 +2818,45 @@ async def get_download_progress(
         return _empty
 
 
-_repo_size_cache: "OrderedDict[str, int]" = OrderedDict()
+_repo_size_cache: "OrderedDict[str, tuple[int, bool, str]]" = OrderedDict()
 _repo_size_neg_cache: "OrderedDict[str, float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_NEG_TTL = 60.0
 _repo_size_cache_lock = threading.Lock()
 
 
-def _get_repo_size_cached(repo_id: str) -> int:
+def _token_fingerprint(hf_token: Optional[str]) -> str:
+    if not hf_token:
+        return ""
+    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+
+
+def _get_repo_size_cached(repo_id: str, hf_token: Optional[str] = None) -> int:
+    token_fp = _token_fingerprint(hf_token)
     with _repo_size_cache_lock:
         cached = _repo_size_cache.get(repo_id)
         if cached is not None:
-            _repo_size_cache.move_to_end(repo_id)
-            return cached
-        neg_ts = _repo_size_neg_cache.get(repo_id)
-        if neg_ts is not None and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL:
-            return 0
+            size, restricted, cached_fp = cached
+            # A gated/private repo's size is only served back to the token that
+            # fetched it: a tokenless caller couldn't fetch it, and another token
+            # may have no access to it at all.
+            if not restricted or cached_fp == token_fp:
+                _repo_size_cache.move_to_end(repo_id)
+                return size
+        # A token may unlock a gated/private repo that failed anonymously, so a
+        # tokened lookup ignores a prior negative-cache entry.
+        if not hf_token:
+            neg_ts = _repo_size_neg_cache.get(repo_id)
+            if neg_ts is not None and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL:
+                return 0
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = None, files_metadata = True)
+        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
         total = sum(s.size for s in info.siblings if s.size)
+        restricted = bool(
+            getattr(info, "private", False) or getattr(info, "gated", False)
+        )
     except Exception as e:
         logger.warning(f"Failed to get repo size for {repo_id}: {e}")
         with _repo_size_cache_lock:
@@ -2763,7 +2866,7 @@ def _get_repo_size_cached(repo_id: str) -> int:
                 _repo_size_neg_cache.popitem(last = False)
         return 0
     with _repo_size_cache_lock:
-        _repo_size_cache[repo_id] = total
+        _repo_size_cache[repo_id] = (total, restricted, token_fp)
         _repo_size_cache.move_to_end(repo_id)
         _repo_size_neg_cache.pop(repo_id, None)
         while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
@@ -2859,10 +2962,26 @@ _REPO_CLASSIFICATION_LOCK = threading.Lock()
 
 _CLASSIFY_FANOUT_MAX = 8
 _CLASSIFY_REQUEST_TIMEOUT = 10.0
+_CLASSIFY_TOTAL_BUDGET = 20.0
+# In-flight executor futures keyed by classification cache key. Coalesces the
+# same repo across overlapping polls onto a single HF request and keeps the
+# strong refs that let cache-warming finish past _CLASSIFY_TOTAL_BUDGET.
+_CLASSIFY_INFLIGHT: "dict[tuple[str, str], asyncio.Future]" = {}
+
+# Classification is best-effort cache-warming and runs on its own bounded pool
+# rather than the default asyncio executor. This caps total concurrency across
+# overlapping /cached-* calls and isolates the latency-sensitive endpoints that
+# share the default executor (download-progress, model-config) from in-flight
+# classification work left running past _CLASSIFY_TOTAL_BUDGET against a slow
+# HF API.
+_CLASSIFY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers = _CLASSIFY_FANOUT_MAX,
+    thread_name_prefix = "repo-classify",
+)
 
 
 def _classification_cache_key(repo_id: str, hf_token: Optional[str]) -> tuple[str, str]:
-    return (repo_id.lower(), "auth" if hf_token else "anon")
+    return (repo_id.lower(), _token_fingerprint(hf_token))
 
 
 def _classification_cache_get(key: tuple[str, str]) -> Optional[dict]:
@@ -2893,6 +3012,7 @@ def _fetch_repo_classification(
         "pipeline_tag": None,
         "tags": [],
         "library_name": None,
+        "quant_method": None,
     }
     try:
         from huggingface_hub import HfApi
@@ -2901,10 +3021,17 @@ def _fetch_repo_classification(
         info = api.model_info(
             repo_id, token = hf_token, timeout = _CLASSIFY_REQUEST_TIMEOUT,
         )
+        config = getattr(info, "config", None)
+        quant_method = None
+        if isinstance(config, dict):
+            quant_cfg = config.get("quantization_config")
+            if isinstance(quant_cfg, dict):
+                quant_method = quant_cfg.get("quant_method")
         result = {
             "pipeline_tag": getattr(info, "pipeline_tag", None),
             "tags": list(getattr(info, "tags", None) or []),
             "library_name": getattr(info, "library_name", None),
+            "quant_method": quant_method,
         }
     except Exception as e:
         logger.debug(
@@ -2921,27 +3048,46 @@ async def _classify_cached_repos(
 ) -> None:
     if not repos:
         return
-    semaphore = asyncio.Semaphore(_CLASSIFY_FANOUT_MAX)
+    loop = asyncio.get_running_loop()
 
-    async def _classify_one(repo_id: str) -> dict:
-        async with semaphore:
-            return await asyncio.to_thread(
-                _fetch_repo_classification, repo_id, hf_token,
+    def _schedule(repo_id: str) -> "asyncio.Future[dict]":
+        key = _classification_cache_key(repo_id, hf_token)
+        cached = _classification_cache_get(key)
+        if cached is not None:
+            resolved: "asyncio.Future[dict]" = loop.create_future()
+            resolved.set_result(cached)
+            return resolved
+        inflight = _CLASSIFY_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = loop.run_in_executor(
+                _CLASSIFY_EXECUTOR, _fetch_repo_classification, repo_id, hf_token,
             )
+            _CLASSIFY_INFLIGHT[key] = inflight
+            inflight.add_done_callback(
+                lambda fut, k = key: _CLASSIFY_INFLIGHT.pop(k, None)
+            )
+        return inflight
 
-    results = await asyncio.gather(
-        *[_classify_one(row["repo_id"]) for row in repos],
-        return_exceptions = True,
-    )
-    for row, res in zip(repos, results):
+    futures = [_schedule(row["repo_id"]) for row in repos]
+    await asyncio.wait(futures, timeout = _CLASSIFY_TOTAL_BUDGET)
+    for row, future in zip(repos, futures):
+        res = (
+            future.result()
+            if future.done()
+            and not future.cancelled()
+            and future.exception() is None
+            else None
+        )
         if isinstance(res, dict):
             row["pipeline_tag"] = res.get("pipeline_tag")
             row["tags"] = res.get("tags") or []
             row["library_name"] = res.get("library_name")
+            row["quant_method"] = res.get("quant_method")
         else:
             row["pipeline_tag"] = None
             row["tags"] = []
             row["library_name"] = None
+            row["quant_method"] = None
 
 
 def _scan_cached_gguf() -> list[dict]:
@@ -3169,6 +3315,15 @@ def _delete_variant_incomplete_blobs(
     return deleted
 
 
+def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
+    """True when *loaded_id* is *repo_id* itself or a file within it. Boundary
+    aware on the ``/`` separator so a sibling repo that merely shares a name
+    prefix (``org/model`` vs ``org/model-v2``) does not falsely match."""
+    rid = repo_id.lower()
+    lid = loaded_id.lower()
+    return lid == rid or lid.startswith(f"{rid}/")
+
+
 @router.delete("/delete-cached")
 async def delete_cached_model(
     repo_id: str = Body(...),
@@ -3191,30 +3346,28 @@ async def delete_cached_model(
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_id = llama_backend.model_identifier.lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(llama_backend.model_identifier, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"llama.cpp load-state check failed for {repo_id}: {e}")
 
     try:
         inference_backend = get_inference_backend()
         if inference_backend.active_model_name:
-            active = inference_backend.active_model_name.lower()
-            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(inference_backend.active_model_name, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Inference load-state check failed for {repo_id}: {e}")
 
     repo_key = resolve_cached_repo_id_case(repo_id, repo_type = "model")
     if not _registry.begin_delete(repo_key):

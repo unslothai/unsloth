@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { bumpInventoryVersion } from "@/features/models";
 import {
   HfDatasetSubsetSplitSelectors,
   parseYamlConfig,
@@ -282,6 +283,7 @@ function DatasetDropZone({
       setIsUploading(true);
       try {
         const result = await uploadTrainingDataset(file);
+        bumpInventoryVersion();
         onUploaded(result.stored_path);
         toast.success("Dataset uploaded", { description: result.filename });
       } catch (err) {
@@ -408,6 +410,7 @@ export function StartTrainingCta() {
     isDatasetImage,
     isDatasetAudio,
     datasetCheckFailed,
+    datasetKnownCached,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       isLoadingModelDefaults: s.isLoadingModelDefaults,
@@ -419,6 +422,7 @@ export function StartTrainingCta() {
       isDatasetImage: s.isDatasetImage,
       isDatasetAudio: s.isDatasetAudio,
       datasetCheckFailed: s.datasetCheckFailed,
+      datasetKnownCached: s.datasetKnownCached,
     })),
   );
   const configValidation = useTrainingConfigStore(
@@ -434,11 +438,16 @@ export function StartTrainingCta() {
       (!isAudioModel && isDatasetAudio === true));
 
   const modelHandlesAllModalities = isVisionModel && isAudioModel;
+  // A failed format check normally blocks Start, but for a dataset already on
+  // device the check only fails because the modality probe needs the network
+  // (it streams from the Hub). Training reads the cached copy, so don't lock
+  // an offline user out of a dataset they downloaded to train offline.
   const datasetUnverified =
     isModelCapabilitiesSettled &&
     !isCheckingDataset &&
     datasetCheckFailed &&
-    !modelHandlesAllModalities;
+    !modelHandlesAllModalities &&
+    !datasetKnownCached;
 
   const disabled =
     isStarting ||

@@ -19,18 +19,28 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   trustRemoteCode: false,
 };
 
-const VALID_KV_CACHE_DTYPES = new Set(["bf16", "q8_0", "q5_1", "q4_1"]);
-const VALID_SPECULATIVE_TYPES = new Set([
+// Stored KV cache dtypes (full precision = null, rendered as "f16" in the UI).
+export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
+const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
+// Single source of truth for the speculative-decoding modes. UI labels live in
+// model-config-page; the values and the MTP-bearing subset (which gates
+// specDraftNMax) are shared from here so the two can't drift.
+export const SPECULATIVE_TYPES = [
   "auto",
   "mtp",
   "ngram",
   "mtp+ngram",
   "off",
+] as const;
+export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
+  "mtp",
+  "mtp+ngram",
 ]);
-const MTP_SPECULATIVE_TYPES = new Set(["mtp", "mtp+ngram"]);
+const VALID_SPECULATIVE_TYPES = new Set<string>(SPECULATIVE_TYPES);
 
 const STORAGE_KEY = "unsloth_model_configs";
 const MAX_ENTRIES = 500;
+export const MAX_CHAT_TEMPLATE_LENGTH = 65_536;
 
 type StoredMap = Record<string, PerModelConfig>;
 
@@ -58,12 +68,14 @@ function readMap(): StoredMap {
   }
 }
 
-function writeMap(map: StoredMap): void {
-  if (!canUseStorage()) return;
+function writeMap(map: StoredMap): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    return;
+    return true;
+  } catch (err) {
+    console.warn("Failed to persist per-model config:", err);
+    return false;
   }
 }
 
@@ -96,11 +108,13 @@ function normalize(raw: unknown): PerModelConfig {
     specDraftNMax,
     customContextLength:
       typeof partial.customContextLength === "number" &&
-      Number.isFinite(partial.customContextLength)
-        ? partial.customContextLength
+      Number.isFinite(partial.customContextLength) &&
+      partial.customContextLength > 0
+        ? Math.floor(partial.customContextLength)
         : null,
     chatTemplateOverride:
-      typeof partial.chatTemplateOverride === "string"
+      typeof partial.chatTemplateOverride === "string" &&
+      partial.chatTemplateOverride.length <= MAX_CHAT_TEMPLATE_LENGTH
         ? partial.chatTemplateOverride
         : null,
     trustRemoteCode:
@@ -143,7 +157,7 @@ export function savePerModelConfig(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
-): void {
+): boolean {
   const map = readMap();
   const key = configEntryKey(modelId, ggufVariant);
   delete map[key];
@@ -154,7 +168,7 @@ export function savePerModelConfig(
       delete map[stale];
     }
   }
-  writeMap(map);
+  return writeMap(map);
 }
 
 export function deletePerModelConfig(

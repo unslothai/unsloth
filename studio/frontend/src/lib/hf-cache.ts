@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type ModelEntry, modelInfo } from "@huggingface/hub";
+import { LruMap } from "@/lib/lru-map";
 
 /**
  * Thin caching + throttling layer over `modelInfo()` from @huggingface/hub.
@@ -13,9 +14,14 @@ import { type ModelEntry, modelInfo } from "@huggingface/hub";
  */
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-// HF API allows bursts but rate-limits sustained traffic; 3 parallel requests
-// keeps startup snappy while staying well under the observed throttle threshold.
-const MAX_CONCURRENT = 3;
+// A failed lookup (404, 401/403, rate limit, network) is cached briefly so a
+// failing or throttled repo isn't re-requested by every caller and re-render.
+// Short enough to recover quickly once the cause clears.
+const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
+// HF API allows bursts but rate-limits sustained traffic. 6 parallel requests
+// keeps clicking through several models snappy while staying polite (matches the
+// avatar limiter); higher would risk the sustained-traffic throttle.
+const MAX_CONCURRENT = 6;
 
 // ── Cache & in-flight maps ──────────────────────────────────────
 
@@ -41,11 +47,17 @@ export type CachedResult = ModelEntry & {
 
 
 interface CacheEntry {
-  data: CachedResult;
+  // `null` data with an `error` marks a negative-cache entry: a recent failed
+  // lookup we replay (by re-throwing) instead of re-fetching until it expires.
+  data: CachedResult | null;
   ts: number;
+  ttl: number;
+  error?: unknown;
 }
 
-const cache = new Map<string, CacheEntry>();
+// Bounded so a long browsing session can't grow the cache without limit.
+const MAX_CACHE_ENTRIES = 512;
+const cache = new LruMap<string, CacheEntry>(MAX_CACHE_ENTRIES);
 const inflight = new Map<string, Promise<CachedResult>>();
 
 // ── Concurrency semaphore ───────────────────────────────────────
@@ -91,16 +103,18 @@ export const ALL_FIELDS = [
 function isStale(key: string): boolean {
   const hit = cache.get(key);
   if (!hit) return true;
-  return Date.now() - hit.ts >= CACHE_TTL_MS;
+  return Date.now() - hit.ts >= hit.ttl;
 }
 
 function cacheKey(name: string, token: string | undefined): string {
   if (!token) {
     return `${name}::anon`;
   }
-  // Use last 8 chars as a lightweight fingerprint so different tokens get
-  // separate cache entries without storing the full secret in memory.
-  return `${name}::${token.slice(-8)}`;
+  // Scope by the full token so two tokens never share a cache slot — a
+  // truncated fingerprint could collide and cross-serve gated/private
+  // metadata between tokens. The token already lives in memory (auth store),
+  // so this adds no exposure, and the keys are never logged or persisted.
+  return `${name}::${token}`;
 }
 
 function extractToken(
@@ -121,8 +135,8 @@ function extractToken(
 
 /**
  * Pre-populate the cache with data from a listModels result.
- * Only writes if the key is not already fresh -- never overwrites a recent
- * modelInfo response with a listing response.
+ * Never overwrites a fresh modelInfo response, but does replace a fresh
+ * negative-cache entry -- real listing data beats a cached failure.
  */
 export function primeCacheFromListing(
   name: string,
@@ -131,8 +145,9 @@ export function primeCacheFromListing(
 ): void {
   if (!name) return;
   const key = cacheKey(name, token);
-  if (!isStale(key)) return; // already fresh, don't overwrite
-  cache.set(key, { data, ts: Date.now() });
+  const hit = cache.get(key);
+  if (hit && hit.error === undefined && Date.now() - hit.ts < hit.ttl) return;
+  cache.set(key, { data, ts: Date.now(), ttl: CACHE_TTL_MS });
 }
 
 export async function cachedModelInfo(
@@ -141,9 +156,11 @@ export async function cachedModelInfo(
   const token = extractToken(params);
   const key = cacheKey(params.name, token);
 
-  // 1. Return from cache if fresh
-  if (!isStale(key)) {
-    return cache.get(key)!.data;
+  // 1. Return from cache if fresh -- replaying a cached failure as a throw.
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < hit.ttl) {
+    if (hit.error !== undefined) throw hit.error;
+    if (hit.data) return hit.data;
   }
 
   // 2. Share in-flight request if one exists
@@ -160,7 +177,11 @@ export async function cachedModelInfo(
         ...params,
         additionalFields: ALL_FIELDS,
       });
-      const entry = { data: result as CachedResult, ts: Date.now() };
+      const entry: CacheEntry = {
+        data: result as CachedResult,
+        ts: Date.now(),
+        ttl: CACHE_TTL_MS,
+      };
       cache.set(key, entry);
       // For public (non-gated, non-private) models, also prime the anonymous
       // cache slot so the VRAM hook (which reads without credentials) gets a
@@ -174,6 +195,16 @@ export async function cachedModelInfo(
         }
       }
       return result as CachedResult;
+    } catch (err) {
+      // Negative-cache the failure so concurrent and follow-up callers don't
+      // re-hammer a failing or rate-limited repo until the entry expires.
+      cache.set(key, {
+        data: null,
+        ts: Date.now(),
+        ttl: NEGATIVE_CACHE_TTL_MS,
+        error: err,
+      });
+      throw err;
     } finally {
       release();
       inflight.delete(key);

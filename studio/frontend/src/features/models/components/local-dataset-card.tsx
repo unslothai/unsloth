@@ -2,14 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TrainIcon } from "@/components/icons/train-icon";
-import type { LocalModelInfo } from "@/features/chat/api/chat-api";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { LocalSource } from "../types";
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
 
 interface LocalDatasetCardProps {
   sourceLabel: string;
-  source: LocalModelInfo["source"];
+  source: LocalSource;
   path: string;
   onTrain?: () => void;
 }

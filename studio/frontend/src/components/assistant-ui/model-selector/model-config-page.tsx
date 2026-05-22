@@ -10,6 +10,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { NumericValueInput } from "@/components/ui/numeric-value-input";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -18,7 +20,11 @@ import {
 } from "@/components/ui/tooltip";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  KV_CACHE_DTYPES,
+  MAX_CHAT_TEMPLATE_LENGTH,
+  MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
+  SPECULATIVE_TYPES,
   deletePerModelConfigsForModel,
   hasPerModelConfig,
   isDefaultConfig,
@@ -30,13 +36,11 @@ import {
   useModelDefaults,
 } from "@/features/chat/model-config/use-model-defaults";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   Delete02Icon,
-  InformationCircleIcon,
   PlayIcon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
@@ -51,15 +55,19 @@ import {
 import type { DeletedModelRef, ModelPickTarget } from "./types";
 
 const DEFAULT_CONTEXT_FALLBACK = 131072;
+const MIN_CONTEXT_LENGTH = 1024;
 
-const SPECULATIVE_OPTIONS: { value: string; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "mtp", label: "MTP" },
-  { value: "ngram", label: "Ngram" },
-  { value: "mtp+ngram", label: "MTP+Ngram" },
-  { value: "off", label: "Off" },
-];
-const MTP_MODES = new Set(["mtp", "mtp+ngram"]);
+const SPECULATIVE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> = {
+  auto: "Auto",
+  mtp: "MTP",
+  ngram: "Ngram",
+  "mtp+ngram": "MTP+Ngram",
+  off: "Off",
+};
+const SPECULATIVE_OPTIONS = SPECULATIVE_TYPES.map((value) => ({
+  value,
+  label: SPECULATIVE_LABELS[value],
+}));
 
 interface ModelConfigPageProps {
   target: ModelPickTarget;
@@ -76,116 +84,6 @@ function pickerSourceToDeleteSource(
   if (source === "lora") return "training";
   if (source === "exported") return "exported";
   return null;
-}
-
-function snapToStep(
-  value: number,
-  step: number,
-  min?: number,
-  max?: number,
-): number {
-  const lo = min ?? Number.NEGATIVE_INFINITY;
-  const hi = max ?? Number.POSITIVE_INFINITY;
-  const clamped = Math.min(Math.max(value, lo), hi);
-  const stepStr = String(step);
-  const decimals = stepStr.includes(".") ? stepStr.split(".")[1].length : 0;
-  const base = Number.isFinite(lo) ? lo : 0;
-  const snapped = base + Math.round((clamped - base) / step) * step;
-  return Number(Math.min(Math.max(snapped, lo), hi).toFixed(decimals));
-}
-
-function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  ariaLabel,
-  className,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  ariaLabel?: string;
-  className?: string;
-}) {
-  const [focused, setFocused] = useState(false);
-  const [draft, setDraft] = useState("");
-  const cancelBlurCommitRef = useRef(false);
-
-  const commit = (raw: string) => {
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed)) return;
-    const final = snapToStep(parsed, step, min, max);
-    if (final !== value) onChange(final);
-  };
-
-  return (
-    <input
-      type="text"
-      inputMode="decimal"
-      value={focused ? draft : value.toLocaleString()}
-      aria-label={ariaLabel}
-      onFocus={(e) => {
-        cancelBlurCommitRef.current = false;
-        setDraft(String(value));
-        setFocused(true);
-        const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
-      }}
-      onBlur={() => {
-        if (cancelBlurCommitRef.current) {
-          cancelBlurCommitRef.current = false;
-        } else {
-          commit(draft);
-        }
-        setFocused(false);
-      }}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur();
-        } else if (e.key === "Escape") {
-          cancelBlurCommitRef.current = true;
-          setDraft(String(value));
-          e.currentTarget.blur();
-        }
-      }}
-      className={cn(
-        "panel-number-input min-w-0 flex-1 tabular-nums",
-        className,
-      )}
-    />
-  );
-}
-
-function InfoHint({ children }: { children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:text-foreground"
-        >
-          <HugeiconsIcon
-            icon={InformationCircleIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="left"
-        sideOffset={8}
-        className="tooltip-compact max-w-64"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  );
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -302,6 +200,14 @@ export function ModelConfigPage({
     setAdvancedOpen(!initialIsDefault);
   }, [initial, initialIsDefault]);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const isGguf = target.isGguf;
   const nativeMaxContext = sameAsLoaded
     ? (ggufNativeContextFromStore ?? ggufContextFromStore ?? null)
@@ -339,6 +245,7 @@ export function ModelConfigPage({
       setTemplateLoading(true);
       try {
         const defaults = await fetchModelDefaults(target.id);
+        if (!mountedRef.current) return;
         if (defaults.chatTemplate != null) {
           setFetchedChatTemplate(defaults.chatTemplate);
           setTemplateDraft((current) =>
@@ -349,18 +256,25 @@ export function ModelConfigPage({
           );
         }
       } catch (err) {
+        if (!mountedRef.current) return;
         if (!isAbortError(err)) {
           toast.error("Couldn't load chat template", {
             description: err instanceof Error ? err.message : undefined,
           });
         }
       } finally {
-        setTemplateLoading(false);
+        if (mountedRef.current) setTemplateLoading(false);
       }
     }
   }
 
   function saveTemplateEditor() {
+    if (templateDraft.length > MAX_CHAT_TEMPLATE_LENGTH) {
+      toast.error("Chat template is too large", {
+        description: `Keep it under ${MAX_CHAT_TEMPLATE_LENGTH.toLocaleString()} characters.`,
+      });
+      return;
+    }
     const trimmed = templateDraft.trim();
     const next =
       trimmed.length === 0 ||
@@ -539,12 +453,13 @@ export function ModelConfigPage({
                 {isCustomContext ? (
                   <NumericValueInput
                     value={ctxValue}
-                    min={128}
-                    max={ctxMax}
+                    min={MIN_CONTEXT_LENGTH}
+                    max={Math.max(MIN_CONTEXT_LENGTH, ctxMax)}
                     step={1}
                     onChange={(v) => update("customContextLength", v)}
+                    displayValue={ctxValue.toLocaleString()}
                     ariaLabel="Context Length"
-                    className="w-20 !flex-none text-right"
+                    className="min-w-0 flex-1 tabular-nums w-20 !flex-none text-right"
                   />
                 ) : (
                   <button
@@ -566,10 +481,10 @@ export function ModelConfigPage({
               {isCustomContext && (
                 <>
                   <Slider
-                    min={1024}
-                    max={Math.max(1024, ctxMax)}
+                    min={MIN_CONTEXT_LENGTH}
+                    max={Math.max(MIN_CONTEXT_LENGTH, ctxMax)}
                     step={1024}
-                    value={[Math.min(ctxValue, Math.max(1024, ctxMax))]}
+                    value={[Math.min(ctxValue, Math.max(MIN_CONTEXT_LENGTH, ctxMax))]}
                     onValueChange={([v]) =>
                       update("customContextLength", Math.round(v))
                     }
@@ -612,10 +527,11 @@ export function ModelConfigPage({
                 </SelectTrigger>
                 <SelectContent className="menu-soft-surface rounded-lg border-0 ring-0">
                   <SelectItem value="f16">f16</SelectItem>
-                  <SelectItem value="bf16">bf16</SelectItem>
-                  <SelectItem value="q8_0">q8_0</SelectItem>
-                  <SelectItem value="q5_1">q5_1</SelectItem>
-                  <SelectItem value="q4_1">q4_1</SelectItem>
+                  {KV_CACHE_DTYPES.map((dtype) => (
+                    <SelectItem key={dtype} value={dtype}>
+                      {dtype}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </FieldRow>
@@ -634,7 +550,7 @@ export function ModelConfigPage({
                 value={config.speculativeType ?? "auto"}
                 onValueChange={(v) => {
                   update("speculativeType", v);
-                  if (!MTP_MODES.has(v)) update("specDraftNMax", null);
+                  if (!MTP_SPECULATIVE_TYPES.has(v)) update("specDraftNMax", null);
                 }}
               >
                 <SelectTrigger
@@ -655,7 +571,7 @@ export function ModelConfigPage({
               </Select>
             </FieldRow>
 
-            {MTP_MODES.has(config.speculativeType ?? "") && (
+            {MTP_SPECULATIVE_TYPES.has(config.speculativeType ?? "") && (
               <FieldRow
                 label="Draft Tokens"
                 info={

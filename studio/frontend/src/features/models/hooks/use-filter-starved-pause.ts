@@ -14,23 +14,23 @@ export function useFilterStarvedPause({
   isDiscoverTab,
   scannedCount,
   filteredCount,
-  resetDeps,
+  resetSignature,
 }: {
   isDiscoverTab: boolean;
   scannedCount: number;
   filteredCount: number;
-  // Spread as a useEffect dependency array, so callers must pass a
-  // constant-length array across renders (React throws otherwise).
-  resetDeps: ReadonlyArray<unknown>;
+  // A single value that changes whenever the pause should reset (e.g. query
+  // or filters changed). Pass a stable serialization, not a fresh array.
+  resetSignature: string;
 }): FilterStarvedPause {
   const [filterPaused, setFilterPaused] = useState(false);
   const [pauseFloor, setPauseFloor] = useState(FILTER_STARVED_THRESHOLD);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetSignature is a reset trigger, not read in the body
   useEffect(() => {
     setFilterPaused(false);
     setPauseFloor(FILTER_STARVED_THRESHOLD);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, resetDeps);
+  }, [resetSignature]);
 
   useEffect(() => {
     if (

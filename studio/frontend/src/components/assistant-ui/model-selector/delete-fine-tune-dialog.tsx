@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { deleteFineTunedModel } from "@/features/chat/api/chat-api";
+import { bumpInventoryVersion } from "@/features/models";
 import { emitTrainingRunsChanged } from "@/features/training";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
@@ -56,6 +57,7 @@ export function DeleteFineTuneDialog({
         ggufVariant: target.ggufVariant,
         deleteRunRecord: alsoDeleteRunRecord,
       });
+      bumpInventoryVersion();
       emitTrainingRunsChanged();
       onDeleted(target, result.deleted_run_ids ?? []);
     } catch (err) {

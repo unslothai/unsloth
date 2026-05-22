@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useChatModelRuntime, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
@@ -12,15 +11,11 @@ import {
   type HfSortKey,
   useDebouncedValue,
   useGpuInfo,
-  useHfDatasetSearch,
-  useHfModelSearch,
   useInfiniteScroll,
   useOnlineStatus,
 } from "@/hooks";
-import { cachedModelInfo } from "@/lib/hf-cache";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -28,21 +23,21 @@ import {
   type ChannelPreset,
   findChannel,
 } from "./lib/channels";
-import { formatBytes } from "./lib/format";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
   matchesCapability,
   matchesFormat,
-  toHfModelResult,
 } from "./lib/view-models";
 import { ModelInspector } from "./components/model-inspector";
 import { ModelsCatalog } from "./components/models-catalog";
 import { ModelsHeader } from "./components/models-header";
 import { ModelsToolbar } from "./components/models-toolbar";
-import { useHubInventory } from "./hooks/use-hub-inventory";
+import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFilterStarvedPause } from "./hooks/use-filter-starved-pause";
-import { useSelectedModelView } from "./hooks/use-selected-model-view";
+import { useHubInventory } from "./hooks/use-hub-inventory";
+import { useHubModelVram } from "./hooks/use-hub-model-vram";
+import { useModelsSelection } from "./hooks/use-models-selection";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -82,7 +77,13 @@ export function ModelsPage() {
     (state) => state.activeGgufVariant,
   );
 
-  const tab: ModelsTab = search.tab ?? "discover";
+  // Local state, not router state: switching is instant instead of awaiting the
+  // /models beforeLoad auth round-trip. The URL is mirrored below for deep links.
+  const [tab, setTab] = useState<ModelsTab>(() => search.tab ?? "discover");
+  useEffect(() => {
+    const urlTab: ModelsTab = search.tab ?? "discover";
+    setTab((cur) => (cur === urlTab ? cur : urlTab));
+  }, [search.tab]);
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<HfSortKey>("trendingScore");
   const [direction, setDirection] = useState<HfSortDirection>("desc");
@@ -97,39 +98,38 @@ export function ModelsPage() {
     useState<ModelFormatFilter>("gguf");
   const [downloadedFormat, setDownloadedFormat] =
     useState<ModelFormatFilter>("all");
+  const isDiscoverTab = tab === "discover";
+  const isDatasetMode = resourceType === "datasets";
   // When a channel is active, the channel's recipe drives the format on the
   // discover tab. Manual format changes from the toolbar deactivate the
   // channel so the user has direct control again.
-  const formatFilter =
-    tab === "discover"
-      ? (activeChannel?.format ?? discoverFormat)
-      : downloadedFormat;
+  const formatFilter = isDiscoverTab
+    ? (activeChannel?.format ?? discoverFormat)
+    : downloadedFormat;
   const setFormatFilter = useCallback(
     (next: ModelFormatFilter) => {
-      if (tab === "discover") {
+      if (isDiscoverTab) {
         setActiveChannelId(null);
         setDiscoverFormat(next);
       } else {
         setDownloadedFormat(next);
       }
     },
-    [tab],
+    [isDiscoverTab],
   );
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
-  const handleSelect = useCallback((id: string) => {
-    setSelectedId(id);
-    setMobileInspectorOpen(true);
-  }, []);
+
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
       setMobileInspectorOpen(false);
       if (next === "downloaded") setActiveChannelId(null);
+      setTab(next);
       void navigate({
         to: "/models",
         search: (prev) => ({ ...prev, tab: next }),
+        replace: true,
       });
     },
     [navigate],
@@ -137,17 +137,14 @@ export function ModelsPage() {
 
   const handleResourceTypeChange = useCallback(
     (next: ResourceTypeFilter) => {
-      setResourceType((prev) => {
-        if (prev !== next) {
-          setDiscoverFormat("gguf");
-          setDownloadedFormat("all");
-          setCapabilityFilter("all");
-          setActiveChannelId(null);
-        }
-        return next;
-      });
+      if (next === resourceType) return;
+      setResourceType(next);
+      setDiscoverFormat("gguf");
+      setDownloadedFormat("all");
+      setCapabilityFilter("all");
+      setActiveChannelId(null);
     },
-    [],
+    [resourceType],
   );
 
   const handleChannelSelect = useCallback((next: ChannelId | null) => {
@@ -165,92 +162,26 @@ export function ModelsPage() {
   const debouncedQuery = useDebouncedValue(query);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
-  const isDiscoverTab = tab === "discover";
   const effectiveSort: HfSortKey = activeChannel?.sort ?? sortBy;
-  const channelOption = useMemo(
-    () =>
-      activeChannel
-        ? {
-            owner: activeChannel.owner,
-            tags: activeChannel.tags,
-            query: activeChannel.query,
-            idSuffix: activeChannel.idSuffix,
-          }
-        : null,
-    [activeChannel],
-  );
-  const modelSearch = useHfModelSearch(debouncedQuery, {
+
+  const {
+    results,
+    datasetResults,
+    isLoading,
+    isLoadingMore,
+    fetchMore,
+    searchError,
+    handleRetrySearch,
+  } = useDiscoverSearch({
+    debouncedQuery,
     accessToken: debouncedHfToken || undefined,
+    isDiscoverTab,
+    isDatasetMode,
     sortBy: effectiveSort,
-    sortDirection: direction,
-    pinUnslothFirst:
-      effectiveSort === "trendingScore" &&
-      direction === "desc" &&
-      !activeChannel,
-    enabled: isDiscoverTab && resourceType !== "datasets",
-    keepUnsupportedTags: true,
-    channel: channelOption,
+    direction,
+    activeChannel,
+    online,
   });
-  const datasetSearch = useHfDatasetSearch(debouncedQuery, {
-    accessToken: debouncedHfToken || undefined,
-    enabled: isDiscoverTab && resourceType === "datasets",
-    sortBy: effectiveSort,
-    sortDirection: direction,
-  });
-  const isDatasetMode = resourceType === "datasets";
-  const results = isDatasetMode ? [] : modelSearch.results;
-  const isLoading = isDatasetMode ? datasetSearch.isLoading : modelSearch.isLoading;
-  const isLoadingMore = isDatasetMode
-    ? datasetSearch.isLoadingMore
-    : modelSearch.isLoadingMore;
-  const fetchMore = isDatasetMode ? datasetSearch.fetchMore : modelSearch.fetchMore;
-  const searchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
-  const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
-
-  const handleRetrySearch = useCallback(() => {
-    if (!online) {
-      toast.error("You're offline", {
-        description: "Reconnect to the internet to browse Hugging Face.",
-      });
-      return;
-    }
-    retrySearch();
-    toast.message("Retrying…", {
-      description: "Reaching Hugging Face for the latest models.",
-    });
-  }, [online, retrySearch]);
-
-  const lastErrorRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!searchError) {
-      lastErrorRef.current = null;
-      return;
-    }
-    if (lastErrorRef.current === searchError) return;
-    lastErrorRef.current = searchError;
-    toast.error(
-      online
-        ? "Couldn't reach Hugging Face"
-        : "You're offline",
-      {
-        description: online
-          ? searchError
-          : "Reconnect to the internet to browse models.",
-        action: { label: "Retry", onClick: handleRetrySearch },
-      },
-    );
-  }, [searchError, online, handleRetrySearch]);
-
-  const wasOfflineRef = useRef(!online);
-  useEffect(() => {
-    if (online && wasOfflineRef.current) {
-      toast.success("Back online", {
-        description: "Refreshing the discovery feed.",
-      });
-      retrySearch();
-    }
-    wasOfflineRef.current = !online;
-  }, [online, retrySearch]);
 
   const {
     cachedRows: effectiveCachedRows,
@@ -261,8 +192,6 @@ export function ModelsPage() {
     inventoryError,
     refreshInventory,
   } = useHubInventory(isDatasetMode);
-  const [selectedRepoMetadata, setSelectedRepoMetadata] =
-    useState<ReturnType<typeof toHfModelResult>>(null);
 
   const modelDiscoverRows = useMemo<DiscoverRow[]>(
     () => buildDiscoverRows(results, availableSet, partialSet),
@@ -271,7 +200,7 @@ export function ModelsPage() {
 
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
     if (!isDatasetMode) return [];
-    return datasetSearch.results.map((ds) => {
+    return datasetResults.map((ds) => {
       const owner = ds.id.includes("/") ? ds.id.split("/")[0] : "Hub";
       const repo = ds.id.includes("/")
         ? ds.id.split("/").slice(1).join("/")
@@ -300,7 +229,7 @@ export function ModelsPage() {
         capabilities: [],
       };
     });
-  }, [isDatasetMode, datasetSearch.results, availableSet, partialSet]);
+  }, [isDatasetMode, datasetResults, availableSet, partialSet]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
@@ -317,8 +246,8 @@ export function ModelsPage() {
   );
 
   const inventoryTokens = useMemo(
-    () => (isDiscoverTab ? [] : tokenizeQuery(query)),
-    [isDiscoverTab, query],
+    () => (isDiscoverTab ? [] : tokenizeQuery(debouncedQuery)),
+    [isDiscoverTab, debouncedQuery],
   );
   // Format filter is a deliberate scope narrowing — hard-filter it out.
   // The text query, by contrast, drives dim-not-filter on the On Device tab
@@ -347,11 +276,18 @@ export function ModelsPage() {
     [effectiveLocalRows, isDatasetMode, formatFilter, inventoryTokens],
   );
 
-  const { filterPaused, handleKeepSearching } = useFilterStarvedPause({
-    isDiscoverTab,
-    scannedCount: discoverRows.length,
-    filteredCount: filteredDiscoverRows.length,
-    resetDeps: [
+  const filterResetSignature = useMemo(
+    () =>
+      JSON.stringify([
+        debouncedQuery,
+        resourceType,
+        formatFilter,
+        capabilityFilter,
+        effectiveSort,
+        direction,
+        activeChannelId,
+      ]),
+    [
       debouncedQuery,
       resourceType,
       formatFilter,
@@ -360,6 +296,12 @@ export function ModelsPage() {
       direction,
       activeChannelId,
     ],
+  );
+  const { filterPaused, handleKeepSearching } = useFilterStarvedPause({
+    isDiscoverTab,
+    scannedCount: discoverRows.length,
+    filteredCount: filteredDiscoverRows.length,
+    resetSignature: filterResetSignature,
   });
 
   const handleClearFilters = useCallback(() => {
@@ -378,106 +320,27 @@ export function ModelsPage() {
     isDiscoverTab && !filterPaused,
   );
 
-  useEffect(() => {
-    const nextIds =
-      tab === "discover"
-        ? filteredDiscoverRows.map((row) => row.id)
-        : [
-            ...filteredCachedRows.map((row) => row.id),
-            ...filteredLocalRows.map((row) => row.id),
-          ];
+  const { selectedId, setSelected, selectedModel, metadataUnavailable } =
+    useModelsSelection({
+      isDiscoverTab,
+      isDatasetMode,
+      discoverRows,
+      cachedRows: effectiveCachedRows,
+      localRows: effectiveLocalRows,
+      filteredDiscoverRows,
+      filteredCachedRows,
+      filteredLocalRows,
+      results,
+      accessToken: debouncedHfToken || undefined,
+    });
 
-    if (selectedId && nextIds.includes(selectedId)) return;
-    setSelectedId(nextIds[0] ?? null);
-  }, [
-    tab,
-    filteredCachedRows,
-    filteredDiscoverRows,
-    filteredLocalRows,
-    selectedId,
-  ]);
-
-  const selectedDiscoverRow = useMemo(
-    () =>
-      selectedId
-        ? (discoverRows.find((row) => row.id === selectedId) ?? null)
-        : null,
-    [discoverRows, selectedId],
+  const handleSelect = useCallback(
+    (id: string) => {
+      setSelected(id);
+      setMobileInspectorOpen(true);
+    },
+    [setSelected],
   );
-
-  const selectedCachedRow = useMemo(
-    () =>
-      selectedId
-        ? (effectiveCachedRows.find((row) => row.id === selectedId) ?? null)
-        : null,
-    [effectiveCachedRows, selectedId],
-  );
-
-  const selectedLocalRow = useMemo(
-    () =>
-      selectedId
-        ? (effectiveLocalRows.find((row) => row.id === selectedId) ?? null)
-        : null,
-    [effectiveLocalRows, selectedId],
-  );
-
-  const selectedHubRepoId =
-    selectedDiscoverRow?.result.id ??
-    selectedCachedRow?.repoId ??
-    selectedLocalRow?.repoId ??
-    null;
-
-  const selectedResultFromFeed = useMemo(
-    () =>
-      selectedHubRepoId
-        ? (results.find(
-            (row) => row.id.toLowerCase() === selectedHubRepoId.toLowerCase(),
-          ) ?? null)
-        : null,
-    [results, selectedHubRepoId],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!selectedHubRepoId) {
-      setSelectedRepoMetadata(null);
-      return;
-    }
-
-    if (selectedResultFromFeed) {
-      setSelectedRepoMetadata(selectedResultFromFeed);
-      return;
-    }
-
-    setSelectedRepoMetadata(null);
-    void cachedModelInfo({
-      name: selectedHubRepoId,
-      ...(debouncedHfToken ? { accessToken: debouncedHfToken } : {}),
-    })
-      .then((result) => {
-        if (cancelled) return;
-        setSelectedRepoMetadata(toHfModelResult(result));
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setSelectedRepoMetadata(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedHubRepoId, selectedResultFromFeed, debouncedHfToken]);
-
-  const selectedHfResult = selectedResultFromFeed ?? selectedRepoMetadata;
-
-  const selectedModel = useSelectedModelView({
-    selectedDiscoverRow,
-    selectedCachedRow,
-    selectedLocalRow,
-    selectedHfResult,
-    isDatasetMode,
-  });
 
   const isActive = useMemo(
     () =>
@@ -499,34 +362,7 @@ export function ModelsPage() {
     [loadingModel, selectedModel],
   );
 
-  const vramInfo = useMemo(() => {
-    if (!selectedModel || selectedModel.isGguf || !selectedModel.totalParams) {
-      return null;
-    }
-    const est = estimateLoadingVram(selectedModel.totalParams, "qlora");
-    if (!gpu.available) {
-      return { est, status: "fits" as const };
-    }
-    const status = checkVramFit(est, gpu.memoryTotalGb);
-    return status ? { est, status } : null;
-  }, [gpu, selectedModel]);
-
-  const minMemory = useMemo(() => {
-    if (!selectedModel) return null;
-    if (selectedModel.isGguf) {
-      if (selectedModel.cachedBytes)
-        return formatBytes(selectedModel.cachedBytes);
-      if (selectedModel.estimatedSizeBytes)
-        return formatBytes(selectedModel.estimatedSizeBytes);
-      return null;
-    }
-    if (selectedModel.estimatedSizeBytes)
-      return formatBytes(selectedModel.estimatedSizeBytes);
-    if (vramInfo) return `~${vramInfo.est} GB`;
-    if (selectedModel.cachedBytes)
-      return formatBytes(selectedModel.cachedBytes);
-    return null;
-  }, [selectedModel, vramInfo]);
+  const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
     ? `${Math.floor(gpu.memoryTotalGb)} GB`
@@ -624,6 +460,7 @@ export function ModelsPage() {
               onCapabilityFilterChange={setCapabilityFilter}
               activeChannelId={activeChannelId}
               onChannelSelect={handleChannelSelect}
+              onRefresh={handleRetrySearch}
             />
           </div>
 
@@ -687,6 +524,7 @@ export function ModelsPage() {
               <ModelInspector
                 model={selectedModel}
                 isDataset={isDatasetMode}
+                metadataUnavailable={metadataUnavailable}
                 isActive={isActive}
                 activeGgufVariant={activeGgufVariant}
                 isLoadingThisModel={isLoadingThisModel}

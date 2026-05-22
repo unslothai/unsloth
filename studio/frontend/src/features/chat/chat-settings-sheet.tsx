@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { InfoHint as SharedInfoHint } from "@/components/ui/info-hint";
+import { NumericValueInput } from "@/components/ui/numeric-value-input";
+import { snapToStep } from "@/lib/snap-to-step";
 import {
   Dialog,
   DialogContent,
@@ -36,19 +39,14 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
-  InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "@/lib/toast";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -232,136 +230,15 @@ function loadSavedActivePreset(): string {
 
 export function InfoHint({ children }: { children: ReactNode }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#232528] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <HugeiconsIcon
-            icon={InformationCircleIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="left"
-        sideOffset={8}
-        className="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
+    <SharedInfoHint
+      triggerClassName="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#232528] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      contentClassName="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
+    >
+      {children}
+    </SharedInfoHint>
   );
 }
 
-/**
- * Editable numeric value display.
- *
- * Renders as a single <input> that *looks* like text by default —
- * transparent background, no border, no ring — and only shows a faint
- * surface tint on hover/focus to signal editability. When unfocused,
- * the input shows the formatted display string (`displayValue ?? value`,
- * so labels like "Off" / "Max" still render); on focus, it switches to
- * the raw numeric value, selects it, and accepts free text input.
- * Commit happens on blur or Enter; Escape reverts. The clamp-to-range
- * happens on commit so users can type intermediate values without the
- * input fighting them mid-keystroke. Single component shared by every
- * slider value and the Context Length input so the click-to-edit
- * affordance is consistent across the panel.
- */
-function snapToStep(
-  value: number,
-  step: number,
-  min?: number,
-  max?: number,
-): number {
-  const lo = min ?? Number.NEGATIVE_INFINITY;
-  const hi = max ?? Number.POSITIVE_INFINITY;
-  const clamped = Math.min(Math.max(value, lo), hi);
-  const stepStr = String(step);
-  const decimals = stepStr.includes(".") ? stepStr.split(".")[1].length : 0;
-  const base = Number.isFinite(lo) ? lo : 0;
-  const snapped = base + Math.round((clamped - base) / step) * step;
-  const reclamped = Math.min(Math.max(snapped, lo), hi);
-  return Number(reclamped.toFixed(decimals));
-}
-
-function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  displayValue,
-  className,
-  ariaLabel,
-  size: sizeAttr,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  displayValue?: string;
-  className?: string;
-  ariaLabel?: string;
-  size?: number;
-}) {
-  const [focused, setFocused] = useState(false);
-  const [draft, setDraft] = useState("");
-  const cancelBlurCommitRef = useRef(false);
-
-  const commit = (raw: string) => {
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
-    const final = snapToStep(parsed, step, min, max);
-    if (final !== value) {
-      onChange(final);
-    }
-  };
-
-  return (
-    <input
-      type="text"
-      inputMode="decimal"
-      size={sizeAttr}
-      value={focused ? draft : (displayValue ?? String(value))}
-      aria-label={ariaLabel}
-      onFocus={(e) => {
-        cancelBlurCommitRef.current = false;
-        setDraft(String(value));
-        setFocused(true);
-        // Defer the select() so it runs after the value swap above.
-        const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
-      }}
-      onBlur={() => {
-        if (cancelBlurCommitRef.current) {
-          cancelBlurCommitRef.current = false;
-        } else {
-          commit(draft);
-        }
-        setFocused(false);
-      }}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur();
-        } else if (e.key === "Escape") {
-          cancelBlurCommitRef.current = true;
-          setDraft(String(value));
-          e.currentTarget.blur();
-        }
-      }}
-      className={cn("panel-number-input", className)}
-    />
-  );
-}
 
 function ParamSlider({
   label,
@@ -1270,4 +1147,3 @@ function AutoHealToolCallsToggle() {
     </div>
   );
 }
-

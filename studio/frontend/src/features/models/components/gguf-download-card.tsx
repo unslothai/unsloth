@@ -13,15 +13,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  cancelModelDownload,
   deleteCachedModel,
-  getDownloadProgress,
-  getGgufDownloadProgress,
-  getModelDownloadStatus,
-  getModelTransportStatus,
+  getActiveModelDownloads,
   invalidateGgufVariantsCache,
   listGgufVariants,
-  startModelDownload,
 } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { cn } from "@/lib/utils";
@@ -39,7 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { formatBytes } from "../lib/format";
-import { useDownloadJob } from "../hooks/use-download-job";
+import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -49,24 +44,6 @@ import { DotTag } from "./dot-tag";
 import { DownloadCancelIndicator } from "./download-cancel-indicator";
 import { PathInfoButton } from "./path-info-button";
 import type { InventoryHint } from "./download-types";
-
-function pickRecommendedQuant(
-  variants: GgufVariantDetail[],
-  gpuGb?: number,
-  systemRamGb?: number,
-): string | null {
-  if (variants.length === 0) return null;
-  if (!gpuGb || gpuGb <= 0) return null;
-  const bySizeDesc = [...variants].sort((a, b) => b.size_bytes - a.size_bytes);
-  for (const cls of ["fits", "marginal", "partial"] as const) {
-    const match = bySizeDesc.find(
-      (v) => classifyGgufFit(v.size_bytes, { gpuGb, systemRamGb }) === cls,
-    );
-    if (match) return match.quant;
-  }
-  const bySizeAsc = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-  return bySizeAsc[0]?.quant ?? null;
-}
 
 interface FitBadgeMeta {
   label: string;
@@ -217,7 +194,7 @@ export function GgufDownloadCard({
         invalidateGgufVariantsCache(repoId);
       }
       try {
-        const res = await listGgufVariants(repoId);
+        const res = await listGgufVariants(repoId, hfToken || undefined);
         if (!mountedRef.current) return;
         setVariants(res.variants);
       } catch (err) {
@@ -227,34 +204,16 @@ export function GgufDownloadCard({
         if (mountedRef.current && !silent) setLoading(false);
       }
     },
-    [repoId],
+    [repoId, hfToken],
   );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const job = useDownloadJob({
+  const job = useRepoDownload({
+    kind: "model",
     repoId,
-    label: (variant) => `${repoId}${variant ? ` · ${variant}` : ""}`,
-    toastId: (variant) => `model-download-${repoId}-${variant ?? ""}`,
-    startErrorTitle: "Failed to start download",
-    errorTitle: "Download failed",
-    getProgress: (variant, expectedBytes) =>
-      variant
-        ? getGgufDownloadProgress(repoId, variant, expectedBytes, hfToken)
-        : getDownloadProgress(repoId),
-    getStatus: (variant) => getModelDownloadStatus(repoId, variant),
-    start: (variant, useXet) =>
-      startModelDownload({
-        repo_id: repoId,
-        gguf_variant: variant,
-        hf_token: hfToken || undefined,
-        use_xet: useXet,
-      }),
-    cancel: (variant) =>
-      cancelModelDownload({ repo_id: repoId, gguf_variant: variant }),
-    getTransportStatus: () => getModelTransportStatus(repoId),
     onComplete: (variant, bytes) => {
       const done = refresh(true);
       onChange?.({
@@ -275,89 +234,82 @@ export function GgufDownloadCard({
   const cancelling = job.cancelling;
 
   const adoptRunningJob = job.adoptRunningJob;
+  // Probe once per repo: the silent post-completion refresh swaps the variants
+  // array, which would otherwise re-fire the probe needlessly.
+  const adoptCheckedRepoRef = useRef<string | null>(null);
+  const adoptAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (!variants) return;
-    let cancelled = false;
-    const candidates: (string | null)[] = [
-      null,
-      ...variants.map((v) => v.quant),
-    ];
-    void Promise.all(
-      candidates.map(async (variant) => {
-        try {
-          const status = await getModelDownloadStatus(repoId, variant);
-          return { variant, state: status.state };
-        } catch {
-          return { variant, state: "idle" as const };
-        }
-      }),
-    ).then((results) => {
-      if (cancelled) return;
-      const active = results.find(
-        (r) => r.state === "running" || r.state === "cancelling",
-      );
-      if (active) {
+    if (adoptCheckedRepoRef.current === repoId) return;
+    adoptCheckedRepoRef.current = repoId;
+    adoptAbortRef.current?.abort();
+    const controller = new AbortController();
+    adoptAbortRef.current = controller;
+    void getActiveModelDownloads(repoId, controller.signal)
+      .then((downloads) => {
+        if (controller.signal.aborted) return;
+        const active = downloads.find(
+          (d) => d.state === "running" || d.state === "cancelling",
+        );
+        if (!active) return;
         if (active.variant) setSelectedQuant(active.variant);
-        adoptRunningJob(active.variant, 0);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
+        const knownSize = active.variant
+          ? (variants.find((v) => v.quant === active.variant)?.size_bytes ?? 0)
+          : 0;
+        adoptRunningJob(active.variant, knownSize);
+      })
+      .catch(() => {});
   }, [repoId, variants, adoptRunningJob]);
 
+  useEffect(() => () => adoptAbortRef.current?.abort(), []);
+
   useEffect(() => {
+    adoptAbortRef.current?.abort();
+    adoptCheckedRepoRef.current = null;
     setSelectedQuant(null);
     setVariants(null);
   }, [repoId]);
 
-  const recommendedQuant = useMemo(
-    () => (variants ? pickRecommendedQuant(variants, gpuGb, systemRamGb) : null),
-    [variants, gpuGb, systemRamGb],
-  );
-
   const sortedVariants = useMemo(() => {
     if (!variants) return null;
-    const tierOf = (v: GgufVariantDetail) => {
-      const f = classifyGgufFit(v.size_bytes, { gpuGb, systemRamGb });
-      if (f === "oom") return 4;
-      const base = f === "fits" ? 0 : 1;
-      return v.downloaded ? base : base + 2;
+    const statusRank = (v: GgufVariantDetail) => {
+      if (v.downloaded) return 0;
+      if (v.partial) return 1;
+      return 2;
+    };
+    const fitRank = (v: GgufVariantDetail): number => {
+      switch (classifyGgufFit(v.size_bytes, { gpuGb, systemRamGb })) {
+        case "fits":
+          return 0;
+        case "marginal":
+          return 1;
+        case "partial":
+          return 2;
+        default:
+          return 3;
+      }
     };
     return [...variants].sort((a, b) => {
-      const aTier = tierOf(a);
-      const bTier = tierOf(b);
-      if (aTier !== bTier) return aTier - bTier;
-      const aIsRec = a.quant === recommendedQuant;
-      const bIsRec = b.quant === recommendedQuant;
-      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
-      return b.size_bytes - a.size_bytes;
+      const statusDelta = statusRank(a) - statusRank(b);
+      if (statusDelta !== 0) return statusDelta;
+      const aFit = fitRank(a);
+      const bFit = fitRank(b);
+      if (aFit !== bFit) return aFit - bFit;
+      // Within a tier the larger build is the more capable pick; in the oom
+      // tier nothing fits, so the smallest is the least-bad default instead.
+      return aFit === 3
+        ? a.size_bytes - b.size_bytes
+        : b.size_bytes - a.size_bytes;
     });
-  }, [variants, recommendedQuant, gpuGb, systemRamGb]);
+  }, [variants, gpuGb, systemRamGb]);
 
   useEffect(() => {
     if (!sortedVariants || sortedVariants.length === 0) return;
     if (selectedQuant && sortedVariants.some((v) => v.quant === selectedQuant)) {
       return;
     }
-    if (activeQuant && sortedVariants.some((v) => v.quant === activeQuant)) {
-      setSelectedQuant(activeQuant);
-      return;
-    }
-    const downloaded = sortedVariants.find((v) => v.downloaded);
-    if (downloaded) {
-      setSelectedQuant(downloaded.quant);
-      return;
-    }
-    if (
-      recommendedQuant &&
-      sortedVariants.some((v) => v.quant === recommendedQuant)
-    ) {
-      setSelectedQuant(recommendedQuant);
-      return;
-    }
     setSelectedQuant(sortedVariants[0].quant);
-  }, [sortedVariants, activeQuant, selectedQuant, recommendedQuant]);
+  }, [sortedVariants, selectedQuant]);
 
   const selected =
     sortedVariants?.find((v) => v.quant === selectedQuant) ?? null;
@@ -519,6 +471,7 @@ export function GgufDownloadCard({
                     <QuantBadge
                       quant={v.quant}
                       fit={fit}
+                      showFit={Boolean(gpuGb)}
                       active={isLoaded}
                       variant="menu"
                     />

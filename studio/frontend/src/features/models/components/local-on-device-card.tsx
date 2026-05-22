@@ -2,16 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TrainIcon } from "@/components/icons/train-icon";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -31,6 +21,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DeleteConfirmDialog } from "./download-card";
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
 
@@ -212,36 +203,22 @@ export function LocalOnDeviceCard({
           </div>
         </div>
       </div>
-      <AlertDialog
+      <DeleteConfirmDialog
         open={deleteOpen}
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-      >
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove{" "}
-              <span className="font-medium text-foreground">{repoId}</span> and
-              its downloaded files from disk. You can re-download it later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={deleting}
-              onClick={(e) => {
-                e.preventDefault();
-                void handleDelete();
-              }}
-            >
-              {deleting ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title="Delete cached model?"
+        deleting={deleting}
+        onConfirm={() => void handleDelete()}
+        description={
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">{repoId}</span> and
+            its downloaded files from disk. You can re-download it later.
+          </>
+        }
+      />
     </div>
   );
 }

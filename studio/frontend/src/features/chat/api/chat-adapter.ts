@@ -264,7 +264,7 @@ function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
-  
+
   for (const part of message.content ?? []) {
     if (part.type === "image" && "image" in part) {
       const src = (part as { image: string }).image;
@@ -278,7 +278,7 @@ function collectImageParts(
       }
     }
   }
-  
+
   if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
     for (const attachment of message.attachments ?? []) {
       for (const part of attachment.content ?? []) {
@@ -298,7 +298,7 @@ function collectImageParts(
       }
     }
   }
-  
+
   return parts;
 }
 
@@ -1381,7 +1381,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 runtime.setToolStatus(toolStatusText || null);
                 continue;
               }
-    
+
               // Emit tool-call content parts for assistant-ui.
               // On tool_start: add a new tool-call part (renders in "running" state).
               // On tool_end: set result on the existing part (transitions to "complete").

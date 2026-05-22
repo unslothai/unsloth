@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Input } from "@/components/ui/input";
+import { matchTokens, tokenizeQuery } from "@/lib/search-text";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -46,26 +47,6 @@ import type {
   ModelSelectorChangeMeta,
 } from "./types";
 import { buildRecentRank } from "@/features/chat/model-config/recent-models";
-
-function normalizeForSearch(s: string): string {
-  return s.toLowerCase().replace(/[\s\-_\.]/g, "");
-}
-
-function tokenizeQuery(query: string): string[] {
-  return query
-    .split(/\s+/)
-    .map((token) => normalizeForSearch(token))
-    .filter((token) => token.length > 0);
-}
-
-function matchTokens(target: string, tokens: readonly string[]): boolean {
-  if (tokens.length === 0) return true;
-  const haystack = normalizeForSearch(target);
-  for (const token of tokens) {
-    if (!haystack.includes(token)) return false;
-  }
-  return true;
-}
 
 function ListLabel({ children }: { children: ReactNode }) {
   return (
@@ -252,13 +233,14 @@ function GgufVariantExpander({
   const [hasVision, setHasVision] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hfToken = useHfTokenStore((s) => s.token) || undefined;
 
   useEffect(() => {
     let canceled = false;
     setLoading(true);
     setError(null);
 
-    listGgufVariants(repoId)
+    listGgufVariants(repoId, hfToken)
       .then((res) => {
         if (canceled) return;
         setVariants(res.variants);
@@ -278,7 +260,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId]);
+  }, [repoId, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -521,29 +503,35 @@ export function HubModelPicker({
     const loadKey = `${inventoryVersion}::${hfToken ?? ""}`;
     if (loadedKeyRef.current === loadKey) return;
     loadedKeyRef.current = loadKey;
+    const controller = new AbortController();
+    const { signal } = controller;
     refreshLocalModelsList();
     let done = 0;
     const check = () => {
+      if (signal.aborted) return;
       if (++done >= 2) {
         setCachedReady(true);
         _cachedInventoryVersion = inventoryVersion;
         _cachedToken = hfToken ?? null;
       }
     };
-    listCachedGguf(hfToken)
+    listCachedGguf(hfToken, signal)
       .then((v) => {
+        if (signal.aborted) return;
         _cachedGgufCache = v;
         setCachedGguf(v);
       })
       .catch(() => {})
       .finally(check);
-    listCachedModels(hfToken)
+    listCachedModels(hfToken, signal)
       .then((v) => {
+        if (signal.aborted) return;
         _cachedModelsCache = v;
         setCachedModels(v);
       })
       .catch(() => {})
       .finally(check);
+    return () => controller.abort();
   }, [refreshLocalModelsList, inventoryVersion, hfToken]);
 
   const filterTokens = useMemo(() => tokenizeQuery(filter), [filter]);
@@ -600,7 +588,7 @@ export function HubModelPicker({
   const filteredModels = useMemo(
     () =>
       cachedModels.filter(
-        (c) => matchesFilter(c.repo_id) && isRepoCompatible(c),
+        (c) => !c.partial && matchesFilter(c.repo_id) && isRepoCompatible(c),
       ),
     [cachedModels, isRepoCompatible, matchesFilter],
   );
@@ -748,21 +736,24 @@ export function HubModelPicker({
                 <>
                   <ListLabel>External</ListLabel>
                   {sortedLmStudio.map((m) => {
-                      const isGguf =
-                        isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                      // A standalone .gguf file is one weight to load directly;
+                      // only a GGUF repo/directory (named *-GGUF) holds multiple
+                      // variants to expand. Detecting both keeps the label and
+                      // the click path in agreement.
+                      const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
+                      const isGgufDir =
+                        !isGgufFile &&
+                        (isGgufRepo(m.id) || isGgufRepo(m.display_name));
+                      const isGguf = isGgufFile || isGgufDir;
                       return (
                         <div key={m.id}>
                           <ModelRow
                             label={m.model_id ?? m.display_name}
-                            meta={
-                              isGguf || m.path.toLowerCase().endsWith(".gguf")
-                                ? "GGUF"
-                                : "Local"
-                            }
+                            meta={isGguf ? "GGUF" : "Local"}
                             selected={value === m.id}
-                            expanded={isGguf && expandedGguf === m.id}
+                            expanded={isGgufDir && expandedGguf === m.id}
                             onClick={() => {
-                              if (isGguf) {
+                              if (isGgufDir) {
                                 setExpandedGguf((prev) =>
                                   prev === m.id ? null : m.id,
                                 );
@@ -770,8 +761,8 @@ export function HubModelPicker({
                                 onPick({
                                   id: m.id,
                                   displayName: m.model_id ?? m.display_name,
-                                  isGguf: false,
-                                  supportsTrustRemoteCode: true,
+                                  isGguf: isGgufFile,
+                                  supportsTrustRemoteCode: !isGgufFile,
                                   meta: {
                                     source: "local",
                                     isLora: false,
@@ -782,7 +773,7 @@ export function HubModelPicker({
                             }}
                             vramStatus={null}
                           />
-                          {expandedGguf === m.id && (
+                          {isGgufDir && expandedGguf === m.id && (
                             <GgufVariantExpander
                               repoId={m.id}
                               displayName={m.model_id ?? m.display_name}

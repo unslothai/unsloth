@@ -29,7 +29,11 @@ import {
   listLocalModels,
   useTrainingConfigStore,
 } from "@/features/training";
-import { extractParamLabel, useInventoryVersion } from "@/features/models";
+import {
+  extractParamLabel,
+  modelShortName,
+  useInventoryVersion,
+} from "@/features/models";
 import { usePlatformStore } from "@/config/env";
 import {
   classifyUnslothSupport,
@@ -39,6 +43,7 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { cn, formatCompact } from "@/lib/utils";
+import { matchTokens, tokenizeQuery } from "@/lib/search-text";
 import {
   type VramFitStatus,
   type TrainingMethod as VramTrainingMethod,
@@ -47,6 +52,12 @@ import {
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import type { TrainingMethod } from "@/types/training";
 import {
+  TRAINING_METHOD_DESCRIPTIONS,
+  TRAINING_METHOD_DOTS,
+  TRAINING_METHOD_HINTS,
+  TRAINING_METHOD_LABELS,
+} from "@/features/training/lib/training-method-meta";
+import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   ChipIcon,
@@ -54,61 +65,22 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   PICKER_TABS,
   type PickerTab,
   PickerTabToggle,
+  RetryButton,
   isHfAuthError,
+  looksLikeLocalPath,
 } from "./picker-tab-toggle";
+import { useHfErrorToast } from "./use-hf-error-toast";
 
 const TRIGGER_BASE = cn(
   "menu-trigger field-soft inline-flex h-9 items-center gap-1.5 rounded-[12px] px-3 text-[12.5px] text-muted-foreground transition-colors",
   "focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
 );
-
-const METHOD_DOTS: Record<TrainingMethod, string> = {
-  qlora: "bg-emerald-500/70",
-  lora: "bg-sky-500/70",
-  full: "bg-amber-500/70",
-  cpt: "bg-violet-500/70",
-};
-
-const METHOD_LABELS: Record<TrainingMethod, string> = {
-  qlora: "QLoRA",
-  lora: "LoRA",
-  full: "Full Fine-tune",
-  cpt: "Continued Pretraining",
-};
-
-const METHOD_DESCRIPTIONS: Record<TrainingMethod, string> = {
-  qlora: "QLoRA (4-bit)",
-  lora: "LoRA (16-bit)",
-  full: "Full Fine-tune",
-  cpt: "Continued Pretraining",
-};
-
-const METHOD_HINTS: Record<TrainingMethod, string> = {
-  qlora: "4-bit quantization. Lowest VRAM, fastest to start.",
-  lora: "16-bit adapters. Balanced quality and memory.",
-  full: "Trains all weights. Highest quality, needs the most VRAM.",
-  cpt: "Continued pretraining for new domains or languages.",
-};
-
-function modelDisplayName(id: string): string {
-  const tail = id.split("/").pop() ?? id;
-  return tail;
-}
-
-function looksLikeLocalPath(query: string): boolean {
-  return (
-    /^[/.~]/.test(query) ||
-    query.includes("\\") ||
-    /^[a-zA-Z]:[\\/]/.test(query)
-  );
-}
 
 export function TrainModelPicker() {
   const gpu = useGpuInfo();
@@ -129,6 +101,8 @@ export function TrainModelPicker() {
   const [deviceQuery, setDeviceQuery] = useState("");
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
   const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
+  const [localModelsError, setLocalModelsError] = useState<string | null>(null);
+  const [localRetryToken, setLocalRetryToken] = useState(0);
   const inventoryVersion = useInventoryVersion();
   const loadedInventoryVersionRef = useRef<number>(-1);
 
@@ -141,6 +115,7 @@ export function TrainModelPicker() {
     isLoading: isLoadingHf,
     isLoadingMore: isLoadingHfMore,
     fetchMore: fetchMoreHf,
+    retry: retryHf,
     error: hfError,
   } = useHfModelSearch(debouncedHubQuery, {
     task,
@@ -150,54 +125,43 @@ export function TrainModelPicker() {
     enabled: open && tab === "hub",
   });
 
-  const lastToastedErrorRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!hfError) {
-      lastToastedErrorRef.current = null;
-      return;
-    }
-    if (lastToastedErrorRef.current === hfError) return;
-    lastToastedErrorRef.current = hfError;
-    if (isHfAuthError(hfError)) {
-      toast.error("Hugging Face token rejected", {
-        id: "hf-token-rejected",
-        description:
-          "Your token was refused. Update it in Settings → Hugging Face to search models.",
-      });
-    } else {
-      toast.error("Couldn't reach Hugging Face", {
-        id: "hf-search-failed",
-        description: hfError,
-      });
-    }
-  }, [hfError]);
+  useHfErrorToast(hfError, "models");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || tab !== "device") return;
     if (loadedInventoryVersionRef.current === inventoryVersion) return;
     const controller = new AbortController();
     setIsLoadingLocalModels(true);
+    setLocalModelsError(null);
     void listLocalModels(controller.signal)
       .then((models) => {
         if (controller.signal.aborted) return;
         setLocalModels(models);
         loadedInventoryVersionRef.current = inventoryVersion;
       })
-      .catch(() => {
-        // Silent: empty list is fine for the picker; the user can still type
-        // an HF id or select Hugging Face tab.
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setLocalModelsError(
+          err instanceof Error ? err.message : "Couldn't scan local models",
+        );
       })
       .finally(() => {
         if (controller.signal.aborted) return;
         setIsLoadingLocalModels(false);
       });
     return () => controller.abort();
-  }, [open, inventoryVersion]);
+  }, [open, tab, inventoryVersion, localRetryToken]);
+
+  const retryLocalModels = useCallback(() => {
+    loadedInventoryVersionRef.current = -1;
+    setLocalRetryToken((token) => token + 1);
+  }, []);
 
   const deviceType = usePlatformStore((s) => s.deviceType);
   const trainableLocalModels = useMemo(
     () =>
       localModels.filter((m) => {
+        if (m.partial) return false;
         // GGUF + LM Studio: never trainable in Unsloth.
         if (m.source === "lmstudio") return false;
         if (m.path.toLowerCase().endsWith(".gguf")) return false;
@@ -223,19 +187,22 @@ export function TrainModelPicker() {
   );
 
   const filteredLocalModels = useMemo(() => {
-    const q = deviceQuery.trim().toLowerCase();
-    if (!q) return trainableLocalModels;
-    return trainableLocalModels.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) ||
-        m.display_name.toLowerCase().includes(q) ||
-        m.path.toLowerCase().includes(q),
+    const tokens = tokenizeQuery(deviceQuery);
+    if (tokens.length === 0) return trainableLocalModels;
+    return trainableLocalModels.filter((m) =>
+      matchTokens(`${m.id} ${m.display_name} ${m.path}`, tokens),
     );
   }, [trainableLocalModels, deviceQuery]);
 
   const hubResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
-    if (selectedModel && !ids.includes(selectedModel)) ids.push(selectedModel);
+    if (
+      selectedModel &&
+      !looksLikeLocalPath(selectedModel) &&
+      !ids.includes(selectedModel)
+    ) {
+      ids.push(selectedModel);
+    }
     return applyPriorityOrdering(ids);
   }, [hfResults, selectedModel]);
 
@@ -276,7 +243,7 @@ export function TrainModelPicker() {
     setOpen(false);
   }
 
-  const display = selectedModel ? modelDisplayName(selectedModel) : null;
+  const display = selectedModel ? modelShortName(selectedModel) : null;
   const activeQuery = (tab === "hub" ? hubQuery : deviceQuery).trim();
   const hasExactMatch =
     activeQuery.length === 0
@@ -400,9 +367,11 @@ export function TrainModelPicker() {
               <DeviceList
                 items={filteredLocalModels}
                 isLoading={isLoadingLocalModels}
+                error={localModelsError}
                 value={selectedModel}
                 hasQuery={activeQuery.length > 0}
                 onPick={pick}
+                onRetry={retryLocalModels}
               />
             ) : (
               <HubList
@@ -415,6 +384,7 @@ export function TrainModelPicker() {
                 hasQuery={activeQuery.length > 0}
                 error={hfError}
                 onPick={pick}
+                onRetry={retryHf}
                 sentinelRef={sentinelRef}
               />
             )}
@@ -428,15 +398,19 @@ export function TrainModelPicker() {
 function DeviceList({
   items,
   isLoading,
+  error,
   value,
   hasQuery,
   onPick,
+  onRetry,
 }: {
   items: LocalModelInfo[];
   isLoading: boolean;
+  error: string | null;
   value: string | null;
   hasQuery: boolean;
   onPick: (id: string) => void;
+  onRetry: () => void;
 }) {
   if (isLoading) {
     return (
@@ -446,6 +420,19 @@ function DeviceList({
     );
   }
   if (items.length === 0) {
+    if (error) {
+      return (
+        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
+          <p className="text-[12.5px] font-medium text-foreground">
+            Couldn't scan local models
+          </p>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            {error}
+          </p>
+          <RetryButton onRetry={onRetry} />
+        </div>
+      );
+    }
     // When the user has typed a custom query the parent renders a
     // "Use as local path" affordance above this list — don't compete with
     // a contradictory "no models found" empty state in that case.
@@ -512,6 +499,7 @@ function HubList({
   hasQuery,
   error,
   onPick,
+  onRetry,
   sentinelRef,
 }: {
   ids: string[];
@@ -526,6 +514,7 @@ function HubList({
   hasQuery: boolean;
   error: string | null;
   onPick: (id: string) => void;
+  onRetry: () => void;
   sentinelRef: React.RefObject<HTMLDivElement | null>;
 }) {
   if (isLoading && ids.length === 0) {
@@ -548,6 +537,7 @@ function HubList({
               ? "Update your token in Settings → Hugging Face, then retry."
               : error}
           </p>
+          <RetryButton onRetry={onRetry} />
         </div>
       );
     }
@@ -650,11 +640,11 @@ export function TrainingMethodSelect() {
             aria-hidden="true"
             className={cn(
               "size-2 shrink-0 rounded-full",
-              METHOD_DOTS[trainingMethod] ?? "bg-muted-foreground",
+              TRAINING_METHOD_DOTS[trainingMethod] ?? "bg-muted-foreground",
             )}
           />
           <span className="truncate font-medium text-foreground">
-            {METHOD_LABELS[trainingMethod] ?? trainingMethod}
+            {TRAINING_METHOD_LABELS[trainingMethod] ?? trainingMethod}
           </span>
         </span>
       </SelectTrigger>
@@ -676,10 +666,10 @@ export function TrainingMethodSelect() {
                       aria-hidden="true"
                       className={cn(
                         "size-2 shrink-0 rounded-full",
-                        METHOD_DOTS[method],
+                        TRAINING_METHOD_DOTS[method],
                       )}
                     />
-                    {METHOD_DESCRIPTIONS[method]}
+                    {TRAINING_METHOD_DESCRIPTIONS[method]}
                   </span>
                 </SelectItem>
               </TooltipTrigger>
@@ -688,7 +678,7 @@ export function TrainingMethodSelect() {
                 sideOffset={10}
                 className="max-w-[220px] text-[11.5px] leading-snug"
               >
-                {METHOD_HINTS[method]}
+                {TRAINING_METHOD_HINTS[method]}
               </TooltipContent>
             </Tooltip>
           ),
@@ -697,4 +687,3 @@ export function TrainingMethodSelect() {
     </Select>
   );
 }
-

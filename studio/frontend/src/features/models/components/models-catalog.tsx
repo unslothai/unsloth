@@ -29,6 +29,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ModelDeleteAction } from "@/components/assistant-ui/model-selector/model-delete-action";
 import {
   Tooltip,
@@ -41,6 +42,7 @@ import {
   listGgufVariants,
 } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import { deleteCachedDataset } from "@/features/training/api/datasets-api";
 import { OwnerAvatar } from "./owner-avatar";
 import { formatBytes, formatRelativeShort } from "../lib/format";
@@ -73,6 +75,7 @@ function CachedSizeChip({
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const fetchedForRef = useRef<string | null>(null);
   const needsVariantFetch = isGguf && !isDataset;
+  const hfToken = useHfTokenStore((s) => s.token) || undefined;
 
   useEffect(() => {
     setVariants(null);
@@ -83,7 +86,7 @@ function CachedSizeChip({
     if (!needsVariantFetch) return;
     if (fetchedForRef.current === repoId) return;
     fetchedForRef.current = repoId;
-    listGgufVariants(repoId)
+    listGgufVariants(repoId, hfToken)
       .then((res) => {
         if (fetchedForRef.current !== repoId) return;
         setVariants(res.variants.filter((v) => v.downloaded));
@@ -92,7 +95,7 @@ function CachedSizeChip({
         if (fetchedForRef.current !== repoId) return;
         setVariants([]);
       });
-  }, [needsVariantFetch, repoId]);
+  }, [needsVariantFetch, repoId, hfToken]);
 
   const trigger = (
     <span onClick={(e) => e.stopPropagation()}>
@@ -155,6 +158,7 @@ function StatChip({
 
 function CatalogRow({
   selected,
+  active,
   onClick,
   tooltip,
   children,
@@ -170,6 +174,7 @@ function CatalogRow({
       role="button"
       tabIndex={0}
       data-selected={selected || undefined}
+      data-active={active || undefined}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
@@ -640,6 +645,7 @@ const InventoryRow = memo(function InventoryRow({
           pipelineTag: row.pipelineTag,
           tags: row.tags,
           libraryName: row.libraryName,
+          quantMethod: row.quantMethod,
           deviceType,
         }).status === "unsupported"
       );
@@ -790,6 +796,62 @@ const InventoryRow = memo(function InventoryRow({
   );
 });
 
+// Approximate row height; measureElement corrects per-row variance after paint.
+const ROW_ESTIMATE_PX = 56;
+
+// Windowed list: only rows near the viewport mount, so avatars and tooltips
+// render only for visible rows however many results stream in.
+function VirtualRows<T>({
+  items,
+  scrollRef,
+  getKey,
+  renderRow,
+}: {
+  items: readonly T[];
+  scrollRef: RefObject<HTMLDivElement | null>;
+  getKey: (item: T, index: number) => string;
+  renderRow: (item: T) => ReactNode;
+}) {
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_ESTIMATE_PX,
+    overscan: 10,
+    getItemKey: (index) => getKey(items[index], index),
+  });
+
+  return (
+    <ul
+      style={{
+        height: virtualizer.getTotalSize(),
+        position: "relative",
+        width: "100%",
+      }}
+    >
+      {virtualizer.getVirtualItems().map((virtualRow) => (
+        <li
+          key={virtualRow.key}
+          data-index={virtualRow.index}
+          ref={virtualizer.measureElement}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            transform: `translateY(${virtualRow.start}px)`,
+          }}
+        >
+          {renderRow(items[virtualRow.index])}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type InventoryItem =
+  | { variant: "cached"; row: CachedInventoryRow }
+  | { variant: "local"; row: LocalInventoryRow };
+
 export function ModelsCatalog({
   tab,
   discoverRows,
@@ -845,6 +907,15 @@ export function ModelsCatalog({
 }) {
   const [scrolled, setScrolled] = useState(false);
   const deviceType = usePlatformStore((s) => s.deviceType);
+
+  // One scroll container, so cached + local share a single virtual window.
+  const inventoryItems = useMemo<InventoryItem[]>(
+    () => [
+      ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
+      ...localRows.map((row) => ({ variant: "local" as const, row })),
+    ],
+    [cachedRows, localRows],
+  );
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -919,22 +990,23 @@ export function ModelsCatalog({
               }
             />
           ) : (
-            <ul>
-              {discoverRows.map((row) => (
-                <li key={row.id}>
-                  <DiscoverModelRow
-                    row={row}
-                    selected={selectedId === row.id}
-                    active={
-                      activeCheckpoint?.toLowerCase() === row.id.toLowerCase()
-                    }
-                    deviceType={deviceType}
-                    isDataset={isDataset}
-                    onSelect={onSelect}
-                  />
-                </li>
-              ))}
-            </ul>
+            <VirtualRows
+              items={discoverRows}
+              scrollRef={scrollRef}
+              getKey={(row) => row.id}
+              renderRow={(row) => (
+                <DiscoverModelRow
+                  row={row}
+                  selected={selectedId === row.id}
+                  active={
+                    activeCheckpoint?.toLowerCase() === row.id.toLowerCase()
+                  }
+                  deviceType={deviceType}
+                  isDataset={isDataset}
+                  onSelect={onSelect}
+                />
+              )}
+            />
           )}
 
           <div ref={sentinelRef} className="h-px" />
@@ -964,36 +1036,23 @@ export function ModelsCatalog({
           }
         />
       ) : (
-        <ul>
-          {cachedRows.map((row) => (
-            <li key={`cached-${row.id}`}>
-              <InventoryRow
-                row={row}
-                selected={selectedId === row.id}
-                activeCheckpoint={activeCheckpoint}
-                isDataset={isDataset}
-                dimmed={!inventoryRowMatches(row, inventoryTokens)}
-                deviceType={deviceType}
-                onSelect={onSelect}
-                onChange={onInventoryChange}
-              />
-            </li>
-          ))}
-          {localRows.map((row) => (
-            <li key={`local-${row.id}`}>
-              <InventoryRow
-                row={row}
-                selected={selectedId === row.id}
-                activeCheckpoint={activeCheckpoint}
-                isDataset={isDataset}
-                dimmed={!inventoryRowMatches(row, inventoryTokens)}
-                deviceType={deviceType}
-                onSelect={onSelect}
-                onChange={onInventoryChange}
-              />
-            </li>
-          ))}
-        </ul>
+        <VirtualRows
+          items={inventoryItems}
+          scrollRef={scrollRef}
+          getKey={(item) => `${item.variant}-${item.row.id}`}
+          renderRow={(item) => (
+            <InventoryRow
+              row={item.row}
+              selected={selectedId === item.row.id}
+              activeCheckpoint={activeCheckpoint}
+              isDataset={isDataset}
+              dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
+              deviceType={deviceType}
+              onSelect={onSelect}
+              onChange={onInventoryChange}
+            />
+          )}
+        />
       )}
       </div>
       <div

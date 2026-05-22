@@ -9,7 +9,7 @@ import {
   toBackendTrainingType,
 } from "../lib/training-methods";
 
-function parseSliceValue(value: string | null): number | null {
+export function parseSliceValue(value: string | null): number | null {
   if (value == null) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;

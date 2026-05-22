@@ -14,6 +14,7 @@ import {
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { modelShortName } from "@/features/models/lib/format";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
@@ -269,6 +270,7 @@ function PendingImageThumb({
 type CompareModelConfig = {
   kvCacheDtype: string | null;
   speculativeType: string | null;
+  specDraftNMax: number | null;
   customContextLength: number | null;
   chatTemplateOverride: string | null;
   trustRemoteCode?: boolean;
@@ -589,17 +591,13 @@ export function SharedComposer({
       const fallbackMaxSeqLength = store.params.maxSeqLength;
       const fallbackTrustRemoteCode = store.params.trustRemoteCode ?? false;
 
-      function modelDisplayName(id: string): string {
-        const parts = id.split("/");
-        return parts[parts.length - 1] || id;
-      }
-
       function resolveSelectionLoad(sel: CompareModelSelection): {
         maxSeqLength: number;
         trustRemoteCode: boolean;
         chatTemplateOverride: string | null;
         cacheTypeKv: string | null;
         speculativeType: string | null;
+        specDraftNMax: number | null;
       } {
         const config = sel.config;
         const trustRemoteCode =
@@ -625,6 +623,7 @@ export function SharedComposer({
           chatTemplateOverride,
           cacheTypeKv: config?.kvCacheDtype ?? null,
           speculativeType: config?.speculativeType ?? null,
+          specDraftNMax: config?.specDraftNMax ?? null,
         };
       }
 
@@ -647,7 +646,7 @@ export function SharedComposer({
           });
           if (validation.requires_trust_remote_code && !load.trustRemoteCode) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              `${modelShortName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
             );
           }
         }
@@ -662,6 +661,7 @@ export function SharedComposer({
           chat_template_override: load.chatTemplateOverride,
           cache_type_kv: load.cacheTypeKv,
           speculative_type: load.speculativeType,
+          spec_draft_n_max: load.specDraftNMax,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -717,8 +717,8 @@ export function SharedComposer({
       if (handle1) handle1.appendMessage(content);
       if (handle2) handle2.appendMessage(content);
 
-      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
-      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const name1 = model1?.id ? modelShortName(model1.id) : "";
+      const name2 = model2?.id ? modelShortName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);

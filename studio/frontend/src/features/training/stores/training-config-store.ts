@@ -88,6 +88,7 @@ const initialState: TrainingConfigState = {
   isDatasetImage: null,
   isDatasetAudio: false,
   datasetCheckFailed: false,
+  datasetKnownCached: false,
   maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -106,6 +107,10 @@ let _trainOnCompletionsManuallySet = false;
 // since the last model load. When false, switching training method
 // auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
+
+// Mirrors _learningRateManuallySet: blocks the async auto-select from
+// overriding a method the user picked during its hardware-fetch window.
+let _trainingMethodManuallySet = false;
 
 // Stash the model-config-provided (YAML) learning rate so that
 // setTrainingMethod can restore it when switching back from full to adapter.
@@ -302,6 +307,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             _trainOnCompletionsManuallySet = false;
             _learningRateManuallySet = false;
+            _trainingMethodManuallySet = false;
             _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
@@ -350,6 +356,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
                   if (get().trainingMethod === "cpt") return;
+                  if (_trainingMethodManuallySet) return;
                   if (method) {
                     const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
@@ -379,6 +386,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelDefaultsAppliedFor: modelName,
               maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
             });
+
+            recheckSelectedDataset();
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
@@ -405,6 +414,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   isAudioModel: false,
                   isCheckingVision: false,
                 });
+                recheckSelectedDataset();
               })
               .catch(() => {
                 if (get().selectedModel !== modelName) return;
@@ -463,6 +473,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
       };
 
+      const recheckSelectedDataset = () => {
+        const state = get();
+        const datasetName =
+          state.datasetSource === "huggingface"
+            ? state.dataset
+            : state.uploadedFile;
+        if (!datasetName) return;
+        runDatasetCheck(datasetName, state.datasetSplit || "train");
+      };
+
       const resetDatasetState = (): Partial<TrainingConfigStore> => ({
         datasetSubset: null,
         datasetSplit: null,
@@ -498,7 +518,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isVisionModel: false,
             isEmbeddingModel: false,
             isAudioModel: false,
+            isDatasetImage: null,
             isDatasetAudio: false,
+            datasetCheckFailed: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
@@ -539,6 +561,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           void loadAndApplyModelDefaults(state.selectedModel);
         },
         setTrainingMethod: (trainingMethod) => {
+          _trainingMethodManuallySet = true;
           const state = get();
           set(
             buildTrainingMethodPatch(
@@ -549,7 +572,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           );
         },
         setDatasetSource: (datasetSource) => set({ datasetSource }),
-        selectHfDataset: (dataset) => {
+        selectHfDataset: (dataset, opts) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
@@ -558,6 +581,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             dataset,
             uploadedFile: null,
             ...resetDatasetState(),
+            datasetKnownCached: !!opts?.knownCached,
           });
           if (dataset) {
             runDatasetCheck(dataset, "train");
@@ -572,6 +596,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             dataset: null,
             uploadedFile,
             ...resetDatasetState(),
+            datasetKnownCached: false,
           });
           if (uploadedFile) {
             runDatasetCheck(uploadedFile, "train");
@@ -613,6 +638,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetAudio: false,
             isCheckingDataset: false,
             datasetCheckFailed: false,
+            datasetKnownCached: false,
           });
         },
         setDatasetSubset: (datasetSubset) => {
@@ -629,6 +655,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isCheckingDataset: false,
             datasetCheckFailed: false,
           });
+
+          const state = get();
+          const datasetName =
+            state.datasetSource === "huggingface"
+              ? state.dataset
+              : state.uploadedFile;
+          if (!datasetName) return;
+
+          runDatasetCheck(datasetName, "train");
         },
         setDatasetSplit: (datasetSplit) => {
           set({
@@ -761,6 +796,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
+          _trainingMethodManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
           set(initialState);

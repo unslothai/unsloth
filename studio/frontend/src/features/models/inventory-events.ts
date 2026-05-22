@@ -14,7 +14,7 @@ export function getInventoryVersion(): number {
 
 export function bumpInventoryVersion(): void {
   _version += 1;
-  for (const fn of listeners) fn();
+  for (const fn of [...listeners]) fn();
 }
 
 export function subscribeInventory(listener: Listener): () => void {

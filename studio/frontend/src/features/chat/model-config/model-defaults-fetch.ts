@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { subscribeInventory } from "@/features/models/inventory-events";
-import { getHfToken, useHfTokenStore } from "@/stores/hf-token-store";
+import { getHfToken } from "@/stores/hf-token-store";
 import { getModelConfig } from "@/features/training/api/models-api";
 
 export interface ModelDefaults {
@@ -12,6 +12,7 @@ export interface ModelDefaults {
 
 const cache = new Map<string, ModelDefaults>();
 const inflight = new Map<string, Promise<ModelDefaults>>();
+const CACHE_MAX = 128;
 
 const EMPTY: ModelDefaults = { maxPositionEmbeddings: null, chatTemplate: null };
 
@@ -19,16 +20,28 @@ subscribeInventory(() => {
   cache.clear();
 });
 
-useHfTokenStore.subscribe((state, prev) => {
-  if (state.token !== prev.token) cache.clear();
-});
+function cacheKey(modelId: string, token: string): string {
+  return `${modelId}::${token}`;
+}
+
+function storeDefaults(key: string, result: ModelDefaults): void {
+  cache.set(key, result);
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 export function invalidateModelDefaults(modelId?: string): void {
   if (!modelId) {
     cache.clear();
     return;
   }
-  cache.delete(modelId);
+  const prefix = `${modelId}::`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
 }
 
 function withCallerAbort(
@@ -59,17 +72,23 @@ export function fetchModelDefaults(
   signal?: AbortSignal,
 ): Promise<ModelDefaults> {
   if (!modelId) return Promise.resolve(EMPTY);
-  const cached = cache.get(modelId);
-  if (cached) return Promise.resolve(cached);
+  const token = getHfToken();
+  const key = cacheKey(modelId, token);
+  const cached = cache.get(key);
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return Promise.resolve(cached);
+  }
 
-  let shared = inflight.get(modelId);
+  let shared = inflight.get(key);
   if (!shared) {
     shared = (async (): Promise<ModelDefaults> => {
       try {
         const details = await getModelConfig(
           modelId,
           undefined,
-          getHfToken() || undefined,
+          token || undefined,
         );
         const result: ModelDefaults = {
           maxPositionEmbeddings:
@@ -82,18 +101,21 @@ export function fetchModelDefaults(
               ? details.chat_template
               : null,
         };
-        cache.set(modelId, result);
+        storeDefaults(key, result);
         return result;
       } finally {
-        inflight.delete(modelId);
+        inflight.delete(key);
       }
     })();
-    inflight.set(modelId, shared);
+    inflight.set(key, shared);
   }
 
   return signal ? withCallerAbort(shared, signal) : shared;
 }
 
-export function readCachedModelDefaults(modelId: string): ModelDefaults | null {
-  return cache.get(modelId) ?? null;
+export function readCachedModelDefaults(
+  modelId: string,
+  token: string = getHfToken(),
+): ModelDefaults | null {
+  return cache.get(cacheKey(modelId, token)) ?? null;
 }

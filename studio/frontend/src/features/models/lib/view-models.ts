@@ -82,6 +82,10 @@ function compactNumber(value: number): string {
   }).format(value);
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 export function toHfModelResult(raw: unknown): HfModelResult | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -115,9 +119,10 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
 
   return {
     id: model.name,
-    downloads: model.downloads ?? 0,
-    likes: model.likes ?? 0,
-    totalParams: model.safetensors?.total ?? model.gguf?.total,
+    downloads: finiteNumber(model.downloads) ?? 0,
+    likes: finiteNumber(model.likes) ?? 0,
+    totalParams:
+      finiteNumber(model.safetensors?.total) ?? finiteNumber(model.gguf?.total),
     estimatedSizeBytes: estimateSizeFromDtypes(model.safetensors?.parameters),
     isGguf,
     tags: model.tags,
@@ -183,7 +188,7 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   }
 }
 
-function normalizeTimestamp(value?: number | null): number | null {
+export function normalizeTimestamp(value?: number | null): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
@@ -242,6 +247,7 @@ export function buildLocalInventoryRows(
       };
     })
     .sort((a, b) => {
+      if (Boolean(a.partial) !== Boolean(b.partial)) return a.partial ? 1 : -1;
       const sourceWeight = sourceSortWeight(a.source) - sourceSortWeight(b.source);
       if (sourceWeight !== 0) return sourceWeight;
       if (a.updatedAt && b.updatedAt && a.updatedAt !== b.updatedAt) {

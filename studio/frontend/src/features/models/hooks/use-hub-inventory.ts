@@ -17,8 +17,12 @@ import {
 import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { getHfToken } from "@/stores/hf-token-store";
 import type { InventoryHint } from "../components/download-section";
-import { bumpInventoryVersion } from "../inventory-events";
-import { buildLocalInventoryRows } from "../lib/view-models";
+import {
+  bumpInventoryVersion,
+  getInventoryVersion,
+  useInventoryVersion,
+} from "../inventory-events";
+import { buildLocalInventoryRows, normalizeTimestamp } from "../lib/view-models";
 import type { CachedInventoryRow, LocalInventoryRow } from "../types";
 
 export interface HubInventory {
@@ -60,6 +64,7 @@ function toCachedRow(
     pipeline_tag?: string | null;
     tags?: string[];
     library_name?: string | null;
+    quant_method?: string | null;
   },
   isGguf: boolean,
 ): CachedInventoryRow {
@@ -78,7 +83,13 @@ function toCachedRow(
     pipelineTag: row.pipeline_tag ?? null,
     tags: row.tags,
     libraryName: row.library_name ?? null,
+    quantMethod: row.quant_method ?? null,
   };
+}
+
+function compareCachedRows(a: CachedInventoryRow, b: CachedInventoryRow): number {
+  if (Boolean(a.partial) !== Boolean(b.partial)) return a.partial ? 1 : -1;
+  return a.repoId.localeCompare(b.repoId);
 }
 
 export function useHubInventory(isDatasetMode: boolean): HubInventory {
@@ -103,29 +114,37 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
 
   const lastSignatureRef = useRef<string | null>(null);
   const loadEpochRef = useRef(0);
+  // Version this hook itself last published. Lets the subscription below
+  // ignore its own bumps so an external mutation triggers exactly one
+  // refetch and a self-bump triggers none.
+  const selfVersionRef = useRef(getInventoryVersion());
   const loadInventory = useCallback((onSettled?: () => void) => {
     const epoch = ++loadEpochRef.current;
     const fresh = () => mountedRef.current && loadEpochRef.current === epoch;
     const hfToken = getHfToken() || undefined;
+    const onFetchError = (source: string) => (err: unknown) => {
+      console.warn(`Hub inventory: ${source} fetch failed`, err);
+      return null;
+    };
     const fetchers: Array<Promise<string | null>> = [
       listCachedGguf(hfToken)
         .then((rows) => {
           if (fresh()) setCachedGguf(rows);
           return sourceSignature(rows);
         })
-        .catch(() => null),
+        .catch(onFetchError("cached-gguf")),
       listCachedModels(hfToken)
         .then((rows) => {
           if (fresh()) setCachedModels(rows);
           return sourceSignature(rows);
         })
-        .catch(() => null),
+        .catch(onFetchError("cached-models")),
       listCachedDatasets()
         .then((rows) => {
           if (fresh()) setCachedDatasets(rows);
           return sourceSignature(rows);
         })
-        .catch(() => null),
+        .catch(onFetchError("cached-datasets")),
       listLocalModels()
         .then((response) => {
           if (fresh()) {
@@ -133,13 +152,13 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
           }
           return sourceSignature(response.models);
         })
-        .catch(() => null),
+        .catch(onFetchError("local-models")),
       listLocalDatasets()
         .then((response) => {
           if (fresh()) setLocalDatasets(response.datasets);
           return sourceSignature(response.datasets);
         })
-        .catch(() => null),
+        .catch(onFetchError("local-datasets")),
     ];
     void Promise.all(fetchers).then((parts) => {
       if (!fresh()) return;
@@ -149,10 +168,18 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
         models: parts[0] === null || parts[1] === null || parts[3] === null,
         datasets: parts[2] === null || parts[4] === null,
       });
-      const signature = parts.includes(null) ? null : parts.join("|");
-      if (signature === null || signature !== lastSignatureRef.current) {
+      // Build the signature with a per-slot sentinel for failed fetches rather
+      // than discarding it. A single flaky endpoint then bumps the global
+      // version once (when its slot flips to/from failed) instead of on every
+      // refresh, which would otherwise fan a down endpoint into an app-wide
+      // refetch storm across all useInventoryVersion consumers.
+      const signature = parts
+        .map((part, i) => (part === null ? ` fail:${i}` : part))
+        .join("|");
+      if (signature !== lastSignatureRef.current) {
         lastSignatureRef.current = signature;
         bumpInventoryVersion();
+        selfVersionRef.current = getInventoryVersion();
       }
       onSettled?.();
     });
@@ -199,12 +226,22 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
     loadInventory(() => setDownloadedReady(true));
   }, [loadInventory]);
 
+  // Refetch when any other surface (a download completing in the global
+  // panel, a fine-tune delete, a dataset upload) mutates on-disk inventory.
+  // Bumps this hook published itself are filtered via selfVersionRef.
+  const inventoryVersion = useInventoryVersion();
+  useEffect(() => {
+    if (inventoryVersion === selfVersionRef.current) return;
+    selfVersionRef.current = inventoryVersion;
+    loadInventory();
+  }, [inventoryVersion, loadInventory]);
+
   const cachedModelRows = useMemo<CachedInventoryRow[]>(
     () =>
       [
         ...cachedGguf.map((row) => toCachedRow(row, true)),
         ...cachedModels.map((row) => toCachedRow(row, false)),
-      ].sort((a, b) => a.repoId.localeCompare(b.repoId)),
+      ].sort(compareCachedRows),
     [cachedGguf, cachedModels],
   );
 
@@ -212,7 +249,7 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
     () =>
       cachedDatasets
         .map((row) => toCachedRow(row, false))
-        .sort((a, b) => a.repoId.localeCompare(b.repoId)),
+        .sort(compareCachedRows),
     [cachedDatasets],
   );
 
@@ -231,7 +268,7 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
           sourceLabel: "Local dataset",
           path: ds.path,
           isGguf: false,
-          updatedAt: ds.updated_at ?? null,
+          updatedAt: normalizeTimestamp(ds.updated_at),
         };
       })
       .sort((a, b) => a.title.localeCompare(b.title));

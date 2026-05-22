@@ -15,6 +15,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   EMBEDDING_TAGS,
   estimateSizeFromDtypes,
+  isGgufLike,
 } from "@/features/models/lib/hf-model-meta";
 
 export type HfSortKey =
@@ -286,6 +287,7 @@ const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
+  signal?: AbortSignal,
 ): typeof fetch {
   return (input, init) => {
     const rawUrl =
@@ -306,7 +308,7 @@ function makeSortFetch(
       effectiveSort && DESC_ONLY_SORTS.has(effectiveSort) ? "desc" : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
-    return fetch(url, init);
+    return fetch(url, signal ? { ...init, signal } : init);
   };
 }
 
@@ -322,8 +324,8 @@ function makeMapModel(
   return (raw: unknown): HfModelResult | null => {
     const m = raw as {
       name: string;
-      downloads: number;
-      likes: number;
+      downloads?: number;
+      likes?: number;
       task?: string;
       pipeline_tag?: string;
       library_name?: string;
@@ -346,7 +348,7 @@ function makeMapModel(
     }
     const isGguf =
       Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
-      /-GGUF(?:$|-)/i.test(m.name);
+      isGgufLike(m.name);
     if (excludeGguf && isGguf) {
       return null;
     }
@@ -358,8 +360,8 @@ function makeMapModel(
           : undefined;
     return {
       id: m.name,
-      downloads: m.downloads,
-      likes: m.likes,
+      downloads: m.downloads ?? 0,
+      likes: m.likes ?? 0,
       totalParams: m.safetensors?.total ?? m.gguf?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
@@ -412,8 +414,9 @@ async function* mergedModelIterator(
   pinnedId?: string,
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
+  signal?: AbortSignal,
 ): AsyncGenerator<unknown> {
-  const sortFetch = makeSortFetch(sortBy, direction);
+  const sortFetch = makeSortFetch(sortBy, direction, signal);
   const common = {
     additionalFields: ALL_FIELDS,
     fetch: sortFetch,
@@ -497,10 +500,11 @@ async function* priorityThenListingIterator(
   accessToken?: string,
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
+  signal?: AbortSignal,
 ): AsyncGenerator<unknown> {
   const common = {
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(sortBy, direction),
+    fetch: makeSortFetch(sortBy, direction, signal),
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -597,7 +601,7 @@ export function useHfModelSearch(
   }, [query]);
 
   const createIter = useCallback(
-    () => {
+    (signal: AbortSignal) => {
       // Channel scoping bypasses the unsloth-merge iterator: listings get a
       // hard owner/tag filter so the sidebar shows just that curated slice.
       // The user's text query (if any) is forwarded as a free-text filter
@@ -615,7 +619,7 @@ export function useHfModelSearch(
             ...(channelTags ? { tags: channelTags } : {}),
           },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection),
+          fetch: makeSortFetch(sortBy, sortDirection, signal),
           sort: sortBy,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
@@ -629,12 +633,13 @@ export function useHfModelSearch(
             accessToken,
             sortBy,
             sortDirection,
+            signal,
           ) as AsyncGenerator<unknown>;
         }
         return listModels({
           search: { ...(task ? { task } : {}) },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection),
+          fetch: makeSortFetch(sortBy, sortDirection, signal),
           sort: sortBy,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
@@ -653,6 +658,7 @@ export function useHfModelSearch(
         pinnedId,
         sortBy,
         sortDirection,
+        signal,
       ) as AsyncGenerator<unknown>;
     },
     [

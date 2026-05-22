@@ -21,11 +21,13 @@ interface DatasetSizeApiResponse {
   };
 }
 
-// A 404 means the repo genuinely has no size to report, so cache it for good.
-// A 429/5xx/network hiccup or a stalled socket is transient: cache it briefly
-// so one rate-limited burst doesn't pin the size to "unknown" until reload,
-// mirroring the transient-vs-permanent handling in hf-owner-avatar.ts.
+// 429/5xx/network hiccups are transient: cache briefly so a rate-limited burst
+// doesn't pin the size to "unknown" until reload. "longlived" is for answers
+// that are stable for a while but not forever — notably datasets-server 404s,
+// which often mean "not processed yet" rather than "never". "permanent" is only
+// for a genuinely missing repo (HF models API 404).
 const TRANSIENT_MISS_TTL_MS = 60_000;
+const LONGLIVED_MISS_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
 
 type SizeCacheEntry<T> =
@@ -33,7 +35,7 @@ type SizeCacheEntry<T> =
   | { kind: "miss-permanent" }
   | { kind: "miss-transient"; until: number };
 
-type LoadResult<T> = { value: T } | { miss: "permanent" | "transient" };
+type LoadResult<T> = { value: T } | { miss: "permanent" | "transient" | "longlived" };
 
 function readSizeCache<T>(
   cache: LruMap<string, SizeCacheEntry<T>>,
@@ -49,44 +51,47 @@ function readSizeCache<T>(
 }
 
 function fetchCachedSize<T>(
-  repoId: string,
+  cacheKey: string,
   cache: LruMap<string, SizeCacheEntry<T>>,
   inflight: Map<string, Promise<T | null>>,
   load: (signal: AbortSignal) => Promise<LoadResult<T>>,
 ): Promise<T | null> {
-  const entry = readSizeCache(cache, repoId);
+  const entry = readSizeCache(cache, cacheKey);
   if (entry) {
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
-  const existing = inflight.get(repoId);
+  const existing = inflight.get(cacheKey);
   if (existing) return existing;
 
   const promise = (async (): Promise<T | null> => {
     try {
       const result = await load(AbortSignal.timeout(FETCH_TIMEOUT_MS));
       if ("value" in result) {
-        cache.set(repoId, { kind: "value", value: result.value });
+        cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
       }
-      cache.set(
-        repoId,
-        result.miss === "permanent"
-          ? { kind: "miss-permanent" }
-          : { kind: "miss-transient", until: Date.now() + TRANSIENT_MISS_TTL_MS },
-      );
+      if (result.miss === "permanent") {
+        cache.set(cacheKey, { kind: "miss-permanent" });
+      } else {
+        const ttl =
+          result.miss === "longlived"
+            ? LONGLIVED_MISS_TTL_MS
+            : TRANSIENT_MISS_TTL_MS;
+        cache.set(cacheKey, { kind: "miss-transient", until: Date.now() + ttl });
+      }
       return null;
     } catch {
-      cache.set(repoId, {
+      cache.set(cacheKey, {
         kind: "miss-transient",
         until: Date.now() + TRANSIENT_MISS_TTL_MS,
       });
       return null;
     } finally {
-      inflight.delete(repoId);
+      inflight.delete(cacheKey);
     }
   })();
 
-  inflight.set(repoId, promise);
+  inflight.set(cacheKey, promise);
   return promise;
 }
 
@@ -106,11 +111,12 @@ export function fetchDatasetSize(
         { signal },
       );
       if (!res.ok) {
-        return { miss: res.status === 404 ? "permanent" : "transient" };
+        // datasets-server 404 often means "not processed yet", not "never".
+        return { miss: res.status === 404 ? "longlived" : "transient" };
       }
       const data = (await res.json()) as DatasetSizeApiResponse;
       const ds = data.size?.dataset;
-      if (!ds) return { miss: "permanent" };
+      if (!ds) return { miss: "longlived" };
       return {
         value: {
           numBytesOriginal: ds.num_bytes_original_files ?? null,
@@ -142,12 +148,16 @@ const WEIGHT_FILE_RE = /\.(safetensors|bin|pt|pth|ckpt|onnx|gguf)$/i;
 const modelCache = new LruMap<string, SizeCacheEntry<ModelSizeInfo>>(128);
 const modelInflight = new Map<string, Promise<ModelSizeInfo | null>>();
 
-export function fetchModelSize(repoId: string): Promise<ModelSizeInfo | null> {
-  return fetchCachedSize<ModelSizeInfo>(repoId, modelCache, modelInflight, async (signal) => {
+export function fetchModelSize(
+  repoId: string,
+  token?: string,
+): Promise<ModelSizeInfo | null> {
+  const cacheKey = token ? `${repoId}::${token}` : repoId;
+  return fetchCachedSize<ModelSizeInfo>(cacheKey, modelCache, modelInflight, async (signal) => {
     const path = repoId.split("/").map(encodeURIComponent).join("/");
     const res = await fetch(
       `https://huggingface.co/api/models/${path}?blobs=true`,
-      { signal },
+      { signal, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
     );
     if (!res.ok) {
       return { miss: res.status === 404 ? "permanent" : "transient" };

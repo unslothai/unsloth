@@ -75,6 +75,7 @@ export interface TrainingConfigState {
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   datasetCheckFailed: boolean;
+  datasetKnownCached: boolean;
   trustRemoteCode: boolean;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
@@ -94,7 +95,10 @@ export interface TrainingConfigActions {
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
   setDatasetSource: (source: DatasetSource) => void;
-  selectHfDataset: (dataset: string | null) => void;
+  selectHfDataset: (
+    dataset: string | null,
+    opts?: { knownCached?: boolean },
+  ) => void;
   selectLocalDataset: (file: string | null) => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;

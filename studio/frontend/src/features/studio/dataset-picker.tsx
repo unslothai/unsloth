@@ -15,24 +15,33 @@ import {
   listLocalDatasets,
 } from "@/features/training/api/datasets-api";
 import type { LocalDatasetInfo } from "@/features/training/types/datasets";
-import { useDebouncedValue, useHfDatasetSearch } from "@/hooks";
+import {
+  useDebouncedValue,
+  useHfDatasetSearch,
+  useInfiniteScroll,
+} from "@/hooks";
 import { useInventoryVersion } from "@/features/models";
 import { cn } from "@/lib/utils";
+import { matchTokens, tokenizeQuery } from "@/lib/search-text";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import {
   ArrowDown01Icon,
+  ArrowRight01Icon,
   Database02Icon,
+  FolderSearchIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PICKER_TABS,
   type PickerTab,
   PickerTabToggle,
+  RetryButton,
   isHfAuthError,
+  looksLikeLocalPath,
 } from "./picker-tab-toggle";
+import { useHfErrorToast } from "./use-hf-error-toast";
 
 const TRIGGER_BASE = cn(
   "menu-trigger field-soft inline-flex h-9 w-full items-center gap-1.5 rounded-[12px] px-3 text-[12.5px] text-muted-foreground transition-colors",
@@ -63,6 +72,7 @@ export function TrainDatasetPicker() {
   const dataset = useTrainingConfigStore((s) => s.dataset);
   const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
+  const modelType = useTrainingConfigStore((s) => s.modelType);
   const selectHfDataset = useTrainingConfigStore((s) => s.selectHfDataset);
   const selectLocalDataset = useTrainingConfigStore(
     (s) => s.selectLocalDataset,
@@ -77,6 +87,8 @@ export function TrainDatasetPicker() {
   const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
   const [cachedDatasets, setCachedDatasets] = useState<CachedDatasetRepo[]>([]);
   const [isLoadingLocal, setIsLoadingLocal] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [localRetryToken, setLocalRetryToken] = useState(0);
   const inventoryVersion = useInventoryVersion();
   const loadedInventoryVersionRef = useRef<number>(-1);
 
@@ -86,48 +98,42 @@ export function TrainDatasetPicker() {
   const {
     results: hfResults,
     isLoading: isLoadingHf,
+    isLoadingMore: isLoadingHfMore,
+    fetchMore: fetchMoreHf,
+    retry: retryHf,
     error: hfError,
   } = useHfDatasetSearch(debouncedHubQuery, {
+    modelType,
     enabled: open && tab === "hub",
     accessToken: debouncedHfToken || undefined,
   });
 
-  const lastToastedErrorRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!hfError) {
-      lastToastedErrorRef.current = null;
-      return;
-    }
-    if (lastToastedErrorRef.current === hfError) return;
-    lastToastedErrorRef.current = hfError;
-    if (isHfAuthError(hfError)) {
-      toast.error("Hugging Face token rejected", {
-        id: "hf-token-rejected",
-        description:
-          "Your token was refused. Update it in Settings → Hugging Face to search datasets.",
-      });
-    } else {
-      toast.error("Couldn't reach Hugging Face", {
-        id: "hf-search-failed",
-        description: hfError,
-      });
-    }
-  }, [hfError]);
+  useHfErrorToast(hfError, "datasets");
+
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMoreHf,
+    hfResults.length,
+    open && tab === "hub",
+  );
 
   useEffect(() => {
     if (!open || tab !== "device") return;
     if (loadedInventoryVersionRef.current === inventoryVersion) return;
     let cancelled = false;
     setIsLoadingLocal(true);
-    void Promise.all([
-      listLocalDatasets().catch(() => ({ datasets: [] as LocalDatasetInfo[] })),
-      listCachedDatasets().catch(() => [] as CachedDatasetRepo[]),
-    ])
+    setLocalError(null);
+    void Promise.all([listLocalDatasets(), listCachedDatasets()])
       .then(([localResponse, cached]) => {
         if (cancelled) return;
         setLocalDatasets(localResponse.datasets);
         setCachedDatasets(cached);
         loadedInventoryVersionRef.current = inventoryVersion;
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLocalError(
+          err instanceof Error ? err.message : "Couldn't scan local datasets",
+        );
       })
       .finally(() => {
         if (cancelled) return;
@@ -136,16 +142,23 @@ export function TrainDatasetPicker() {
     return () => {
       cancelled = true;
     };
-  }, [open, tab, inventoryVersion]);
+  }, [open, tab, inventoryVersion, localRetryToken]);
+
+  const retryLocalDatasets = useCallback(() => {
+    loadedInventoryVersionRef.current = -1;
+    setLocalRetryToken((token) => token + 1);
+  }, []);
 
   const deviceItems = useMemo<DeviceDatasetItem[]>(() => {
-    const cachedItems: DeviceDatasetItem[] = cachedDatasets.map((d) => ({
-      kind: "cached",
-      key: `cached:${d.repo_id}`,
-      title: d.repo_id,
-      detail: "Hugging Face cache",
-      repoId: d.repo_id,
-    }));
+    const cachedItems: DeviceDatasetItem[] = cachedDatasets
+      .filter((d) => !d.partial)
+      .map((d) => ({
+        kind: "cached",
+        key: `cached:${d.repo_id}`,
+        title: d.repo_id,
+        detail: "Hugging Face cache",
+        repoId: d.repo_id,
+      }));
     const localItems: DeviceDatasetItem[] = localDatasets.map((d) => ({
       kind: "local",
       key: `local:${d.path}`,
@@ -159,16 +172,41 @@ export function TrainDatasetPicker() {
   }, [cachedDatasets, localDatasets]);
 
   const filteredDevice = useMemo(() => {
-    const q = deviceQuery.trim().toLowerCase();
-    if (!q) return deviceItems;
-    return deviceItems.filter((item) => {
-      const haystack =
-        item.kind === "cached"
-          ? item.repoId.toLowerCase()
-          : `${item.title} ${item.path}`.toLowerCase();
-      return haystack.includes(q);
-    });
+    const tokens = tokenizeQuery(deviceQuery);
+    if (tokens.length === 0) return deviceItems;
+    return deviceItems.filter((item) =>
+      matchTokens(
+        item.kind === "cached" ? item.repoId : `${item.title} ${item.path}`,
+        tokens,
+      ),
+    );
   }, [deviceItems, deviceQuery]);
+
+  const activeQuery = (tab === "hub" ? hubQuery : deviceQuery).trim();
+  const hasExactMatch =
+    activeQuery.length === 0
+      ? false
+      : tab === "hub"
+        ? hfResults.some((r) => r.id === activeQuery)
+        : deviceItems.some(
+            (item) =>
+              (item.kind === "cached" && item.repoId === activeQuery) ||
+              (item.kind === "local" && item.path === activeQuery),
+          );
+  const showUseThis =
+    activeQuery.length > 0 &&
+    !hasExactMatch &&
+    (tab === "hub" || looksLikeLocalPath(activeQuery));
+  const useThisLabel =
+    tab === "hub" ? "Use as Hugging Face dataset" : "Use as local path";
+
+  const commitRaw = (raw: string) => {
+    const next = raw.trim();
+    if (!next) return;
+    if (tab === "hub") selectHfDataset(next);
+    else selectLocalDataset(next);
+    setOpen(false);
+  };
 
   const display =
     datasetSource === "upload"
@@ -235,6 +273,11 @@ export function TrainDatasetPicker() {
                   ? setHubQuery(e.target.value)
                   : setDeviceQuery(e.target.value)
               }
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                if (showUseThis) commitRaw(activeQuery);
+              }}
               placeholder={
                 tab === "hub"
                   ? "Search Hugging Face datasets..."
@@ -247,11 +290,43 @@ export function TrainDatasetPicker() {
             )}
           </div>
 
-          <div className="max-h-[320px] overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]">
+          <div
+            ref={scrollRef}
+            className="max-h-[320px] overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+          >
+            {showUseThis && (
+              <button
+                type="button"
+                onClick={() => commitRaw(activeQuery)}
+                className="mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-[12.5px] transition-colors hover:bg-primary/[0.08]"
+              >
+                <HugeiconsIcon
+                  icon={tab === "hub" ? Search01Icon : FolderSearchIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 shrink-0 text-primary"
+                />
+                <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                  <span className="truncate font-medium text-foreground">
+                    {activeQuery}
+                  </span>
+                  <span className="text-[10.5px] text-muted-foreground/80">
+                    {useThisLabel}
+                  </span>
+                </span>
+                <HugeiconsIcon
+                  icon={ArrowRight01Icon}
+                  strokeWidth={1.5}
+                  className="size-3.5 shrink-0 text-muted-foreground/70"
+                />
+              </button>
+            )}
             {tab === "device" ? (
               <DeviceList
                 items={filteredDevice}
                 isLoading={isLoadingLocal}
+                error={localError}
+                hasQuery={activeQuery.length > 0}
+                onRetry={retryLocalDatasets}
                 selectedLocalPath={
                   datasetSource === "upload" ? uploadedFile : null
                 }
@@ -260,7 +335,7 @@ export function TrainDatasetPicker() {
                 }
                 onPick={(item) => {
                   if (item.kind === "local") selectLocalDataset(item.path);
-                  else selectHfDataset(item.repoId);
+                  else selectHfDataset(item.repoId, { knownCached: true });
                   setOpen(false);
                 }}
               />
@@ -268,12 +343,15 @@ export function TrainDatasetPicker() {
               <HubList
                 items={hfResults}
                 isLoading={isLoadingHf}
+                isLoadingMore={isLoadingHfMore}
                 value={dataset}
                 error={hfError}
                 onPick={(id) => {
                   selectHfDataset(id);
                   setOpen(false);
                 }}
+                onRetry={retryHf}
+                sentinelRef={sentinelRef}
               />
             )}
           </div>
@@ -286,12 +364,18 @@ export function TrainDatasetPicker() {
 function DeviceList({
   items,
   isLoading,
+  error,
+  hasQuery,
+  onRetry,
   selectedLocalPath,
   selectedHfRepoId,
   onPick,
 }: {
   items: DeviceDatasetItem[];
   isLoading: boolean;
+  error: string | null;
+  hasQuery: boolean;
+  onRetry: () => void;
   selectedLocalPath: string | null;
   selectedHfRepoId: string | null;
   onPick: (item: DeviceDatasetItem) => void;
@@ -304,6 +388,20 @@ function DeviceList({
     );
   }
   if (items.length === 0) {
+    if (error) {
+      return (
+        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
+          <p className="text-[12.5px] font-medium text-foreground">
+            Couldn't scan local datasets
+          </p>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            {error}
+          </p>
+          <RetryButton onRetry={onRetry} />
+        </div>
+      );
+    }
+    if (hasQuery) return null;
     return (
       <div className="px-4 py-8 text-center text-xs text-muted-foreground">
         Nothing on this device yet. Download a dataset from the Hub, build one
@@ -345,15 +443,21 @@ function DeviceList({
 function HubList({
   items,
   isLoading,
+  isLoadingMore,
   value,
   error,
   onPick,
+  onRetry,
+  sentinelRef,
 }: {
   items: ReadonlyArray<{ id: string; downloads?: number | null }>;
   isLoading: boolean;
+  isLoadingMore: boolean;
   value: string | null;
   error: string | null;
   onPick: (id: string) => void;
+  onRetry: () => void;
+  sentinelRef: React.RefObject<HTMLDivElement | null>;
 }) {
   if (isLoading && items.length === 0) {
     return (
@@ -375,6 +479,7 @@ function HubList({
               ? "Update your token in Settings → Hugging Face, then retry."
               : error}
           </p>
+          <RetryButton onRetry={onRetry} />
         </div>
       );
     }
@@ -403,6 +508,12 @@ function HubList({
           </li>
         );
       })}
+      <div ref={sentinelRef} className="h-px" />
+      {isLoadingMore && (
+        <div className="flex items-center justify-center py-2">
+          <Spinner className="size-3.5 text-muted-foreground" />
+        </div>
+      )}
     </ul>
   );
 }

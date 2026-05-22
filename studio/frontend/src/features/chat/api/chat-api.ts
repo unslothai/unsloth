@@ -117,12 +117,23 @@ export interface DownloadJobStatus {
   error?: string | null;
 }
 
+// The start endpoints answer 202 even when the registry refuses the claim,
+// reporting the blocking job's state ("running"/"cancelling") or, for a repo
+// pending removal, "deleting" (never a per-job status). ``accepted`` is true
+// only when a worker for this key is freshly spawned or already pollable.
+export type DownloadStartState = DownloadJobState | "deleting";
+
+export interface DownloadStartResult {
+  state: DownloadStartState;
+  accepted: boolean;
+}
+
 export async function startModelDownload(payload: {
   repo_id: string;
   gguf_variant?: string | null;
   hf_token?: string | null;
   use_xet?: boolean;
-}): Promise<{ job_key: string; state: DownloadJobState }> {
+}): Promise<DownloadStartResult & { job_key: string }> {
   const response = await authFetch("/api/models/download", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -146,18 +157,40 @@ export async function cancelModelDownload(payload: {
 export async function getModelDownloadStatus(
   repoId: string,
   ggufVariant?: string | null,
+  signal?: AbortSignal,
 ): Promise<DownloadJobStatus> {
   const params = new URLSearchParams({ repo_id: repoId });
   if (ggufVariant) params.set("gguf_variant", ggufVariant);
-  const response = await authFetch(`/api/models/download-status?${params}`);
+  const response = await authFetch(`/api/models/download-status?${params}`, {
+    signal,
+  });
   return parseJsonOrThrow<DownloadJobStatus>(response);
+}
+
+export interface ActiveModelDownload {
+  variant: string | null;
+  state: DownloadJobState;
+}
+
+export async function getActiveModelDownloads(
+  repoId: string,
+  signal?: AbortSignal,
+): Promise<ActiveModelDownload[]> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/models/active-downloads?${params}`, {
+    signal,
+  });
+  const data = await parseJsonOrThrow<{ downloads: ActiveModelDownload[] }>(
+    response,
+  );
+  return data.downloads;
 }
 
 export async function startDatasetDownload(payload: {
   repo_id: string;
   hf_token?: string | null;
   use_xet?: boolean;
-}): Promise<{ repo_id: string; state: DownloadJobState }> {
+}): Promise<DownloadStartResult & { repo_id: string }> {
   const response = await authFetch("/api/datasets/download", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -179,9 +212,12 @@ export async function cancelDatasetDownload(payload: {
 
 export async function getDatasetDownloadStatus(
   repoId: string,
+  signal?: AbortSignal,
 ): Promise<DownloadJobStatus> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-status?${params}`);
+  const response = await authFetch(`/api/datasets/download-status?${params}`, {
+    signal,
+  });
   return parseJsonOrThrow<DownloadJobStatus>(response);
 }
 
@@ -214,6 +250,7 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
   const params = new URLSearchParams({
     repo_id: repoId,
@@ -222,6 +259,7 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(`/api/models/gguf-download-progress?${params}`, {
     headers: hfTokenHeader(hfToken),
+    signal,
   });
   return parseJsonOrThrow(response);
 }
@@ -240,17 +278,27 @@ export interface DownloadProgressResponse {
 
 export async function getDownloadProgress(
   repoId: string,
+  signal?: AbortSignal,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hfTokenHeader(hfToken),
+    signal,
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  signal?: AbortSignal,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(`/api/datasets/download-progress?${params}`, {
+    headers: hfTokenHeader(hfToken),
+    signal,
+  });
   return parseJsonOrThrow(response);
 }
 
@@ -303,9 +351,11 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
 
 export async function listCachedGguf(
   hfToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<CachedGgufRepo[]> {
   const response = await authFetch("/api/models/cached-gguf", {
     headers: hfTokenHeader(hfToken),
+    signal,
   });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
@@ -319,13 +369,16 @@ export interface CachedModelRepo {
   pipeline_tag?: string | null;
   tags?: string[];
   library_name?: string | null;
+  quant_method?: string | null;
 }
 
 export async function listCachedModels(
   hfToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<CachedModelRepo[]> {
   const response = await authFetch("/api/models/cached-models", {
     headers: hfTokenHeader(hfToken),
+    signal,
   });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
@@ -445,6 +498,11 @@ export async function browseFolders(
 }
 
 const GGUF_VARIANTS_TTL_MS = 30 * 1000;
+// The backend enumerates variants against the HF API, so a stalled upstream
+// connection would otherwise leave the expander spinning indefinitely. Bound
+// the shared request; on timeout it rejects, the cache entry is dropped, and
+// the caller surfaces an error.
+const GGUF_VARIANTS_TIMEOUT_MS = 30_000;
 interface GgufVariantsCacheEntry {
   ts: number;
   promise: Promise<GgufVariantsResponse>;
@@ -465,6 +523,7 @@ export async function listGgufVariants(
   const promise = (async () => {
     const response = await authFetch(`/api/models/gguf-variants?${params}`, {
       headers: hfTokenHeader(hfToken),
+      signal: AbortSignal.timeout(GGUF_VARIANTS_TIMEOUT_MS),
     });
     return parseJsonOrThrow<GgufVariantsResponse>(response);
   })();

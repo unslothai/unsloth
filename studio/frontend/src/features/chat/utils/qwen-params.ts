@@ -3,6 +3,14 @@
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
+/** Qwen3.5/3.6 builds under 9B default thinking off; larger builds keep it on. */
+export function smallQwenThinkingOffByDefault(modelId: string): boolean {
+  const mid = modelId.toLowerCase();
+  if (!mid.includes("qwen3.5") && !mid.includes("qwen3.6")) return false;
+  const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+  return sizeMatch !== null && Number.parseFloat(sizeMatch[1]) < 9;
+}
+
 /**
  * Apply Qwen3-family recommended sampling parameters when the Think toggle
  * changes. Qwen3.5 and Qwen3.6 also need a presence_penalty bump on top of

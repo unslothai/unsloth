@@ -45,7 +45,7 @@ import {
   parseLanguageTags,
 } from "../lib/view-models";
 import type { SelectedModelView } from "../types";
-import { classifyUnslothSupport } from "@/hooks";
+import { type UnslothSupport, classifyUnslothSupport } from "@/hooks";
 import { usePlatformStore } from "@/config/env";
 
 function ViewRepositoryButton({
@@ -172,6 +172,95 @@ function StatusChip({
   );
 }
 
+type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
+
+function ModelStatusChips({
+  isDataset,
+  isGguf,
+  unslothSupport,
+  vramInfo,
+}: {
+  isDataset: boolean;
+  isGguf: boolean;
+  unslothSupport: UnslothSupport;
+  vramInfo: VramInfo;
+}) {
+  const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  const showVram = !isDataset && vramInfo && !isGguf;
+  if (!showUnsupported && !showVram) return null;
+
+  const vramTone = !vramInfo
+    ? "success"
+    : vramInfo.status === "exceeds"
+      ? "danger"
+      : vramInfo.status === "tight"
+        ? "warning"
+        : "success";
+  const vramLabel = !vramInfo
+    ? ""
+    : vramInfo.status === "exceeds"
+      ? `Over VRAM budget · ~${vramInfo.est} GB`
+      : vramInfo.status === "tight"
+        ? `Tight fit · ~${vramInfo.est} GB`
+        : `Likely fits · ~${vramInfo.est} GB`;
+  const vramDetail = !vramInfo
+    ? ""
+    : vramInfo.status === "exceeds"
+      ? "A 4-bit load is likely to exceed the current GPU budget. Higher-precision loads need even more."
+      : vramInfo.status === "tight"
+        ? "A 4-bit load should fit, with limited headroom for context and activations."
+        : "A 4-bit load should fit comfortably on the current GPU.";
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      {showUnsupported && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="danger" label="May not be supported" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This model may not be supported yet.
+            {unslothSupport.reason && (
+              <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+                {unslothSupport.reason}
+              </span>
+            )}
+            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              Still downloadable to your Hugging Face cache, shared with every
+              framework that reads it.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showVram && vramInfo && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone={vramTone} label={vramLabel} />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            Estimated 4-bit memory load is around {vramInfo.est} GB.
+            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              {vramDetail}
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
 export function ModelInspector({
   model,
   isActive,
@@ -188,9 +277,11 @@ export function ModelInspector({
   onTrain,
   onInventoryChange,
   isDataset = false,
+  metadataUnavailable = false,
 }: {
   model: SelectedModelView | null;
   isDataset?: boolean;
+  metadataUnavailable?: boolean;
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
@@ -275,7 +366,13 @@ export function ModelInspector({
     quantMethod: model.quantMethod,
   });
 
+  // Mirror the training picker's filter so a model the Hub flags as
+  // unsupported cannot be sent to Studio with a config that later fails.
+  const trainingSupported = unslothSupport.status !== "unsupported";
+
   const languages = parseLanguageTags(model.tags);
+  const datasetSizeBytes =
+    datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
@@ -377,7 +474,7 @@ export function ModelInspector({
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
-              onTrain={!model.isGguf ? onTrain : undefined}
+              onTrain={!model.isGguf && trainingSupported ? onTrain : undefined}
               onChange={onInventoryChange}
             />
           ) : (
@@ -394,7 +491,7 @@ export function ModelInspector({
               cachePath={model.path}
               onLoad={onLoad}
               onUseInChat={onUseInChat}
-              onTrain={onTrain}
+              onTrain={trainingSupported ? onTrain : undefined}
               onChange={onInventoryChange}
             />
           )}
@@ -402,6 +499,12 @@ export function ModelInspector({
       )}
 
       <div className="shrink-0 px-6 pb-5 pt-5">
+        {metadataUnavailable && (
+          <p className="mb-3 text-[11.5px] leading-snug text-muted-foreground">
+            Couldn't load full details from Hugging Face. Some fields may be
+            incomplete.
+          </p>
+        )}
         <StatGrid>
           <StatRow
             label="Updated"
@@ -445,18 +548,13 @@ export function ModelInspector({
               icon={Database02Icon}
             />
           )}
-          {isDataset &&
-            (datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal) !=
-              null && (
-              <StatRow
-                label="Size"
-                value={formatBytes(
-                  (datasetSize?.numBytesParquet ??
-                    datasetSize?.numBytesOriginal) as number,
-                )}
-                icon={PackageIcon}
-              />
-            )}
+          {isDataset && datasetSizeBytes != null && (
+            <StatRow
+              label="Size"
+              value={formatBytes(datasetSizeBytes)}
+              icon={PackageIcon}
+            />
+          )}
           {isDataset && datasetSize?.numSplits != null && datasetSize.numSplits > 0 && (
             <StatRow
               label="Splits"
@@ -481,79 +579,12 @@ export function ModelInspector({
             icon={LicenseIcon}
           />
         </StatGrid>
-        {(() => {
-          const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
-          const showVram = !isDataset && vramInfo && !model.isGguf;
-          if (!showUnsupported && !showVram) return null;
-          return (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {showUnsupported && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span tabIndex={0} className="inline-flex outline-none">
-                      <StatusChip tone="danger" label="May not be supported" />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent
-                    side="bottom"
-                    sideOffset={6}
-                    className="tooltip-compact max-w-xs"
-                  >
-                    This model may not be supported yet.
-                    {unslothSupport.reason && (
-                      <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-                        {unslothSupport.reason}
-                      </span>
-                    )}
-                    <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-                      Still downloadable to your Hugging Face cache, shared with
-                      every framework that reads it.
-                    </span>
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              {showVram && vramInfo && (() => {
-                const vramTone =
-                  vramInfo.status === "exceeds"
-                    ? "danger"
-                    : vramInfo.status === "tight"
-                      ? "warning"
-                      : "success";
-                const vramLabel =
-                  vramInfo.status === "exceeds"
-                    ? `Over VRAM budget · ~${vramInfo.est} GB`
-                    : vramInfo.status === "tight"
-                      ? `Tight fit · ~${vramInfo.est} GB`
-                      : `Likely fits · ~${vramInfo.est} GB`;
-                const vramDetail =
-                  vramInfo.status === "exceeds"
-                    ? "A 4-bit load is likely to exceed the current GPU budget. Higher-precision loads need even more."
-                    : vramInfo.status === "tight"
-                      ? "A 4-bit load should fit, with limited headroom for context and activations."
-                      : "A 4-bit load should fit comfortably on the current GPU.";
-                return (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span tabIndex={0} className="inline-flex outline-none">
-                        <StatusChip tone={vramTone} label={vramLabel} />
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent
-                      side="bottom"
-                      sideOffset={6}
-                      className="tooltip-compact max-w-xs"
-                    >
-                      Estimated 4-bit memory load is around {vramInfo.est} GB.
-                      <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-                        {vramDetail}
-                      </span>
-                    </TooltipContent>
-                  </Tooltip>
-                );
-              })()}
-            </div>
-          );
-        })()}
+        <ModelStatusChips
+          isDataset={isDataset}
+          isGguf={model.isGguf}
+          unslothSupport={unslothSupport}
+          vramInfo={vramInfo}
+        />
       </div>
 
       <div

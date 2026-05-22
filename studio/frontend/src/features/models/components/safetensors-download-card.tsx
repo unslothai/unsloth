@@ -7,14 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  cancelModelDownload,
-  deleteCachedModel,
-  getDownloadProgress,
-  getModelDownloadStatus,
-  getModelTransportStatus,
-  startModelDownload,
-} from "@/features/chat/api/chat-api";
+import { deleteCachedModel } from "@/features/chat/api/chat-api";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
@@ -28,7 +21,7 @@ import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { fetchModelSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
-import { useDownloadJob } from "../hooks/use-download-job";
+import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -71,7 +64,7 @@ export function SafetensorsDownloadCard({
     setModelTotalBytes(null);
     if (!repoId) return;
     let cancelled = false;
-    void fetchModelSize(repoId).then((info) => {
+    void fetchModelSize(repoId, hfToken || undefined).then((info) => {
       if (cancelled || !info) return;
       const upstream = info.weightsBytes ?? info.totalBytes;
       if (upstream && upstream > 0) setModelTotalBytes(upstream);
@@ -79,24 +72,12 @@ export function SafetensorsDownloadCard({
     return () => {
       cancelled = true;
     };
-  }, [repoId]);
+  }, [repoId, hfToken]);
 
-  const job = useDownloadJob({
+  const job = useRepoDownload({
+    kind: "model",
     repoId,
-    label: () => repoId,
-    toastId: () => `model-download-${repoId}-`,
-    startErrorTitle: "Failed to start download",
-    errorTitle: "Download failed",
-    getProgress: () => getDownloadProgress(repoId),
-    getStatus: () => getModelDownloadStatus(repoId, null),
-    start: (_variant, useXet) =>
-      startModelDownload({
-        repo_id: repoId,
-        hf_token: hfToken || undefined,
-        use_xet: useXet,
-      }),
-    cancel: () => cancelModelDownload({ repo_id: repoId }),
-    getTransportStatus: () => getModelTransportStatus(repoId),
+    autoAdopt: true,
     onComplete: (_variant, bytes) =>
       onChange?.({ kind: "model", repoId, bytes: bytes || undefined }),
     onCancelled: () => onChange?.(),
@@ -105,21 +86,12 @@ export function SafetensorsDownloadCard({
   const progress = job.progress;
   const cancelling = job.cancelling;
 
-  const adoptRunningJob = job.adoptRunningJob;
+  const setJobExpectedBytes = job.setExpectedBytes;
   useEffect(() => {
-    let cancelled = false;
-    void getModelDownloadStatus(repoId, null)
-      .then((status) => {
-        if (cancelled) return;
-        if (status.state === "running" || status.state === "cancelling") {
-          adoptRunningJob(null, 0);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId, adoptRunningJob]);
+    if (modelTotalBytes && modelTotalBytes > 0) {
+      setJobExpectedBytes(modelTotalBytes);
+    }
+  }, [modelTotalBytes, setJobExpectedBytes]);
 
   async function handleRepoDeleteConfirm() {
     setDeleting(true);

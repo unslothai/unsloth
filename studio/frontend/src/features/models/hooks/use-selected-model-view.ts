@@ -74,6 +74,8 @@ export function useSelectedModelView({
         selectedHfResult?.pipelineTag ?? selectedCachedRow.pipelineTag ?? undefined;
       const mergedLibraryName =
         selectedHfResult?.libraryName ?? selectedCachedRow.libraryName ?? undefined;
+      const mergedQuantMethod =
+        selectedHfResult?.quantMethod ?? selectedCachedRow.quantMethod ?? undefined;
       return {
         id: selectedCachedRow.repoId,
         kind: "cache",
@@ -105,7 +107,7 @@ export function useSelectedModelView({
         cachedBytes: selectedCachedRow.bytes,
         updatedAt: selectedHfResult?.updatedAt,
         tags: mergedTags,
-        quantMethod: selectedHfResult?.quantMethod,
+        quantMethod: mergedQuantMethod,
       };
     }
 

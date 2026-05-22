@@ -10,6 +10,7 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { DownloadManagerPanel } from "@/features/models/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -291,6 +292,7 @@ export function AppProvider({ children }: AppProviderProps) {
       <TauriWrapper>
         {children}
       </TauriWrapper>
+      <DownloadManagerPanel />
       <Toaster
         position="top-right"
         visibleToasts={2}

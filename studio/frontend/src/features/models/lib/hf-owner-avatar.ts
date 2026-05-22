@@ -5,15 +5,25 @@ import { useEffect, useState } from "react";
 import { LruMap } from "@/lib/lru-map";
 
 type AvatarCacheEntry =
-  | { kind: "url"; url: string }
+  | { kind: "url"; url: string; expiresAt: number }
   | { kind: "miss-permanent" }
-  | { kind: "miss-transient"; until: number };
+  | { kind: "miss-transient"; until: number; failures: number };
+
+// Avatars rarely change, but "never" is wrong for a session that stays open for
+// days. After this the cached URL is still shown immediately, then refreshed in
+// the background and swapped if it changed (stale-while-revalidate).
+const URL_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Fast scrolling through the discover list can fire dozens of avatar lookups
 // at once. HF will sometimes 429 / 5xx those bursts; those failures used to
 // pin the owner avatar to null until the user refreshed the page. We now
-// negative-cache transient failures with a short TTL so they auto-recover.
-const TRANSIENT_MISS_TTL_MS = 60_000;
+// negative-cache transient failures so they auto-recover, but a persistently
+// flapping owner must not refetch on a fixed cadence for the list's whole
+// lifetime: each consecutive failure doubles the retry delay up to a cap, and
+// a success resets it. The backoff lives in the cache entry so it survives the
+// remount churn of a virtualized list.
+const TRANSIENT_MISS_BASE_TTL_MS = 60_000;
+const TRANSIENT_MISS_MAX_TTL_MS = 30 * 60_000;
 
 // A stalled connection (captive portal, hung socket) must never hold a
 // concurrency permit open: without a deadline the fetch never settles, the
@@ -49,14 +59,25 @@ function release(): void {
   waiting.shift()?.();
 }
 
+// An expired transient miss is reported as "no entry" so the caller refetches,
+// but the entry is kept so its failure count can escalate the next backoff.
 function readCache(name: string): AvatarCacheEntry | null {
   const entry = cache.get(name);
   if (!entry) return null;
   if (entry.kind === "miss-transient" && Date.now() >= entry.until) {
-    cache.delete(name);
     return null;
   }
   return entry;
+}
+
+function transientMiss(name: string): AvatarCacheEntry {
+  const prev = cache.get(name);
+  const failures = prev?.kind === "miss-transient" ? prev.failures + 1 : 1;
+  const ttl = Math.min(
+    TRANSIENT_MISS_BASE_TTL_MS * 2 ** (failures - 1),
+    TRANSIENT_MISS_MAX_TTL_MS,
+  );
+  return { kind: "miss-transient", until: Date.now() + ttl, failures };
 }
 
 async function fetchAvatarUrl(
@@ -104,12 +125,9 @@ function loadAvatar(name: string): Promise<string | null> {
     .then(
       ({ url, transient }) => {
         if (url) {
-          cache.set(name, { kind: "url", url });
+          cache.set(name, { kind: "url", url, expiresAt: Date.now() + URL_TTL_MS });
         } else if (transient) {
-          cache.set(name, {
-            kind: "miss-transient",
-            until: Date.now() + TRANSIENT_MISS_TTL_MS,
-          });
+          cache.set(name, transientMiss(name));
         } else {
           cache.set(name, { kind: "miss-permanent" });
         }
@@ -117,16 +135,20 @@ function loadAvatar(name: string): Promise<string | null> {
         return url;
       },
       () => {
-        cache.set(name, {
-          kind: "miss-transient",
-          until: Date.now() + TRANSIENT_MISS_TTL_MS,
-        });
+        cache.set(name, transientMiss(name));
         inflight.delete(name);
         return null;
       },
     );
   inflight.set(name, promise);
   return promise;
+}
+
+// Manual cache-bust path: drop a specific owner (or all) so the next render
+// refetches. Call after an action that's known to change an avatar.
+export function invalidateOwnerAvatar(owner?: string): void {
+  if (owner) cache.delete(owner.trim());
+  else cache.clear();
 }
 
 export function useHfOwnerAvatar(owner: string | null | undefined): string | null {
@@ -156,6 +178,11 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
       const cached = readCache(key);
       if (cached?.kind === "url") {
         if (!cancelled) setUrl(cached.url);
+        if (cached.expiresAt <= Date.now()) {
+          void loadAvatar(key).then((next) => {
+            if (!cancelled && next) setUrl(next);
+          });
+        }
         return;
       }
       if (cached?.kind === "miss-permanent") {

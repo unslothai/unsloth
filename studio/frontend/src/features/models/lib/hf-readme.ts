@@ -11,7 +11,23 @@ export interface FetchedReadme {
   branch: "main" | "master";
 }
 
-const cache = new LruMap<string, Promise<FetchedReadme | null>>(64);
+interface ReadmeCacheEntry {
+  promise: Promise<FetchedReadme | null>;
+  // Epoch ms after which the resolved result is refetched. A clean 404 (no
+  // README) and a transient failure are both cached briefly so absence/outage
+  // can recover; transient failures use a shorter window to recover sooner.
+  // Positive results and still-pending requests never expire within the session.
+  staleAt: number;
+}
+
+const cache = new LruMap<string, ReadmeCacheEntry>(64);
+
+// A stalled HF connection must not leave the model card spinning forever:
+// bound each request so it aborts and surfaces as a transient failure, matching
+// the timeout the dataset-size and owner-avatar helpers already use.
+const README_FETCH_TIMEOUT_MS = 10_000;
+const README_NEGATIVE_TTL_MS = 5 * 60_000;
+const README_TRANSIENT_TTL_MS = 30_000;
 
 function readmePrefix(kind: ReadmeKind): string {
   return kind === "dataset" ? "datasets/" : "";
@@ -37,7 +53,11 @@ async function fetchReadmeOnce(
   for (const branch of ["main", "master"] as const) {
     try {
       const url = `https://huggingface.co/${prefix}${repoId}/raw/${branch}/README.md`;
-      const res = await fetch(url, { mode: "cors", headers });
+      const res = await fetch(url, {
+        mode: "cors",
+        headers,
+        signal: AbortSignal.timeout(README_FETCH_TIMEOUT_MS),
+      });
       if (res.ok) {
         return { markdown: await res.text(), branch };
       }
@@ -59,13 +79,23 @@ export function fetchReadme(
 ): Promise<FetchedReadme | null> {
   const key = `${kind}::${repoId}::${token ?? ""}`;
   const cached = cache.get(key);
-  if (cached) return cached;
-  const promise = fetchReadmeOnce(repoId, kind, token).catch(() => {
-    cache.delete(key);
-    return null;
-  });
-  cache.set(key, promise);
-  return promise;
+  if (cached && Date.now() < cached.staleAt) return cached.promise;
+
+  const entry: ReadmeCacheEntry = {
+    promise: Promise.resolve(null),
+    staleAt: Number.POSITIVE_INFINITY,
+  };
+  entry.promise = fetchReadmeOnce(repoId, kind, token)
+    .then((result) => {
+      if (result === null) entry.staleAt = Date.now() + README_NEGATIVE_TTL_MS;
+      return result;
+    })
+    .catch(() => {
+      entry.staleAt = Date.now() + README_TRANSIENT_TTL_MS;
+      return null;
+    });
+  cache.set(key, entry);
+  return entry.promise;
 }
 
 const ABSOLUTE_URL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|data:|mailto:|tel:)/i;

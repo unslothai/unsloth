@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
   Database02Icon,
+  RefreshIcon,
   Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -73,12 +74,14 @@ export function ModelsToolbar({
   onCapabilityFilterChange,
   activeChannelId,
   onChannelSelect,
+  onRefresh,
 }: {
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
   onQueryChange: (value: string) => void;
   isLoading: boolean;
+  onRefresh: () => void;
   sortBy: HfSortKey;
   onSortChange: (value: HfSortKey) => void;
   resourceType: ResourceTypeFilter;
@@ -386,6 +389,31 @@ export function ModelsToolbar({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+        )}
+
+        {tab === "discover" && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Refresh from Hugging Face"
+                onClick={onRefresh}
+                className={cn(
+                  triggerBase,
+                  "field-filter inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={RefreshIcon}
+                  strokeWidth={1.75}
+                  className={cn("size-4", isLoading && "animate-spin")}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Refresh from Hugging Face
+            </TooltipContent>
+          </Tooltip>
         )}
 
       </div>

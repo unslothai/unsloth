@@ -173,25 +173,6 @@ type CompareModelSelection = {
   config?: NonNullable<ModelSelectorChangeMeta["config"]>;
 };
 
-function applyPickerConfigToRuntime(
-  config: NonNullable<ModelSelectorChangeMeta["config"]>,
-): void {
-  useChatRuntimeStore.setState({
-    kvCacheDtype: config.kvCacheDtype,
-    speculativeType: config.speculativeType,
-    specDraftNMax: config.specDraftNMax,
-    customContextLength: config.customContextLength,
-    chatTemplateOverride: config.chatTemplateOverride,
-  });
-  if (typeof config.trustRemoteCode === "boolean") {
-    const state = useChatRuntimeStore.getState();
-    state.setParams({
-      ...state.params,
-      trustRemoteCode: config.trustRemoteCode,
-    });
-  }
-}
-
 function modelMatchesDeleted(
   model: { id: string; ggufVariant?: string | null },
   deletedModel?: DeletedModelRef,
@@ -1083,9 +1064,6 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
-        if (meta?.config) {
-          applyPickerConfigToRuntime(meta.config);
-        }
         await selectModel({
           id: value,
           isLora: meta?.isLora,
@@ -1093,6 +1071,7 @@ export function ChatPage(): ReactElement {
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
           forceReload,
+          config: meta?.config,
         });
       })();
     },

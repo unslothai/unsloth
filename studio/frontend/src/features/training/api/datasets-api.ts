@@ -130,17 +130,16 @@ export interface CachedDatasetRepo {
 export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   const res = await authFetch("/api/datasets/cached");
   if (!res.ok) {
+    // Only a 404 (older backend without this endpoint) degrades to empty; every
+    // other failure must surface so callers can show Retry instead of an empty
+    // list that reads as "nothing cached".
     if (res.status === 404) {
       console.warn(
         "GET /api/datasets/cached returned 404 — backend may need a restart to expose the cached-datasets endpoint.",
       );
-    } else {
-      console.warn(
-        "GET /api/datasets/cached failed with status",
-        res.status,
-      );
+      return [];
     }
-    return [];
+    throw new Error(await readFastApiError(res, "Couldn't scan cached datasets"));
   }
   const data = (await res.json().catch(() => null)) as
     | { cached?: CachedDatasetRepo[] }

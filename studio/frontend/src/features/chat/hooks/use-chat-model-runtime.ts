@@ -38,6 +38,8 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
+import { smallQwenThinkingOffByDefault } from "../utils/qwen-params";
+import type { PerModelConfig } from "../model-config/per-model-config";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -53,7 +55,28 @@ type SelectedModelInput = {
   forceReload?: boolean;
   nativePathToken?: string;
   throwOnError?: boolean;
+  // Per-model inference config to apply for this load. Passed explicitly (not
+  // read back from a side-effecting global write) so the caller can't get the
+  // order wrong; its presence is also what marks the load as config-driven.
+  config?: PerModelConfig;
 };
+
+function applyPerModelConfigToRuntime(config: PerModelConfig): void {
+  useChatRuntimeStore.setState({
+    kvCacheDtype: config.kvCacheDtype,
+    speculativeType: config.speculativeType,
+    specDraftNMax: config.specDraftNMax,
+    customContextLength: config.customContextLength,
+    chatTemplateOverride: config.chatTemplateOverride,
+  });
+  if (typeof config.trustRemoteCode === "boolean") {
+    const state = useChatRuntimeStore.getState();
+    state.setParams({
+      ...state.params,
+      trustRemoteCode: config.trustRemoteCode,
+    });
+  }
+}
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
   toast: "items-start gap-2.5",
@@ -375,21 +398,16 @@ export function useChatModelRuntime() {
             }),
         });
 
-        // Set reasoning default for Qwen3.5/3.6 small models
         if (
           supportsReasoning &&
           hydratingExistingModel &&
           storedReasoningEnabled === null
         ) {
-          let reasoningDefault = true;
-          const mid = statusRes.active_model.toLowerCase();
-          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-              reasoningDefault = false;
-            }
-          }
-          useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
+          useChatRuntimeStore.setState({
+            reasoningEnabled: !smallQwenThinkingOffByDefault(
+              statusRes.active_model,
+            ),
+          });
         }
       } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
@@ -451,8 +469,13 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.nativePathToken;
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
-      const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
+      const perModelConfig =
+        typeof selection === "string" ? undefined : selection.config;
+      const hasPerModelConfig = perModelConfig != null;
+      const runtimeState = useChatRuntimeStore.getState();
+      const currentVariant = runtimeState.activeGgufVariant;
+      const currentCheckpoint = runtimeState.params.checkpoint;
+      if (!forceReload && (!modelId || (currentCheckpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
       // Prevent duplicate loads if already loading this model
@@ -461,6 +484,16 @@ export function useChatModelRuntime() {
         (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
       )
         return;
+      // Apply the picker's config only after both early returns above. Applying
+      // it earlier would mutate the store even when this call is a no-op (e.g. a
+      // concurrent same-model load already in flight): the in-flight load never
+      // reloads with the new settings and clobbers them on completion, silently
+      // dropping the just-confirmed KV dtype / spec mode / chat template /
+      // context. Applied here it still precedes the load's store reads, so its
+      // presence marks this as a config-driven load.
+      if (perModelConfig) {
+        applyPerModelConfigToRuntime(perModelConfig);
+      }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -478,9 +511,8 @@ export function useChatModelRuntime() {
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
       const safeModelName = safeNotificationLabel(displayName, "The model");
-      const currentCheckpoint =
+      const previousCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
-      const previousCheckpoint = currentCheckpoint;
       const previousVariant =
         useChatRuntimeStore.getState().activeGgufVariant ?? null;
       const reloadingSameModel =
@@ -574,21 +606,25 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // Reset Speculative Decoding to Auto whenever the user
-            // switches to a different model. Spec strategy is a
-            // per-model decision: a sub-3B non-MTP GGUF that ran with
-            // "Off" should not carry that choice into a 27B MTP GGUF
-            // where Auto would auto-promote to draft-mtp. The user can
-            // still pick a forced mode on the new model; this just
-            // clears the stale prior-model choice so the backend's
-            // platform-aware path runs by default. Same applies to
-            // spec_draft_n_max which is MTP-only.
             if (currentCheckpoint && currentCheckpoint !== modelId) {
               useChatRuntimeStore.setState({
-                speculativeType: null,
                 loadedSpeculativeType: null,
-                specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+              });
+            }
+            // Per-model inference settings must not leak across models. An
+            // applied picker config is authoritative and a same-model reload
+            // keeps its current settings; every other load (native drop,
+            // programmatic reload of a different model) starts from defaults
+            // so model B never inherits model A's chat template, KV dtype,
+            // custom context, or spec-decoding choice.
+            if (!hasPerModelConfig && !reloadingSameModel) {
+              useChatRuntimeStore.setState({
+                speculativeType: null,
+                specDraftNMax: null,
+                kvCacheDtype: null,
+                customContextLength: null,
+                chatTemplateOverride: null,
               });
             }
 
@@ -642,17 +678,9 @@ export function useChatModelRuntime() {
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
             );
-            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
-            let reasoningDefault = loadResponse.supports_reasoning ?? false;
-            if (reasoningDefault) {
-              const mid = modelId.toLowerCase();
-              if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-                const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-                if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-                  reasoningDefault = false;
-                }
-              }
-            }
+            const reasoningDefault =
+              (loadResponse.supports_reasoning ?? false) &&
+              !smallQwenThinkingOffByDefault(modelId);
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
@@ -1113,7 +1141,6 @@ export function useChatModelRuntime() {
       cancelLoading,
       loras,
       models,
-      params.checkpoint,
       refresh,
       renderLoadDescription,
       resetLoadingUi,

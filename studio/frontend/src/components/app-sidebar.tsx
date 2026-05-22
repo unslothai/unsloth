@@ -485,7 +485,9 @@ export function AppSidebar() {
                 active={
                   pathname === "/models" || pathname.startsWith("/models/")
                 }
+                disabled={chatOnly}
                 onClick={() => {
+                  if (chatOnly) return;
                   navigate({ to: "/models" });
                   closeMobileIfOpen();
                 }}

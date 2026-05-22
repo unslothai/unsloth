@@ -24,6 +24,7 @@ import {
   useTrainingActions,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { bumpInventoryVersion } from "@/features/models";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
@@ -286,6 +287,7 @@ export function HistoryCardGrid({
         deleteArtifacts: alsoDeleteArtifacts,
       });
       emitTrainingRunDeleted(deleteTarget);
+      if (alsoDeleteArtifacts) bumpInventoryVersion();
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
       fetchRuns(0, false, limit).catch(() => {});

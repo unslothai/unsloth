@@ -46,6 +46,15 @@ export function ownerOf(id: string): string {
   return id.includes("/") ? id.split("/")[0] : "";
 }
 
+/** Last path segment of a model id or path (e.g. "owner/name" -> "name"). */
+export function modelShortName(id: string): string {
+  return id.split("/").pop() || id;
+}
+
+export function datasetShortName(id: string): string {
+  return id.split("/").pop() || id;
+}
+
 export function repoOf(id: string): string {
   return id.includes("/") ? id.split("/").slice(1).join("/") : id;
 }

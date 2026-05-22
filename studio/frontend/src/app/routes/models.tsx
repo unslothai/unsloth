@@ -7,7 +7,7 @@ import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 const ModelsPage = lazy(() =>
-  import("@/features/models").then((m) => ({
+  import("@/features/models/models-page").then((m) => ({
     default: m.ModelsPage,
   })),
 );

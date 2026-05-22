@@ -41,15 +41,27 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
+# Bound the variant-resolution metadata fetch so a stalled connection fails the
+# worker (exit 1, surfaced as a job error) instead of hanging at 0% until the
+# user manually cancels. The file download itself is governed separately by
+# huggingface_hub's own download timeout.
+_METADATA_REQUEST_TIMEOUT = 30.0
+
+
 _SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.gguf",
     "*.onnx",
     "onnx/*",
     "openvino/*",
     "mlx/*",
-    "consolidated*",
     "*.bin.index.json.bak",
 )
+
+# Mistral's original single-file weights. Redundant only when the repo ALSO
+# ships transformers-format shards, so this is appended conditionally per repo
+# (see _resolve_snapshot_ignore_patterns). Skipping it unconditionally would
+# leave a consolidated-only repo cached with no loadable weights.
+_CONSOLIDATED_PATTERN = "consolidated*"
 
 
 def _on_signal(signum, frame):
@@ -63,10 +75,53 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, _on_signal)
 
 
+def _repo_ships_transformers_weights(repo_id: str, hf_token: str | None) -> bool:
+    """True when the repo provides standard transformers-format weights
+    (``model*.safetensors``/``pytorch_model*.bin`` or their sharded variants),
+    which make a sibling ``consolidated.*`` copy redundant."""
+    from huggingface_hub import model_info as hf_model_info
+
+    info = hf_model_info(
+        repo_id, token = hf_token, timeout = _METADATA_REQUEST_TIMEOUT,
+    )
+    for sibling in info.siblings:
+        base = sibling.rfilename.rsplit("/", 1)[-1].lower()
+        if base.startswith("consolidated"):
+            continue
+        if base.endswith(".safetensors"):
+            return True
+        if base.endswith(".bin") and (
+            base.startswith("model") or base.startswith("pytorch_model")
+        ):
+            return True
+    return False
+
+
+def _resolve_snapshot_ignore_patterns(
+    repo_id: str, hf_token: str | None,
+) -> list[str]:
+    ignore = list(_SNAPSHOT_IGNORE_PATTERNS)
+    # Drop consolidated.* only when transformers-format weights exist. If the
+    # layout can't be inspected, keep it (never silently strip the sole weights).
+    try:
+        redundant = _repo_ships_transformers_weights(repo_id, hf_token)
+    except Exception as e:
+        print(
+            f"Could not inspect weight layout for {repo_id} "
+            f"({type(e).__name__}: {e}); keeping consolidated.* weights.",
+            file = sys.stderr,
+        )
+        redundant = False
+    if redundant:
+        ignore.append(_CONSOLIDATED_PATTERN)
+    return ignore
+
+
 def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     from huggingface_hub import snapshot_download
     from utils.hf_cache_scan import prepare_cache_for_transport
 
+    ignore_patterns = _resolve_snapshot_ignore_patterns(repo_id, hf_token)
     purged = prepare_cache_for_transport("model", repo_id, mode)
     if purged:
         print(
@@ -77,7 +132,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     snapshot_download(
         repo_id = repo_id,
         token = hf_token,
-        ignore_patterns = list(_SNAPSHOT_IGNORE_PATTERNS),
+        ignore_patterns = ignore_patterns,
         max_workers = 1,
     )
 
@@ -86,7 +141,12 @@ def _gguf_variant_patterns(repo_id: str, variant: str, hf_token: str | None) -> 
     from huggingface_hub import model_info as hf_model_info
     from utils.models.model_config import _extract_quant_label
 
-    info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    info = hf_model_info(
+        repo_id,
+        token = hf_token,
+        files_metadata = True,
+        timeout = _METADATA_REQUEST_TIMEOUT,
+    )
     targets: list[str] = []
     for sibling in info.siblings:
         fname = sibling.rfilename

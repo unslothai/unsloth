@@ -58,8 +58,8 @@ export interface HfDatasetResult {
 function mapDataset(raw: unknown): HfDatasetResult {
   const ds = raw as {
     name: string;
-    downloads: number;
-    likes: number;
+    downloads?: number;
+    likes?: number;
     tags?: string[];
     cardData?: unknown;
   };
@@ -71,8 +71,8 @@ function mapDataset(raw: unknown): HfDatasetResult {
   const plainTags = tags.filter((t) => !t.includes(":"));
   return {
     id: ds.name,
-    downloads: ds.downloads,
-    likes: ds.likes,
+    downloads: ds.downloads ?? 0,
+    likes: ds.likes ?? 0,
     totalExamples: extractTotalExamples(card),
     sizeCategory: card?.size_categories?.[0],
     taskCategories,
@@ -93,6 +93,7 @@ const DESC_ONLY_DATASET_SORTS = new Set<DatasetSortKey>(["trendingScore"]);
 function makeDatasetSortFetch(
   sortBy: DatasetSortKey,
   direction: DatasetSortDirection,
+  signal?: AbortSignal,
 ): typeof fetch {
   return (input, init) => {
     const rawUrl =
@@ -115,7 +116,7 @@ function makeDatasetSortFetch(
         : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
-    return fetch(url, init);
+    return fetch(url, signal ? { ...init, signal } : init);
   };
 }
 
@@ -380,14 +381,14 @@ export function useHfDatasetSearch(
   const hasQuery = query.trim().length > 0;
   const useCuratedOnly = !hasQuery && !!modelType;
   const createIter = useCallback(
-    () => {
+    (signal: AbortSignal) => {
       if (useCuratedOnly) {
         return (async function* empty() {})() as AsyncGenerator<unknown>;
       }
       return listDatasets({
         search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags"],
-        fetch: makeDatasetSortFetch(sortBy, sortDirection),
+        fetch: makeDatasetSortFetch(sortBy, sortDirection, signal),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;
     },

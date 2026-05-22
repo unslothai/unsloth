@@ -954,6 +954,13 @@
 	html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
 		background-color: rgba(17, 24, 39, 0.06);
 	}
+	/* Currently-loaded checkpoint: a brand-green left stripe plus a faint
+	   green wash, orthogonal to the neutral selected tint so a row that is
+	   both loaded and selected still reads as loaded. */
+	html:not(.dark) .hub-page .catalog-row[data-active="true"] {
+		background-color: rgba(17, 182, 134, 0.07);
+		box-shadow: inset 2px 0 0 0 var(--primary);
+	}
 
 	html.dark .hub-page .catalog-row {
 		background-color: transparent;
@@ -966,6 +973,10 @@
 	}
 	html.dark .hub-page .catalog-row[data-selected="true"] {
 		background-color: rgba(255, 255, 255, 0.07);
+	}
+	html.dark .hub-page .catalog-row[data-active="true"] {
+		background-color: rgba(17, 182, 134, 0.12);
+		box-shadow: inset 2px 0 0 0 var(--primary);
 	}
 
 	/* Picker rows reuse the exact catalog-row palette so the model selector
