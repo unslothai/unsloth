@@ -508,6 +508,21 @@ export function AppSidebar() {
                 closeMobileIfOpen();
               }}
             />
+
+            <NavItem
+              icon={LayoutAlignLeftIcon}
+              label="Score"
+              active={
+                pathname === "/document-score" ||
+                pathname.startsWith("/document-score/")
+              }
+              disabled={chatOnly}
+              onClick={() => {
+                if (chatOnly) return;
+                navigate({ to: "/document-score" });
+                closeMobileIfOpen();
+              }}
+            />
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
