@@ -122,6 +122,7 @@ from routes import (
     inference_studio_router,
     models_router,
     providers_router,
+    scoring_router,
     training_history_router,
     training_router,
 )
@@ -528,6 +529,7 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
+app.include_router(scoring_router, prefix = "/api/scoring", tags = ["scoring"])
 
 
 # ============ Health and System Endpoints ============

@@ -70,6 +70,10 @@ from .data_recipe import (
     ValidateResponse,
     JobCreateResponse,
 )
+from .scoring import (
+    ScoreRequest,
+    ScoreResponse,
+)
 
 __all__ = [
     # Training schemas
@@ -129,4 +133,7 @@ __all__ = [
     "ValidateError",
     "ValidateResponse",
     "JobCreateResponse",
+    # Document scoring
+    "ScoreRequest",
+    "ScoreResponse",
 ]
