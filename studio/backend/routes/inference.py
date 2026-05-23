@@ -427,36 +427,16 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call XML from assistant messages/stream.
-#
-# Four leak shapes are handled, all caused by the speculative-buffer
-# state machine in `core/inference/llama_cpp.py` boundary-slicing the
-# tool_call XML between content_accum (visible) and the silent
-# DRAINING buffer:
-#
-# 1. Well-formed `<tool_call>...</tool_call>` (or `<function=...></function>`)
-#    -- both opening and close ended up in content.
-# 2. Orphan opening (`<tool_call>...EOF`) -- the close was DRAINED so
-#    only the opening leaks; `(?:</tool_call>|\Z)` consumes from the
-#    opening to end-of-string when no close is found.
-# 3. Orphan close (`...</function>\n</tool_call>`) -- the opening was
-#    DRAINED and only the trailing close leaked; matched by the bare
-#    `</tool_call>` / `</function>` alternatives.
-# 4. Tail-only `</parameter>` orphan (gdpval sweep, 7/192 trials) --
-#    `<tool_call><function=...><parameter=...>...content...</parameter>`
-#    where the OUTER `</function>\n</tool_call>` was truncated by EOS
-#    and the INNER `<parameter=...>` open got DRAINED, leaving just
-#    `</parameter>\n\n` at end-of-buffer. We strip ONLY when anchored
-#    to end-of-string (`\s*\Z`) so legitimate mid-text uses of
-#    `<parameter>...</parameter>` in user code samples survive.
+# Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
+# split across the visible/DRAIN boundary. Four leak shapes:
+#   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
+#   2. orphan opening to EOF (close was DRAINED)
+#   3. bare orphan close (open was DRAINED)
+#   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
+#      `\Z` so mid-text `<parameter>` in user code samples survives.
 _TOOL_XML_RE = _re.compile(
-    # opening + body + close-or-EOF; close tag may be tool_call OR function
-    # (well-formed pairs nest; non-greedy stops at the inner one and the
-    # outer dangling close gets picked up by the next alternative).
     r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
-    # bare orphan closes (opening was DRAINED, close leaked alone)
     r"|</(?:tool_call|function)>"
-    # tail-only </parameter> (anchored to EOF; mid-text uses preserved)
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
