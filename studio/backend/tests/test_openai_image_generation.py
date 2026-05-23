@@ -398,7 +398,6 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
         supports_vision=True,
         provider_type="anthropic",
     ) == [
-        {"role": "assistant", "content": []},
         {"role": "user", "content": "make it more realistic"},
     ]
 

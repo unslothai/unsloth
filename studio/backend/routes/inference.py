@@ -1775,6 +1775,8 @@ def _build_external_messages(
                         # provider would 400 on the unknown part, so
                         # gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
+                if msg.role == "assistant" and not parts:
+                    continue
                 result.append({"role": msg.role, "content": parts})
             else:
                 # Non-vision provider: strip images / documents, keep
@@ -1802,6 +1804,8 @@ def _build_external_messages(
                         preserved.append(image_ref)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
+                if msg.role == "assistant" and not preserved:
+                    continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses back to a string for
                     # providers that don't accept content arrays.
