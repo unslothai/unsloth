@@ -56,12 +56,10 @@ def test_openai_keeps_every_known_chat_family():
         # search-api suffix.
         "gpt-4o-search-preview",
         "gpt-4o-mini-search-preview",
-        # gpt-audio family: chat-completion-capable (text in / text or
-        # audio out) per OpenAI's audio guide. Earlier revisions of
-        # this denylist dropped them via `(?:^|-)audio`; the regex
-        # comment block now keeps them.
+        # gpt-audio is chat-completion-capable with streaming. The
+        # `-mini` variant does NOT stream (Realtime API only) and is
+        # asserted dropped in the realtime/audio split test below.
         "gpt-audio",
-        "gpt-audio-mini",
         "gpt-audio-1.5",
         # Hypothetical future families that the old allowlist would have
         # silently dropped -- they MUST surface under the new denylist.
@@ -77,39 +75,35 @@ def test_openai_keeps_every_known_chat_family():
     assert surviving == live, surviving
 
 
-def test_openai_audio_and_realtime_families_are_chat_capable_and_kept():
-    # Pin the chat/non-chat split that lives in the regex comment:
-    # gpt-audio AND gpt-realtime are kept (both accept text in via
-    # /v1/chat/completions and /v1/responses, not only their
-    # specialised transports); gpt-4o-transcribe etc. are dropped
-    # (audio-only input via /v1/audio/transcriptions).
+def test_openai_audio_and_realtime_families_split_on_streaming_support():
+    # Pin the chat/non-chat split: Studio always sends `stream: true`,
+    # so the picker keeps gpt-audio* (chat streams over /v1/chat/
+    # completions) and gpt-4o-realtime-preview (chat streams via the
+    # /v1/responses adapter), but drops the new gpt-realtime* family
+    # and gpt-audio-mini, which OpenAI's model cards mark Streaming:
+    # Not supported (Realtime API / WebSocket only).
     kept = _apply(
         "openai",
         [
             "gpt-audio",
             "gpt-audio-1.5",
-            "gpt-audio-mini",
-            "gpt-realtime",
-            "gpt-realtime-mini",
-            "gpt-realtime-1.5",
-            "gpt-realtime-2",
             "gpt-4o-realtime-preview",
         ],
     )
     assert kept == [
         "gpt-audio",
         "gpt-audio-1.5",
-        "gpt-audio-mini",
-        "gpt-realtime",
-        "gpt-realtime-mini",
-        "gpt-realtime-1.5",
-        "gpt-realtime-2",
         "gpt-4o-realtime-preview",
     ], kept
 
     dropped = _apply(
         "openai",
         [
+            "gpt-audio-mini",
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-realtime-1.5",
+            "gpt-realtime-2",
             "gpt-4o-transcribe",
             "gpt-4o-mini-transcribe",
         ],
@@ -120,9 +114,9 @@ def test_openai_audio_and_realtime_families_are_chat_capable_and_kept():
 def test_openai_drops_non_chat_ids():
     noise = [
         # Embeddings / TTS / image / moderation / whisper / etc.
-        # gpt-audio* and gpt-realtime* are intentionally OMITTED from
-        # this list -- both are chat-capable. See
-        # test_openai_audio_and_realtime_families_are_chat_capable_and_kept.
+        # gpt-audio (no -mini) and gpt-4o-realtime-preview are
+        # intentionally OMITTED from this list -- they DO stream chat.
+        # See test_openai_audio_and_realtime_families_split_on_streaming_support.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -169,26 +163,13 @@ def test_openai_drops_non_chat_ids():
 
 
 def test_openai_realtime_translate_variants_are_dropped_but_parent_chat_family_survives():
-    """gpt-realtime / gpt-realtime-mini are chat-capable and stay,
-    but the audio-translation variants share the chat picker's
-    transport and would 4xx, so they must be filtered. Pin both
-    behaviours so a future regex tweak cannot collapse one into
-    the other."""
-    kept = _apply(
-        "openai",
-        [
-            "gpt-realtime",
-            "gpt-realtime-mini",
-            "gpt-audio",
-            "gpt-audio-mini",
-        ],
-    )
-    assert kept == [
-        "gpt-realtime",
-        "gpt-realtime-mini",
-        "gpt-audio",
-        "gpt-audio-mini",
-    ], kept
+    """gpt-audio is chat-capable (streams over /v1/chat/completions)
+    and stays, but the audio-translation variants share the chat
+    picker's transport and would 4xx, so they must be filtered. The
+    new gpt-realtime* family and gpt-audio-mini are Realtime-only and
+    are dropped by a sibling assertion."""
+    kept = _apply("openai", ["gpt-audio"])
+    assert kept == ["gpt-audio"], kept
 
     dropped = _apply(
         "openai",

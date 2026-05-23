@@ -68,17 +68,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Verified against the live /v1/models listing 2026-05-22.
         "model_id_denylist": re.compile(
             # Feature suffixes that mark a non-chat variant on any base.
-            # Note: `audio` and `realtime` are omitted on purpose --
-            # see docstring above. `translate` is here so the audio
-            # translation variants `gpt-realtime-translate*` /
-            # `gpt-audio-translate*` are dropped even though we keep
-            # the parent `gpt-realtime` / `gpt-audio` chat families.
-            # `instruct` catches the legacy completion-only suffix
-            # used by `gpt-3.5-turbo-instruct*`; that family is wired
-            # to /v1/completions and would 4xx on our chat/responses
-            # transport, so it should not surface in the chat picker.
+            # `audio`/`realtime` are NOT in this group so `gpt-audio`
+            # (chat-capable, streaming) stays; specific non-streaming
+            # IDs are caught further down.
             r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
             r"transcribe|translate|instruct|sora)\b"
+            # OpenAI realtime/audio variants that don't support chat
+            # streaming. Studio always sends `stream: true`, and OpenAI
+            # marks `gpt-realtime*` and `gpt-audio-mini` as Streaming:
+            # Not supported (Realtime API only); surfacing them in the
+            # picker would 4xx at request time. `gpt-audio` and
+            # `gpt-4o-realtime-preview` still stream and are kept.
+            r"|^gpt-realtime(?:$|-)"
+            r"|^gpt-audio-mini\b"
             # Legacy completion bases -- ^-anchored to avoid false
             # positives on hypothetical future chat ids containing
             # those words mid-string.
