@@ -1269,28 +1269,36 @@ def test_canonicalize_spec_mode_none_aliases_map_to_off(value):
 # ---- Bug C: legacy chained MTP+ngram does not duplicate --draft-max ----
 
 
-def test_build_ngram_mod_flags_legacy_chained_omits_draft_max():
-    """When chaining ngram-mod alongside MTP on a legacy llama-server,
-    --draft-max collides with MTP's --draft-max (same flag, different
-    semantic in old builds). The chain_with_mtp flag must suppress the
-    ngram-mod --draft-max so MTP's draft length wins."""
+def test_build_ngram_mod_flags_legacy_chained_omits_draft_min_and_max():
+    """Legacy chained ngram+MTP must drop BOTH --draft-min and --draft-max.
+    Both are generic flags on legacy binaries, so MTP's own --draft-min /
+    --draft-max (e.g. 2/3 from spec_draft_n_max) would race with ngram's
+    larger size-N range. Suppressing only --draft-max produced an inverted
+    legacy range (--draft-min 48 --draft-max 2/3) that disabled ngram-mod
+    on affected builds; gate them together. --spec-ngram-size-n is a
+    distinct flag and must remain so ngram-mod still tunes the chain."""
     caps = {"ngram_mod_flavor": "legacy"}
     chained = _build_ngram_mod_flags(caps, chain_with_mtp = True)
     assert (
         "--draft-max" not in chained
     ), f"chain_with_mtp=True must drop --draft-max on legacy; got {chained}"
-    # The other two knobs must still be present so ngram-mod actually
-    # tunes the chain.
+    assert (
+        "--draft-min" not in chained
+    ), f"chain_with_mtp=True must drop --draft-min on legacy; got {chained}"
     assert "--spec-ngram-size-n" in chained
-    assert "--draft-min" in chained
 
 
-def test_build_ngram_mod_flags_legacy_standalone_keeps_draft_max():
-    """When NOT chaining, --draft-max is the ngram-mod size-N max and must
-    still be emitted on legacy."""
+def test_build_ngram_mod_flags_legacy_standalone_keeps_draft_min_and_max():
+    """Standalone ngram on legacy must emit --draft-min AND --draft-max as
+    a valid range (size-N min/max) so ngram-mod actually has a window."""
     caps = {"ngram_mod_flavor": "legacy"}
     standalone = _build_ngram_mod_flags(caps, chain_with_mtp = False)
+    assert "--draft-min" in standalone
     assert "--draft-max" in standalone
+    # The range must not be inverted: min <= max.
+    i_min = standalone.index("--draft-min")
+    i_max = standalone.index("--draft-max")
+    assert int(standalone[i_min + 1]) <= int(standalone[i_max + 1])
 
 
 def test_build_ngram_mod_flags_new_flavor_always_emits_distinct_names():

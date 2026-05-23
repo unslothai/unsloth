@@ -523,17 +523,18 @@ def _build_ngram_mod_flags(
         # Legacy llama.cpp before the spec arg rename: same knobs lived
         # under --spec-ngram-size-n (lookup length) and the generic
         # --draft-min / --draft-max (ngram size N range).
-        out = [
-            "--spec-ngram-size-n",
-            str(n_match),
-            "--draft-min",
-            str(n_min),
-        ]
+        out = ["--spec-ngram-size-n", str(n_match)]
         if not chain_with_mtp:
-            # Only safe to set --draft-max here when MTP is NOT in the
-            # same emission; otherwise this duplicates MTP's --draft-max
-            # and last-wins clobbers the MTP draft length.
-            out.extend(["--draft-max", str(n_max)])
+            # Gate --draft-min AND --draft-max together. Both flags are
+            # generic on legacy binaries, so emitting either in the same
+            # invocation as MTP would race with MTP's own --draft-min /
+            # --draft-max (typically 2/3 from spec_draft_n_max). Earlier
+            # we suppressed only --draft-max, which produced an inverted
+            # legacy range (--draft-min 48 --draft-max 2/3) and disabled
+            # ngram-mod entirely. Keeping the pair together preserves a
+            # valid range when ngram is standalone and avoids the clobber
+            # when it is chained with MTP.
+            out.extend(["--draft-min", str(n_min), "--draft-max", str(n_max)])
         return out
     return []
 
