@@ -43,6 +43,9 @@ import {
 interface ImageGenerationArgs {
   prompt?: string;
   kind?: string;
+  openai_image_generation_call_id?: unknown;
+  openai_response_id?: unknown;
+  openai_reasoning_item?: unknown;
 }
 
 interface ImageGenerationResult {
@@ -145,6 +148,14 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
     .filter(Boolean)
     .join(" · ");
+  const openaiImageGenerationCallId =
+    typeof parsedArgs.openai_image_generation_call_id === "string"
+      ? parsedArgs.openai_image_generation_call_id
+      : undefined;
+  const openaiResponseId =
+    typeof parsedArgs.openai_response_id === "string"
+      ? parsedArgs.openai_response_id
+      : undefined;
   const imagePart: GeneratedImagePart | null = imageSrc
     ? {
         type: "image",
@@ -172,6 +183,9 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       title: imageTitle,
       metadata: imageMetadata,
       filename: imagePart.filename,
+      openaiImageGenerationCallId,
+      openaiResponseId,
+      openaiReasoningItem: parsedArgs.openai_reasoning_item,
     });
   };
 

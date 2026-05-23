@@ -17,6 +17,9 @@ export type GeneratedImageOverlayState = {
   title: string;
   metadata: string;
   filename?: string;
+  openaiImageGenerationCallId?: string;
+  openaiResponseId?: string;
+  openaiReasoningItem?: unknown;
 };
 
 type GeneratedImageOverlayContextValue = {

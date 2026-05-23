@@ -29,11 +29,15 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type PendingImageEditReference,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
+  OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
@@ -378,7 +382,9 @@ function normalizeOpenAIReasoningItem(
   return normalized;
 }
 
-function openAIImageGenerationRequiresReasoningReplay(modelId: string): boolean {
+function openAIImageGenerationRequiresReasoningReplay(
+  modelId: string,
+): boolean {
   const normalized = modelId.trim().toLowerCase();
   return normalized.startsWith("gpt-5") || normalized.startsWith("o");
 }
@@ -414,8 +420,7 @@ function collectOpenAIImageGenerationCallParts(
         ? args.openai_image_generation_call_id
         : "";
     const fallbackId = part.toolCallId;
-    const id =
-      argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
+    const id = argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
     const responseId =
       typeof args?.openai_response_id === "string"
         ? args.openai_response_id
@@ -439,6 +444,29 @@ function collectOpenAIImageGenerationCallParts(
     }
   }
   return parts;
+}
+
+function toOpenAIImageEditReferenceMessage(
+  reference: PendingImageEditReference,
+): OpenAIChatMessage | null {
+  if (!reference.openaiImageGenerationCallId) {
+    return null;
+  }
+  const content: Exclude<OpenAIMessageContent, string> = [];
+  const reasoningItem = normalizeOpenAIReasoningItem(
+    reference.openaiReasoningItem,
+  );
+  if (reasoningItem) {
+    content.push(reasoningItem);
+  }
+  content.push({
+    type: "image_generation_call",
+    id: reference.openaiImageGenerationCallId,
+    ...(reference.openaiResponseId
+      ? { response_id: reference.openaiResponseId }
+      : {}),
+  });
+  return { role: "assistant", content };
 }
 
 function toOpenAIMessage(
@@ -923,6 +951,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
+      if (pendingImageEditReferenceForRun) {
+        runtime.clearPendingImageEditReference();
+      }
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -952,7 +984,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -991,33 +1028,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
-      const webSearchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
-        );
-      const codeExecEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            externalSelection &&
-            codeToolsEnabled &&
-            providerSupportsBuiltinCodeExecution(
-              externalProvider.providerType,
-              externalSelection.modelId,
-              externalProvider.baseUrl,
-            ),
-        );
+      const webSearchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebSearch(externalProvider.providerType),
+      );
+      const codeExecEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          codeToolsEnabled &&
+          providerSupportsBuiltinCodeExecution(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
       // web_fetch shares the Search pill with web_search (no separate
       // UI toggle), so it follows toolsEnabled. Anthropic is the only
       // provider that ships it today; on others providerSupportsBuiltinWebFetch
       // returns false and this stays inert.
-      const webFetchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebFetch(externalProvider.providerType),
-        );
+      const webFetchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
       const providerShipsWebFetch = Boolean(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
@@ -1037,11 +1071,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
+      if (
+        pendingImageEditReferenceForRun &&
+        !imageGenerationEnabledForThisTurn
+      ) {
+        toast.error("Image editing is unavailable", {
+          description:
+            "Select an OpenAI image-generation model, then retry the edit.",
+        });
+        throw new Error("Image generation edit unavailable.");
+      }
+
+      const selectedImageEditReference = pendingImageEditReferenceForRun;
       const outboundMessages = messages
         .map((message) =>
           toOpenAIMessage(message, {
             includeOpenAIImageGenerationCalls:
-              imageGenerationEnabledForThisTurn,
+              imageGenerationEnabledForThisTurn && !selectedImageEditReference,
             requireOpenAIImageGenerationReasoning: Boolean(
               externalSelection &&
                 runtime.reasoningEnabled !== false &&
@@ -1054,6 +1100,26 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
+      if (selectedImageEditReference) {
+        const referenceMessage = toOpenAIImageEditReferenceMessage(
+          selectedImageEditReference,
+        );
+        if (!referenceMessage) {
+          toast.error("This generated image cannot be edited", {
+            description:
+              "The original image reference is missing. Generate the image again, then retry the edit.",
+          });
+          throw new Error("Generated image edit reference missing.");
+        }
+        let insertAt = outboundMessages.length;
+        for (let i = outboundMessages.length - 1; i >= 0; i -= 1) {
+          if (outboundMessages[i]?.role === "user") {
+            insertAt = i;
+            break;
+          }
+        }
+        outboundMessages.splice(insertAt, 0, referenceMessage);
+      }
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
@@ -1083,7 +1149,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             "If a request genuinely requires tool use, live data fetch, running code, or image generation, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        } else if (
+          !webSearchEnabledForThisTurn &&
+          !codeExecEnabledForThisTurn
+        ) {
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
             "You may still use image generation tools when they are available and useful. " +
@@ -1466,8 +1535,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ) {
                       void updateStoredChatThreadEventually(t.id, {
                         openaiCodeExecContainerId: null,
-                      })
-                        .catch(() => {});
+                      }).catch(() => {});
                       continue;
                     }
                     openaiCodeExecContainerId = t.openaiCodeExecContainerId;
@@ -1511,8 +1579,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = created.id;
                   void updateStoredChatThreadEventually(resolvedThreadId, {
                     openaiCodeExecContainerId: created.id,
-                  })
-                    .catch(() => {});
+                  }).catch(() => {});
                 } catch {
                   // Fall back to backend's container_auto path on
                   // failure — keeps the chat moving; the next turn
@@ -1625,7 +1692,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // attaches `cache_control.ttl` when the value is one of
               // "5m" / "1h" (see external_provider.py near line 1375),
               // so unknown values are a no-op end-to-end.
-              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              ...(supportsProviderPromptCacheTtl(
+                externalProvider.providerType,
+              ) &&
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
@@ -1743,8 +1812,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         : "openaiCodeExecContainerId";
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: null,
-                    })
-                      .catch(() => {});
+                    }).catch(() => {});
                   }
                   continue;
                 }
@@ -1823,7 +1891,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       parsedResult = rawResult;
                     }
                     const nextArgs =
-                      toolEvent.arguments && typeof toolEvent.arguments === "object"
+                      toolEvent.arguments &&
+                      typeof toolEvent.arguments === "object"
                         ? (toolEvent.arguments as ToolCallMessagePart["args"])
                         : undefined;
                     const mergedArgs = nextArgs

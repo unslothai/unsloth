@@ -413,6 +413,9 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const setPendingImageEditReference = useChatRuntimeStore(
+    (s) => s.setPendingImageEditReference,
+  );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -448,12 +451,28 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
           event.preventDefault();
           return;
         }
+        if (!overlay.openaiImageGenerationCallId) {
+          event.preventDefault();
+          toast.error("This generated image cannot be edited", {
+            description:
+              "The original image reference is missing. Generate the image again, then retry the edit.",
+          });
+          closeOverlay();
+          return;
+        }
         setImageToolsEnabled(true);
+        setPendingImageEditReference({
+          openaiImageGenerationCallId: overlay.openaiImageGenerationCallId,
+          ...(overlay.openaiResponseId
+            ? { openaiResponseId: overlay.openaiResponseId }
+            : {}),
+          openaiReasoningItem: overlay.openaiReasoningItem,
+        });
         flushResourcesSync(() => {
           aui
             .composer()
             .setText(
-              `Use the previous generated image as the reference and apply this edit: ${trimmed}. Preserve everything else exactly.`,
+              `Use the selected generated image as the reference and apply this edit: ${trimmed}. Preserve everything else exactly.`,
             );
         });
         closeOverlay();
@@ -469,6 +488,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       isComposingRef,
       overlay,
       setImageToolsEnabled,
+      setPendingImageEditReference,
     ],
   );
 
