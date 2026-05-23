@@ -120,19 +120,19 @@ class _AnthropicThinkingSpec(NamedTuple):
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes=("claude-opus-4-7",),
-        kind="adaptive",
-        efforts=("none", "low", "medium", "high", "xhigh", "max"),
+        prefixes = ("claude-opus-4-7",),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
     _AnthropicThinkingSpec(
-        prefixes=("claude-opus-4-6", "claude-sonnet-4-6"),
-        kind="adaptive",
-        efforts=("none", "low", "medium", "high", "xhigh", "max"),
+        prefixes = ("claude-opus-4-6", "claude-sonnet-4-6"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
     _AnthropicThinkingSpec(
-        prefixes=("claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"),
-        kind="manual",
-        efforts=("none", "low", "medium", "high"),
+        prefixes = ("claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"),
+        kind = "manual",
+        efforts = ("none", "low", "medium", "high"),
     ),
 )
 
@@ -228,13 +228,13 @@ class _MistralThinkingSpec(NamedTuple):
 
 _MISTRAL_THINKING_SPECS = (
     _MistralThinkingSpec(
-        models=("magistral-medium-latest",),
-        style="prompt_mode",
+        models = ("magistral-medium-latest",),
+        style = "prompt_mode",
     ),
     _MistralThinkingSpec(
-        models=("mistral-small-latest", "mistral-vibe-cli-latest"),
-        style="reasoning_effort",
-        efforts=("none", "high"),
+        models = ("mistral-small-latest", "mistral-vibe-cli-latest"),
+        style = "reasoning_effort",
+        efforts = ("none", "high"),
     ),
 )
 
@@ -252,7 +252,7 @@ def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
     for spec in _MISTRAL_THINKING_SPECS:
         if model in spec.models:
             return spec
-    return _MistralThinkingSpec(models=(), style="disabled")
+    return _MistralThinkingSpec(models = (), style = "disabled")
 
 
 def _apply_mistral_reasoning_controls(
@@ -339,7 +339,7 @@ class ExternalProviderClient:
         self.provider_type = provider_type
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._timeout = httpx.Timeout(timeout, connect=10.0)
+        self._timeout = httpx.Timeout(timeout, connect = 10.0)
         # Separate timeout for SSE streams: reasoning-heavy providers
         # (Anthropic Opus 4.7 with adaptive thinking, OpenAI gpt-5.x via
         # /v1/responses) can pause for tens of seconds between bytes
@@ -348,7 +348,7 @@ class ExternalProviderClient:
         # disabling it lets long thinks complete without cutting the
         # stream prematurely. connect/write/pool keep the 10s / 120s
         # bounds so genuine network failures still surface.
-        self._stream_timeout = httpx.Timeout(timeout, connect=10.0, read=None)
+        self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = None)
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -580,18 +580,18 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "POST",
                 url,
-                json=body,
-                headers=self._auth_headers(),
-                timeout=self._stream_timeout,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     error_text = _friendly_provider_error_text(
                         self.provider_type,
                         response.status_code,
                         error_text,
-                        model=model,
+                        model = model,
                     )
                     logger.error(
                         "External provider returned %d: %s",
@@ -911,13 +911,13 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "POST",
                 url,
-                json=body,
-                headers=self._auth_headers(),
-                timeout=self._stream_timeout,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     logger.error(
                         "Kimi first-call returned %d: %s",
                         response.status_code,
@@ -1005,13 +1005,13 @@ class ExternalProviderClient:
                 async with _http_client.stream(
                     "POST",
                     url,
-                    json=fallback_body,
-                    headers=self._auth_headers(),
-                    timeout=self._stream_timeout,
+                    json = fallback_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
                 ) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
-                        error_text = error_body.decode("utf-8", errors="replace")
+                        error_text = error_body.decode("utf-8", errors = "replace")
                         logger.error(
                             "Kimi fallback returned %d: %s",
                             response.status_code,
@@ -1123,13 +1123,13 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "POST",
                 url,
-                json=followup_body,
-                headers=self._auth_headers(),
-                timeout=self._stream_timeout,
+                json = followup_body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     logger.error(
                         "Kimi second-call returned %d: %s",
                         response.status_code,
@@ -1718,13 +1718,13 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "POST",
                 url,
-                json=body,
-                headers=request_headers,
-                timeout=self._stream_timeout,
+                json = body,
+                headers = request_headers,
+                timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
                     error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error_text = error_body.decode("utf-8", errors = "replace")
                     logger.error(
                         "Anthropic returned %d: %s",
                         response.status_code,
@@ -2333,7 +2333,7 @@ class ExternalProviderClient:
                                     except Exception:
                                         logger.debug(
                                             "Failed to parse web_fetch input_json",
-                                            buffer=buffer,
+                                            buffer = buffer,
                                         )
                                         url = ""
                                 tool_use_id = current_web_fetch_use["id"]
@@ -2972,13 +2972,13 @@ class ExternalProviderClient:
                 async with _http_client.stream(
                     "POST",
                     url,
-                    json=attempt_body,
-                    headers=self._auth_headers(),
-                    timeout=self._stream_timeout,
+                    json = attempt_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
                 ) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
-                        error_text = error_body.decode("utf-8", errors="replace")
+                        error_text = error_body.decode("utf-8", errors = "replace")
                         logger.error(
                             "OpenAI Responses returned %d: %s",
                             response.status_code,
@@ -3857,9 +3857,9 @@ class ExternalProviderClient:
 
         response = await _http_client.post(
             f"{self.base_url}/chat/completions",
-            json=body,
-            headers=self._auth_headers(),
-            timeout=self._timeout,
+            json = body,
+            headers = self._auth_headers(),
+            timeout = self._timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -3878,8 +3878,8 @@ class ExternalProviderClient:
         try:
             response = await _http_client.get(
                 f"{self.base_url}/models",
-                headers=self._auth_headers(),
-                timeout=self._timeout,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -3902,8 +3902,8 @@ class ExternalProviderClient:
         root = self.base_url.removesuffix("/v1").rstrip("/")
         response = await _http_client.get(
             f"{root}/api/tags",
-            headers=self._auth_headers(),
-            timeout=self._timeout,
+            headers = self._auth_headers(),
+            timeout = self._timeout,
         )
         response.raise_for_status()
         payload = response.json()
@@ -3930,12 +3930,12 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "GET",
                 url,
-                headers=self._auth_headers(),
-                timeout=self._timeout,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
             ) as response:
                 if response.status_code != 200:
                     response.raise_for_status()
-                async for _chunk in response.aiter_bytes(chunk_size=2048):
+                async for _chunk in response.aiter_bytes(chunk_size = 2048):
                     break
         except httpx.HTTPError as exc:
             logger.error(
@@ -3972,8 +3972,8 @@ class ExternalProviderClient:
         """
         response = await _http_client.get(
             f"{self.base_url}/containers",
-            headers=self._container_headers(),
-            timeout=self._timeout,
+            headers = self._container_headers(),
+            timeout = self._timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -4009,9 +4009,9 @@ class ExternalProviderClient:
         }
         response = await _http_client.post(
             f"{self.base_url}/containers",
-            json=body,
-            headers=self._container_headers(),
-            timeout=self._timeout,
+            json = body,
+            headers = self._container_headers(),
+            timeout = self._timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -4039,8 +4039,8 @@ class ExternalProviderClient:
             "Authorization" in headers,
             headers.get("OpenAI-Beta"),
         )
-        async with httpx.AsyncClient(timeout=self._timeout) as fresh_client:
-            response = await fresh_client.delete(url, headers=headers)
+        async with httpx.AsyncClient(timeout = self._timeout) as fresh_client:
+            response = await fresh_client.delete(url, headers = headers)
         logger.info(
             "openai_container_delete.response status=%s cf_ray=%s "
             "request_id=%s organization=%s project=%s processing_ms=%s body=%s",
