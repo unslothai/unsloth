@@ -109,7 +109,7 @@ export const copyImagePart = async (
   const blob = part.image.startsWith("data:")
     ? dataUriToBlob(part.image)
     : await fetch(part.image).then((r) => r.blob());
-  const mime = mimeFromImage(part.image) ?? blob.type ?? "image/png";
+  const mime = mimeFromImage(part.image) || blob.type || "image/png";
   await navigator.clipboard.write([new ClipboardItem({ [mime]: blob })]);
 };
 
