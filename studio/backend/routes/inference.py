@@ -427,9 +427,26 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call XML from assistant messages/stream
+# Regex for stripping leaked tool-call XML from assistant messages/stream.
+#
+# Three leak shapes are handled, all caused by the speculative-buffer
+# state machine in `core/inference/llama_cpp.py` boundary-slicing the
+# tool_call XML between content_accum (visible) and the silent
+# DRAINING buffer:
+#
+# 1. Well-formed `<tool_call>...</tool_call>` (or `<function=...></function>`)
+#    -- both opening and close ended up in content.
+# 2. Orphan opening (`<tool_call>...EOF`) -- the close was DRAINED so
+#    only the opening leaks; `(?:</tool_call>|\Z)` consumes from the
+#    opening to end-of-string when no close is found.
+# 3. Orphan close (`...</function>\n</tool_call>`) -- the opening was
+#    DRAINED and only the trailing close leaked; matched by the bare
+#    `</tool_call>` / `</function>` alternatives.
 _TOOL_XML_RE = _re.compile(
-    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    r"<tool_call>.*?(?:</tool_call>|\Z)"
+    r"|<function=\w+>.*?(?:</function>|\Z)"
+    r"|</tool_call>"
+    r"|</function>",
     _re.DOTALL,
 )
 logger = get_logger(__name__)
