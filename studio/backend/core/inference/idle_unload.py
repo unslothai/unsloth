@@ -158,7 +158,9 @@ async def _watchdog_iteration() -> None:
     if unloaded:
         logger.info(
             "idle-unload: unloaded '%s' after %ds idle (timeout=%dmin)",
-            unloaded, int(idle_for), minutes,
+            unloaded,
+            int(idle_for),
+            minutes,
         )
         _reset_for_tests()  # next /load re-arms the watchdog
 
