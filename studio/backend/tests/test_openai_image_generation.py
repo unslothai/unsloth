@@ -86,6 +86,15 @@ def _capture_body(
     return captured
 
 
+def _image_generation_events(events: list[dict]) -> list[dict]:
+    return [
+        event
+        for event in events
+        if event.get("tool_name") == "image_generation"
+        or (event.get("type") == "tool_end" and event.get("image_b64"))
+    ]
+
+
 def _collect_tool_events(monkeypatch, *, include_added: bool = False) -> list[dict]:
     """Drive a Responses stream that emits one image_generation_call done
     event and return the parsed _toolEvent chunks."""
@@ -407,12 +416,7 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
 
 def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     events = _collect_tool_events(monkeypatch)
-    image_events = [
-        e
-        for e in events
-        if e.get("tool_name") == "image_generation"
-        or (e.get("type") == "tool_end" and e.get("image_b64"))
-    ]
+    image_events = _image_generation_events(events)
     starts = [e for e in image_events if e.get("type") == "tool_start"]
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
@@ -441,12 +445,7 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
 
 def test_image_generation_added_emits_early_placeholder_start(monkeypatch):
     events = _collect_tool_events(monkeypatch, include_added = True)
-    image_events = [
-        e
-        for e in events
-        if e.get("tool_name") == "image_generation"
-        or (e.get("type") == "tool_end" and e.get("image_b64"))
-    ]
+    image_events = _image_generation_events(events)
     starts = [e for e in image_events if e.get("type") == "tool_start"]
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events

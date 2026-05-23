@@ -449,6 +449,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
 
 const ImageImpl: ImageMessagePartComponent = (props) => {
   const { image, filename, status } = props;
+  const alt = filename || "Image content";
 
   if (status?.type === "running") {
     return (
@@ -469,8 +470,8 @@ const ImageImpl: ImageMessagePartComponent = (props) => {
 
   return (
     <ImageRoot>
-      <ImageZoom src={image} alt={filename || "Image content"}>
-        <ImagePreview src={image} alt={filename || "Image content"} />
+      <ImageZoom src={image} alt={alt}>
+        <ImagePreview src={image} alt={alt} />
       </ImageZoom>
       <ImageFilename>{filename}</ImageFilename>
     </ImageRoot>

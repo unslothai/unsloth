@@ -204,14 +204,19 @@ export type OpenAIReasoningContentPart = {
   status?: "in_progress" | "completed" | "incomplete";
 };
 
-export type OpenAIMessageContent =
-  | string
-  | Array<
-      | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string } }
-      | OpenAIReasoningContentPart
-      | { type: "image_generation_call"; id: string; response_id?: string }
-    >;
+export type OpenAIImageGenerationCallContentPart = {
+  type: "image_generation_call";
+  id: string;
+  response_id?: string;
+};
+
+export type OpenAIMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | OpenAIReasoningContentPart
+  | OpenAIImageGenerationCallContentPart;
+
+export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";

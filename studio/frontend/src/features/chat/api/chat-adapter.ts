@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -38,6 +38,7 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
+  OpenAIImageGenerationCallContentPart,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
@@ -307,37 +308,30 @@ function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  const pushImagePart = (part: { type: string }) => {
+    if (part.type !== "image" || !("image" in part)) {
+      return;
+    }
+    const src = (part as { image: string }).image;
+    if (!src) {
+      return;
+    }
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+      },
+    });
+  };
 
   for (const part of message.content ?? []) {
-    if (part.type === "image" && "image" in part) {
-      const src = (part as { image: string }).image;
-      if (src) {
-        parts.push({
-          type: "image_url",
-          image_url: {
-            url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
-          },
-        });
-      }
-    }
+    pushImagePart(part);
   }
 
   if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
     for (const attachment of message.attachments ?? []) {
       for (const part of attachment.content ?? []) {
-        if (part.type === "image" && "image" in part) {
-          const src = (part as { image: string }).image;
-          if (src) {
-            parts.push({
-              type: "image_url",
-              image_url: {
-                url: src.startsWith("data:")
-                  ? src
-                  : `data:image/png;base64,${src}`,
-              },
-            });
-          }
-        }
+        pushImagePart(part);
       }
     }
   }
@@ -392,16 +386,12 @@ function openAIImageGenerationRequiresReasoningReplay(
 function collectOpenAIImageGenerationCallParts(
   message: RunMessage,
   options?: { requireReasoningReplay?: boolean },
-): Array<
-  | OpenAIReasoningContentPart
-  | { type: "image_generation_call"; id: string; response_id?: string }
-> {
+): Array<OpenAIReasoningContentPart | OpenAIImageGenerationCallContentPart> {
   if (message.role !== "assistant") {
     return [];
   }
   const parts: Array<
-    | OpenAIReasoningContentPart
-    | { type: "image_generation_call"; id: string; response_id?: string }
+    OpenAIReasoningContentPart | OpenAIImageGenerationCallContentPart
   > = [];
   const seenReasoningIds = new Set<string>();
   for (const part of message.content ?? []) {

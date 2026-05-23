@@ -432,15 +432,15 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+  const shouldBlockSend = useCallback(
+    () =>
+      !hasSendableContent || isComposingRef.current || hasPendingAttachments,
+    [hasPendingAttachments, hasSendableContent, isComposingRef],
+  );
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
-      if (
-        disabled ||
-        !hasSendableContent ||
-        isComposingRef.current ||
-        hasPendingAttachments
-      ) {
+      if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
       }
@@ -483,12 +483,10 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       closeOverlay,
       composerText,
       disabled,
-      hasPendingAttachments,
-      hasSendableContent,
-      isComposingRef,
       overlay,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      shouldBlockSend,
     ],
   );
 
@@ -517,9 +515,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
           isComposing ||
           hasPendingAttachments
         }
-        blockSend={() =>
-          !hasSendableContent || isComposingRef.current || hasPendingAttachments
-        }
+        shouldBlockSend={shouldBlockSend}
       />
     </>
   );
@@ -1146,10 +1142,10 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
-  disabled,
-  blockSend,
-}) => {
+const ComposerAction: FC<{
+  disabled?: boolean;
+  shouldBlockSend?: () => boolean;
+}> = ({ disabled, shouldBlockSend }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-0.5">
@@ -1196,7 +1192,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
               size="icon"
               disabled={disabled}
               onClick={(event) => {
-                if (blockSend?.()) {
+                if (shouldBlockSend?.()) {
                   event.preventDefault();
                 }
               }}

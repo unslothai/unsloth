@@ -2640,7 +2640,7 @@ class ExternalProviderClient:
 
             if isinstance(content, list):
                 translated_parts: list[dict[str, Any]] = []
-                message_sets_previous_response_id = False
+                used_previous_response_id = False
                 for part in content:
                     part_type = part.get("type")
                     if part_type == "text":
@@ -2671,7 +2671,7 @@ class ExternalProviderClient:
                                 previous_response_id = response_id
                                 input_items = []
                                 translated_parts = []
-                                message_sets_previous_response_id = True
+                                used_previous_response_id = True
                             else:
                                 previous_response_id = None
                             openai_replay_items.append(
@@ -2714,7 +2714,7 @@ class ExternalProviderClient:
                         if filename:
                             block["filename"] = filename
                         translated_parts.append(block)
-                if translated_parts and not message_sets_previous_response_id:
+                if translated_parts and not used_previous_response_id:
                     input_items.append({"role": role, "content": translated_parts})
 
         if previous_response_id:
@@ -2735,9 +2735,10 @@ class ExternalProviderClient:
                 if item.get("type") == "reasoning":
                     has_reasoning_replay = True
                     filtered_replay_items.append(item)
-                elif item.get("type") == "image_generation_call":
-                    if has_reasoning_replay:
-                        filtered_replay_items.append(item)
+                elif (
+                    item.get("type") == "image_generation_call" and has_reasoning_replay
+                ):
+                    filtered_replay_items.append(item)
                 else:
                     filtered_replay_items.append(item)
             openai_replay_items = filtered_replay_items
@@ -3209,6 +3210,21 @@ class ExternalProviderClient:
                                     summary.append(summary_part)
                         return existing
 
+                    def _image_generation_arguments(
+                        prompt: str,
+                        raw_item_id: Any,
+                    ) -> dict[str, Any]:
+                        arguments: dict[str, Any] = {"kind": "image", "prompt": prompt}
+                        if isinstance(raw_item_id, str) and raw_item_id:
+                            arguments["openai_image_generation_call_id"] = raw_item_id
+                        if current_openai_response_id:
+                            arguments["openai_response_id"] = current_openai_response_id
+                        if last_openai_reasoning_replay_item:
+                            arguments["openai_reasoning_item"] = (
+                                last_openai_reasoning_replay_item
+                            )
+                        return arguments
+
                     def _extract_reasoning_text(payload: Any) -> str:
                         if payload is None:
                             return ""
@@ -3341,21 +3357,10 @@ class ExternalProviderClient:
                                 ):
                                     raw_item_id = item.get("id")
                                     if isinstance(raw_item_id, str) and raw_item_id:
-                                        arguments: dict[str, Any] = {
-                                            "kind": "image",
-                                            "prompt": "",
-                                            "openai_image_generation_call_id": (
-                                                raw_item_id
-                                            ),
-                                        }
-                                        if current_openai_response_id:
-                                            arguments["openai_response_id"] = (
-                                                current_openai_response_id
-                                            )
-                                        if last_openai_reasoning_replay_item:
-                                            arguments["openai_reasoning_item"] = (
-                                                last_openai_reasoning_replay_item
-                                            )
+                                        arguments = _image_generation_arguments(
+                                            "",
+                                            raw_item_id,
+                                        )
                                         image_generation_calls_started.add(raw_item_id)
                                         yield _emit_tool_event(
                                             {
@@ -3512,22 +3517,10 @@ class ExternalProviderClient:
                                         or item.get("prompt")
                                         or ""
                                     )
-                                    done_arguments: dict[str, Any] = {
-                                        "kind": "image",
-                                        "prompt": prompt_in,
-                                    }
-                                    if isinstance(raw_item_id, str) and raw_item_id:
-                                        done_arguments[
-                                            "openai_image_generation_call_id"
-                                        ] = raw_item_id
-                                    if current_openai_response_id:
-                                        done_arguments["openai_response_id"] = (
-                                            current_openai_response_id
-                                        )
-                                    if last_openai_reasoning_replay_item:
-                                        done_arguments["openai_reasoning_item"] = (
-                                            last_openai_reasoning_replay_item
-                                        )
+                                    done_arguments = _image_generation_arguments(
+                                        prompt_in,
+                                        raw_item_id,
+                                    )
                                     if item_id not in image_generation_calls_started:
                                         yield _emit_tool_event(
                                             {

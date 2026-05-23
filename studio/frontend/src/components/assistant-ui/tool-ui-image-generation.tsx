@@ -89,24 +89,33 @@ const imageFilenameFromPrompt = (prompt: string, mime: string): string => {
   return `${slug || "generated-image"}.${extensionForMime(mime)}`;
 };
 
-function GeneratedImagePlaceholder({ label }: { label: string }) {
-  const dots = Array.from({ length: 64 }, (_, index) => {
-    const row = Math.floor(index / 8);
-    const col = index % 8;
-    return (
-      <span
-        key={index}
-        className="generated-image-loading-dot"
-        style={
-          {
-            "--dot-row": row,
-            "--dot-col": col,
-          } as CSSProperties
-        }
-      />
-    );
-  });
+const formatGeneratedImageLabel = (prompt: string): string => {
+  if (!prompt) {
+    return "Generated image";
+  }
+  return prompt.length > 80
+    ? `Generated image: ${prompt.slice(0, 80)}…`
+    : `Generated image: ${prompt}`;
+};
 
+const loadingDots = Array.from({ length: 64 }, (_, index) => {
+  const row = Math.floor(index / 8);
+  const col = index % 8;
+  return (
+    <span
+      key={index}
+      className="generated-image-loading-dot"
+      style={
+        {
+          "--dot-row": row,
+          "--dot-col": col,
+        } as CSSProperties
+      }
+    />
+  );
+});
+
+function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
     <div
       className={cn(
@@ -118,7 +127,7 @@ function GeneratedImagePlaceholder({ label }: { label: string }) {
     >
       <span className="sr-only">{label}</span>
       <div className="generated-image-loading-wave" aria-hidden={true}>
-        {dots}
+        {loadingDots}
       </div>
     </div>
   );
@@ -168,11 +177,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const isPendingImage = !imagePart && status?.type === "running";
 
   const runningLabel = "Generating image…";
-  const completedLabel = prompt
-    ? prompt.length > 80
-      ? `Generated image: ${prompt.slice(0, 80)}…`
-      : `Generated image: ${prompt}`
-    : "Generated image";
+  const completedLabel = formatGeneratedImageLabel(prompt);
 
   const showPreview = () => {
     if (!imagePart) {
@@ -189,20 +194,22 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     });
   };
 
-  const stopActionClick = (event: MouseEvent<HTMLButtonElement>) => {
+  const stopOverlayActionPropagation = (
+    event: MouseEvent<HTMLButtonElement>,
+  ) => {
     event.preventDefault();
     event.stopPropagation();
   };
 
   const handleDownload = (event: MouseEvent<HTMLButtonElement>) => {
-    stopActionClick(event);
+    stopOverlayActionPropagation(event);
     if (imagePart) {
       downloadImagePart(imagePart);
     }
   };
 
   const handleEditClick = (event: MouseEvent<HTMLButtonElement>) => {
-    stopActionClick(event);
+    stopOverlayActionPropagation(event);
     showPreview();
   };
 
