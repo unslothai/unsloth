@@ -162,3 +162,26 @@ def test_array_empty_both_is_perfect():
 def test_dispatch_infers_array_when_no_schema():
     node = _score([1, 2], [2, 1], None, "string")
     assert node.score == 1.0 and node.n_leaves == 2
+
+
+def test_leaf_schema_on_container_is_mismatch():
+    # a leaf comparator must not stringify a dict/list and Levenshtein its repr
+    node = _score({"a": 1, "b": 2}, {"a": 1}, normalize_schema("string"), "string")
+    assert node.score == 0.0 and node.note == "type mismatch"
+    node = _score("scalar", [1, 2, 3], normalize_schema("string"), "string")
+    assert node.score == 0.0 and node.note == "type mismatch"
+
+
+def test_array_breakdown_includes_unmatched_items():
+    schema = _items_schema()
+    gt = [{"desc": "Apple", "price": 10}]
+    pred = [{"desc": "Apple", "price": 10}, {"desc": "Ghost", "price": 99}]
+    node = _score_array(gt, pred, schema, "string")
+    notes = [c.note for c in node.children]
+    assert "hallucinated" in notes  # the extra "Ghost" row is surfaced
+
+    gt2 = [{"desc": "Apple", "price": 10}, {"desc": "Banana", "price": 20}]
+    pred2 = [{"desc": "Apple", "price": 10}]
+    node2 = _score_array(gt2, pred2, schema, "string")
+    notes2 = [c.note for c in node2.children]
+    assert "missing in prediction" in notes2  # the dropped "Banana" row is surfaced

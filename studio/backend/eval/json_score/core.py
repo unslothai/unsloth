@@ -84,13 +84,20 @@ def _score(gt: Any, pred: Any, node: Node | None, default: str) -> ScoreNode:
             return _mismatch(gt, pred, node)
         return _score_array(gt, pred, node, default)
 
-    # Leaf
+    # Leaf — but a container on either side can't be scored by a leaf
+    # comparator (it would stringify and Levenshtein the repr), so treat a
+    # leaf-vs-container shape clash as a type mismatch.
+    if isinstance(gt, (dict, list)) or isinstance(pred, (dict, list)):
+        return _mismatch(gt, pred, node)
     if isinstance(node, LeafNode):
         return _score_leaf(gt, pred, node.comparator, node.params)
     return _score_leaf(gt, pred, default, {})
 
 
 def _mismatch(gt: Any, pred: Any, node: Node | None) -> ScoreNode:
+    # Weight the mismatch by what ground truth claims: when GT is the degenerate
+    # (scalar) side, _leaf_count is 1; when GT carries the structure, it's that
+    # subtree's size. Either way the local score is 0.
     n = _leaf_count(gt, node) if gt is not None else 1
     return ScoreNode(0.0, max(n, 1), note="type mismatch")
 
@@ -140,4 +147,19 @@ def _score_array(gt: list, pred: list, node: Node | None, default: str) -> Score
     matched = list(zip(row_ind.tolist(), col_ind.tolist()))
     total = sum(score_matrix[i][j] for i, j in matched)
     children = [node_matrix[i][j] for i, j in matched]
+    # Surface the unmatched items in the breakdown — they drove the penalty.
+    # (Score and n_leaves already account for them via the `slots` denominator;
+    # these nodes are for diagnosis only.)
+    matched_g = {i for i, _ in matched}
+    matched_p = {j for _, j in matched}
+    children += [
+        ScoreNode(0.0, 1, note="missing in prediction")
+        for i in range(n_g)
+        if i not in matched_g
+    ]
+    children += [
+        ScoreNode(0.0, 1, note="hallucinated")
+        for j in range(n_p)
+        if j not in matched_p
+    ]
     return ScoreNode(float(total) / slots, slots, children=children)
