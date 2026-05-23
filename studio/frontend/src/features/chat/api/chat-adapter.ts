@@ -868,7 +868,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
-      const selectedImageEditReference = runtime.pendingImageEditReference;
+      const resolvedThreadKey = resolvedThreadId ?? null;
+      const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
+      const selectedImageEditReference =
+        (pendingImageEditReferenceForRun?.threadId ?? null) ===
+        resolvedThreadKey
+          ? pendingImageEditReferenceForRun
+          : null;
       const clearSelectedImageEditReference = () => {
         if (!selectedImageEditReference) {
           return;
@@ -878,7 +884,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (
           pending?.openaiImageGenerationCallId ===
             selectedImageEditReference.openaiImageGenerationCallId &&
-          pending.openaiResponseId === selectedImageEditReference.openaiResponseId
+          pending.openaiResponseId ===
+            selectedImageEditReference.openaiResponseId &&
+          (pending.threadId ?? null) ===
+            (selectedImageEditReference.threadId ?? null)
         ) {
           store.clearPendingImageEditReference();
         }

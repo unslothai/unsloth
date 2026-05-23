@@ -146,7 +146,10 @@ export const Thread: FC<{
               <AuiIf
                 condition={({ thread }) => thread.isEmpty && !thread.isLoading}
               >
-                <ThreadWelcome hideComposer={hideComposer} />
+                <ThreadWelcome
+                  hideComposer={hideComposer}
+                  threadId={targetThreadId ?? null}
+                />
               </AuiIf>
             )}
 
@@ -185,7 +188,10 @@ export const Thread: FC<{
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <ThreadComposerDock disabled={isComposerAttachPending} />
+              <ThreadComposerDock
+                disabled={isComposerAttachPending}
+                threadId={targetThreadId ?? null}
+              />
             </AuiIf>
           )}
         </IntentAwareScrollProvider>
@@ -286,7 +292,10 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
   );
 };
 
-const ThreadComposerDock: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ThreadComposerDock: FC<{
+  disabled?: boolean;
+  threadId?: string | null;
+}> = ({ disabled, threadId }) => {
   const { overlay } = useGeneratedImageOverlay();
 
   return (
@@ -302,7 +311,7 @@ const ThreadComposerDock: FC<{ disabled?: boolean }> = ({ disabled }) => {
       />
       <div className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-          <ComposerAnimated disabled={disabled} />
+          <ComposerAnimated disabled={disabled} threadId={threadId} />
         </div>
         <p className="composer-footer-note">
           LLMs can make mistakes. Double-check responses.
@@ -336,7 +345,10 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+const ThreadWelcome: FC<{
+  hideComposer?: boolean;
+  threadId?: string | null;
+}> = ({ hideComposer, threadId }) => {
   const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
 
   useEffect(() => {
@@ -366,18 +378,21 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          {!hideComposer && <ComposerAnimated />}
+          {!hideComposer && <ComposerAnimated threadId={threadId} />}
         </div>
       </div>
     </div>
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAnimated: FC<{
+  disabled?: boolean;
+  threadId?: string | null;
+}> = ({ disabled, threadId }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} />
+        <Composer disabled={disabled} threadId={threadId} />
       </div>
     </div>
   );
@@ -407,12 +422,16 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const Composer: FC<{
+  disabled?: boolean;
+  threadId?: string | null;
+}> = ({ disabled, threadId }) => {
   const aui = useAui();
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
@@ -430,6 +449,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
   const shouldBlockSend = useCallback(
@@ -462,6 +482,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         }
         setImageToolsEnabled(true);
         setPendingImageEditReference({
+          threadId: referenceThreadId,
           openaiImageGenerationCallId: overlay.openaiImageGenerationCallId,
           ...(overlay.openaiResponseId
             ? { openaiResponseId: overlay.openaiResponseId }
@@ -484,6 +505,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       composerText,
       disabled,
       overlay,
+      referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
       shouldBlockSend,

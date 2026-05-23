@@ -63,6 +63,7 @@ function saveLastExternalCheckpoint(value: string | null): void {
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type PendingImageEditReference = {
+  threadId: string | null;
   openaiImageGenerationCallId: string;
   openaiResponseId?: string;
   openaiReasoningItem?: unknown;
