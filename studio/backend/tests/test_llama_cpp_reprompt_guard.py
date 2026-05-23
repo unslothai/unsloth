@@ -205,3 +205,59 @@ def test_reprompts_on_intent_with_open_fence():
     """Open code fence is not a complete artifact, so we still re-prompt."""
     content = "First, let me write the code.\n```python\nimport"
     assert _would_reprompt(content)
+
+
+# ── Cross-platform line endings ────────────────────────────────────
+
+
+def test_artifact_regex_handles_crlf_code_fence():
+    """Windows / CRLF-converted content still detects a closed fence."""
+    content = "First, let me code.\r\n```python\r\nimport sys\r\nprint('hi')\r\n```"
+    assert _HAS_ANSWER_ARTIFACT.search(content), (
+        "CRLF (\\r\\n) line endings inside a code fence must still match"
+    )
+
+
+def test_artifact_regex_handles_crlf_numbered_list():
+    """CRLF numbered list also matches."""
+    content = "Here's the plan:\r\n1. one\r\n2. two\r\n"
+    assert _HAS_ANSWER_ARTIFACT.search(content)
+
+
+def test_artifact_regex_handles_mixed_lf_crlf():
+    """Mixed line endings (real-world: paste-and-edit on Windows)."""
+    content = "Here's the code:\r\n```python\nimport sys\r\n```"
+    assert _HAS_ANSWER_ARTIFACT.search(content)
+
+
+def test_no_backtrack_on_crlf_spam():
+    """10K of `\\r\\n` repeats must complete fast.
+
+    Pre-fix the numbered-list alternative `(?:^|\\r?\\n)\\s*\\d+\\.` would
+    O(n^2)-backtrack on this kind of input (measured at ~630ms for 10KB
+    of `\\r\\n` repeats). The post-fix `[ \\t]*` indent restriction
+    keeps it linear.
+    """
+    import time
+    payload = "\r\n" * 5000
+    t0 = time.time()
+    _HAS_ANSWER_ARTIFACT.search(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"regex took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+
+
+def test_no_reprompt_on_crlf_complete_python_game():
+    """End-to-end CRLF: complete fence -> no re-prompt."""
+    content = (
+        "First, let me set up pygame.\r\n"
+        "```python\r\n"
+        "import pygame\r\n"
+        "pygame.init()\r\n"
+        "while True:\r\n"
+        "    for e in pygame.event.get():\r\n"
+        "        if e.type == pygame.QUIT: break\r\n"
+        "```"
+    )
+    assert not _would_reprompt(content), (
+        "CRLF-encoded complete fence must also suppress the re-prompt"
+    )

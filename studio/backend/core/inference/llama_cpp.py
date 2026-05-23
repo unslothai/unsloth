@@ -79,12 +79,19 @@ _MAX_REPROMPTS = 3
 # re-prompt and the next user-visible message wipes the code. We
 # require ALL of (intent signal, length < _REPROMPT_MAX_CHARS, no
 # answer artifact) to fire.
+#
+# `\r?\n` is used everywhere a newline is required so Windows-authored or
+# CRLF-converted content still matches. The numbered-list indent uses
+# `[ \t]*` (spaces / tabs only) rather than `\s*` so the regex stays
+# linear on long whitespace runs -- greedy `\s*` + failing `\d+` caused
+# O(n^2) backtracking through embedded `\r\n` characters on adversarial
+# inputs.
 _HAS_ANSWER_ARTIFACT = re.compile(
-    r"```[a-zA-Z]*\n[\s\S]+?\n```"  # closed code fence
+    r"```[a-zA-Z]*\r?\n[\s\S]+?\r?\n```"  # closed code fence
     r"|<!doctype\b"  # HTML page
     r"|<html\b"
     r"|<svg\b[\s\S]*?</svg>"  # complete SVG
-    r"|(?:^|\n)\s*\d+\.\s+\S.*?\n\s*\d+\.",  # 2+ numbered list items
+    r"|(?:^|\r?\n)[ \t]*\d+\.[ \t]+\S.*?\r?\n[ \t]*\d+\.",  # 2+ numbered list items
     re.IGNORECASE,
 )
 
