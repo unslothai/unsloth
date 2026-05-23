@@ -951,14 +951,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        // Treat search and fetch as a single "any web tool enabled"
+        // axis. The guard only needs to warn the model when no web
+        // tool is wired in for this turn; once either pill is on the
+        // model can pick the right one from the tool schema. Earlier
+        // revisions checked webSearchEnabledForThisTurn alone, which
+        // mis-fired when the standalone Fetch pill was on and Search
+        // was off and told Claude it had no web_fetch when in fact it
+        // did, suppressing live web_fetch tool calls.
+        const anyWebEnabledForThisTurn =
+          webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
+        if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
             "Answer from your own knowledge. " +
             "If a request genuinely requires tool use, live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn) {
+        } else if (!anyWebEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
             "You may still use code execution tools when they are available and useful. " +
