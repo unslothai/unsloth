@@ -3833,6 +3833,19 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "llama-quantize",
             "libllama-common.so*",
             "libllama.so*",
+            # Upstream llama.cpp split the per-binary entry code into
+            # paired ``libllama-<binary>-impl.so`` shared libraries
+            # around release b9261. ``llama-server`` and
+            # ``llama-quantize`` are NEEDED-linked against
+            # ``libllama-server-impl.so`` / ``libllama-quantize-impl.so``
+            # respectively, with RUNPATH ``$ORIGIN``. Without copying
+            # the impl ``.so`` files alongside the binaries, ldd
+            # reports them missing, preflight rejects the install, and
+            # the installer falls back to a source build on a fresh
+            # Linux install. Glob the whole family so future bundles
+            # that split additional binaries (e.g. ``llama-cli``,
+            # ``llama-bench``) keep working.
+            "libllama-*-impl.so*",
             "libggml.so*",
             "libggml-base.so*",
             "libmtmd.so*",
