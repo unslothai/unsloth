@@ -61,3 +61,18 @@ def test_score_from_text_unparseable_breakdown():
         _gt(), "no json here", SCHEMA, return_key_scores=True
     )
     assert score == 0.0 and node.note == "unparseable prediction"
+
+
+def test_score_from_text_extracts_json_after_leading_prose():
+    raw = 'Sure! Here is the result: {"currency": "USD"} — hope it helps.'
+    assert score_from_text({"currency": "USD"}, raw, {"currency": "categorical"}) == 1.0
+
+
+def test_score_from_text_bare_json_object():
+    raw = '{"currency": "USD"}'
+    assert score_from_text({"currency": "USD"}, raw, {"currency": "categorical"}) == 1.0
+
+
+def test_score_from_text_accepts_already_parsed_dict():
+    pred = {"currency": "USD"}
+    assert score_from_text({"currency": "USD"}, pred, {"currency": "categorical"}) == 1.0

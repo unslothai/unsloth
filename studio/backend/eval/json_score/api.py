@@ -63,7 +63,11 @@ def score_from_text(
     default_comparator: str = "string",
     return_key_scores: bool = False,
 ):
-    """Extract JSON from raw model output, then score. Unparseable -> 0.0."""
+    """Extract JSON from raw model output, then score.
+
+    Returns the same shape as ``json_anls_score`` (a float, or ``(float,
+    ScoreNode)`` when ``return_key_scores=True``). Unparseable output scores 0.0.
+    """
     pred = _extract_json(raw_text)
     if pred is None:
         node: Node | None = normalize_schema(schema) if schema is not None else None
