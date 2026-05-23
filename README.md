@@ -202,7 +202,7 @@ unsloth studio -p 8888
 
 #### Nightly: Windows:
 Run in Windows Powershell:
-```bash
+```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 git checkout nightly
