@@ -38,7 +38,6 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
-  OpenAIImageGenerationCallContentPart,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
@@ -376,66 +375,6 @@ function normalizeOpenAIReasoningItem(
   return normalized;
 }
 
-function openAIImageGenerationRequiresReasoningReplay(
-  modelId: string,
-): boolean {
-  const normalized = modelId.trim().toLowerCase();
-  return normalized.startsWith("gpt-5") || normalized.startsWith("o");
-}
-
-function collectOpenAIImageGenerationCallParts(
-  message: RunMessage,
-  options?: { requireReasoningReplay?: boolean },
-): Array<OpenAIReasoningContentPart | OpenAIImageGenerationCallContentPart> {
-  if (message.role !== "assistant") {
-    return [];
-  }
-  const parts: Array<
-    OpenAIReasoningContentPart | OpenAIImageGenerationCallContentPart
-  > = [];
-  const seenReasoningIds = new Set<string>();
-  for (const part of message.content ?? []) {
-    if (part.type !== "tool-call" || part.toolName !== "image_generation") {
-      continue;
-    }
-    const args = part.args as
-      | {
-          openai_image_generation_call_id?: unknown;
-          openai_reasoning_item?: unknown;
-          openai_response_id?: unknown;
-        }
-      | undefined;
-    const argsId =
-      typeof args?.openai_image_generation_call_id === "string"
-        ? args.openai_image_generation_call_id
-        : "";
-    const fallbackId = part.toolCallId;
-    const id = argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
-    const responseId =
-      typeof args?.openai_response_id === "string"
-        ? args.openai_response_id
-        : "";
-    if (id) {
-      const reasoningItem = normalizeOpenAIReasoningItem(
-        args?.openai_reasoning_item,
-      );
-      if (options?.requireReasoningReplay && !reasoningItem && !responseId) {
-        continue;
-      }
-      if (reasoningItem && !seenReasoningIds.has(reasoningItem.id)) {
-        seenReasoningIds.add(reasoningItem.id);
-        parts.push(reasoningItem);
-      }
-      parts.push({
-        type: "image_generation_call",
-        id,
-        ...(responseId ? { response_id: responseId } : {}),
-      });
-    }
-  }
-  return parts;
-}
-
 function toOpenAIImageEditReferenceMessage(
   reference: PendingImageEditReference,
 ): OpenAIChatMessage | null {
@@ -459,13 +398,7 @@ function toOpenAIImageEditReferenceMessage(
   return { role: "assistant", content };
 }
 
-function toOpenAIMessage(
-  message: RunMessage,
-  options?: {
-    includeOpenAIImageGenerationCalls?: boolean;
-    requireOpenAIImageGenerationReasoning?: boolean;
-  },
-): {
+function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
   content: OpenAIMessageContent;
 } | null {
@@ -488,18 +421,12 @@ function toOpenAIMessage(
   }
 
   const imageParts = collectImageParts(message);
-  const imageGenerationCallParts = options?.includeOpenAIImageGenerationCalls
-    ? collectOpenAIImageGenerationCallParts(message, {
-        requireReasoningReplay: options.requireOpenAIImageGenerationReasoning,
-      })
-    : [];
-  if (imageParts.length > 0 || imageGenerationCallParts.length > 0) {
+  if (imageParts.length > 0) {
     return {
       role: message.role,
       content: [
         ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
         ...imageParts,
-        ...imageGenerationCallParts,
       ],
     };
   }
@@ -941,10 +868,21 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
-      const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
-      if (pendingImageEditReferenceForRun) {
-        runtime.clearPendingImageEditReference();
-      }
+      const selectedImageEditReference = runtime.pendingImageEditReference;
+      const clearSelectedImageEditReference = () => {
+        if (!selectedImageEditReference) {
+          return;
+        }
+        const store = useChatRuntimeStore.getState();
+        const pending = store.pendingImageEditReference;
+        if (
+          pending?.openaiImageGenerationCallId ===
+            selectedImageEditReference.openaiImageGenerationCallId &&
+          pending.openaiResponseId === selectedImageEditReference.openaiResponseId
+        ) {
+          store.clearPendingImageEditReference();
+        }
+      };
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -1061,10 +999,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
-      if (
-        pendingImageEditReferenceForRun &&
-        !imageGenerationEnabledForThisTurn
-      ) {
+      if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         toast.error("Image editing is unavailable", {
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
@@ -1072,21 +1007,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Image generation edit unavailable.");
       }
 
-      const selectedImageEditReference = pendingImageEditReferenceForRun;
       const outboundMessages = messages
-        .map((message) =>
-          toOpenAIMessage(message, {
-            includeOpenAIImageGenerationCalls:
-              imageGenerationEnabledForThisTurn && !selectedImageEditReference,
-            requireOpenAIImageGenerationReasoning: Boolean(
-              externalSelection &&
-                runtime.reasoningEnabled !== false &&
-                openAIImageGenerationRequiresReasoningReplay(
-                  externalSelection.modelId,
-                ),
-            ),
-          }),
-        )
+        .map((message) => toOpenAIMessage(message))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -2119,6 +2041,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             cachedTokens: meta.timings?.cache_n ?? 0,
           });
         }
+
+        clearSelectedImageEditReference();
 
         const finalTiming = buildTiming(
           streamStartTime,
