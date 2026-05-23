@@ -40,28 +40,20 @@ _BACKEND = _HERE.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from utils.hf_snapshot_filters import (
+    SNAPSHOT_IGNORE_PATTERNS,
+    CONSOLIDATED_PATTERN,
+    repo_ships_transformers_weights,
+)
+
 
 # Bound the variant-resolution metadata fetch so a stalled connection fails the
 # worker (exit 1, surfaced as a job error) instead of hanging at 0% until the
-# user manually cancels. The file download itself is governed separately by
-# huggingface_hub's own download timeout.
-_METADATA_REQUEST_TIMEOUT = 30.0
-
-
-_SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
-    "*.gguf",
-    "*.onnx",
-    "onnx/*",
-    "openvino/*",
-    "mlx/*",
-    "*.bin.index.json.bak",
-)
-
-# Mistral's original single-file weights. Redundant only when the repo ALSO
-# ships transformers-format shards, so this is appended conditionally per repo
-# (see _resolve_snapshot_ignore_patterns). Skipping it unconditionally would
-# leave a consolidated-only repo cached with no loadable weights.
-_CONSOLIDATED_PATTERN = "consolidated*"
+# user manually cancels. 10s is well above the typical sub-second hf_model_info
+# response on healthy networks while keeping the worst-case "stuck at 0%"
+# perception short on flaky connections. The file download itself is governed
+# separately by huggingface_hub's own download timeout.
+_METADATA_REQUEST_TIMEOUT = 10.0
 
 
 def _on_signal(signum, frame):
@@ -84,23 +76,15 @@ def _repo_ships_transformers_weights(repo_id: str, hf_token: str | None) -> bool
     info = hf_model_info(
         repo_id, token = hf_token, timeout = _METADATA_REQUEST_TIMEOUT,
     )
-    for sibling in info.siblings:
-        base = sibling.rfilename.rsplit("/", 1)[-1].lower()
-        if base.startswith("consolidated"):
-            continue
-        if base.endswith(".safetensors"):
-            return True
-        if base.endswith(".bin") and (
-            base.startswith("model") or base.startswith("pytorch_model")
-        ):
-            return True
-    return False
+    return repo_ships_transformers_weights(
+        sibling.rfilename for sibling in info.siblings
+    )
 
 
 def _resolve_snapshot_ignore_patterns(
     repo_id: str, hf_token: str | None,
 ) -> list[str]:
-    ignore = list(_SNAPSHOT_IGNORE_PATTERNS)
+    ignore = list(SNAPSHOT_IGNORE_PATTERNS)
     # Drop consolidated.* only when transformers-format weights exist. If the
     # layout can't be inspected, keep it (never silently strip the sole weights).
     try:
@@ -113,7 +97,7 @@ def _resolve_snapshot_ignore_patterns(
         )
         redundant = False
     if redundant:
-        ignore.append(_CONSOLIDATED_PATTERN)
+        ignore.append(CONSOLIDATED_PATTERN)
     return ignore
 
 

@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { fetchDatasetSize } from "../lib/dataset-size";
-import { formatBytes } from "../lib/format";
+import { formatBytes } from "@/lib/format";
 import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
@@ -154,7 +154,7 @@ export function DatasetDownloadSection({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                Partial download. Click Resume to continue.
+                Partial download. Click to continue.
               </TooltipContent>
             </Tooltip>
           )}

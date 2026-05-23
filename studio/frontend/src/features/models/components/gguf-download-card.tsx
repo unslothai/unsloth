@@ -33,7 +33,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import { formatBytes } from "../lib/format";
+import { formatBytes } from "@/lib/format";
 import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
@@ -231,30 +231,8 @@ export function GgufDownloadCard({
   );
 
   useEffect(() => {
-    let cancelled = false;
-    void listGgufVariants(repoId, hfToken || undefined)
-      .then((res) => {
-        if (cancelled) return;
-        setVariantState({
-          key: variantKey,
-          variants: res.variants,
-          loading: false,
-          error: null,
-        });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setVariantState({
-          key: variantKey,
-          variants: null,
-          loading: false,
-          error: err instanceof Error ? err.message : "Failed to load variants",
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId, hfToken, variantKey]);
+    void refresh();
+  }, [refresh]);
 
   const job = useRepoDownload({
     kind: "model",
@@ -462,7 +440,7 @@ export function GgufDownloadCard({
                     </span>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={4}>
-                    Partial download. Click Resume to continue.
+                    Partial download. Click to continue.
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -534,8 +512,7 @@ export function GgufDownloadCard({
                           </span>
                         </TooltipTrigger>
                         <TooltipContent side="top" sideOffset={4}>
-                          Partial download. Select it and click Resume to
-                          continue.
+                          Partial download. Select it to continue.
                         </TooltipContent>
                       </Tooltip>
                     )}
@@ -667,7 +644,7 @@ export function GgufDownloadCard({
         ) : (
           <>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-            {selected?.partial ? "Resume" : "Download"}
+            {selected?.partial ? "Continue" : "Download"}
           </>
         )}
       </button>

@@ -158,10 +158,18 @@ export function savePerModelConfig(
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
 ): boolean {
+  const normalized = normalize(config);
+  if (isDefaultConfig(normalized)) {
+    const map = readMap();
+    const key = configEntryKey(modelId, ggufVariant);
+    if (!Object.hasOwn(map, key)) return true;
+    delete map[key];
+    return writeMap(map);
+  }
   const map = readMap();
   const key = configEntryKey(modelId, ggufVariant);
   delete map[key];
-  map[key] = normalize(config);
+  map[key] = normalized;
   const keys = Object.keys(map);
   if (keys.length > MAX_ENTRIES) {
     for (const stale of keys.slice(0, keys.length - MAX_ENTRIES)) {

@@ -236,6 +236,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
+        <DownloadManagerPanel />
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
@@ -253,6 +254,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
+      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen
@@ -292,7 +294,6 @@ export function AppProvider({ children }: AppProviderProps) {
       <TauriWrapper>
         {children}
       </TauriWrapper>
-      <DownloadManagerPanel />
       <Toaster
         position="top-right"
         visibleToasts={2}

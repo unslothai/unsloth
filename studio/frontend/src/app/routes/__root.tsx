@@ -88,14 +88,14 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
+          className="h-full min-h-0 overflow-hidden"
         >
           <AppSidebar />
           <SidebarInset
             className={
               isChatRoute
                 ? "overflow-hidden"
-                : "overflow-y-auto [scrollbar-gutter:stable]"
+                : "overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
             }
           >
             <Navbar />

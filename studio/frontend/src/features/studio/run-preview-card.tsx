@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { datasetShortName, modelShortName, ownerOf } from "@/features/models";
-import { useTrainingConfigStore } from "@/features/training";
+import { datasetShortName, modelShortName, ownerOf } from "@/lib/format";
+import {
+  useTrainingConfigStore,
+  useTrainingReadiness,
+} from "@/features/training";
 import {
   TRAINING_METHOD_LABELS,
   TRAINING_METHOD_NOTES,
@@ -12,6 +15,11 @@ import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import type { ReactElement, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
+
+function formatLearningRate(lr: number): string {
+  if (!Number.isFinite(lr) || lr === 0) return "0";
+  return lr.toExponential().replace(/\.?0+e/, "e");
+}
 
 function MetaRow({
   label,
@@ -77,10 +85,7 @@ export function RunPreviewCard({
   const gpu = useGpuInfo();
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = !!hfToken && hfToken.trim().length > 0;
-
-  const hasModel = !!selectedModel;
-  const hasDataset =
-    datasetSource === "upload" ? !!uploadedFile : !!dataset;
+  const { isReady, hasModel, hasDataset } = useTrainingReadiness();
 
   const modelOwner = selectedModel ? ownerOf(selectedModel) : null;
   const modelName = selectedModel ? modelShortName(selectedModel) : null;
@@ -119,12 +124,12 @@ export function RunPreviewCard({
         <span
           className={cn(
             "inline-flex h-5 items-center rounded-full px-2 text-[10px] font-medium tracking-nav",
-            hasModel && hasDataset
+            isReady
               ? "bg-foreground/[0.06] text-foreground/90 dark:bg-white/[0.08]"
               : "bg-foreground/[0.03] text-muted-foreground/70 dark:bg-white/[0.04]",
           )}
         >
-          {hasModel && hasDataset ? "Ready" : "Not ready"}
+          {isReady ? "Ready" : "Not ready"}
         </span>
       </header>
 
@@ -206,7 +211,7 @@ export function RunPreviewCard({
           value={contextLength.toLocaleString()}
           mono
         />
-        <MetaRow label="LR" value={String(learningRate)} mono />
+        <MetaRow label="LR" value={formatLearningRate(learningRate)} mono />
       </section>
 
       <section className="flex flex-col gap-3">

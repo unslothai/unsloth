@@ -13,7 +13,7 @@ import {
   detectCapabilities,
   type CapabilityKey,
 } from "./capabilities";
-import { ownerOf, repoOf } from "./format";
+import { ownerOf, repoOf } from "@/lib/format";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 
 export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{

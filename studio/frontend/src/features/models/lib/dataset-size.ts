@@ -143,7 +143,39 @@ interface ModelInfoApiResponse {
   }>;
 }
 
-const WEIGHT_FILE_RE = /\.(safetensors|bin|pt|pth|ckpt|onnx|gguf)$/i;
+type ModelSibling = NonNullable<ModelInfoApiResponse["siblings"]>[number];
+
+const SNAPSHOT_WEIGHT_FILE_RE =
+  /\.(safetensors|bin|pt|pth|ckpt|h5|msgpack|npz)$/i;
+
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
+  return siblings.some((s) => {
+    const base = basename(s.rfilename ?? "").toLowerCase();
+    if (base.startsWith("consolidated")) return false;
+    if (base.endsWith(".safetensors")) return true;
+    return (
+      base.endsWith(".bin") &&
+      (base.startsWith("model") || base.startsWith("pytorch_model"))
+    );
+  });
+}
+
+function isSnapshotIgnored(filename: string, skipConsolidated: boolean): boolean {
+  const lower = filename.toLowerCase();
+  return (
+    lower.endsWith(".gguf") ||
+    lower.endsWith(".onnx") ||
+    lower.startsWith("onnx/") ||
+    lower.startsWith("openvino/") ||
+    lower.startsWith("mlx/") ||
+    lower.endsWith(".bin.index.json.bak") ||
+    (skipConsolidated && lower.startsWith("consolidated"))
+  );
+}
 
 const modelCache = new LruMap<string, SizeCacheEntry<ModelSizeInfo>>(128);
 const modelInflight = new Map<string, Promise<ModelSizeInfo | null>>();
@@ -164,12 +196,15 @@ export function fetchModelSize(
     }
     const data = (await res.json()) as ModelInfoApiResponse;
     const siblings = data.siblings ?? [];
+    const skipConsolidated = shipsTransformersWeights(siblings);
     let total = 0;
     let weights = 0;
     for (const s of siblings) {
       if (typeof s.size !== "number") continue;
+      const filename = s.rfilename ?? "";
+      if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
       total += s.size;
-      if (s.rfilename && WEIGHT_FILE_RE.test(s.rfilename)) {
+      if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
         weights += s.size;
       }
     }

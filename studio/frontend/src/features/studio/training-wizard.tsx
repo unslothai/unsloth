@@ -9,7 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { bumpInventoryVersion } from "@/features/models";
+import { bumpInventoryVersion } from "@/stores/inventory-events";
 import {
   HfDatasetSubsetSplitSelectors,
   parseYamlConfig,
@@ -17,7 +17,7 @@ import {
   uploadTrainingDataset,
   useTrainingActions,
   useTrainingConfigStore,
-  validateTrainingConfig,
+  useTrainingReadiness,
 } from "@/features/training";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
@@ -400,62 +400,23 @@ function resolveStartTrainingError(input: {
 }
 
 export function StartTrainingCta() {
-  const {
-    isLoadingModelDefaults,
-    isCheckingVision,
-    isCheckingDataset,
-    selectedModel,
-    isVisionModel,
-    isAudioModel,
-    isDatasetImage,
-    isDatasetAudio,
-    datasetCheckFailed,
-    datasetKnownCached,
-  } = useTrainingConfigStore(
+  const { isAudioModel, isDatasetAudio } = useTrainingConfigStore(
     useShallow((s) => ({
-      isLoadingModelDefaults: s.isLoadingModelDefaults,
-      isCheckingVision: s.isCheckingVision,
-      isCheckingDataset: s.isCheckingDataset,
-      selectedModel: s.selectedModel,
-      isVisionModel: s.isVisionModel,
       isAudioModel: s.isAudioModel,
-      isDatasetImage: s.isDatasetImage,
       isDatasetAudio: s.isDatasetAudio,
-      datasetCheckFailed: s.datasetCheckFailed,
-      datasetKnownCached: s.datasetKnownCached,
     })),
   );
-  const configValidation = useTrainingConfigStore(
-    useShallow((s) => validateTrainingConfig(s)),
-  );
+  const {
+    isReady,
+    isLoadingModel,
+    isCheckingDataset,
+    isIncompatible,
+    datasetUnverified,
+    configValidation,
+  } = useTrainingReadiness();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
-  const isLoadingModel = isLoadingModelDefaults || isCheckingVision;
-  const isModelCapabilitiesSettled = !!selectedModel && !isLoadingModel;
-  const isIncompatible =
-    isModelCapabilitiesSettled &&
-    ((!isVisionModel && isDatasetImage === true) ||
-      (!isAudioModel && isDatasetAudio === true));
-
-  const modelHandlesAllModalities = isVisionModel && isAudioModel;
-  // A failed format check normally blocks Start, but for a dataset already on
-  // device the check only fails because the modality probe needs the network
-  // (it streams from the Hub). Training reads the cached copy, so don't lock
-  // an offline user out of a dataset they downloaded to train offline.
-  const datasetUnverified =
-    isModelCapabilitiesSettled &&
-    !isCheckingDataset &&
-    datasetCheckFailed &&
-    !modelHandlesAllModalities &&
-    !datasetKnownCached;
-
-  const disabled =
-    isStarting ||
-    isIncompatible ||
-    datasetUnverified ||
-    isCheckingDataset ||
-    isLoadingModel ||
-    !configValidation.ok;
+  const disabled = isStarting || !isReady;
 
   const buttonLabel = isStarting
     ? "Starting training…"

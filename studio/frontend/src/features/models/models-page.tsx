@@ -3,7 +3,11 @@
 
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
-import { useChatModelRuntime, useChatRuntimeStore } from "@/features/chat";
+import {
+  resolveInitialConfig,
+  useChatModelRuntime,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
@@ -379,6 +383,7 @@ export function ModelsPage() {
         isLora: false,
         isDownloaded: true,
         expectedBytes: opts.expectedBytes,
+        config: resolveInitialConfig(selectedModel.id, opts.ggufVariant).config,
       });
       refreshInventory();
     },
@@ -391,6 +396,7 @@ export function ModelsPage() {
       id: selectedModel.id,
       isLora: false,
       isDownloaded: true,
+      config: resolveInitialConfig(selectedModel.id, null).config,
     });
   }, [selectedModel, selectModel]);
 
@@ -412,17 +418,14 @@ export function ModelsPage() {
       }
     } else {
       const caps = selectedModel.capabilities.map((c) => c.key);
-      const inferredType: ModelType = caps.includes("vision")
-        ? "vision"
+      const inferredType: ModelType = caps.includes("embedding")
+        ? "embeddings"
         : caps.includes("audio")
           ? "audio"
-          : caps.includes("embedding")
-            ? "embeddings"
+          : caps.includes("vision")
+            ? "vision"
             : "text";
-      if (store.modelType !== inferredType) {
-        store.setModelType(inferredType);
-      }
-      store.setSelectedModel(repoId);
+      store.selectTrainingModel(repoId, inferredType);
     }
     void navigate({ to: "/studio" });
   }, [selectedModel, isDatasetMode, navigate]);

@@ -11,6 +11,8 @@ import huggingface_hub
 import pytest
 
 from workers.hf_download import _resolve_snapshot_ignore_patterns
+from utils.hf_cache_scan import DownloadRegistry
+from utils.hf_snapshot_filters import snapshot_download_size, snapshot_weight_size
 
 
 def _patch_siblings(monkeypatch, filenames):
@@ -77,3 +79,26 @@ def test_baseline_runtime_ignores_are_always_present(monkeypatch):
     patterns = _resolve_snapshot_ignore_patterns("org/standard", None)
     for expected in ("*.gguf", "*.onnx", "onnx/*", "openvino/*", "mlx/*"):
         assert expected in patterns
+
+
+def test_snapshot_size_matches_worker_ignored_files():
+    siblings = [
+        SimpleNamespace(rfilename = "config.json", size = 10),
+        SimpleNamespace(rfilename = "model.safetensors", size = 100),
+        SimpleNamespace(rfilename = "model.gguf", size = 1000),
+        SimpleNamespace(rfilename = "onnx/model.onnx", size = 1000),
+        SimpleNamespace(rfilename = "openvino/model.xml", size = 1000),
+        SimpleNamespace(rfilename = "mlx/model.safetensors", size = 1000),
+        SimpleNamespace(rfilename = "consolidated.safetensors", size = 500),
+    ]
+
+    assert snapshot_download_size(siblings) == 110
+    assert snapshot_weight_size(siblings) == 100
+
+
+def test_download_registry_rejects_concurrent_same_repo_variants():
+    registry = DownloadRegistry()
+
+    assert registry.claim("org/repo::Q4_K_M", "http") == (True, "running")
+    assert registry.claim("org/repo::Q8_0", "http") == (False, "running")
+    assert not registry.adoptable("org/repo::Q8_0")

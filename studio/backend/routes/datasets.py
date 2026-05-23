@@ -7,7 +7,6 @@ Datasets API routes
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import os
@@ -31,14 +30,8 @@ _DATASET_SIZE_NEG_TTL = 60.0
 _dataset_size_cache_lock = threading.Lock()
 
 
-def _token_fingerprint(hf_token: Optional[str]) -> str:
-    if not hf_token:
-        return ""
-    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
-
-
 def _get_dataset_size_cached(repo_id: str, hf_token: Optional[str] = None) -> int:
-    token_fp = _token_fingerprint(hf_token)
+    token_fp = hf_cache_scan.token_fingerprint(hf_token)
     with _dataset_size_cache_lock:
         cached = _dataset_size_cache.get(repo_id)
         if cached is not None:
@@ -77,25 +70,6 @@ def _get_dataset_size_cached(repo_id: str, hf_token: Optional[str] = None) -> in
         while len(_dataset_size_cache) > _DATASET_SIZE_CACHE_MAX:
             _dataset_size_cache.popitem(last = False)
     return total
-
-
-def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo dir.
-
-    Mirrors the helper in routes/models.py: prefer the most-recent
-    snapshot dir, fall back to the cache repo root, return resolved
-    realpath. Duplicated here to keep routes/datasets.py self-contained.
-    """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
 
 
 # Add backend directory to path
@@ -480,7 +454,10 @@ async def list_cached_datasets(
         return {"cached": await asyncio.to_thread(_scan_hf_dataset_caches)}
     except Exception as exc:
         logger.error("Error listing cached datasets: %s", exc, exc_info = True)
-        return {"cached": []}
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to read the local dataset cache.",
+        ) from exc
 
 
 @router.delete("/cached")
@@ -564,30 +541,23 @@ async def get_dataset_download_progress(
         if not _is_valid_repo_id(repo_id):
             return _empty
 
-        from huggingface_hub import constants as hf_constants
+        force_active = _registry.get_job(repo_id).state in {"running", "cancelling"}
+        readings: list[hf_cache_scan.CacheProgressReading] = []
 
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"datasets--{repo_id.replace('/', '--')}".lower()
-        completed_bytes = 0
-        in_progress_bytes = 0
-        cache_path: Optional[str] = None
-
-        if cache_dir.is_dir():
-            # Walk all case-variants of the target dir name (HF can keep
-            # ``datasets--owner--name`` and ``datasets--owner--Name``
-            # side-by-side; only one usually has the live blobs).
-            for entry in cache_dir.iterdir():
-                if entry.name.lower() != target:
-                    continue
-                if cache_path is None:
-                    cache_path = _resolve_hf_cache_realpath(entry)
-                blobs_dir = entry / "blobs"
-                if not blobs_dir.is_dir():
-                    continue
+        for entry in hf_cache_scan.preferred_repo_cache_dirs(
+            "dataset",
+            repo_id,
+            force_active = force_active,
+        ):
+            completed_bytes = 0
+            in_progress_bytes = 0
+            cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
+            blobs_dir = entry / "blobs"
+            if blobs_dir.is_dir():
                 try:
                     blob_entries = list(blobs_dir.iterdir())
                 except OSError:
-                    continue
+                    blob_entries = []
                 for f in blob_entries:
                     # Skip a blob that vanished mid-poll (renamed out of
                     # *.incomplete) rather than zeroing the whole reading.
@@ -600,7 +570,13 @@ async def get_dataset_download_progress(
                             completed_bytes += f.stat().st_size
                     except OSError:
                         continue
+            readings.append((completed_bytes, in_progress_bytes, cache_path))
 
+        selected_reading = hf_cache_scan.select_best_cache_progress(readings)
+        if selected_reading is None:
+            return _empty
+
+        completed_bytes, in_progress_bytes, cache_path = selected_reading
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
             return {**_empty, "cache_path": cache_path}
@@ -636,12 +612,14 @@ async def get_dataset_download_progress(
 
 
 class DownloadDatasetRequest(BaseModel):
-    """Body for ``POST /api/datasets/download``."""
+    """Body for ``POST /api/datasets/download``.
+
+    The HuggingFace token travels in the ``X-HF-Token`` request header so it
+    never appears in browser devtools payload tabs, request-body access logs,
+    or exception reporters that capture request bodies.
+    """
 
     repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated/private repos"
-    )
     use_xet: bool = Field(
         False,
         description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
@@ -673,6 +651,7 @@ def terminate_active_dataset_downloads() -> None:
 @router.post("/download", status_code = 202)
 async def download_dataset(
     body: DownloadDatasetRequest,
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token", max_length = 512),
     current_subject: str = Depends(get_current_subject),
 ):
     """Start a background download for a HuggingFace dataset."""
@@ -702,12 +681,12 @@ async def download_dataset(
     try:
         proc = hf_cache_scan.spawn_worker(
             ["--repo-id", repo_id, "--dataset"],
-            body.hf_token,
+            hf_token,
             backend_dir,
             use_xet = body.use_xet,
         )
     except Exception as e:
-        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = body.hf_token)
+        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = hf_token)
         logger.error(f"Failed to spawn dataset download worker for {repo_id}: {scrubbed}", exc_info = True)
         _registry.set_job(repo_id, "error", scrubbed)
         raise HTTPException(
@@ -724,7 +703,7 @@ async def download_dataset(
         except Exception as e:
             logger.warning(f"Cancel SIGKILL for dataset {repo_id} failed: {e}")
 
-    worker_token = body.hf_token
+    worker_token = hf_token
     def _watch() -> None:
         hf_cache_scan.finalize_worker_exit(
             _registry,
@@ -735,6 +714,8 @@ async def download_dataset(
             log_prefix = "Dataset download",
             logger = logger,
         )
+        if _registry.get_job(repo_id).state in ("error", "cancelled"):
+            hf_cache_scan.purge_empty_marker_dir("dataset", repo_id)
 
     threading.Thread(
         target = _watch,

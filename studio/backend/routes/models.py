@@ -82,6 +82,11 @@ try:
         resolve_export_dir,
     )
     from utils import hf_cache_scan
+    from utils.hf_snapshot_filters import (
+        snapshot_download_lfs_hashes,
+        snapshot_download_size,
+        snapshot_weight_size,
+    )
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
@@ -116,6 +121,11 @@ except ImportError:
         resolve_export_dir,
     )
     from utils import hf_cache_scan
+    from utils.hf_snapshot_filters import (
+        snapshot_download_lfs_hashes,
+        snapshot_download_size,
+        snapshot_weight_size,
+    )
 
 from models import (
     CheckpointInfo,
@@ -1577,14 +1587,7 @@ def _get_model_size_bytes(
         if not info.siblings:
             return None
 
-        weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
-        total = 0
-        for sibling in info.siblings:
-            if sibling.rfilename and any(
-                sibling.rfilename.endswith(ext) for ext in weight_exts
-            ):
-                if sibling.size is not None:
-                    total += sibling.size
+        total = snapshot_weight_size(info.siblings)
 
         return total if total > 0 else None
     except Exception as e:
@@ -2271,21 +2274,11 @@ async def get_gguf_variants(
         # case-insensitive match.
         cached_bytes_by_quant: dict[str, int] = {}
         try:
-            import re as _re
-            from huggingface_hub import constants as hf_constants
-
             # Sanitize repo_id: must be "owner/name" with safe chars only
             if not _is_valid_repo_id(repo_id):
                 raise ValueError(f"Invalid repo_id format: {repo_id}")
 
-            cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            target = f"models--{repo_id.replace('/', '--')}".lower()
-            for entry in cache_dir.iterdir():
-                # Walk every sibling that lowercases to ``target`` —
-                # HF sometimes keeps both lowercase and case-preserved
-                # directories side-by-side for the same repo.
-                if entry.name.lower() != target:
-                    continue
+            for entry in hf_cache_scan.iter_repo_cache_dirs("model", repo_id):
                 snapshots = entry / "snapshots"
                 if not snapshots.is_dir():
                     continue
@@ -2357,14 +2350,18 @@ async def get_gguf_variants(
 
 
 class DownloadModelRequest(BaseModel):
-    """Body for POST /api/models/download (download-only, no load)."""
+    """Body for POST /api/models/download (download-only, no load).
+
+    The HuggingFace token travels in the ``X-HF-Token`` request header so it
+    never appears in browser devtools payload tabs, request-body access logs,
+    or exception reporters that capture request bodies.
+    """
 
     repo_id: str = Field(..., description = "HuggingFace repo ID, e.g. 'unsloth/Qwen3-4B-GGUF'")
     gguf_variant: Optional[str] = Field(
         None,
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
-    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated/private repos")
     use_xet: bool = Field(
         False,
         description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
@@ -2413,6 +2410,7 @@ def _spawn_download_worker(
 @router.post("/download", status_code = 202)
 async def download_model(
     body: DownloadModelRequest,
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token", max_length = 512),
     current_subject: str = Depends(get_current_subject),
 ):
     """Start a background download for a HuggingFace model."""
@@ -2450,9 +2448,9 @@ async def download_model(
 
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
     try:
-        proc = _spawn_download_worker(repo_id, variant, body.hf_token, use_xet = body.use_xet)
+        proc = _spawn_download_worker(repo_id, variant, hf_token, use_xet = body.use_xet)
     except Exception as e:
-        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = body.hf_token)
+        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = hf_token)
         logger.error(f"Failed to spawn download worker for {label}: {scrubbed}", exc_info = True)
         _registry.set_job(key, "error", scrubbed)
         raise HTTPException(
@@ -2469,7 +2467,7 @@ async def download_model(
         except Exception as e:
             logger.warning(f"Cancel SIGKILL for {label} failed: {e}")
 
-    worker_token = body.hf_token
+    worker_token = hf_token
     def _watch() -> None:
         hf_cache_scan.finalize_worker_exit(
             _registry,
@@ -2480,8 +2478,11 @@ async def download_model(
             log_prefix = "Download",
             logger = logger,
         )
-        if _registry.get_job(key).state == "complete":
+        final_state = _registry.get_job(key).state
+        if final_state == "complete":
             invalidate_chat_template_cache(repo_id)
+        elif final_state in ("error", "cancelled"):
+            hf_cache_scan.purge_empty_marker_dir("model", repo_id)
 
     threading.Thread(
         target = _watch,
@@ -2636,19 +2637,20 @@ async def get_gguf_download_progress(
         if not _is_valid_repo_id(repo_id):
             return _empty
 
-        from huggingface_hub import constants as hf_constants
-
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"models--{repo_id.replace('/', '--')}".lower()
         if variant:
             variant_hashes = _gguf_variant_blob_hashes(repo_id, variant, hf_token)
         else:
             variant_hashes = frozenset()
-        downloaded_bytes = 0
-        in_progress_bytes = 0
-        for entry in cache_dir.iterdir():
-            if entry.name.lower() != target:
-                continue
+        job_state = _registry.get_job(_download_job_key(repo_id, variant or None)).state
+        force_active = job_state in {"running", "cancelling"}
+        readings: list[hf_cache_scan.CacheProgressReading] = []
+        for entry in hf_cache_scan.preferred_repo_cache_dirs(
+            "model",
+            repo_id,
+            force_active = force_active,
+        ):
+            downloaded_bytes = 0
+            in_progress_bytes = 0
             try:
                 gguf_paths = list(_iter_gguf_paths(entry))
             except OSError:
@@ -2678,6 +2680,13 @@ async def get_gguf_download_progress(
                     except OSError:
                         continue
 
+            readings.append((downloaded_bytes, in_progress_bytes, None))
+
+        selected_reading = hf_cache_scan.select_best_cache_progress(readings)
+        if selected_reading is None:
+            return _empty
+
+        downloaded_bytes, in_progress_bytes, _cache_path = selected_reading
         total_progress_bytes = downloaded_bytes + in_progress_bytes
         progress = (
             min(total_progress_bytes / expected_bytes, 0.99)
@@ -2697,25 +2706,6 @@ async def get_gguf_download_progress(
         return await asyncio.to_thread(_compute)
     except Exception:
         return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
-
-
-def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo.
-
-    Prefers the most-recent snapshot dir (what `from_pretrained` actually
-    points at). Falls back to the cache repo root. Returns the resolved
-    realpath so symlinks under snapshots/ are followed back to blobs/.
-    """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
 
 
 @router.get("/download-progress")
@@ -2744,48 +2734,55 @@ async def get_download_progress(
         if not _is_valid_repo_id(repo_id):
             return _empty
 
-        from huggingface_hub import constants as hf_constants
+        job_state = _registry.get_job(_download_job_key(repo_id, None)).state
+        force_active = job_state in {"running", "cancelling"}
+        readings: list[hf_cache_scan.CacheProgressReading] = []
+        expected_bytes, expected_hashes = _get_repo_snapshot_metadata_cached(
+            repo_id, hf_token,
+        )
 
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"models--{repo_id.replace('/', '--')}".lower()
-        completed_bytes = 0
-        in_progress_bytes = 0
-        cache_path: Optional[str] = None
-
-        # Walk every case-variant of the target dir (HF cache can keep
-        # both ``models--owner--name`` and ``models--owner--Name``
-        # side-by-side; only one usually has the live blobs).
-        for entry in cache_dir.iterdir():
-            if entry.name.lower() != target:
-                continue
-            if cache_path is None:
-                cache_path = _resolve_hf_cache_realpath(entry)
+        for entry in hf_cache_scan.preferred_repo_cache_dirs(
+            "model",
+            repo_id,
+            force_active = force_active,
+        ):
+            completed_bytes = 0
+            in_progress_bytes = 0
+            cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
             blobs_dir = entry / "blobs"
-            if not blobs_dir.is_dir():
-                continue
-            try:
-                blob_entries = list(blobs_dir.iterdir())
-            except OSError:
-                continue
-            for f in blob_entries:
-                # Skip a blob that vanished mid-poll (renamed out of
-                # *.incomplete) rather than zeroing the whole reading.
+            if blobs_dir.is_dir():
                 try:
-                    if not f.is_file():
-                        continue
-                    if f.name.endswith(".incomplete"):
-                        in_progress_bytes += f.stat().st_size
-                    else:
-                        completed_bytes += f.stat().st_size
+                    blob_entries = list(blobs_dir.iterdir())
                 except OSError:
-                    continue
+                    blob_entries = []
+                for f in blob_entries:
+                    # Skip a blob that vanished mid-poll (renamed out of
+                    # *.incomplete) rather than zeroing the whole reading.
+                    try:
+                        if not f.is_file():
+                            continue
+                        if f.name.endswith(".incomplete"):
+                            blob_hash = f.name[: -len(".incomplete")]
+                            if expected_hashes and blob_hash not in expected_hashes:
+                                continue
+                            in_progress_bytes += f.stat().st_size
+                        else:
+                            if expected_hashes and f.name not in expected_hashes:
+                                continue
+                            completed_bytes += f.stat().st_size
+                    except OSError:
+                        continue
+            readings.append((completed_bytes, in_progress_bytes, cache_path))
 
+        selected_reading = hf_cache_scan.select_best_cache_progress(readings)
+        if selected_reading is None:
+            return _empty
+
+        completed_bytes, in_progress_bytes, cache_path = selected_reading
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
             return {**_empty, "cache_path": cache_path}
 
-        # Get expected size from HF API (cached per repo_id)
-        expected_bytes = _get_repo_size_cached(repo_id, hf_token)
         if expected_bytes <= 0:
             # Cannot determine total; report bytes only, no percentage
             return {
@@ -2818,42 +2815,44 @@ async def get_download_progress(
         return _empty
 
 
-_repo_size_cache: "OrderedDict[str, tuple[int, bool, str]]" = OrderedDict()
+_repo_size_cache: "OrderedDict[str, tuple[int, frozenset[str], bool, str]]" = (
+    OrderedDict()
+)
 _repo_size_neg_cache: "OrderedDict[str, float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_NEG_TTL = 60.0
 _repo_size_cache_lock = threading.Lock()
 
 
-def _token_fingerprint(hf_token: Optional[str]) -> str:
-    if not hf_token:
-        return ""
-    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
-
-
-def _get_repo_size_cached(repo_id: str, hf_token: Optional[str] = None) -> int:
-    token_fp = _token_fingerprint(hf_token)
+def _get_repo_snapshot_metadata_cached(
+    repo_id: str, hf_token: Optional[str] = None,
+) -> tuple[int, frozenset[str]]:
+    token_fp = hf_cache_scan.token_fingerprint(hf_token)
     with _repo_size_cache_lock:
         cached = _repo_size_cache.get(repo_id)
         if cached is not None:
-            size, restricted, cached_fp = cached
+            size, lfs_hashes, restricted, cached_fp = cached
             # A gated/private repo's size is only served back to the token that
             # fetched it: a tokenless caller couldn't fetch it, and another token
             # may have no access to it at all.
             if not restricted or cached_fp == token_fp:
                 _repo_size_cache.move_to_end(repo_id)
-                return size
+                return size, lfs_hashes
         # A token may unlock a gated/private repo that failed anonymously, so a
         # tokened lookup ignores a prior negative-cache entry.
         if not hf_token:
             neg_ts = _repo_size_neg_cache.get(repo_id)
-            if neg_ts is not None and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL:
-                return 0
+            if (
+                neg_ts is not None
+                and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL
+            ):
+                return 0, frozenset()
     try:
         from huggingface_hub import model_info as hf_model_info
 
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
-        total = sum(s.size for s in info.siblings if s.size)
+        total = snapshot_download_size(info.siblings)
+        lfs_hashes = snapshot_download_lfs_hashes(info.siblings)
         restricted = bool(
             getattr(info, "private", False) or getattr(info, "gated", False)
         )
@@ -2864,14 +2863,19 @@ def _get_repo_size_cached(repo_id: str, hf_token: Optional[str] = None) -> int:
             _repo_size_neg_cache.move_to_end(repo_id)
             while len(_repo_size_neg_cache) > _REPO_SIZE_CACHE_MAX:
                 _repo_size_neg_cache.popitem(last = False)
-        return 0
+        return 0, frozenset()
     with _repo_size_cache_lock:
-        _repo_size_cache[repo_id] = (total, restricted, token_fp)
+        _repo_size_cache[repo_id] = (total, lfs_hashes, restricted, token_fp)
         _repo_size_cache.move_to_end(repo_id)
         _repo_size_neg_cache.pop(repo_id, None)
         while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
             _repo_size_cache.popitem(last = False)
-    return total
+    return total, lfs_hashes
+
+
+def _get_repo_size_cached(repo_id: str, hf_token: Optional[str] = None) -> int:
+    size, _hashes = _get_repo_snapshot_metadata_cached(repo_id, hf_token)
+    return size
 
 
 def _all_hf_cache_scans():
@@ -2879,15 +2883,17 @@ def _all_hf_cache_scans():
     from huggingface_hub import scan_cache_dir
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
 
-    scans = [scan_cache_dir()]
+    scans: list = []
     seen: set[str] = set()
     try:
-        # Resolve the active cache dir so we can dedup
         from huggingface_hub.constants import HF_HUB_CACHE
 
-        seen.add(str(Path(HF_HUB_CACHE).resolve()))
-    except Exception:
-        pass
+        active = Path(HF_HUB_CACHE).resolve()
+        seen.add(str(active))
+        if active.is_dir():
+            scans.append(scan_cache_dir())
+    except Exception as exc:
+        logger.warning("Could not scan active HF cache: %s", exc)
 
     for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
         extra = extra_fn()
@@ -2957,7 +2963,9 @@ def _repo_has_gguf_files(repo_info) -> bool:
 
 
 _REPO_CLASSIFICATION_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+_repo_classification_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
 _REPO_CLASSIFICATION_MAX = 512
+_REPO_CLASSIFICATION_NEG_TTL = 60.0
 _REPO_CLASSIFICATION_LOCK = threading.Lock()
 
 _CLASSIFY_FANOUT_MAX = 8
@@ -2985,7 +2993,7 @@ _CLASSIFY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 
 
 def _classification_cache_key(repo_id: str, hf_token: Optional[str]) -> tuple[str, str]:
-    return (repo_id.lower(), _token_fingerprint(hf_token))
+    return (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
 
 
 def _classification_cache_get(key: tuple[str, str]) -> Optional[dict]:
@@ -3012,12 +3020,20 @@ def _fetch_repo_classification(
     cached = _classification_cache_get(cache_key)
     if cached is not None:
         return cached
-    result: dict = {
+    empty: dict = {
         "pipeline_tag": None,
         "tags": [],
         "library_name": None,
         "quant_method": None,
     }
+    # Transient fetch failures get a short negative TTL (not permanent LRU-only
+    # caching) so a one-off timeout doesn't leave a repo blank. Mirrors _get_repo_size_cached.
+    with _REPO_CLASSIFICATION_LOCK:
+        neg_ts = _repo_classification_neg_cache.get(cache_key)
+        if neg_ts is not None and (
+            time.monotonic() - neg_ts
+        ) < _REPO_CLASSIFICATION_NEG_TTL:
+            return empty
     try:
         from huggingface_hub import HfApi
 
@@ -3043,7 +3059,15 @@ def _fetch_repo_classification(
             repo_id,
             hf_cache_scan.scrub_secrets(str(e), hf_token = hf_token),
         )
+        with _REPO_CLASSIFICATION_LOCK:
+            _repo_classification_neg_cache[cache_key] = time.monotonic()
+            _repo_classification_neg_cache.move_to_end(cache_key)
+            while len(_repo_classification_neg_cache) > _REPO_CLASSIFICATION_MAX:
+                _repo_classification_neg_cache.popitem(last = False)
+        return empty
     _classification_cache_set(cache_key, result)
+    with _REPO_CLASSIFICATION_LOCK:
+        _repo_classification_neg_cache.pop(cache_key, None)
     return result
 
 
@@ -3142,7 +3166,10 @@ async def list_cached_gguf(
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
-        return {"cached": []}
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to read the local model cache.",
+        ) from e
 
 
 _WEIGHT_EXTENSIONS = (
@@ -3239,7 +3266,10 @@ async def list_cached_models(
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
-        return {"cached": []}
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to read the local model cache.",
+        ) from e
 
 
 _VARIANT_HASH_CACHE: "OrderedDict[tuple[str, str], frozenset[str]]" = OrderedDict()
@@ -3332,7 +3362,7 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    hf_token: Optional[str] = Body(None),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token", max_length = 512),
     current_subject: str = Depends(get_current_subject),
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.

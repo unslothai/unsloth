@@ -453,12 +453,12 @@
 	}
 
 	html {
-		@apply font-sans h-full;
+		@apply font-sans h-full overflow-hidden;
 	}
 
 	body,
 	#root {
-		@apply h-full;
+		@apply h-full overflow-hidden;
 	}
 
 	body[data-scroll-locked] {

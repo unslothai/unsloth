@@ -180,6 +180,15 @@ export function ModelConfigPage({
   const activeConfigState =
     configState.key === configKey ? configState : defaultConfigState();
   const { config, remember, advancedOpen } = activeConfigState;
+  const [contextEditingState, setContextEditingState] = useState<{
+    key: string;
+    value: boolean;
+  }>({ key: configKey, value: false });
+  const contextEditing =
+    contextEditingState.key === configKey ? contextEditingState.value : false;
+  const setContextEditing = (value: boolean) => {
+    setContextEditingState({ key: configKey, value });
+  };
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState("");
   const [templateInitialDraft, setTemplateInitialDraft] = useState("");
@@ -225,7 +234,7 @@ export function ModelConfigPage({
   const ctxMax = nativeMaxContext ?? DEFAULT_CONTEXT_FALLBACK;
   const ctxValue = config.customContextLength ?? nativeMaxContext ?? ctxMax;
   const isCustomContext = config.customContextLength !== null;
-  const ctxIsKnown = nativeMaxContext != null;
+  const showContextEditor = isCustomContext || contextEditing;
   const remembered = hasPerModelConfig(target.id, target.meta.ggufVariant);
   const isDefault = isDefaultConfig(config);
 
@@ -240,6 +249,7 @@ export function ModelConfigPage({
   }
 
   function resetToDefaults() {
+    setContextEditing(false);
     setConfigState((prev) => {
       const base = prev.key === configKey ? prev : defaultConfigState();
       return { ...base, config: { ...DEFAULT_PER_MODEL_CONFIG } };
@@ -471,7 +481,7 @@ export function ModelConfigPage({
                     more VRAM.
                   </InfoHint>
                 </div>
-                {isCustomContext ? (
+                {showContextEditor ? (
                   <NumericValueInput
                     value={ctxValue}
                     min={MIN_CONTEXT_LENGTH}
@@ -485,21 +495,16 @@ export function ModelConfigPage({
                 ) : (
                   <button
                     type="button"
-                    onClick={() =>
-                      update(
-                        "customContextLength",
-                        nativeMaxContext ?? ctxMax,
-                      )
-                    }
+                    onClick={() => setContextEditing(true)}
                     className="hub-action-btn h-7 shrink-0 px-2.5 text-[11.5px] tabular-nums"
                   >
-                    {ctxIsKnown
-                      ? `Default · ${nativeMaxContext!.toLocaleString()}`
+                    {nativeMaxContext != null
+                      ? `Default · ${nativeMaxContext.toLocaleString()}`
                       : "Default"}
                   </button>
                 )}
               </div>
-              {isCustomContext && (
+              {showContextEditor && (
                 <>
                   <Slider
                     min={MIN_CONTEXT_LENGTH}
@@ -513,7 +518,10 @@ export function ModelConfigPage({
                   />
                   <button
                     type="button"
-                    onClick={() => update("customContextLength", null)}
+                    onClick={() => {
+                      update("customContextLength", null);
+                      setContextEditing(false);
+                    }}
                     className="self-start text-[11px] font-medium tracking-tight text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
                   >
                     Use model default

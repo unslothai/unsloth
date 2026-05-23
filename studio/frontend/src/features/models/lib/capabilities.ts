@@ -114,7 +114,9 @@ export function detectCapabilities(
   }
   if (
     hasAny(AUDIO_TAGS) ||
-    /audio|whisper|speech|tts|stt|parler|sesame/.test(lowerId)
+    /audio|whisper|speech|tts|stt|asr|parler|sesame|bark|wav2vec|hubert|musicgen|speecht5|vocos|encodec|clap|ultravox|kyutai|moshi/.test(
+      lowerId,
+    )
   ) {
     out.push({ key: "audio", label: "Audio" });
   }
@@ -123,7 +125,7 @@ export function detectCapabilities(
   }
   if (
     hasAny(REASONING_TAGS) ||
-    /think|reason|qwq|deepseek[-_]?r|gpt[-_]?oss|o1[-_]|nemotron[-_]reasoning/.test(
+    /think|reason|qwq|deepseek[-_]?r|gpt[-_]?oss|(?:^|[-_/])o1(?:[-_]|$)|nemotron[-_]reasoning/.test(
       lowerId,
     )
   ) {
@@ -131,20 +133,29 @@ export function detectCapabilities(
   }
   if (
     hasAny(CODE_TAGS) ||
-    /coder|code[-_]|starcoder|codellama|deepseek[-_]coder/.test(lowerId)
+    /coder|(?:^|[-_/])code(?:[-_]|$)|starcoder|codellama|deepseek[-_]coder/.test(
+      lowerId,
+    )
   ) {
     out.push({ key: "code", label: "Code" });
   }
   if (
     hasAny(EMBEDDING_TAGS) ||
-    /embed|retriever|reranker|bge[-_]|e5[-_]/.test(lowerId)
+    /embed|embedding|retriever|reranker|bge[-_]|e5[-_]|gte[-_]|colbert|sentence[-_]?transformer|sentence[-_]?similarity|jina[-_]?embeddings?|nomic[-_]?embed|arctic[-_]?embed|qwen3[-_]?embedding|qwen3[-_]?reranker|text[-_]?embedding/.test(
+      lowerId,
+    )
   ) {
     out.push({ key: "embedding", label: "Embeddings" });
   }
-  const languageTagCount = (tags ?? []).reduce((count, tag) => {
-    return COMMON_LANGUAGE_TAGS.has(tag.toLowerCase()) ? count + 1 : count;
-  }, 0);
-  if (tagSet.has("multilingual") || languageTagCount >= 3) {
+  const languageCodes = new Set<string>();
+  for (const tag of tags ?? []) {
+    const lower = tag.toLowerCase();
+    const code = lower.startsWith("language:")
+      ? lower.slice("language:".length)
+      : lower;
+    if (COMMON_LANGUAGE_TAGS.has(code)) languageCodes.add(code);
+  }
+  if (tagSet.has("multilingual") || languageCodes.size >= 3) {
     out.push({ key: "multilingual", label: "Multilingual" });
   }
   return out;

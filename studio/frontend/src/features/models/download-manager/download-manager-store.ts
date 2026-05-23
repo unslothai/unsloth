@@ -18,6 +18,7 @@ import {
   startModelDownload,
 } from "@/features/chat";
 import { getHfToken } from "@/stores/hf-token-store";
+import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -25,7 +26,7 @@ import {
   persist,
 } from "zustand/middleware";
 import type { TransportConflictInfo } from "../components/transport-conflict-dialog";
-import { bumpInventoryVersion } from "../inventory-events";
+import { bumpInventoryVersion } from "@/stores/inventory-events";
 import { getTransportMode } from "../lib/transport-preference";
 
 // Backend jobs live under model and dataset registries; the on-disk progress
@@ -144,13 +145,23 @@ interface ProgressLike {
   progress: number;
 }
 
+interface PollSignal {
+  signal: AbortSignal;
+  dispose: () => void;
+}
+
 // AbortSignal.any is unavailable on older WebView engines (WebKitGTK < 2.44,
 // Safari < 17.4) while AbortSignal.timeout is not, so combine the abort signal
 // with the request deadline by hand there; without this every poll throws and
 // downloads fail with a misleading "lost contact" error.
-function pollSignal(parent: AbortSignal, timeoutMs: number): AbortSignal {
+// Callers MUST invoke dispose() once the request settles so the parent-listener
+// + timeout pair don't pile up for the timeout's lifetime on the fallback path.
+function pollSignal(parent: AbortSignal, timeoutMs: number): PollSignal {
   if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([parent, AbortSignal.timeout(timeoutMs)]);
+    return {
+      signal: AbortSignal.any([parent, AbortSignal.timeout(timeoutMs)]),
+      dispose: () => {},
+    };
   }
   const controller = new AbortController();
   const onParentAbort = () => controller.abort(parent.reason);
@@ -171,7 +182,14 @@ function pollSignal(parent: AbortSignal, timeoutMs: number): AbortSignal {
     },
     { once: true },
   );
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    },
+  };
 }
 
 function apiGetStatus(job: ManagedDownload, signal: AbortSignal) {
@@ -373,10 +391,13 @@ function finalize(
   teardownRuntime(key);
   if (!job) return;
   if (outcome === "gone") {
+    // Record evicted from under us (backend restart, cancel watchdog, or
+    // idle-evict). On-disk bytes may still have changed and per-card listeners
+    // (variant cache, "On device" badge) need a chance to refresh just like
+    // any other terminal outcome.
+    notify(job, "onCancelled", 0);
     removeJob(key);
-    return;
-  }
-  if (outcome === "complete") {
+  } else if (outcome === "complete") {
     const bytes = opts.bytes || job.downloadedBytes || job.expectedBytes || 0;
     patchJob(key, {
       state: "complete",
@@ -399,10 +420,10 @@ function finalize(
     notify(job, "onError", 0);
     scheduleRemoval(key, ERROR_LINGER_MS);
   }
-  // Every non-"gone" terminal changes on-disk bytes (a completed snapshot, or
-  // a kept partial after cancel/error), so refresh inventory consumers that
-  // aren't this download's own card listener (pickers, the Hub page when a
-  // background download finishes there).
+  // Every terminal can change on-disk bytes (a completed snapshot, a kept
+  // partial after cancel/error, or an evicted "gone" record), so refresh
+  // inventory consumers that aren't this download's own card listener (pickers,
+  // the Hub page when a background download finishes there).
   bumpInventoryVersion();
 }
 
@@ -425,13 +446,13 @@ async function tick(key: string): Promise<void> {
   rt.inFlight = true;
   const epoch = rt.epoch;
   const abort = rt.abort;
+  const poll: PollSignal = abort
+    ? pollSignal(abort.signal, POLL_REQUEST_TIMEOUT_MS)
+    : { signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS), dispose: () => {} };
   try {
-    const signal = abort
-      ? pollSignal(abort.signal, POLL_REQUEST_TIMEOUT_MS)
-      : AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS);
     const [progressResp, status] = await Promise.all([
-      apiGetProgress(job, signal),
-      apiGetStatus(job, signal),
+      apiGetProgress(job, poll.signal),
+      apiGetStatus(job, poll.signal),
     ]);
     if (!isCurrent(key, epoch)) return;
     // Re-read after the awaits: setExpected (or another tick path) may have
@@ -506,6 +527,7 @@ async function tick(key: string): Promise<void> {
       });
     }
   } finally {
+    poll.dispose();
     rt.inFlight = false;
   }
 }
@@ -621,6 +643,7 @@ async function cancelJob(key: string): Promise<void> {
     }
     // The download may still be running; revert the CTA and let polling continue.
     patchJob(key, { state: "running" });
+    toast.error("Couldn't cancel the download. It's still running.");
     console.warn("Failed to cancel download", err);
   }
 }
@@ -746,6 +769,9 @@ let hydrated = false;
 
 // Restore in-flight downloads after a full page reload: re-verify each persisted
 // job against the backend and resume polling only for those still running.
+// Callers must ensure the backend + auth are ready before invoking; otherwise
+// every probe fails and persisted jobs would be discarded while the worker
+// keeps writing to disk with no UI to observe it.
 export function hydrateDownloadManager(): void {
   if (hydrated) return;
   hydrated = true;
@@ -769,7 +795,9 @@ export function hydrateDownloadManager(): void {
           removeJob(job.key);
         }
       })
-      .catch(() => removeJob(job.key));
+      // Transient probe failures (5xx, network blip) must not orphan a worker
+      // still writing to disk: adopt and let polling settle the real state.
+      .catch(() => adoptJob(req));
   }
 }
 

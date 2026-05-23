@@ -14,8 +14,9 @@ import {
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { modelShortName } from "@/features/models/lib/format";
+import { modelShortName } from "@/lib/format";
 import { isMultimodalResponse } from "./types/api";
+import type { PerModelConfig } from "./model-config/per-model-config";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
@@ -267,20 +268,11 @@ function PendingImageThumb({
   );
 }
 
-type CompareModelConfig = {
-  kvCacheDtype: string | null;
-  speculativeType: string | null;
-  specDraftNMax: number | null;
-  customContextLength: number | null;
-  chatTemplateOverride: string | null;
-  trustRemoteCode?: boolean;
-};
-
 type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
-  config?: CompareModelConfig;
+  config?: PerModelConfig;
 };
 
 export function SharedComposer({
@@ -589,7 +581,6 @@ export function SharedComposer({
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
       const fallbackMaxSeqLength = store.params.maxSeqLength;
-      const fallbackTrustRemoteCode = store.params.trustRemoteCode ?? false;
 
       function resolveSelectionLoad(sel: CompareModelSelection): {
         maxSeqLength: number;
@@ -600,8 +591,7 @@ export function SharedComposer({
         specDraftNMax: number | null;
       } {
         const config = sel.config;
-        const trustRemoteCode =
-          config?.trustRemoteCode ?? fallbackTrustRemoteCode;
+        const trustRemoteCode = config?.trustRemoteCode ?? false;
         const trimmedTemplate = config?.chatTemplateOverride?.trim();
         const chatTemplateOverride =
           trimmedTemplate && trimmedTemplate.length > 0
@@ -612,7 +602,7 @@ export function SharedComposer({
           sel.id.toLowerCase().endsWith(".gguf");
         const customContextLength = config?.customContextLength ?? null;
         const maxSeqLength =
-          customContextLength != null
+          isGgufLoad && customContextLength != null
             ? customContextLength
             : isGgufLoad
               ? 0

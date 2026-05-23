@@ -21,7 +21,8 @@ import {
   type GgufVariantDetail,
   type LocalModelInfo,
 } from "@/features/chat";
-import { formatBytes, useInventoryVersion } from "@/features/models";
+import { formatBytes } from "@/lib/format";
+import { useInventoryVersion } from "@/stores/inventory-events";
 import { classifyUnslothSupport, useGpuInfo } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { classifyGgufFit, ggufFitTier, type GgufFitTier } from "@/lib/gguf-fit";
@@ -558,7 +559,12 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      // Reset so a same-key remount (StrictMode/Fast Refresh) reloads instead
+      // of skipping past the guard onto the aborted run, stuck loading.
+      loadedKeyRef.current = null;
+    };
   }, [refreshLocalModelsList, inventoryVersion, hfToken]);
 
   const filterTokens = useMemo(() => tokenizeQuery(filter), [filter]);

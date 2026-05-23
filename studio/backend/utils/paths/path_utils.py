@@ -8,6 +8,7 @@ Path utilities for model and dataset handling
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 import structlog
@@ -52,6 +53,31 @@ _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
     "fallbacks": 0,
     "errors": 0,
 }
+
+# resolve_cached_repo_id_case runs both on the event loop and from many
+# asyncio.to_thread workers at once, so the shared memo and counters need a
+# lock. Held only around the in-memory mutations, never around the disk scan.
+_CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
+
+
+def _bump_stat(name: str) -> None:
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        _CACHE_CASE_RESOLUTION_STATS[name] += 1
+
+
+def _memo_get(memo_key: tuple[str, str]) -> Optional[str]:
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        return _CACHE_CASE_RESOLUTION_MEMO.get(memo_key)
+
+
+def _memo_set(memo_key: tuple[str, str], value: str) -> None:
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        _CACHE_CASE_RESOLUTION_MEMO[memo_key] = value
+
+
+def _memo_drop(memo_key: tuple[str, str]) -> None:
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        _CACHE_CASE_RESOLUTION_MEMO.pop(memo_key, None)
 
 
 def _is_wsl() -> bool:
@@ -183,15 +209,15 @@ def resolve_cached_repo_id_case(
     ``repo_type`` selects the HF cache subtree (``models--`` or ``datasets--``);
     callers routing through case-sensitive job keys must pass it correctly.
     """
-    _CACHE_CASE_RESOLUTION_STATS["calls"] += 1
+    _bump_stat("calls")
 
     if not model_name or "/" not in model_name:
-        _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
+        _bump_stat("fallbacks")
         return model_name
 
     cache_dir = _hf_hub_cache_dir()
     if not cache_dir.exists():
-        _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
+        _bump_stat("fallbacks")
         return model_name
 
     prefix = f"{repo_type}s--"
@@ -203,21 +229,21 @@ def resolve_cached_repo_id_case(
     exact_path = cache_dir / expected_dir
     if exact_path.is_dir():
         if use_memo:
-            _CACHE_CASE_RESOLUTION_MEMO[memo_key] = model_name
-        _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
+            _memo_set(memo_key, model_name)
+        _bump_stat("exact_hits")
         return model_name
 
     # Validate memoized entries still exist on disk before returning them.
     # This prevents stale results when cache dirs are deleted/recreated.
     if use_memo:
-        cached = _CACHE_CASE_RESOLUTION_MEMO.get(memo_key)
+        cached = _memo_get(memo_key)
         if cached is not None:
             cached_path = cache_dir / f"{prefix}{cached.replace('/', '--')}"
             if cached_path.is_dir():
-                _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
+                _bump_stat("memo_hits")
                 return cached
             # Stale entry -- drop it and re-scan below.
-            _CACHE_CASE_RESOLUTION_MEMO.pop(memo_key, None)
+            _memo_drop(memo_key)
 
     expected_lower = expected_dir.lower()
     try:
@@ -238,26 +264,28 @@ def resolve_cached_repo_id_case(
             # Deterministic tie-break if multiple case variants coexist.
             resolved = sorted(candidates)[0]
             if len(candidates) > 1:
-                _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1
-            _CACHE_CASE_RESOLUTION_STATS["variant_hits"] += 1
+                _bump_stat("tie_breaks")
+            _bump_stat("variant_hits")
             if use_memo:
-                _CACHE_CASE_RESOLUTION_MEMO[memo_key] = resolved
+                _memo_set(memo_key, resolved)
             return resolved
     except Exception as exc:
-        _CACHE_CASE_RESOLUTION_STATS["errors"] += 1
+        _bump_stat("errors")
         logger.debug(f"Could not resolve cached repo_id case for '{model_name}': {exc}")
 
-    _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
+    _bump_stat("fallbacks")
     return model_name
 
 
 def get_cache_case_resolution_stats() -> dict[str, int]:
     """Return a copy of case-resolution instrumentation counters."""
-    return dict(_CACHE_CASE_RESOLUTION_STATS)
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        return dict(_CACHE_CASE_RESOLUTION_STATS)
 
 
 def reset_cache_case_resolution_state() -> None:
     """Clear resolver memo and counters (primarily for tests)."""
-    _CACHE_CASE_RESOLUTION_MEMO.clear()
-    for key in _CACHE_CASE_RESOLUTION_STATS:
-        _CACHE_CASE_RESOLUTION_STATS[key] = 0
+    with _CACHE_CASE_RESOLUTION_LOCK:
+        _CACHE_CASE_RESOLUTION_MEMO.clear()
+        for key in _CACHE_CASE_RESOLUTION_STATS:
+            _CACHE_CASE_RESOLUTION_STATS[key] = 0

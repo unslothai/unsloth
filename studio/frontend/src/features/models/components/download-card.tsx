@@ -125,7 +125,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {isPartial ? "Resume" : "Download"}
+          {isPartial ? "Continue" : "Download"}
         </>
       )}
     </button>

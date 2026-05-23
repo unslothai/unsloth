@@ -32,6 +32,7 @@ always sees a consistent provenance signal.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import signal
@@ -54,6 +55,39 @@ TRANSPORT_XET = "xet"
 _VALID_TRANSPORTS = frozenset({TRANSPORT_HTTP, TRANSPORT_XET})
 _MARKER_NAME = ".transport"
 _INCOMPLETE_SUFFIX = ".incomplete"
+CacheProgressReading = tuple[int, int, Optional[str]]
+
+
+def token_fingerprint(hf_token: Optional[str]) -> str:
+    """16-char SHA256 prefix used as a cache-key qualifier for gated repos.
+
+    Lets per-token size/snapshot caches refuse to serve a previously
+    fetched value back to a different token (a private/gated repo's
+    metadata is only valid for the credential that fetched it).
+    """
+    if not hf_token:
+        return ""
+    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+
+
+def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
+    """Pick the most useful on-disk path for a HF cache repo dir.
+
+    Prefers the most-recent snapshot dir (what ``from_pretrained``
+    actually points at). Falls back to the cache repo root. Returns the
+    resolved realpath so symlinks under ``snapshots/`` are followed back
+    to ``blobs/``.
+    """
+    try:
+        snapshots_dir = repo_dir / "snapshots"
+        if snapshots_dir.is_dir():
+            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
+            if snaps:
+                latest = max(snaps, key = lambda s: s.stat().st_mtime)
+                return str(latest.resolve())
+        return str(repo_dir.resolve())
+    except Exception:
+        return None
 
 
 def _hf_cache_root(*, create: bool = False) -> Optional[Path]:
@@ -127,6 +161,46 @@ def iter_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
                     yield entry
         except OSError:
             continue
+
+
+def iter_active_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
+    root = _hf_cache_root()
+    if root is None:
+        return
+    target = _target_dir_name(repo_type, repo_id)
+    try:
+        for entry in root.iterdir():
+            if entry.name.lower() == target:
+                yield entry
+    except OSError:
+        return
+
+
+def preferred_repo_cache_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    force_active: bool = False,
+) -> list[Path]:
+    active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id))
+    if active_entries:
+        return active_entries
+    if force_active:
+        root = _hf_cache_root()
+        if root is not None:
+            canonical = f"{repo_type}s--{repo_id.replace('/', '--')}"
+            return [root / canonical]
+    return list(iter_repo_cache_dirs(repo_type, repo_id))
+
+
+def select_best_cache_progress(
+    readings: Iterable[CacheProgressReading],
+) -> Optional[CacheProgressReading]:
+    return max(
+        readings,
+        key = lambda item: (item[0] + item[1], item[0]),
+        default = None,
+    )
 
 
 def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
@@ -299,7 +373,13 @@ def prepare_cache_for_transport(repo_type: str, repo_id: str, mode: str) -> int:
       removing the stale partial only fixes UI accounting — the actual
       bytes already in CAS are still reused.
 
-    The marker is written for the new mode before returning.
+    Scope: only the active ``HF_HUB_CACHE`` root is inspected, unlike the
+    all-roots status/listing helpers. That is sufficient for resume
+    safety because ``snapshot_download`` runs without a ``cache_dir``
+    override and so can only ever read or resume a ``.incomplete`` blob
+    under this same active root; a stale partial in a legacy/default root
+    is never handed to the resumer. The marker is written for the new
+    mode before returning.
     """
     if mode not in _VALID_TRANSPORTS:
         raise ValueError(f"Invalid transport mode: {mode!r}")
@@ -378,6 +458,12 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
       as a user cancel.
     - any other non-zero rc, including crash signals (SIGSEGV, SIGABRT):
       worker errored out.
+
+    Windows has no POSIX signal exit encoding: ``Popen.kill`` calls
+    ``TerminateProcess`` and the child exits with a positive code (typically
+    1), so a user cancel cannot be told apart from a genuine error by the code
+    alone. There ``cancel_requested`` is the only available signal, so any
+    non-clean exit after we asked to stop is treated as a cancel.
     """
     if rc == 0:
         return "complete"
@@ -385,6 +471,8 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
         return "cancelled"
     if rc in _CANCELLATION_RETURN_CODES:
         return "cancelled" if cancel_requested else "error"
+    if cancel_requested and sys.platform == "win32":
+        return "cancelled"
     return "error"
 
 
@@ -441,6 +529,34 @@ def finalize_worker_exit(
         )
 
 
+def purge_empty_marker_dir(repo_type: str, repo_id: str) -> bool:
+    """Remove a repo cache dir that only contains the ``.transport`` marker.
+
+    ``prepare_cache_for_transport`` pre-creates the dir + marker before the
+    worker downloads anything; a failure during validation/auth/network
+    setup leaves the dir as marker-only litter that survives until an
+    explicit delete. This helper is safe to call after any failed
+    download: a dir holding ``blobs/``/``snapshots/``/``refs/`` (i.e. real
+    or in-progress content) won't match and is left untouched, so an
+    interrupted-but-resumable partial isn't blown away.
+    """
+    cleaned = False
+    for entry in iter_repo_cache_dirs(repo_type, repo_id):
+        try:
+            contents = list(entry.iterdir())
+        except OSError:
+            continue
+        if len(contents) != 1 or contents[0].name != _MARKER_NAME:
+            continue
+        try:
+            contents[0].unlink()
+            entry.rmdir()
+            cleaned = True
+        except OSError:
+            continue
+    return cleaned
+
+
 def read_transport_marker(repo_type: str, repo_id: str) -> Optional[str]:
     for entry in iter_repo_cache_dirs(repo_type, repo_id):
         value = _read_marker(entry)
@@ -493,9 +609,9 @@ class DownloadRegistry:
 
     One instance backs model downloads (keys ``repo_id::variant``) and
     another backs dataset downloads (keys ``repo_id``). ``_repo_of_key``
-    groups keys by repo so concurrent variants of one repo cannot run
-    under conflicting transports, and the no-variant dataset case (one key
-    per repo) falls through that check unchanged.
+    groups keys by repo so only one writer can touch a repo cache at a time,
+    and the no-variant dataset case (one key per repo) falls through that
+    check unchanged.
     """
 
     def __init__(self, max_terminal: int = 64) -> None:
@@ -580,16 +696,15 @@ class DownloadRegistry:
             active = self._repo_active.get(repo, {})
             stale_keys: list[str] = []
             conflict_state: Optional[str] = None
-            for other_key, other_transport in active.items():
+            for other_key in active:
                 if other_key == key:
                     continue
                 other_status = self._jobs.get(other_key)
                 if other_status is None or other_status.state not in _ACTIVE_STATES:
                     stale_keys.append(other_key)
                     continue
-                if other_transport != transport:
-                    conflict_state = other_status.state
-                    break
+                conflict_state = other_status.state
+                break
             for stale_key in stale_keys:
                 active.pop(stale_key, None)
             if conflict_state is not None:

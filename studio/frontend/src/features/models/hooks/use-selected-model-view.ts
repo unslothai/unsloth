@@ -13,6 +13,15 @@ import type {
 
 type HfResult = ReturnType<typeof toHfModelResult>;
 
+function detectViewCapabilities(
+  tags: string[] | undefined,
+  pipelineTag: string | undefined,
+  ...identifiers: Array<string | null | undefined>
+) {
+  const modelId = identifiers.filter(Boolean).join(" ");
+  return detectCapabilities(tags, pipelineTag, modelId);
+}
+
 export function useSelectedModelView({
   selectedDiscoverRow,
   selectedCachedRow,
@@ -92,10 +101,12 @@ export function useSelectedModelView({
         isGguf: selectedCachedRow.isGguf,
         isDownloaded: !selectedCachedRow.partial,
         isPartial: selectedCachedRow.partial ?? false,
-        capabilities: detectCapabilities(
+        capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,
           selectedCachedRow.repoId,
+          selectedCachedRow.id,
+          selectedCachedRow.repo,
         ),
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
@@ -135,10 +146,13 @@ export function useSelectedModelView({
           isGguf: selectedLocalRow.isGguf,
           isDownloaded: false,
           isPartial: true,
-          capabilities: detectCapabilities(
+          capabilities: detectViewCapabilities(
             selectedHfResult?.tags,
             selectedHfResult?.pipelineTag,
             selectedLocalRow.repoId,
+            selectedLocalRow.id,
+            selectedLocalRow.title,
+            selectedLocalRow.path,
           ),
           license: detectLicense(selectedHfResult?.tags),
           pipelineTag: selectedHfResult?.pipelineTag,
@@ -172,10 +186,12 @@ export function useSelectedModelView({
         isLocal: true,
         isGguf: selectedLocalRow.isGguf,
         isDownloaded: true,
-        capabilities: detectCapabilities(
+        capabilities: detectViewCapabilities(
           selectedHfResult?.tags,
           selectedHfResult?.pipelineTag,
           selectedLocalRow.repoId ?? selectedLocalRow.title,
+          selectedLocalRow.id,
+          selectedLocalRow.path,
         ),
         license: detectLicense(selectedHfResult?.tags),
         pipelineTag: selectedHfResult?.pipelineTag,

@@ -159,6 +159,7 @@ export function useIntentAwareAutoScroll(): {
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
       let lastClientHeight = el.clientHeight;
+      let lastBorderBoxResizeAt = 0;
       let upwardAccumulator = 0;
       let touchStartY = 0;
 
@@ -460,21 +461,80 @@ export function useIntentAwareAutoScroll(): {
         el.scrollTo({ top: scrollHeight, behavior: "instant" });
       };
 
-      // All three layout-change signals fan in here so there's a
-      // single place to understand "what runs when the viewport's
-      // content shape changes". Order matters: extend first so the
+      // Content-driven changes (streaming, expand/collapse, message
+      // delete) extend the follow window so the RAF loop keeps pinning
+      // as new content settles in. Order matters: extend first so the
       // stabilizer sees the follow window as active; stabilize before
       // pinning so we scroll to the post-adjustment scrollHeight.
-      const onLayoutChange = (): void => {
+      const onContentChange = (): void => {
         extendFollow();
         const scrollHeight = stabilize();
         pinIfFollowing(scrollHeight);
         requestTick();
       };
 
-      const resizeObserver = new ResizeObserver(onLayoutChange);
-      const mutationObserver = new MutationObserver(onLayoutChange);
-      const onViewportResize = onLayoutChange;
+      // Pure viewport-size signals (window drag-resize, sidebar pin
+      // toggle, settings panel open/close, iOS visual-viewport keyboard)
+      // must NOT extend the follow window. extendFollow + requestTick
+      // schedules a 60Hz scrollTo loop for 600ms after the last event,
+      // and during a window drag-resize that runs every frame across
+      // the entire drag plus a 600ms tail — burning the main thread on
+      // synchronous layout and visibly bouncing the viewport under the
+      // composer dock. Instead, keep alignment by re-pinning once
+      // synchronously when the user was already at the bottom; otherwise
+      // just refresh the at-bottom flag for the new size.
+      const onViewportResize = (): void => {
+        const clientWidth = el.clientWidth;
+        const clientHeight = el.clientHeight;
+        const syncViewportSize = (): void => {
+          lastClientWidth = clientWidth;
+          lastClientHeight = clientHeight;
+        };
+
+        if (userDetachedRef.current) {
+          syncViewportSize();
+          return;
+        }
+        if (
+          isAtBottomRef.current ||
+          performance.now() < followUntilRef.current
+        ) {
+          const scrollHeight = stabilize();
+          if (scrollHeight > clientHeight) {
+            el.scrollTo({ top: scrollHeight, behavior: "instant" });
+          }
+          setIsAtBottom(true);
+          syncViewportSize();
+          return;
+        }
+        setIsAtBottom(atBottomStrict());
+        syncViewportSize();
+      };
+
+      const onBorderBoxResize = (): void => {
+        lastBorderBoxResizeAt = performance.now();
+        onViewportResize();
+      };
+
+      const onVisualViewportResize = (): void => {
+        // Desktop window resizes fire both ResizeObserver and
+        // visualViewport.resize. If the element border box changed,
+        // the ResizeObserver callback either just handled it or is
+        // about to; visualViewport is only needed for cases such as an
+        // iOS keyboard changing the visual viewport without changing
+        // this element's border box.
+        if (
+          el.clientWidth !== lastClientWidth ||
+          el.clientHeight !== lastClientHeight ||
+          performance.now() - lastBorderBoxResizeAt < 50
+        ) {
+          return;
+        }
+        onViewportResize();
+      };
+
+      const resizeObserver = new ResizeObserver(onBorderBoxResize);
+      const mutationObserver = new MutationObserver(onContentChange);
 
       // Fresh attach always starts pinned. `userDetachedRef` survives
       // ref rebinds (it's hook-scoped), so if the viewport element is
@@ -527,7 +587,7 @@ export function useIntentAwareAutoScroll(): {
       // the viewport element). visualViewport.resize is the only signal
       // for iOS software-keyboard changes, where the visual viewport
       // shrinks without the viewport element's clientHeight changing.
-      window.visualViewport?.addEventListener("resize", onViewportResize);
+      window.visualViewport?.addEventListener("resize", onVisualViewportResize);
 
       return () => {
         if (rafId !== null) {
@@ -540,7 +600,7 @@ export function useIntentAwareAutoScroll(): {
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("scroll", onScroll);
-        window.visualViewport?.removeEventListener("resize", onViewportResize);
+        window.visualViewport?.removeEventListener("resize", onVisualViewportResize);
         scrollImplRef.current = () => {
           /* no viewport mounted */
         };

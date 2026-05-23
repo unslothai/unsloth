@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { deleteFineTunedModel } from "@/features/chat";
-import { bumpInventoryVersion } from "@/features/models";
+import { bumpInventoryVersion } from "@/stores/inventory-events";
 import { emitTrainingRunsChanged } from "@/features/training";
 import { useId, useState } from "react";
 import { toast } from "sonner";

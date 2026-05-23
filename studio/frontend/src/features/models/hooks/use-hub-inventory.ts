@@ -21,7 +21,7 @@ import {
   bumpInventoryVersion,
   getInventoryVersion,
   useInventoryVersion,
-} from "../inventory-events";
+} from "@/stores/inventory-events";
 import { buildLocalInventoryRows, normalizeTimestamp } from "../lib/view-models";
 import type { CachedInventoryRow, LocalInventoryRow } from "../types";
 
@@ -179,8 +179,12 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
       if (signature !== lastSignatureRef.current) {
         lastSignatureRef.current = signature;
         bumpInventoryVersion();
-        selfVersionRef.current = getInventoryVersion();
       }
+      // Sync to the current global version on every load, not only when we
+      // bumped. Otherwise a load triggered by an external bump that returned
+      // unchanged data would leave selfVersionRef stale, and the next
+      // unrelated bump would be misread as our own.
+      selfVersionRef.current = getInventoryVersion();
       onSettled?.();
     });
   }, []);
@@ -208,9 +212,7 @@ export function useHubInventory(isDatasetMode: boolean): HubInventory {
           return [...prev.slice(0, idx), merged, ...prev.slice(idx + 1)];
         };
         if (hint.kind === "gguf") {
-          setCachedGguf((prev) =>
-            merge(prev, { ...baseEntry, cache_path: "" }),
-          );
+          setCachedGguf((prev) => merge(prev, baseEntry));
         } else if (hint.kind === "model") {
           setCachedModels((prev) => merge(prev, baseEntry));
         } else if (hint.kind === "dataset") {

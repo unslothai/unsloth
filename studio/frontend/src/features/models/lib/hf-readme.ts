@@ -90,9 +90,9 @@ export function fetchReadme(
       if (result === null) entry.staleAt = Date.now() + README_NEGATIVE_TTL_MS;
       return result;
     })
-    .catch(() => {
+    .catch((err) => {
       entry.staleAt = Date.now() + README_TRANSIENT_TTL_MS;
-      return null;
+      throw err;
     });
   cache.set(key, entry);
   return entry.promise;

@@ -320,7 +320,7 @@ export function resolveLoadMaxSeqLength({
     currentCheckpoint === modelId &&
     (ggufVariant ?? null) === (activeGgufVariant ?? null);
 
-  if (customContextLength != null) {
+  if (isGgufLoad && customContextLength != null) {
     return customContextLength;
   }
   if (isGgufLoad && presetSource === "builtin-default") {

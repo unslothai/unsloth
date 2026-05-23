@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { fetchModelSize } from "../lib/dataset-size";
-import { formatBytes } from "../lib/format";
+import { formatBytes } from "@/lib/format";
 import { useRepoDownload } from "../download-manager";
 import {
   CardDivider,
@@ -65,21 +65,6 @@ export function SafetensorsDownloadCard({
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => {
-    if (!repoId) return;
-    let cancelled = false;
-    void fetchModelSize(repoId, hfToken || undefined).then((info) => {
-      if (cancelled || !info) return;
-      const upstream = info.weightsBytes ?? info.totalBytes;
-      if (upstream && upstream > 0) {
-        setModelSize({ key: sizeKey, bytes: upstream });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId, hfToken, sizeKey]);
-
   const job = useRepoDownload({
     kind: "model",
     repoId,
@@ -91,13 +76,23 @@ export function SafetensorsDownloadCard({
 
   const progress = job.progress;
   const cancelling = job.cancelling;
-
   const setJobExpectedBytes = job.setExpectedBytes;
+
   useEffect(() => {
-    if (modelTotalBytes && modelTotalBytes > 0) {
-      setJobExpectedBytes(modelTotalBytes);
-    }
-  }, [modelTotalBytes, setJobExpectedBytes]);
+    if (!repoId) return;
+    let cancelled = false;
+    void fetchModelSize(repoId, hfToken || undefined).then((info) => {
+      if (cancelled || !info) return;
+      const upstream = info.weightsBytes ?? info.totalBytes;
+      if (upstream && upstream > 0) {
+        setModelSize({ key: sizeKey, bytes: upstream });
+        setJobExpectedBytes(upstream);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, hfToken, sizeKey, setJobExpectedBytes]);
 
   async function handleRepoDeleteConfirm() {
     setDeleting(true);
@@ -162,7 +157,7 @@ export function SafetensorsDownloadCard({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                Partial download. Click Resume to continue.
+                Partial download. Click to continue.
               </TooltipContent>
             </Tooltip>
           )}

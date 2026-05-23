@@ -8,7 +8,7 @@ import {
   checkVramFit,
   estimateLoadingVram,
 } from "@/lib/vram";
-import { formatBytes } from "../lib/format";
+import { formatBytes } from "@/lib/format";
 import type { SelectedModelView } from "../types";
 
 export interface ModelVramInfo {

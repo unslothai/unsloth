@@ -20,7 +20,7 @@ import {
   useHfDatasetSearch,
   useInfiniteScroll,
 } from "@/hooks";
-import { useInventoryVersion } from "@/features/models";
+import { useInventoryVersion } from "@/stores/inventory-events";
 import { cn } from "@/lib/utils";
 import { matchTokens, tokenizeQuery } from "@/lib/search-text";
 import { useHfTokenStore } from "@/stores/hf-token-store";
@@ -117,7 +117,7 @@ export function TrainDatasetPicker() {
   );
 
   useEffect(() => {
-    if (!open || tab !== "device") return;
+    if (!open) return;
     if (loadedInventoryVersionRef.current === inventoryVersion) return;
     let cancelled = false;
     setIsLoadingLocal(true);
@@ -142,12 +142,29 @@ export function TrainDatasetPicker() {
     return () => {
       cancelled = true;
     };
-  }, [open, tab, inventoryVersion, localRetryToken]);
+  }, [open, inventoryVersion, localRetryToken]);
 
   const retryLocalDatasets = useCallback(() => {
     loadedInventoryVersionRef.current = -1;
     setLocalRetryToken((token) => token + 1);
   }, []);
+
+  const cachedRepoSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of cachedDatasets) {
+      if (!d.partial) set.add(d.repo_id.toLowerCase());
+    }
+    return set;
+  }, [cachedDatasets]);
+
+  const selectHubDataset = useCallback(
+    (id: string) => {
+      selectHfDataset(id, {
+        knownCached: cachedRepoSet.has(id.trim().toLowerCase()),
+      });
+    },
+    [selectHfDataset, cachedRepoSet],
+  );
 
   const deviceItems = useMemo<DeviceDatasetItem[]>(() => {
     const cachedItems: DeviceDatasetItem[] = cachedDatasets
@@ -203,7 +220,7 @@ export function TrainDatasetPicker() {
   const commitRaw = (raw: string) => {
     const next = raw.trim();
     if (!next) return;
-    if (tab === "hub") selectHfDataset(next);
+    if (tab === "hub") selectHubDataset(next);
     else selectLocalDataset(next);
     setOpen(false);
   };
@@ -348,7 +365,7 @@ export function TrainDatasetPicker() {
                 hasQuery={activeQuery.length > 0}
                 error={hfError}
                 onPick={(id) => {
-                  selectHfDataset(id);
+                  selectHubDataset(id);
                   setOpen(false);
                 }}
                 onRetry={retryHf}

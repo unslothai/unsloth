@@ -97,7 +97,7 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
-  cache_path: string;
+  cache_path?: string;
   partial?: boolean;
   pipeline_tag?: string | null;
   tags?: string[];
@@ -134,10 +134,11 @@ export async function startModelDownload(payload: {
   hf_token?: string | null;
   use_xet?: boolean;
 }): Promise<DownloadStartResult & { job_key: string }> {
+  const { hf_token, ...body } = payload;
   const response = await authFetch("/api/models/download", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json", ...hfTokenHeader(hf_token) },
+    body: JSON.stringify(body),
   });
   return parseJsonOrThrow(response);
 }
@@ -191,10 +192,11 @@ export async function startDatasetDownload(payload: {
   hf_token?: string | null;
   use_xet?: boolean;
 }): Promise<DownloadStartResult & { repo_id: string }> {
+  const { hf_token, ...body } = payload;
   const response = await authFetch("/api/datasets/download", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json", ...hfTokenHeader(hf_token) },
+    body: JSON.stringify(body),
   });
   return parseJsonOrThrow(response);
 }
@@ -391,10 +393,9 @@ export async function deleteCachedModel(
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  if (hfToken) payload.hf_token = hfToken;
   const response = await authFetch("/api/models/delete-cached", {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...hfTokenHeader(hfToken) },
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response);

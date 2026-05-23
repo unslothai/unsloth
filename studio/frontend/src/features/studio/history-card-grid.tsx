@@ -24,7 +24,7 @@ import {
   useTrainingActions,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { bumpInventoryVersion } from "@/features/models";
+import { bumpInventoryVersion } from "@/stores/inventory-events";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";

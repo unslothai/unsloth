@@ -48,7 +48,7 @@ import {
   SkeletonList,
 } from "./catalog-states";
 import { OwnerAvatar } from "./owner-avatar";
-import { formatBytes, formatRelativeShort } from "../lib/format";
+import { formatBytes, formatRelativeShort } from "@/lib/format";
 import { inventoryRowMatches } from "../lib/inventory-search";
 import { formatLocalUpdated } from "../lib/view-models";
 import type {
@@ -760,6 +760,9 @@ export function ModelsCatalog({
   // the row count is treated as "activity" and re-lights the bar.
   const [streamingActive, setStreamingActive] = useState(false);
   useEffect(() => {
+    // The setStreamingActive calls are deferred one task so they don't run
+    // synchronously inside the effect body; that pattern trips the React
+    // Compiler's cascading-render check on every dep change here.
     let cancelled = false;
     const setActiveSoon = (next: boolean) => {
       window.setTimeout(() => {

@@ -133,12 +133,13 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetImage",
   "isDatasetAudio",
   "datasetCheckFailed",
+  "datasetKnownCached",
   "trainOnCompletions",
   "maxPositionEmbeddings",
 ]);
 
-function partializePersistedState(
-  state: TrainingConfigStore,
+function filterPersistedState(
+  state: Record<string, unknown>,
 ): Partial<TrainingConfigStore> {
   return Object.fromEntries(
     Object.entries(state).filter(([key]) => {
@@ -146,6 +147,17 @@ function partializePersistedState(
       return !NON_PERSISTED_STATE_KEYS.has(stateKey);
     }),
   ) as Partial<TrainingConfigStore>;
+}
+
+function partializePersistedState(
+  state: TrainingConfigStore,
+): Partial<TrainingConfigStore> {
+  return filterPersistedState(state as unknown as Record<string, unknown>);
+}
+
+function safePersistedState(state: unknown): Partial<TrainingConfigStore> {
+  if (!state || typeof state !== "object") return {};
+  return filterPersistedState(state as Record<string, unknown>);
 }
 
 function clampStep(step: number): StepNumber {
@@ -285,6 +297,30 @@ function buildTrainingMethodPatch(
   }
 
   return patch;
+}
+
+function clearedModelMetadataPatch(): Partial<TrainingConfigState> {
+  return {
+    isCheckingVision: false,
+    isVisionModel: false,
+    isEmbeddingModel: false,
+    isAudioModel: false,
+    isDatasetImage: null,
+    isDatasetAudio: false,
+    datasetCheckFailed: false,
+    isLoadingModelDefaults: false,
+    modelDefaultsError: null,
+    modelDefaultsAppliedFor: null,
+    maxPositionEmbeddings: null,
+  };
+}
+
+function pendingModelMetadataPatch(): Partial<TrainingConfigState> {
+  return {
+    ...clearedModelMetadataPatch(),
+    isCheckingVision: true,
+    isLoadingModelDefaults: true,
+  };
 }
 
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
@@ -520,34 +556,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({
             modelType,
             selectedModel: null,
-            isCheckingVision: false,
-            isVisionModel: false,
-            isEmbeddingModel: false,
-            isAudioModel: false,
-            isDatasetImage: null,
-            isDatasetAudio: false,
-            datasetCheckFailed: false,
-            isLoadingModelDefaults: false,
-            modelDefaultsError: null,
-            modelDefaultsAppliedFor: null,
+            ...clearedModelMetadataPatch(),
           });
         },
         setSelectedModel: (selectedModel) => {
           const previousModel = get().selectedModel;
-          set({ selectedModel, modelDefaultsError: null });
 
           if (!selectedModel) {
             _modelConfigController?.abort();
             _modelConfigController = null;
             set({
-              isCheckingVision: false,
-              isVisionModel: false,
-              isEmbeddingModel: false,
-              isAudioModel: false,
-              isDatasetAudio: false,
-              isLoadingModelDefaults: false,
-              modelDefaultsError: null,
-              modelDefaultsAppliedFor: null,
+              selectedModel,
+              ...clearedModelMetadataPatch(),
             });
             return;
           }
@@ -555,6 +575,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const shouldLoadDefaults =
             selectedModel !== previousModel ||
             get().modelDefaultsAppliedFor !== selectedModel;
+          set({
+            selectedModel,
+            ...(shouldLoadDefaults
+              ? pendingModelMetadataPatch()
+              : { modelDefaultsError: null }),
+          });
+          if (shouldLoadDefaults) {
+            void loadAndApplyModelDefaults(selectedModel);
+          }
+        },
+        selectTrainingModel: (selectedModel, modelType) => {
+          const previousModel = get().selectedModel;
+          const shouldLoadDefaults =
+            selectedModel !== previousModel ||
+            get().modelDefaultsAppliedFor !== selectedModel;
+          set({
+            modelType,
+            selectedModel,
+            ...(shouldLoadDefaults
+              ? pendingModelMetadataPatch()
+              : { modelDefaultsError: null }),
+          });
           if (shouldLoadDefaults) {
             void loadAndApplyModelDefaults(selectedModel);
           }
@@ -826,7 +868,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 11,
+      version: 12,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -834,6 +876,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         delete s.datasetConfig;
         delete s.hfToken;
+        delete s.datasetKnownCached;
         if (version < 3 && s.modelDefaultsAppliedFor == null) {
           s.modelDefaultsAppliedFor = null;
         }
@@ -877,6 +920,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
+      merge: (persisted, current) => ({
+        ...current,
+        ...safePersistedState(persisted),
+      }),
     },
   ),
 );

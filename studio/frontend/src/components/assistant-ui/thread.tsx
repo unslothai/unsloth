@@ -118,14 +118,24 @@ export const Thread: FC<{
       }}
     >
       <IntentAwareScrollProvider value={autoScrollContext}>
-        <ThreadPrimitive.Viewport
+        {/*
+          Plain div + `ThreadPrimitive.ViewportProvider` instead of
+          `ThreadPrimitive.Viewport` so AUI's built-in `useThreadViewportAutoScroll`
+          and `useViewportSizeRef` don't install their own ResizeObserver +
+          MutationObserver on the viewport element. Those observers fire on
+          every frame of a window drag-resize — three observers (theirs ×2 +
+          ours) all reading scrollHeight/clientHeight and writing to stores —
+          which thrashes the main thread and makes the composer, topbar icons,
+          and sidebar footer visibly stutter even though every `scrollToBottomOn*`
+          prop is false. Our `useIntentAwareAutoScroll` owns the only viewport
+          ref now; the provider stays only to satisfy child primitives
+          (Messages, ViewportFooter) that need the viewport context.
+        */}
+        <ThreadPrimitive.ViewportProvider>
+        <div
           ref={viewportRef}
-          autoScroll={false}
-          scrollToBottomOnRunStart={false}
-          scrollToBottomOnInitialize={false}
-          scrollToBottomOnThreadSwitch={false}
           className={cn(
-            "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+            "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-hidden overflow-y-auto overscroll-contain scroll-smooth px-5",
             hideComposer ? "pt-4" : "pt-[48px]",
           )}
         >
@@ -164,7 +174,8 @@ export const Thread: FC<{
               <ThreadScrollToBottom />
             </ThreadPrimitive.ViewportFooter>
           </AuiIf>
-        </ThreadPrimitive.Viewport>
+        </div>
+        </ThreadPrimitive.ViewportProvider>
 
         {!hideComposer && (
           <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>

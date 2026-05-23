@@ -38,7 +38,7 @@ import {
   type DatasetSizeInfo,
   fetchDatasetSize,
 } from "../lib/dataset-size";
-import { formatBytes, formatRelativeShort } from "../lib/format";
+import { formatBytes, formatRelativeShort } from "@/lib/format";
 import {
   formatLocalUpdated,
   formatPipelineTag,

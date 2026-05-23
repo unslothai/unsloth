@@ -33,11 +33,8 @@ import {
   listLocalModels,
   useTrainingConfigStore,
 } from "@/features/training";
-import {
-  extractParamLabel,
-  modelShortName,
-  useInventoryVersion,
-} from "@/features/models";
+import { extractParamLabel, modelShortName } from "@/lib/format";
+import { useInventoryVersion } from "@/stores/inventory-events";
 import { usePlatformStore } from "@/config/env";
 import {
   classifyUnslothSupport,
@@ -194,10 +191,11 @@ export function TrainModelPicker() {
 
   const hubResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
+    const seen = new Set(ids.map((id) => id.toLowerCase()));
     if (
       selectedModel &&
       !looksLikeLocalPath(selectedModel) &&
-      !ids.includes(selectedModel)
+      !seen.has(selectedModel.toLowerCase())
     ) {
       ids.push(selectedModel);
     }

@@ -20,7 +20,7 @@ export {
   listLocalDatasets,
   type CachedDatasetRepo,
 } from "./api/datasets-api";
-export { listLocalModels } from "./api/models-api";
+export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo } from "./api/models-api";
 export type { LocalDatasetInfo } from "./types/datasets";
 export {
@@ -58,3 +58,7 @@ export {
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";
+export {
+  useTrainingReadiness,
+  type TrainingReadiness,
+} from "./hooks/use-training-readiness";
