@@ -33,10 +33,27 @@ export const MessageTiming: FC<{
 
   if (timing?.totalStreamTime === undefined) return null;
 
-  const serverTimings = (
+  const custom = (
     message.metadata as Record<string, unknown> | undefined
-  )?.custom as { serverTimings?: Record<string, number> } | undefined;
-  const st = serverTimings?.serverTimings;
+  )?.custom as
+    | {
+        serverTimings?: Record<string, number>;
+        contextUsage?: {
+          cachedTokens?: number;
+          cacheWriteTokens?: number;
+        };
+      }
+    | undefined;
+  const st = custom?.serverTimings;
+  // Cache-hit / cache-write counts. llama-server reports hits on
+  // timings.cache_n; external providers (Anthropic / OpenAI Responses /
+  // Gemini) report them on the include_usage envelope that the adapter
+  // normalizes into custom.contextUsage. Prefer the local-runtime value
+  // when present (so llama.cpp keeps populating the badge mid-stream)
+  // and fall back to the external envelope otherwise.
+  const cacheHits = (st?.cache_n ?? 0) || (custom?.contextUsage?.cachedTokens ?? 0);
+  // Anthropic-only: tokens written into the prompt cache on this turn.
+  const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
 
   // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
   // turns, blowing the rate up to Infinity. Require >=1 token AND a
@@ -122,11 +139,19 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {(st?.cache_n ?? 0) > 0 && (
+              {cacheHits > 0 && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Cache hits</span>
                   <span className="font-mono tabular-nums">
-                    {formatNumber(st!.cache_n)}
+                    {formatNumber(cacheHits)}
+                  </span>
+                </div>
+              )}
+              {cacheWrites > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Cache writes</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(cacheWrites)}
                   </span>
                 </div>
               )}
@@ -146,12 +171,28 @@ export const MessageTiming: FC<{
             </>
           ) : (
             <>
-              {/* Client-side metrics (safetensors fallback) */}
+              {/* Client-side metrics (safetensors + external provider fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(timing.firstTokenTime)}
+                  </span>
+                </div>
+              )}
+              {cacheHits > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Cache hits</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(cacheHits)}
+                  </span>
+                </div>
+              )}
+              {cacheWrites > 0 && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Cache writes</span>
+                  <span className="font-mono tabular-nums">
+                    {formatNumber(cacheWrites)}
                   </span>
                 </div>
               )}

@@ -1491,9 +1491,15 @@ export function ChatPage(): ReactElement {
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {view.mode === "single" && ggufContextLength && contextUsage ? (
+            {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
+                // ggufContextLength is the local llama-server's KV-cache size;
+                // external providers (Anthropic / OpenAI Responses / Gemini)
+                // don't expose a stable per-model context window through the
+                // picker, so it is null in that mode. Pass it as-is -- the bar
+                // drops the "/ total" ratio + percentage when total is absent
+                // and still renders the per-turn counters + cache stats.
                 total={ggufContextLength}
                 cached={contextUsage.cachedTokens}
                 cacheWrites={contextUsage.cacheWriteTokens}
