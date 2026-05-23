@@ -7,6 +7,7 @@ Main FastAPI application for Unsloth UI Backend
 
 import os
 import sys
+import asyncio
 from pathlib import Path as _Path
 
 # Suppress annoying C-level dependency warnings globally
@@ -279,8 +280,32 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    # Idle-unload watchdog (issue #5650). Reads its enabled flag and
+    # timeout from chat_settings on every tick so toggling the UI switch
+    # takes effect without a restart. No-op when the toggle is off.
+    try:
+        from core.inference.idle_unload import start_idle_unload_task
+
+        start_idle_unload_task(app)
+    except Exception as exc:
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).warning(
+            "Failed to start idle-unload watchdog: %s", exc
+        )
+
     yield
     # Cleanup
+    idle_unload_task = getattr(app.state, "idle_unload_task", None)
+    if idle_unload_task is not None and not idle_unload_task.done():
+        idle_unload_task.cancel()
+        try:
+            await idle_unload_task
+        except (asyncio.CancelledError, Exception):
+            # Cancellation is expected; any other exception was already
+            # logged inside the watchdog loop.
+            pass
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 
@@ -469,6 +494,15 @@ app.add_middleware(
     max_bytes = _MAX_BODY_BYTES,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
 )
+
+
+# Idle-unload activity tracking (issue #5650). Records start/end of every
+# inference request — including the full lifetime of streaming responses —
+# so the watchdog never unloads while traffic is in flight and a stream
+# can complete cleanly even if the client takes minutes to read it.
+from core.inference.idle_unload import ActivityMiddleware  # noqa: E402
+
+app.add_middleware(ActivityMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
