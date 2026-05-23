@@ -100,8 +100,14 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             # Fine-tunes carry the user's tenant in the id.
             r"|^ft:"
             # Dated snapshot suffixes hide behind the canonical id
-            # which is also in the listing.
+            # which is also in the listing. Covers both the modern
+            # `-YYYY-MM-DD` dated form and the legacy compact
+            # 4-digit `MMDD` form (e.g. `gpt-3.5-turbo-0125`,
+            # `gpt-4-0613`, `gpt-4-1106-preview`) so the picker only
+            # surfaces the canonical id even when the listing still
+            # returns the snapshot copy.
             r"|-\d{4}-\d{2}-\d{2}$"
+            r"|-\d{4}(?:-preview)?$"
         ),
     },
     "anthropic": {

@@ -207,6 +207,53 @@ def test_openai_legacy_instruct_completion_ids_are_dropped():
     assert dropped == [], dropped
 
 
+def test_openai_legacy_compact_snapshot_suffixes_are_dropped():
+    """Legacy `-MMDD` snapshot suffixes (gpt-3.5-turbo-0125,
+    gpt-4-0613, gpt-4-1106-preview, etc.) hide behind the canonical
+    id which the listing also returns; surface only the canonical so
+    users do not pick a deprecated snapshot by accident. The
+    `-\\d{4}(?:-preview)?$` rule must not catch canonical ids whose
+    minor version happens to be a year-like number (e.g. gpt-4.5,
+    o3) -- those are tested as KEEP below."""
+    dropped = _apply(
+        "openai",
+        [
+            "gpt-3.5-turbo-0125",
+            "gpt-3.5-turbo-0301",
+            "gpt-3.5-turbo-16k-0613",
+            "gpt-4-0613",
+            "gpt-4-0314",
+            "gpt-4-32k-0613",
+            "gpt-4-1106-preview",
+            "gpt-4-0125-preview",
+        ],
+    )
+    assert dropped == [], dropped
+
+    # Canonical chat ids that share a digit-heavy tail must survive.
+    kept = _apply(
+        "openai",
+        [
+            "gpt-3.5-turbo",
+            "gpt-4o",
+            "gpt-4.5",
+            "gpt-5.5",
+            "gpt-5.5-mini",
+            "gpt-5.5-pro",
+            "o3",
+        ],
+    )
+    assert set(kept) >= {
+        "gpt-3.5-turbo",
+        "gpt-4o",
+        "gpt-4.5",
+        "gpt-5.5",
+        "gpt-5.5-mini",
+        "gpt-5.5-pro",
+        "o3",
+    }, kept
+
+
 def test_openai_search_preview_is_kept_search_api_is_dropped():
     # Pin the search-vs-search-api distinction so a future regex tweak
     # doesn't silently regress to dropping chat-with-search models.
