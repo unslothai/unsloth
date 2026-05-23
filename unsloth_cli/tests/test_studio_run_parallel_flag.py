@@ -35,6 +35,7 @@ def _load_run_command():
     time; we only need the Typer command object to introspect options.
     """
     from unsloth_cli.commands import studio as _studio
+
     return _studio
 
 
@@ -67,7 +68,9 @@ def test_parallel_default_is_four():
     sig = inspect.signature(studio_mod.run)
     opt = sig.parameters["parallel"].default
     default = getattr(opt, "default", None)
-    assert default == 4, f"default changed to {default}; would silently alter existing deployments"
+    assert (
+        default == 4
+    ), f"default changed to {default}; would silently alter existing deployments"
 
 
 def test_parallel_range_guards_are_set():
@@ -93,6 +96,6 @@ def test_run_kwargs_use_parallel_value(monkeypatch):
         "found hardcoded `llama_parallel_slots = 4` after the parallel "
         "flag landed -- run_kwargs must pull from the typer option"
     )
-    assert "llama_parallel_slots = parallel" in src, (
-        "run_kwargs must use the parallel variable from the typer option"
-    )
+    assert (
+        "llama_parallel_slots = parallel" in src
+    ), "run_kwargs must use the parallel variable from the typer option"
