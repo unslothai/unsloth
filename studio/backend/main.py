@@ -743,6 +743,31 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
+def _is_same_origin_request(request: Request) -> bool:
+    """Return True when the request is same-origin (or has no Origin header).
+
+    The HTML returned by ``/`` and the SPA fallback may carry an inline
+    ``window.__UNSLOTH_BOOTSTRAP__`` script with the seeded admin password.
+    Default web mode runs CORS with ``allow_origins=["*"]`` and
+    ``allow_credentials=True`` so that the local frontend works on any
+    deployment, but that policy reflects an attacker-controlled Origin back
+    on every request -- meaning a cross-origin page could `fetch('/')` with
+    credentials and read the bootstrap password out of the HTML body.
+
+    Browsers omit ``Origin`` on top-level same-document GET navigations on
+    most engines, so the absence of the header is the common legitimate
+    case. When the header IS present and does not match the request's own
+    scheme://host:port, treat it as cross-origin and skip the bootstrap
+    injection. Callers MUST also emit ``Vary: Origin`` so intermediary
+    caches do not serve a same-origin response to a cross-origin caller.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    same_origin = f"{request.url.scheme}://{request.url.netloc}"
+    return origin == same_origin
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -753,11 +778,21 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
-    def _build_index_response() -> Response:
+    def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        content, nonce = _inject_bootstrap(content, app)
-        headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+        # Only inject the bootstrap admin password into HTML returned to a
+        # same-origin caller. See _is_same_origin_request for the rationale.
+        if _is_same_origin_request(request):
+            content, nonce = _inject_bootstrap(content, app)
+        else:
+            nonce = None
+        # Vary on Origin so a same-origin response cached upstream is not
+        # served to a later cross-origin caller (and vice versa).
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Vary": "Origin",
+        }
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
@@ -767,11 +802,11 @@ def setup_frontend(app: FastAPI, build_path: Path):
         )
 
     @app.get("/")
-    async def serve_root():
-        return _build_index_response()
+    async def serve_root(request: Request):
+        return _build_index_response(request)
 
     @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
+    async def serve_frontend(request: Request, full_path: str):
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
@@ -785,6 +820,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
             return FileResponse(file_path)
 
         # Serve index.html as bytes — avoids Content-Length mismatch
-        return _build_index_response()
+        return _build_index_response(request)
 
     return True
