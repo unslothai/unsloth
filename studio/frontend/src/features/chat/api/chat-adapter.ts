@@ -387,13 +387,15 @@ function collectOpenAIImageGenerationCallParts(
   message: RunMessage,
   options?: { requireReasoningReplay?: boolean },
 ): Array<
-  OpenAIReasoningContentPart | { type: "image_generation_call"; id: string }
+  | OpenAIReasoningContentPart
+  | { type: "image_generation_call"; id: string; response_id?: string }
 > {
   if (message.role !== "assistant") {
     return [];
   }
   const parts: Array<
-    OpenAIReasoningContentPart | { type: "image_generation_call"; id: string }
+    | OpenAIReasoningContentPart
+    | { type: "image_generation_call"; id: string; response_id?: string }
   > = [];
   const seenReasoningIds = new Set<string>();
   for (const part of message.content ?? []) {
@@ -404,6 +406,7 @@ function collectOpenAIImageGenerationCallParts(
       | {
           openai_image_generation_call_id?: unknown;
           openai_reasoning_item?: unknown;
+          openai_response_id?: unknown;
         }
       | undefined;
     const argsId =
@@ -413,18 +416,26 @@ function collectOpenAIImageGenerationCallParts(
     const fallbackId = part.toolCallId;
     const id =
       argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
+    const responseId =
+      typeof args?.openai_response_id === "string"
+        ? args.openai_response_id
+        : "";
     if (id) {
       const reasoningItem = normalizeOpenAIReasoningItem(
         args?.openai_reasoning_item,
       );
-      if (options?.requireReasoningReplay && !reasoningItem) {
+      if (options?.requireReasoningReplay && !reasoningItem && !responseId) {
         continue;
       }
       if (reasoningItem && !seenReasoningIds.has(reasoningItem.id)) {
         seenReasoningIds.add(reasoningItem.id);
         parts.push(reasoningItem);
       }
-      parts.push({ type: "image_generation_call", id });
+      parts.push({
+        type: "image_generation_call",
+        id,
+        ...(responseId ? { response_id: responseId } : {}),
+      });
     }
   }
   return parts;

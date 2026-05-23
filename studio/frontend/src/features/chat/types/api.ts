@@ -210,7 +210,7 @@ export type OpenAIMessageContent =
       | { type: "text"; text: string }
       | { type: "image_url"; image_url: { url: string } }
       | OpenAIReasoningContentPart
-      | { type: "image_generation_call"; id: string }
+      | { type: "image_generation_call"; id: string; response_id?: string }
     >;
 
 export interface OpenAIChatMessage {

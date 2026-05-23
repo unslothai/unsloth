@@ -2620,6 +2620,7 @@ class ExternalProviderClient:
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
         openai_replay_items: list[dict[str, Any]] = []
+        previous_response_id: Optional[str] = None
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2640,6 +2641,7 @@ class ExternalProviderClient:
 
             if isinstance(content, list):
                 translated_parts: list[dict[str, Any]] = []
+                message_sets_previous_response_id = False
                 for part in content:
                     part_type = part.get("type")
                     if part_type == "text":
@@ -2659,8 +2661,20 @@ class ExternalProviderClient:
                         if replay_item:
                             openai_replay_items.append(replay_item)
                     elif part_type == "image_generation_call":
+                        response_id = (
+                            part.get("response_id")
+                            or part.get("openai_response_id")
+                            or part.get("previous_response_id")
+                        )
                         call_id = part.get("id") or part.get("image_generation_call_id")
                         if isinstance(call_id, str) and call_id:
+                            if isinstance(response_id, str) and response_id:
+                                previous_response_id = response_id
+                                input_items = []
+                                translated_parts = []
+                                message_sets_previous_response_id = True
+                            else:
+                                previous_response_id = None
                             openai_replay_items.append(
                                 {"type": "image_generation_call", "id": call_id}
                             )
@@ -2701,10 +2715,17 @@ class ExternalProviderClient:
                         if filename:
                             block["filename"] = filename
                         translated_parts.append(block)
-                if translated_parts:
+                if translated_parts and not message_sets_previous_response_id:
                     input_items.append({"role": role, "content": translated_parts})
 
-        if (
+        if previous_response_id:
+            # OpenAI's documented multi-turn image generation path can use
+            # `previous_response_id` to carry the prior generated image and
+            # paired reasoning state. Prefer that over manual item replay when
+            # we captured the response id; keep replay below as a fallback for
+            # older stored turns that only have an image_generation_call id.
+            openai_replay_items = []
+        elif (
             _openai_image_replay_requires_reasoning(model)
             and reasoning_effort != "none"
             and enable_thinking is not False
@@ -2738,6 +2759,8 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        if previous_response_id:
+            body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning
         # summary events — without it OpenAI returns no thinking text on
         # most reasoning models, the SSE handler has no <think>…</think>
@@ -3016,8 +3039,21 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    current_openai_response_id: Optional[str] = None
                     last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
                     openai_reasoning_replay_items: dict[str, dict[str, Any]] = {}
+
+                    def _record_openai_response_id(payload: dict[str, Any]) -> None:
+                        nonlocal current_openai_response_id
+                        response_obj = payload.get("response")
+                        candidates: list[Any] = []
+                        if isinstance(response_obj, dict):
+                            candidates.append(response_obj.get("id"))
+                        candidates.append(payload.get("response_id"))
+                        for candidate in candidates:
+                            if isinstance(candidate, str) and candidate:
+                                current_openai_response_id = candidate
+                                return
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
                         chunk = {
@@ -3219,6 +3255,7 @@ class ExternalProviderClient:
                                 continue
 
                             event_type = event.get("type")
+                            _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
@@ -3439,6 +3476,10 @@ class ExternalProviderClient:
                                     if isinstance(raw_item_id, str) and raw_item_id:
                                         arguments["openai_image_generation_call_id"] = (
                                             raw_item_id
+                                        )
+                                    if current_openai_response_id:
+                                        arguments["openai_response_id"] = (
+                                            current_openai_response_id
                                         )
                                     if last_openai_reasoning_replay_item:
                                         arguments["openai_reasoning_item"] = (

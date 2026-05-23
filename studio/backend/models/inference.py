@@ -499,6 +499,10 @@ class ImageGenerationCallContentPart(BaseModel):
 
     type: Literal["image_generation_call"]
     id: str = Field(..., description = "OpenAI image_generation_call output item id.")
+    response_id: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses response id to use as previous_response_id for follow-up edits.",
+    )
 
 
 class CompactionContentPart(BaseModel):

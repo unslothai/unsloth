@@ -90,6 +90,9 @@ def _collect_tool_events(monkeypatch) -> list[dict]:
     event and return the parsed _toolEvent chunks."""
 
     sse = (
+        b"event: response.created\n"
+        b'data: {"type":"response.created",'
+        b'"response":{"id":"resp_abc","status":"in_progress"}}\n\n'
         b"event: response.reasoning_summary_text.done\n"
         b'data: {"type":"response.reasoning_summary_text.done",'
         b'"item_id":"rs_abc",'
@@ -208,7 +211,35 @@ def test_omitted_image_generation_pill_no_tool(monkeypatch):
     assert all(t.get("type") != "image_generation" for t in tools)
 
 
-# ── follow-up edits forward previous image_generation_call refs ──────
+# ── follow-up edits forward previous OpenAI image context ────────────
+
+
+def test_previous_response_id_forwarded_for_followup_edit(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        base_url = "https://api.openai.com/v1",
+        enabled_tools = ["image_generation"],
+        messages = [
+            {"role": "user", "content": "generate a cat"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "image_generation_call",
+                        "id": "img_abc",
+                        "response_id": "resp_abc",
+                    },
+                ],
+            },
+            {"role": "user", "content": "make the cat's eyes blue"},
+        ],
+    )
+    assert captured["body"].get("previous_response_id") == "resp_abc"
+    input_items = captured["body"].get("input") or []
+    assert input_items == [
+        {"role": "user", "content": "make the cat's eyes blue"},
+    ]
+    assert {"type": "image_generation_call", "id": "img_abc"} not in input_items
 
 
 def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
@@ -277,7 +308,11 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
                     summary = [{"type": "summary_text", "text": "Need to edit."}],
                     status = "completed",
                 ),
-                SimpleNamespace(type = "image_generation_call", id = "img_abc"),
+                SimpleNamespace(
+                    type = "image_generation_call",
+                    id = "img_abc",
+                    response_id = "resp_abc",
+                ),
             ],
         ),
         SimpleNamespace(role = "user", content = "make it more realistic"),
@@ -297,7 +332,11 @@ def test_external_message_builder_preserves_openai_image_generation_refs():
                     "summary": [{"type": "summary_text", "text": "Need to edit."}],
                     "status": "completed",
                 },
-                {"type": "image_generation_call", "id": "img_abc"},
+                {
+                    "type": "image_generation_call",
+                    "id": "img_abc",
+                    "response_id": "resp_abc",
+                },
             ],
         },
         {"role": "user", "content": "make it more realistic"},
@@ -332,6 +371,7 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
         "openai_image_generation_call_id": "img_abc",
+        "openai_response_id": "resp_abc",
         "openai_reasoning_item": {
             "type": "reasoning",
             "id": "rs_abc",

@@ -1747,8 +1747,13 @@ def _build_external_messages(
                         parts.append(reasoning)
                     elif part.type == "image_generation_call" and openai:
                         # ExternalProviderClient maps this onto a top-level
-                        # Responses input item after the current user prompt.
-                        parts.append({"type": "image_generation_call", "id": part.id})
+                        # Responses input item after the current user prompt,
+                        # or onto `previous_response_id` when response_id is
+                        # available from the prior Responses turn.
+                        image_ref = {"type": "image_generation_call", "id": part.id}
+                        if getattr(part, "response_id", None):
+                            image_ref["response_id"] = part.response_id
+                        parts.append(image_ref)
                     elif part.type == "input_document" and document_provider:
                         # ExternalProviderClient maps this onto
                         # Anthropic's `document` or OpenAI Responses'
@@ -1791,7 +1796,10 @@ def _build_external_messages(
                             reasoning["status"] = p.status
                         preserved.append(reasoning)
                     elif p.type == "image_generation_call" and openai:
-                        preserved.append({"type": "image_generation_call", "id": p.id})
+                        image_ref = {"type": "image_generation_call", "id": p.id}
+                        if getattr(p, "response_id", None):
+                            image_ref["response_id"] = p.response_id
+                        preserved.append(image_ref)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
