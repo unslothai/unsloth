@@ -4,87 +4,76 @@
 
 **Goal:** Build a field-aware document scorer that evaluates LLM-generated JSON against ground truth, scoring each field with a schema-chosen comparator (money/numeric, categorical, string/ANLS, date) and aggregating with ANLS\*-style traversal into one document score plus a per-field breakdown.
 
-**Architecture:** A self-contained package `unsloth/eval/json_score/` reimplements the ANLS\* core (nested-dict traversal, Hungarian list matching, missing/hallucinated penalties, `None`/tuple-of-alternatives handling, equal-weight aggregation) but dispatches each leaf to a pluggable, schema-selected comparator. Aggregation is **global-leaf-equal**: every leaf comparison counts the same in the document score. The scorer submodules are torch-free; importing them runs `unsloth/__init__.py`, so the full unsloth install is required at import time. Comparator deps ship as a new `unsloth[eval]` optional extra.
+**Architecture:** A self-contained, **torch-free** package in the **Studio backend** at `studio/backend/eval/json_score/`. It reimplements the ANLS\* core (nested-dict traversal, Hungarian list matching, missing/hallucinated penalties, `None`/tuple-of-alternatives handling, equal-weight aggregation) but dispatches each leaf to a pluggable, schema-selected comparator. Aggregation is **global-leaf-equal**: every leaf comparison counts the same in the document score. `studio/__init__.py` and `studio/backend/__init__.py` are empty, so importing the scorer pulls in only `rapidfuzz`/`scipy`/`numpy`/`dateutil` — no torch, no `unsloth` import chain.
 
 **Tech Stack:** Python, `rapidfuzz` (Levenshtein), `scipy` (`linear_sum_assignment`), `numpy`, `python-dateutil`; `pytest`; `anls_star` (test-only cross-check).
 
 **Spec:** `docs/superpowers/specs/2026-05-23-json-document-score-design.md`
 
-**Conventions for every new `.py` file:** start with the repo's Apache-2.0 header (copy the 13-line header block from the top of `unsloth/__init__.py`). It is omitted from the code blocks below for brevity — add it as the first lines of each created file.
+**Conventions for every new `.py` file:** start with Studio's AGPL header — exactly these two lines:
 
-**Running tests:** `pyproject.toml` sets `testpaths = ["tests/security"]`, so bare `pytest` will **not** discover these tests. Always pass the explicit path, e.g. `python -m pytest tests/test_json_score_comparators.py -v`. `pythonpath = ["."]` is already configured, and `tests/conftest.py` provides the GPU-free harness so `import unsloth` works without an accelerator.
+```python
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+```
+
+**Imports:** the Studio backend runs with `studio/backend/` on `sys.path` and uses **flat imports** (e.g. `from core.inference import ...`). This scorer is therefore imported as **`from eval.json_score... import ...`** — NOT `from studio.backend.eval.json_score...`. Within the package, use relative imports (`from .comparators import ...`).
+
+**Environment / running tests (Task 0 already done):** use the interpreter at `/home/hadi/repos/unsloth/.venv312/bin/python` for everything — it has `numpy`/`scipy`/`rapidfuzz`/`python-dateutil`/`anls_star`/`pytest` (plus the full unsloth stack, unused here). The default `python` on PATH is a broken 3.14 venv — never use it. Run tests from the repo root as:
+
+```bash
+.venv312/bin/python -m pytest studio/backend/tests/test_json_score_<area>.py -v
+```
+
+`studio/backend/tests/conftest.py` puts the backend root on `sys.path` (enabling the flat `eval.json_score` import). A repo-level conftest may print an `unsloth` import banner/warnings to stderr during startup — that is NORMAL noise, not a failure; read the pytest pass/fail summary.
 
 **Divergence from `anls_star` (intentional):** this metric is not a drop-in clone. It (a) penalizes hallucinated dict keys (one zero-leaf each) where `anls_star` ignores extra dict keys, and (b) weights every leaf equally across the whole document where `anls_star` may weight per nesting level. The Task 8 cross-check therefore only asserts equality on documents where every scheme agrees (identical/flat).
 
 ---
 
-## Task 0: Environment setup
+## Task 0: Environment setup — DONE
 
-**Files:** none (environment only)
-
-- [ ] **Step 1: Ensure the unsloth dev stack + scoring deps are installed**
-
-The scorer lives under the `unsloth` package, so tests must be able to `import unsloth`. Install the full stack once (if not already), then the scoring deps:
+A Python 3.12 venv at `.venv312` has been created with the full unsloth stack plus `rapidfuzz`, `scipy`, `numpy`, `python-dateutil`, `anls_star`, and `pytest`. Verify with:
 
 ```bash
-pip install -e ".[huggingface]"        # full unsloth stack (torch, unsloth_zoo, ...)
-pip install rapidfuzz scipy numpy python-dateutil anls_star
+.venv312/bin/python -c "import rapidfuzz, scipy, numpy, dateutil, anls_star; import pytest; print('deps OK')"
 ```
 
-- [ ] **Step 2: Verify imports work**
-
-Run:
-
-```bash
-python -c "import unsloth; import rapidfuzz, scipy, numpy, dateutil, anls_star; print('deps OK')"
-```
-
-Expected: prints `deps OK` (after unsloth's import banner). If `import unsloth` fails, the dev stack is not installed — re-run Step 1.
+Expected: prints `deps OK`.
 
 ---
 
-## Task 1: Package skeleton + `eval` extra + money/numeric comparator
+## Task 1: Package skeleton + studio deps + money/numeric comparator
 
 **Files:**
-- Create: `unsloth/eval/__init__.py`
-- Create: `unsloth/eval/json_score/__init__.py`
-- Create: `unsloth/eval/json_score/comparators.py`
-- Modify: `pyproject.toml` (add `eval` optional extra)
-- Test: `tests/test_json_score_comparators.py`
+- Create: `studio/backend/eval/__init__.py`
+- Create: `studio/backend/eval/json_score/__init__.py`
+- Create: `studio/backend/eval/json_score/comparators.py`
+- Modify: `studio/backend/requirements/no-torch-runtime.txt` (add scipy/rapidfuzz/python-dateutil)
+- Test: `studio/backend/tests/test_json_score_comparators.py`
 
-- [ ] **Step 1: Create empty namespace inits**
+- [ ] **Step 1: Create the package namespace inits**
 
-`unsloth/eval/__init__.py` — keep empty (do NOT import json_score here, so `import unsloth.eval` does not require scipy):
+`studio/backend/eval/__init__.py` — AGPL header only (intentionally empty; the scorer subpackage is imported directly).
 
-```python
-# (Apache header only — intentionally empty so importing unsloth.eval stays light)
+`studio/backend/eval/json_score/__init__.py` — AGPL header + a one-line comment placeholder (public exports are added in Task 7). Keep otherwise empty.
+
+- [ ] **Step 2: Add the scoring deps to studio's no-torch runtime requirements**
+
+In `studio/backend/requirements/no-torch-runtime.txt`, the line `numpy` already exists. Add these three lines next to it (one per line):
+
 ```
-
-`unsloth/eval/json_score/__init__.py` — leave a placeholder for now (public exports added in Task 7):
-
-```python
-# (Apache header) Public API is wired up in api.py and re-exported here in a later task.
-```
-
-- [ ] **Step 2: Add the `eval` optional extra to pyproject.toml**
-
-In `pyproject.toml`, inside the `[project.optional-dependencies]` block (after the `triton = [...]` entry near line 66), add:
-
-```toml
-eval = [
-    "rapidfuzz",
-    "scipy",
-    "numpy",
-    "python-dateutil",
-]
+scipy
+rapidfuzz
+python-dateutil
 ```
 
 - [ ] **Step 3: Write the failing test for the money comparator**
 
-`tests/test_json_score_comparators.py`:
+`studio/backend/tests/test_json_score_comparators.py` (after the AGPL header):
 
 ```python
-from unsloth.eval.json_score.comparators import get_comparator
+from eval.json_score.comparators import get_comparator
 
 
 def test_money_exact_match():
@@ -134,12 +123,12 @@ def test_numeric_is_money_alias():
 
 - [ ] **Step 4: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_json_score_comparators.py -v`
-Expected: collection/import error — `ModuleNotFoundError` or `cannot import name 'get_comparator'`.
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_comparators.py -v`
+Expected: collection/import error — `ModuleNotFoundError` / `cannot import name 'get_comparator'`.
 
-- [ ] **Step 5: Implement comparators.py with the number parser, money comparator, and registry**
+- [ ] **Step 5: Implement comparators.py (after the AGPL header)**
 
-`unsloth/eval/json_score/comparators.py`:
+`studio/backend/eval/json_score/comparators.py`:
 
 ```python
 from __future__ import annotations
@@ -208,27 +197,29 @@ def get_comparator(name: str, **params: Any) -> Comparator:
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_json_score_comparators.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_comparators.py -v`
 Expected: 9 passed.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add unsloth/eval pyproject.toml tests/test_json_score_comparators.py
-git commit -m "feat(json_score): package skeleton, eval extra, money comparator"
+git add studio/backend/eval studio/backend/requirements/no-torch-runtime.txt studio/backend/tests/test_json_score_comparators.py
+git commit -m "$(printf 'feat(studio/json_score): package skeleton, deps, money comparator\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
+
+(Do NOT `git add -A` or add `.venv312/`.)
 
 ---
 
 ## Task 2: categorical, string, and date comparators
 
 **Files:**
-- Modify: `unsloth/eval/json_score/comparators.py`
-- Test: `tests/test_json_score_comparators.py`
+- Modify: `studio/backend/eval/json_score/comparators.py`
+- Test: `studio/backend/tests/test_json_score_comparators.py`
 
 - [ ] **Step 1: Write the failing tests (append to the test file)**
 
-Append to `tests/test_json_score_comparators.py`:
+Append to `studio/backend/tests/test_json_score_comparators.py`:
 
 ```python
 def test_categorical_exact():
@@ -297,12 +288,12 @@ def test_date_unparseable_is_zero():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_comparators.py -k "categorical or string or date" -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_comparators.py -k "categorical or string or date" -v`
 Expected: FAIL — `Unknown comparator 'categorical'` (etc.).
 
 - [ ] **Step 3: Implement the three comparators and register them**
 
-In `unsloth/eval/json_score/comparators.py`, add the date import near the top (after `import re`):
+In `studio/backend/eval/json_score/comparators.py`, add the date import near the top (after `import re`):
 
 ```python
 from datetime import date, datetime
@@ -383,14 +374,14 @@ _REGISTRY: dict[str, Callable[..., Comparator]] = {
 
 - [ ] **Step 4: Run the full comparator suite**
 
-Run: `python -m pytest tests/test_json_score_comparators.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_comparators.py -v`
 Expected: all tests pass (Task 1 + Task 2).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add unsloth/eval/json_score/comparators.py tests/test_json_score_comparators.py
-git commit -m "feat(json_score): categorical, string (ANLS), and date comparators"
+git add studio/backend/eval/json_score/comparators.py studio/backend/tests/test_json_score_comparators.py
+git commit -m "$(printf 'feat(studio/json_score): categorical, string (ANLS), and date comparators\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -398,17 +389,17 @@ git commit -m "feat(json_score): categorical, string (ANLS), and date comparator
 ## Task 3: Schema normalization
 
 **Files:**
-- Create: `unsloth/eval/json_score/schema.py`
-- Test: `tests/test_json_score_schema.py`
+- Create: `studio/backend/eval/json_score/schema.py`
+- Test: `studio/backend/tests/test_json_score_schema.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/test_json_score_schema.py`:
+`studio/backend/tests/test_json_score_schema.py` (after the AGPL header):
 
 ```python
 import pytest
 
-from unsloth.eval.json_score.schema import (
+from eval.json_score.schema import (
     ArrayNode,
     LeafNode,
     ObjectNode,
@@ -472,12 +463,12 @@ def test_bad_leaf_param_is_error():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_schema.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_schema.py -v`
 Expected: FAIL — module/import error.
 
-- [ ] **Step 3: Implement schema.py**
+- [ ] **Step 3: Implement schema.py (after the AGPL header)**
 
-`unsloth/eval/json_score/schema.py` (plain dataclasses — the default `__eq__` compares all fields, including the `params` dict, which is exactly what the tests assert):
+`studio/backend/eval/json_score/schema.py` (plain dataclasses — the default `__eq__` compares all fields, including the `params` dict, which is exactly what the tests assert):
 
 ```python
 from __future__ import annotations
@@ -545,14 +536,14 @@ def normalize_schema(raw: Any) -> Node:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_json_score_schema.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_schema.py -v`
 Expected: 9 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add unsloth/eval/json_score/schema.py tests/test_json_score_schema.py
-git commit -m "feat(json_score): schema normalization into Leaf/Object/Array nodes"
+git add studio/backend/eval/json_score/schema.py studio/backend/tests/test_json_score_schema.py
+git commit -m "$(printf 'feat(studio/json_score): schema normalization into Leaf/Object/Array nodes\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -560,23 +551,23 @@ git commit -m "feat(json_score): schema normalization into Leaf/Object/Array nod
 ## Task 4: Core — ScoreNode, leaf scoring, leaf counting, and the dispatcher
 
 **Files:**
-- Create: `unsloth/eval/json_score/core.py`
-- Test: `tests/test_json_score_core.py`
+- Create: `studio/backend/eval/json_score/core.py`
+- Test: `studio/backend/tests/test_json_score_core.py`
 
 This task defines `_score`, the recursive dispatcher, even though its object/array branches call `_score_object`/`_score_array`/`_mismatch` (added in Tasks 5–6). Python resolves those names only when the branch executes, so importing `core.py` and running this task's leaf/options tests works without them.
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/test_json_score_core.py`:
+`studio/backend/tests/test_json_score_core.py` (after the AGPL header):
 
 ```python
-from unsloth.eval.json_score.core import (
+from eval.json_score.core import (
     ScoreNode,
     _leaf_count,
     _score,
     _score_leaf,
 )
-from unsloth.eval.json_score.schema import normalize_schema
+from eval.json_score.schema import normalize_schema
 
 
 def test_leaf_both_none_is_perfect():
@@ -631,12 +622,12 @@ def test_options_empty_tuple_is_zero():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_core.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -v`
 Expected: FAIL — import error.
 
-- [ ] **Step 3: Implement core.py (ScoreNode, _leaf_count, _score_leaf, _score)**
+- [ ] **Step 3: Implement core.py (after the AGPL header)**
 
-`unsloth/eval/json_score/core.py`:
+`studio/backend/eval/json_score/core.py`:
 
 ```python
 from __future__ import annotations
@@ -730,14 +721,14 @@ def _score(gt: Any, pred: Any, node: Node | None, default: str) -> ScoreNode:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_json_score_core.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -v`
 Expected: 10 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add unsloth/eval/json_score/core.py tests/test_json_score_core.py
-git commit -m "feat(json_score): ScoreNode, leaf scoring, leaf counting, dispatcher"
+git add studio/backend/eval/json_score/core.py studio/backend/tests/test_json_score_core.py
+git commit -m "$(printf 'feat(studio/json_score): ScoreNode, leaf scoring, leaf counting, dispatcher\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -745,15 +736,15 @@ git commit -m "feat(json_score): ScoreNode, leaf scoring, leaf counting, dispatc
 ## Task 5: Core — object scoring and type mismatch
 
 **Files:**
-- Modify: `unsloth/eval/json_score/core.py`
-- Test: `tests/test_json_score_core.py`
+- Modify: `studio/backend/eval/json_score/core.py`
+- Test: `studio/backend/tests/test_json_score_core.py`
 
 - [ ] **Step 1: Write the failing tests (append)**
 
-Append to `tests/test_json_score_core.py`:
+Append to `studio/backend/tests/test_json_score_core.py`:
 
 ```python
-from unsloth.eval.json_score.core import _mismatch, _score_object
+from eval.json_score.core import _mismatch, _score_object
 
 
 def test_object_all_correct():
@@ -817,12 +808,12 @@ def test_mismatch_schema_object_data_scalar():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_core.py -k "object or mismatch" -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -k "object or mismatch" -v`
 Expected: FAIL — `cannot import name '_score_object'`.
 
 - [ ] **Step 3: Implement _mismatch and _score_object**
 
-Add to `unsloth/eval/json_score/core.py`:
+Add to `studio/backend/eval/json_score/core.py`:
 
 ```python
 def _mismatch(gt: Any, pred: Any, node: Node | None) -> ScoreNode:
@@ -854,14 +845,14 @@ def _score_object(gt: dict, pred: dict, node: Node | None, default: str) -> Scor
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_json_score_core.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -v`
 Expected: all tests pass (Task 4 + Task 5).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add unsloth/eval/json_score/core.py tests/test_json_score_core.py
-git commit -m "feat(json_score): object scoring with missing/hallucinated penalties"
+git add studio/backend/eval/json_score/core.py studio/backend/tests/test_json_score_core.py
+git commit -m "$(printf 'feat(studio/json_score): object scoring with missing/hallucinated penalties\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -869,15 +860,15 @@ git commit -m "feat(json_score): object scoring with missing/hallucinated penalt
 ## Task 6: Core — array scoring with Hungarian matching
 
 **Files:**
-- Modify: `unsloth/eval/json_score/core.py`
-- Test: `tests/test_json_score_core.py`
+- Modify: `studio/backend/eval/json_score/core.py`
+- Test: `studio/backend/tests/test_json_score_core.py`
 
 - [ ] **Step 1: Write the failing tests (append)**
 
-Append to `tests/test_json_score_core.py`:
+Append to `studio/backend/tests/test_json_score_core.py`:
 
 ```python
-from unsloth.eval.json_score.core import _score_array
+from eval.json_score.core import _score_array
 
 
 def _items_schema():
@@ -921,12 +912,12 @@ def test_dispatch_infers_array_when_no_schema():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_core.py -k array -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -k array -v`
 Expected: FAIL — `cannot import name '_score_array'`.
 
 - [ ] **Step 3: Implement _score_array**
 
-Add to `unsloth/eval/json_score/core.py`:
+Add to `studio/backend/eval/json_score/core.py`:
 
 ```python
 def _score_array(gt: list, pred: list, node: Node | None, default: str) -> ScoreNode:
@@ -957,14 +948,14 @@ def _score_array(gt: list, pred: list, node: Node | None, default: str) -> Score
 
 - [ ] **Step 4: Run to verify they pass, then run the whole core suite**
 
-Run: `python -m pytest tests/test_json_score_core.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_core.py -v`
 Expected: all core tests pass (Tasks 4–6).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add unsloth/eval/json_score/core.py tests/test_json_score_core.py
-git commit -m "feat(json_score): Hungarian-matched array scoring"
+git add studio/backend/eval/json_score/core.py studio/backend/tests/test_json_score_core.py
+git commit -m "$(printf 'feat(studio/json_score): Hungarian-matched array scoring\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -972,17 +963,17 @@ git commit -m "feat(json_score): Hungarian-matched array scoring"
 ## Task 7: Public API — json_anls_score and score_from_text
 
 **Files:**
-- Create: `unsloth/eval/json_score/api.py`
-- Modify: `unsloth/eval/json_score/__init__.py`
-- Test: `tests/test_json_score_api.py`
+- Create: `studio/backend/eval/json_score/api.py`
+- Modify: `studio/backend/eval/json_score/__init__.py`
+- Test: `studio/backend/tests/test_json_score_api.py`
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/test_json_score_api.py`:
+`studio/backend/tests/test_json_score_api.py` (after the AGPL header):
 
 ```python
-from unsloth.eval.json_score import json_anls_score, score_from_text
-from unsloth.eval.json_score.core import ScoreNode
+from eval.json_score import json_anls_score, score_from_text
+from eval.json_score.core import ScoreNode
 
 
 SCHEMA = {
@@ -1045,12 +1036,12 @@ def test_score_from_text_unparseable_breakdown():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_json_score_api.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_api.py -v`
 Expected: FAIL — `cannot import name 'json_anls_score'`.
 
-- [ ] **Step 3: Implement api.py**
+- [ ] **Step 3: Implement api.py (after the AGPL header)**
 
-`unsloth/eval/json_score/api.py`:
+`studio/backend/eval/json_score/api.py`:
 
 ```python
 from __future__ import annotations
@@ -1135,7 +1126,7 @@ def score_from_text(
 
 - [ ] **Step 4: Wire up the public exports**
 
-Replace the contents of `unsloth/eval/json_score/__init__.py` (keep the Apache header) with:
+Replace the body of `studio/backend/eval/json_score/__init__.py` (keep the AGPL header) with:
 
 ```python
 from .api import json_anls_score, score_from_text
@@ -1155,14 +1146,14 @@ __all__ = [
 
 - [ ] **Step 5: Run to verify they pass**
 
-Run: `python -m pytest tests/test_json_score_api.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_api.py -v`
 Expected: 7 passed.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add unsloth/eval/json_score/api.py unsloth/eval/json_score/__init__.py tests/test_json_score_api.py
-git commit -m "feat(json_score): public API json_anls_score and score_from_text"
+git add studio/backend/eval/json_score/api.py studio/backend/eval/json_score/__init__.py studio/backend/tests/test_json_score_api.py
+git commit -m "$(printf 'feat(studio/json_score): public API json_anls_score and score_from_text\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
@@ -1170,16 +1161,16 @@ git commit -m "feat(json_score): public API json_anls_score and score_from_text"
 ## Task 8: Reference cross-check and end-to-end invoice test
 
 **Files:**
-- Test: `tests/test_json_score_reference.py`
+- Test: `studio/backend/tests/test_json_score_reference.py`
 
 - [ ] **Step 1: Write the cross-check + end-to-end tests**
 
-`tests/test_json_score_reference.py`:
+`studio/backend/tests/test_json_score_reference.py` (after the AGPL header):
 
 ```python
 import pytest
 
-from unsloth.eval.json_score import json_anls_score
+from eval.json_score import json_anls_score
 
 anls_star = pytest.importorskip("anls_star")
 
@@ -1253,32 +1244,31 @@ def test_end_to_end_invoice_breakdown():
 
 - [ ] **Step 2: Run to verify behavior**
 
-Run: `python -m pytest tests/test_json_score_reference.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_reference.py -v`
 Expected: cross-check cases pass (or skip with "could not import 'anls_star'" if not installed); `test_end_to_end_invoice_breakdown` passes.
 
-If a cross-check case fails by a tiny margin, the cause is almost certainly a string-normalization detail (e.g. `anls_star` lower-casing) — adjust the *test data* to use already-identical or clearly-different lowercase strings. Do NOT loosen the `1e-6` tolerance, and do NOT add hallucinated-key or non-perfect-nested cases (they diverge by design — see the module docstring at the top of this plan).
+If a cross-check case fails by a tiny margin, the cause is almost certainly a string-normalization detail (e.g. `anls_star` lower-casing) — adjust the *test data* to use already-identical or clearly-different lowercase strings. Do NOT loosen the `1e-6` tolerance, and do NOT add hallucinated-key or non-perfect-nested cases (they diverge by design — see the divergence note at the top of this plan).
 
 - [ ] **Step 3: Run the full json_score test suite**
 
-Run: `python -m pytest tests/test_json_score_comparators.py tests/test_json_score_schema.py tests/test_json_score_core.py tests/test_json_score_api.py tests/test_json_score_reference.py -v`
+Run: `.venv312/bin/python -m pytest studio/backend/tests/test_json_score_comparators.py studio/backend/tests/test_json_score_schema.py studio/backend/tests/test_json_score_core.py studio/backend/tests/test_json_score_api.py studio/backend/tests/test_json_score_reference.py -v`
 Expected: all pass (reference cross-check may skip if `anls_star` absent).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/test_json_score_reference.py
-git commit -m "test(json_score): anls_star cross-check and end-to-end invoice"
+git add studio/backend/tests/test_json_score_reference.py
+git commit -m "$(printf 'test(studio/json_score): anls_star cross-check and end-to-end invoice\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>')"
 ```
 
 ---
 
 ## Done
 
-The metric is importable as:
+The metric is importable from the Studio backend as:
 
 ```python
-from unsloth.eval.json_score import json_anls_score, score_from_text
+from eval.json_score import json_anls_score, score_from_text
 ```
 
 with the schema/comparator/aggregation behavior defined in the spec.
-```
