@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
   CloudIcon,
+  Database01Icon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -31,6 +32,7 @@ import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
+import { KnowledgeBasesTab } from "./tabs/knowledge-bases-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 
 interface TabDef {
@@ -45,6 +47,12 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
+  {
+    id: "knowledge-bases",
+    label: "Knowledge Bases",
+    icon: Database01Icon,
+    badge: "New",
+  },
   { id: "connections", label: "Connections", icon: CloudIcon, badge: "New" },
   { id: "api-keys", label: "API", icon: Globe02Icon, badge: "New" },
   { id: "about", label: "Help", icon: HelpCircleIcon },
@@ -60,6 +68,8 @@ function renderTab(tab: SettingsTab) {
       return <AppearanceTab />;
     case "chat":
       return <ChatTab />;
+    case "knowledge-bases":
+      return <KnowledgeBasesTab />;
     case "connections":
       return <ConnectionsTab />;
     case "api-keys":
@@ -81,6 +91,7 @@ export function SettingsDialog() {
     profile: null,
     appearance: null,
     chat: null,
+    "knowledge-bases": null,
     connections: null,
     "api-keys": null,
     about: null,

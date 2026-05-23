@@ -147,6 +147,40 @@ async def get_current_subject(
     )
 
 
+async def get_current_subject_sse(
+    token: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> str:
+    """Auth dep for SSE endpoints.
+
+    EventSource cannot send custom headers, so callers pass the bearer
+    as a ``?token=…`` query param. Falls back to the Authorization
+    header so curl / API clients keep working.
+
+    Wire with ``Query(None)`` and ``Header(None)`` at the route layer:
+
+        async def stream(
+            current_subject: str = Depends(
+                lambda token = Query(None), authorization = Header(None):
+                    get_current_subject_sse(token, authorization)
+            ),
+        ): ...
+    """
+    raw = token
+    if not raw and authorization and authorization.lower().startswith("bearer "):
+        raw = authorization[len("bearer "):].strip()
+    if not raw:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing token",
+        )
+    credentials = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = raw)
+    return await _get_current_subject(
+        credentials,
+        allow_password_change = False,
+    )
+
+
 async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:

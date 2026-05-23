@@ -19,6 +19,7 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import type { RagSource } from "../api/chat-settings-api";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
@@ -294,6 +295,9 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  ragSource: RagSource;
+  enableRerank: boolean;
+  ragTopK: number;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -337,6 +341,9 @@ type ChatRuntimeStore = {
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
+  setRagSource: (source: RagSource) => void;
+  setEnableRerank: (value: boolean) => void;
+  setRagTopK: (value: number) => void;
 };
 
 type PersistedChatSettings = Awaited<
@@ -352,7 +359,10 @@ type ScalarSettingKey =
   | "preserveThinking"
   | "autoHealToolCalls"
   | "maxToolCallsPerMessage"
-  | "toolCallTimeout";
+  | "toolCallTimeout"
+  | "ragSource"
+  | "enableRerank"
+  | "ragTopK";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -386,6 +396,9 @@ const SCALAR_SETTING_KEYS = [
   "autoHealToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "ragSource",
+  "enableRerank",
+  "ragTopK",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -590,6 +603,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  ragSource: { kind: "off" },
+  enableRerank: false,
+  ragTopK: 5,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -788,6 +804,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.preserveThinking,
       );
       return { preserveThinking };
+    }),
+  setRagSource: (ragSource) =>
+    set((state) => {
+      setScalarSettingVersion("ragSource", ragSource, state.ragSource);
+      return { ragSource };
+    }),
+  setEnableRerank: (enableRerank) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "enableRerank",
+        enableRerank,
+        state.enableRerank,
+      );
+      return { enableRerank };
+    }),
+  setRagTopK: (ragTopK) =>
+    set((state) => {
+      setScalarSettingVersion("ragTopK", ragTopK, state.ragTopK);
+      return { ragTopK };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
     set(() => {

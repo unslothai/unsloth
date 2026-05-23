@@ -120,6 +120,22 @@ def tensorboard_root() -> Path:
     return studio_root() / "runs"
 
 
+def rag_root() -> Path:
+    return studio_root() / "rag"
+
+
+def rag_uploads_root() -> Path:
+    return rag_root() / "uploads"
+
+
+def rag_vectordb_root() -> Path:
+    return rag_root() / "qdrant"
+
+
+def rag_bm25_root() -> Path:
+    return rag_root() / "bm25"
+
+
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents = True, exist_ok = True)
     return path
@@ -261,6 +277,10 @@ def ensure_studio_directories() -> None:
         exports_root,
         auth_root,
         tensorboard_root,
+        rag_root,
+        rag_uploads_root,
+        rag_vectordb_root,
+        rag_bm25_root,
     ):
         ensure_dir(dir_fn())
     _setup_cache_env()

@@ -205,6 +205,83 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # RAG: knowledge bases, documents, chunks, ingestion jobs.
+    # rag_documents enforces XOR on (kb_id, thread_id): a document belongs
+    # to either a standalone KB or a single chat thread, never both.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_knowledge_bases (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            owner_user_id TEXT,
+            embedding_model TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    # thread_id has no FK to chat_threads. A user can attach a document
+    # to a thread that hasn't yet been persisted (saveThread only runs
+    # after the first model exchange — see runtime-provider.tsx). The
+    # chat-thread DELETE handlers in routes/chat_history.py purge
+    # matching rag_documents explicitly so lifecycle stays clean.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_documents (
+            id TEXT NOT NULL PRIMARY KEY,
+            kb_id TEXT REFERENCES rag_knowledge_bases(id) ON DELETE CASCADE,
+            thread_id TEXT,
+            filename TEXT NOT NULL,
+            content_type TEXT,
+            stored_path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            num_chunks INTEGER NOT NULL DEFAULT 0,
+            byte_size INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at INTEGER NOT NULL,
+            CHECK ((kb_id IS NOT NULL) <> (thread_id IS NOT NULL))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_documents_kb_id ON rag_documents(kb_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_documents_thread_id ON rag_documents(thread_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_chunks (
+            id TEXT NOT NULL PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            page_number INTEGER,
+            UNIQUE(document_id, chunk_index)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_chunks_document_id ON rag_chunks(document_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_ingestion_jobs (
+            id TEXT NOT NULL PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            progress REAL NOT NULL DEFAULT 0.0,
+            stage TEXT,
+            error TEXT,
+            started_at INTEGER,
+            finished_at INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_jobs_document_id ON rag_ingestion_jobs(document_id)"
+    )
 
 
 def get_connection() -> sqlite3.Connection:

@@ -21,7 +21,9 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, FileTextIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { useRagStore } from "@/features/rag/stores/rag-store";
+import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -67,6 +69,32 @@ export interface CompareHandle {
 }
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
+const DOCUMENT_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
+const DOCUMENT_EXTENSIONS = new Set([
+  ".pdf",
+  ".txt",
+  ".md",
+  ".markdown",
+  ".docx",
+  ".html",
+  ".htm",
+]);
+
+function isDocumentFile(file: File): boolean {
+  const lower = file.name.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot < 0) return false;
+  return DOCUMENT_EXTENSIONS.has(lower.slice(dot));
+}
+
+type PendingDoc = {
+  id: string;
+  file: File;
+  status: "uploading" | "ingesting" | "ready" | "error";
+  jobId?: string;
+  documentId?: string;
+  errorMessage?: string;
+};
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 function isNativeComposing(event: Event) {
@@ -290,6 +318,7 @@ export function SharedComposer({
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
+  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -302,6 +331,9 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -471,6 +503,66 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
+  const addDoc = useCallback(
+    (file: File) => {
+      if (!activeThreadId) {
+        toast.error("Attach to a thread first");
+        return;
+      }
+      const id = crypto.randomUUID();
+      setPendingDocs((prev) => [
+        ...prev,
+        { id, file, status: "uploading" },
+      ]);
+      const uploadDocument = useRagStore.getState().uploadDocument;
+      uploadDocument({ kind: "thread", threadId: activeThreadId }, file)
+        .then(({ documentId, jobId }) => {
+          setPendingDocs((prev) =>
+            prev.map((d) =>
+              d.id === id
+                ? { ...d, status: "ingesting", jobId, documentId }
+                : d,
+            ),
+          );
+          subscribeToJobEvents(jobId, {
+            onEvent: (event) => {
+              if (event.type === "complete") {
+                setPendingDocs((prev) =>
+                  prev.map((d) =>
+                    d.id === id ? { ...d, status: "ready" } : d,
+                  ),
+                );
+                if (useChatRuntimeStore.getState().ragSource.kind === "off") {
+                  useChatRuntimeStore
+                    .getState()
+                    .setRagSource({ kind: "thread" });
+                }
+              } else if (event.type === "error") {
+                setPendingDocs((prev) =>
+                  prev.map((d) =>
+                    d.id === id
+                      ? { ...d, status: "error", errorMessage: event.error }
+                      : d,
+                  ),
+                );
+              }
+            },
+          });
+        })
+        .catch((err: unknown) => {
+          const message =
+            err instanceof Error ? err.message : "Upload failed";
+          setPendingDocs((prev) =>
+            prev.map((d) =>
+              d.id === id ? { ...d, status: "error", errorMessage: message } : d,
+            ),
+          );
+          toast.error(`Document upload failed: ${message}`);
+        });
+    },
+    [activeThreadId],
+  );
+
   const addFiles = useCallback((files: FileList | null) => {
     if (!files?.length) return;
     const next: PendingImage[] = [];
@@ -486,6 +578,11 @@ export function SharedComposer({
         });
         continue;
       }
+      // Handle RAG document files (route to per-thread ingest pipeline).
+      if (isDocumentFile(file)) {
+        addDoc(file);
+        continue;
+      }
       // Handle image files
       if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
@@ -499,11 +596,29 @@ export function SharedComposer({
       toast.error(attachUnavailableReason);
     }
     setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore, attachUnavailableReason]);
+  }, [setPendingAudioStore, attachUnavailableReason, addDoc]);
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   }, []);
+
+  const removePendingDoc = useCallback((id: string) => {
+    setPendingDocs((prev) => {
+      const doc = prev.find((d) => d.id === id);
+      if (doc?.documentId) {
+        void useRagStore
+          .getState()
+          .deleteDocument(
+            doc.documentId,
+            `thread:${activeThreadId ?? ""}`,
+          )
+          .catch(() => {
+            // Best effort — the chip is going away regardless.
+          });
+      }
+      return prev.filter((d) => d.id !== id);
+    });
+  }, [activeThreadId]);
 
   function clearStuckImeTimer() {
     if (stuckImeTimerRef.current) {
@@ -592,6 +707,10 @@ export function SharedComposer({
     setPendingImages([]);
     setPendingAudio(null);
     clearPendingAudioStore();
+    // Docs remain in the backend (already uploaded); just drop the
+    // composer-side chips. The settings panel still shows them in the
+    // thread's document list.
+    setPendingDocs([]);
     textareaRef.current?.focus();
 
     // Generalized compare: load each model before dispatching to its side
@@ -773,7 +892,17 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
+  const docsIndexing = pendingDocs.some(
+    (d) => d.status === "uploading" || d.status === "ingesting",
+  );
+  const canSend =
+    (text.trim().length > 0 ||
+      pendingImages.length > 0 ||
+      pendingAudio !== null ||
+      pendingDocs.length > 0) &&
+    !busy &&
+    !isComposing &&
+    !docsIndexing;
 
   return (
     <div
@@ -793,7 +922,9 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
-      {(pendingImages.length > 0 || pendingAudio) && (
+      {(pendingImages.length > 0 ||
+        pendingAudio ||
+        pendingDocs.length > 0) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
           {pendingImages.map(({ id, file }) => (
             <PendingImageThumb
@@ -802,6 +933,44 @@ export function SharedComposer({
               onRemove={() => removePendingImage(id)}
             />
           ))}
+          {pendingDocs.map((doc) => {
+            const statusLabel =
+              doc.status === "uploading"
+                ? "Uploading…"
+                : doc.status === "ingesting"
+                  ? "Indexing…"
+                  : doc.status === "error"
+                    ? doc.errorMessage ?? "Failed"
+                    : "Ready";
+            const statusClass =
+              doc.status === "error"
+                ? "text-destructive"
+                : doc.status === "ready"
+                  ? "text-muted-foreground"
+                  : "text-muted-foreground italic";
+            return (
+              <div
+                key={doc.id}
+                className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+              >
+                <FileTextIcon className="size-3.5 text-muted-foreground" />
+                <div className="flex flex-col">
+                  <span className="max-w-48 truncate">{doc.file.name}</span>
+                  <span className={cn("text-[10px] leading-tight", statusClass)}>
+                    {statusLabel}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => removePendingDoc(doc.id)}
+                  aria-label="Remove document"
+                >
+                  <XIcon className="size-3.5" />
+                </button>
+              </div>
+            );
+          })}
           {pendingAudio && (
             <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
@@ -854,7 +1023,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={`${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`}
             multiple
             className="hidden"
             onChange={(e) => {

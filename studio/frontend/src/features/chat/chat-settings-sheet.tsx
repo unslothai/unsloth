@@ -90,6 +90,23 @@ import {
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
+import type { RagSource } from "./api/chat-settings-api";
+import { DocumentRow } from "@/features/rag/components/document-row";
+import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
+import { useKnowledgeBases } from "@/features/rag/hooks/use-knowledge-bases";
+import { useThreadDocuments } from "@/features/rag/hooks/use-kb-documents";
+import { useRagStore } from "@/features/rag/stores/rag-store";
+import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+
+function ragSourceLabel(
+  source: RagSource,
+  kbs: { id: string; name: string }[],
+): string {
+  if (source.kind === "off") return "Off";
+  if (source.kind === "thread") return "This thread's documents";
+  const kb = kbs.find((k) => k.id === source.kbId);
+  return kb ? kb.name : "Knowledge base (missing)";
+}
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -418,6 +435,21 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const enableRerank = useChatRuntimeStore((s) => s.enableRerank);
+  const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
+  const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
+  const setRagTopK = useChatRuntimeStore((s) => s.setRagTopK);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const { knowledgeBases, deleteKB } = useKnowledgeBases();
+  const { documents: threadDocs, remove: removeThreadDoc } = useThreadDocuments(
+    ragSource.kind === "thread" ? activeThreadId : null,
+  );
+  const clearThreadIndex = useRagStore((s) => s.clearThreadIndex);
+  const [kbCreateOpen, setKbCreateOpen] = useState(false);
+  const ragEnabled = ragSource.kind !== "off";
+  const activeKbId = ragSource.kind === "kb" ? ragSource.kbId : null;
   const hasModelContent =
     !isExternalModel && (isGguf || Boolean(params.checkpoint));
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -1165,6 +1197,181 @@ export function ChatSettingsPanel({
             />
           </CollapsibleSection>
         ) : null}
+
+        <CollapsibleSection label="Retrieval" defaultOpen={false}>
+          <div className="flex flex-col gap-3 pt-1">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[12px] font-medium text-muted-foreground">
+                Knowledge base
+              </label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button variant="outline" className="w-full justify-between">
+                    <span className="truncate">
+                      {ragSourceLabel(ragSource, knowledgeBases)}
+                    </span>
+                    <ChevronDown className="size-4 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="w-[var(--radix-dropdown-menu-trigger-width)]"
+                >
+                  <DropdownMenuItem
+                    onSelect={() => setRagSource({ kind: "off" })}
+                  >
+                    Off
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => setRagSource({ kind: "thread" })}
+                  >
+                    This thread's documents
+                  </DropdownMenuItem>
+                  {knowledgeBases.length > 0 ? (
+                    <DropdownMenuSeparator />
+                  ) : null}
+                  {knowledgeBases.map((kb) => {
+                    const isActive = kb.id === activeKbId;
+                    return (
+                      <DropdownMenuItem
+                        key={kb.id}
+                        className={cn(
+                          "flex items-center justify-between gap-2",
+                          isActive && "bg-accent text-accent-foreground",
+                        )}
+                        onSelect={() =>
+                          setRagSource({ kind: "kb", kbId: kb.id })
+                        }
+                      >
+                        <span className="truncate">{kb.name}</span>
+                        <button
+                          type="button"
+                          aria-label={`Delete ${kb.name}`}
+                          className="ml-2 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            if (
+                              window.confirm(
+                                `Delete "${kb.name}" and all its documents?`,
+                              )
+                            ) {
+                              void deleteKB(kb.id).then(() => {
+                                if (isActive) {
+                                  setRagSource({ kind: "off" });
+                                }
+                              });
+                            }
+                          }}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} size={12} />
+                        </button>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => setKbCreateOpen(true)}
+                    className="text-muted-foreground"
+                  >
+                    <HugeiconsIcon icon={Add01Icon} size={12} className="mr-2" />
+                    Create knowledge base…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <p className="text-[11px] text-muted-foreground">
+                Each message retrieves matching context from the selected
+                source before sending.
+              </p>
+            </div>
+            <KBCreateDialog
+              open={kbCreateOpen}
+              onOpenChange={setKbCreateOpen}
+              onCreated={(kb) => setRagSource({ kind: "kb", kbId: kb.id })}
+            />
+            {ragSource.kind === "thread" && activeThreadId ? (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[12px] font-medium text-muted-foreground">
+                  Documents in this thread
+                </label>
+                {threadDocs.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground italic">
+                    Attach a file using the + button in the composer to add
+                    documents to this thread.
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex flex-col gap-1.5">
+                      {threadDocs.map((doc) => (
+                        <DocumentRow
+                          key={doc.id}
+                          doc={doc}
+                          onDelete={() => {
+                            void removeThreadDoc(doc.id);
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="self-start text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Delete all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} from this thread? This cannot be undone.`,
+                          )
+                        ) {
+                          void clearThreadIndex(activeThreadId);
+                        }
+                      }}
+                    >
+                      Clear thread index
+                    </Button>
+                  </>
+                )}
+              </div>
+            ) : null}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[12px] font-medium text-muted-foreground">
+                  RAG top K
+                </label>
+                <span className="text-[12px] tabular-nums text-muted-foreground">
+                  {ragTopK}
+                </span>
+              </div>
+              <Slider
+                value={[ragTopK]}
+                min={1}
+                max={20}
+                step={1}
+                onValueChange={([v]) => v != null && setRagTopK(v)}
+                disabled={!ragEnabled}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Number of retrieved chunks passed to the model as context
+                (distinct from the sampling Top K below). Higher = more
+                grounding, more tokens.
+              </p>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-[13px] font-medium">
+                  Use reranker
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Slower; uses GPU. Improves quality for fact-heavy questions.
+                </span>
+              </div>
+              <Switch
+                checked={enableRerank}
+                onCheckedChange={setEnableRerank}
+                disabled={!ragEnabled}
+              />
+            </div>
+          </div>
+        </CollapsibleSection>
 
         <CollapsibleSection label="System Prompt" defaultOpen={true}>
           <button

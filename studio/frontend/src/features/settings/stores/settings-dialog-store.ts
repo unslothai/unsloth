@@ -8,6 +8,7 @@ export type SettingsTab =
   | "profile"
   | "appearance"
   | "chat"
+  | "knowledge-bases"
   | "connections"
   | "api-keys"
   | "about";
@@ -40,6 +41,7 @@ function loadInitialTab(): SettingsTab {
     "profile",
     "appearance",
     "chat",
+    "knowledge-bases",
     "connections",
     "api-keys",
     "about",

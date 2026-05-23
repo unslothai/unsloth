@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from core.rag.ingestion import purge_all_thread_documents, purge_thread_documents
 from storage.studio_db import (
     ChatMessageConflictError,
     CorruptSettingsError,
@@ -229,6 +230,9 @@ async def delete_threads(
     payload: ChatDeleteRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    # rag_documents has no FK cascade to chat_threads, so purge their
+    # files + vectors + bm25 explicitly before deleting the threads.
+    purge_thread_documents(payload.ids)
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
 
@@ -354,6 +358,7 @@ async def record_import_ledger(
 
 @router.delete("")
 async def clear_history(current_subject: str = Depends(get_current_subject)):
+    purge_all_thread_documents()
     clear_chat_history()
     return {"status": "deleted"}
 

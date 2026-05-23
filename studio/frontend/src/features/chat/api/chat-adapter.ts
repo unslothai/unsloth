@@ -57,6 +57,12 @@ import {
   validateModel,
 } from "./chat-api";
 import {
+  type SearchHit,
+  type SearchRequest,
+  search as ragSearch,
+} from "@/features/rag/api/rag-api";
+import type { RagSource } from "./chat-settings-api";
+import {
   createOpenAIContainer,
   listOpenAIContainers,
 } from "./openai-containers";
@@ -64,6 +70,56 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const out: string[] = [];
+  for (const part of content) {
+    if (
+      part &&
+      typeof part === "object" &&
+      (part as { type?: unknown }).type === "text" &&
+      typeof (part as { text?: unknown }).text === "string"
+    ) {
+      out.push((part as { text: string }).text);
+    }
+  }
+  return out.join(" ");
+}
+
+function buildRagRequest(
+  source: RagSource,
+  query: string,
+  resolvedThreadId: string | undefined,
+  enableRerank: boolean,
+  topK: number,
+): SearchRequest | null {
+  const base: SearchRequest = {
+    query,
+    top_k: topK,
+    mode: "hybrid",
+    enable_rerank: enableRerank,
+  };
+  if (source.kind === "thread") {
+    if (!resolvedThreadId) return null;
+    return { ...base, thread_id: resolvedThreadId };
+  }
+  if (source.kind === "kb") {
+    return { ...base, kb_id: source.kbId };
+  }
+  return null;
+}
+
+function formatRagContext(hits: SearchHit[]): string {
+  const parts = hits.map((h) => {
+    const name = h.filename ?? `chunk ${h.chunk_index}`;
+    const pageAttr =
+      h.page_number != null ? ` page="${h.page_number}"` : "";
+    return `<source filename="${name}"${pageAttr}>\n${h.text}\n</source>`;
+  });
+  return `<context>\nThe following documents may help answer the user's question:\n${parts.join("\n")}\n</context>`;
+}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -932,6 +988,49 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           content: safeSystemPrompt.trim(),
         });
       }
+
+      // RAG: optionally retrieve context for the last user turn and
+      // prepend it as a system-role block. Failures are logged but
+      // don't break the chat — better to answer without context than
+      // to drop a message the user just sent.
+      const ragSource = runtime.ragSource;
+      if (ragSource.kind !== "off") {
+        const lastUser = [...outboundMessages]
+          .reverse()
+          .find((m) => m.role === "user");
+        const queryText = lastUser
+          ? extractMessageText(lastUser.content)
+          : "";
+        if (queryText.trim()) {
+          const ragReq = buildRagRequest(
+            ragSource,
+            queryText,
+            resolvedThreadId,
+            runtime.enableRerank,
+            runtime.ragTopK,
+          );
+          if (ragReq) {
+            try {
+              const hits = await ragSearch(ragReq);
+              if (hits.length > 0) {
+                const block = formatRagContext(hits);
+                if (
+                  outboundMessages[0]?.role === "system" &&
+                  typeof outboundMessages[0].content === "string"
+                ) {
+                  outboundMessages[0].content =
+                    `${block}\n\n${outboundMessages[0].content}`;
+                } else {
+                  outboundMessages.unshift({ role: "system", content: block });
+                }
+              }
+            } catch (err) {
+              console.warn("RAG retrieval failed:", err);
+            }
+          }
+        }
+      }
+
       let disabledToolGuard: string | null = null;
       const disabledToolGuardProviderType = externalProvider?.providerType;
       if (

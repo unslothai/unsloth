@@ -15,6 +15,11 @@ export interface PersistedChatPreset {
   params: PersistedInferenceParams;
 }
 
+export type RagSource =
+  | { kind: "off" }
+  | { kind: "thread" }
+  | { kind: "kb"; kbId: string };
+
 export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
   customPresets?: PersistedChatPreset[];
@@ -26,6 +31,9 @@ export interface PersistedChatSettings {
   autoHealToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
+  ragSource?: RagSource;
+  enableRerank?: boolean;
+  ragTopK?: number;
 }
 
 interface ChatSettingsResponse {
