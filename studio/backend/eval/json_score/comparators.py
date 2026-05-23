@@ -3,30 +3,58 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Callable
 
 Comparator = Callable[[Any, Any], float]  # returns a score in [0, 1]
 
-_NUM_RE = re.compile(r"[-+]?\d*\.?\d+")
+# Unsigned magnitude with optional scientific-notation exponent; a leading sign
+# is peeled off separately so currency symbols between the sign and the digits
+# (e.g. "-$1,234.56") don't strand it.
+_NUM_RE = re.compile(r"\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
 def _to_number(x: Any) -> float | None:
+    """Coerce a value to a finite float, or None if it isn't numeric.
+
+    Accepts ints/floats and number-bearing strings, tolerating thousands
+    separators, currency symbols, leading signs, and scientific notation.
+    Booleans and non-finite floats (NaN/inf) are rejected.
+    """
     if isinstance(x, bool):
         return None  # bools are not monetary/numeric values
     if isinstance(x, (int, float)):
-        return float(x)
+        return float(x) if math.isfinite(x) else None
     if isinstance(x, str):
-        m = _NUM_RE.search(x.replace(",", "").strip())
+        s = x.replace(",", "").strip()
+        # Direct parse first — handles signs and scientific notation cleanly.
+        try:
+            v = float(s)
+            return v if math.isfinite(v) else None
+        except ValueError:
+            pass
+        # Fallback: peel a leading sign, then extract the first number even if a
+        # currency symbol or other prefix sits in front of it.
+        sign = ""
+        if s[:1] in "+-":
+            sign, s = s[0], s[1:].lstrip()
+        m = _NUM_RE.search(s)
         if m:
             try:
-                return float(m.group())
+                v = float(sign + m.group())
+                return v if math.isfinite(v) else None
             except ValueError:
                 return None
     return None
 
 
 def money_comparator(rel_tol: float = 0.0, abs_tol: float = 0.0) -> Comparator:
+    """Score numeric closeness: ``max(0, 1 - |a-b| / max(|a|,|b|))``.
+
+    Both zero scores 1.0; within ``abs_tol`` or ``rel_tol`` scores 1.0;
+    uncoercible input scores 0.0.
+    """
     def score(gt: Any, pred: Any) -> float:
         a, b = _to_number(gt), _to_number(pred)
         if a is None or b is None:
