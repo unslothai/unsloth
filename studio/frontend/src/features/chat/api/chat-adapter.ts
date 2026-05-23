@@ -9,9 +9,11 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
+  supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
@@ -23,6 +25,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
@@ -830,7 +833,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled } = runtime;
+      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -869,6 +872,52 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
+      const webSearchEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            toolsEnabled &&
+            providerSupportsBuiltinWebSearch(externalProvider.providerType),
+        );
+      const codeExecEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            externalSelection &&
+            codeToolsEnabled &&
+            providerSupportsBuiltinCodeExecution(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            ),
+        );
+      // web_fetch shares the Search pill with web_search (no separate
+      // UI toggle), so it follows toolsEnabled. Anthropic is the only
+      // provider that ships it today; on others providerSupportsBuiltinWebFetch
+      // returns false and this stays inert.
+      const webFetchEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            toolsEnabled &&
+            providerSupportsBuiltinWebFetch(externalProvider.providerType),
+        );
+      const providerShipsWebFetch = Boolean(
+        externalProvider &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
+      // OpenAI Responses-API image_generation server tool. Pill is
+      // gated on OpenAI cloud + a Responses-API model id; the backend
+      // additionally re-checks is_openai_cloud before appending
+      // {type:"image_generation"} to the request tools array.
+      const imageGenerationEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          imageToolsEnabled &&
+          providerSupportsBuiltinImageGeneration(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
+
       const outboundMessages = messages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
@@ -882,6 +931,62 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           role: "system",
           content: safeSystemPrompt.trim(),
         });
+      }
+      let disabledToolGuard: string | null = null;
+      const disabledToolGuardProviderType = externalProvider?.providerType;
+      if (
+        disabledToolGuardProviderType === "anthropic" ||
+        disabledToolGuardProviderType === "openai"
+      ) {
+        const webLabel = providerShipsWebFetch
+          ? "web search or web fetch"
+          : "web search";
+        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            `You do not have ${webLabel} or code execution tools in this conversation. ` +
+            "Answer from your own knowledge. " +
+            "If a request genuinely requires tool use, live data fetch or running code, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        } else if (!webSearchEnabledForThisTurn) {
+          disabledToolGuard =
+            `You do not have ${webLabel} tools in this conversation. ` +
+            "You may still use code execution tools when they are available and useful. " +
+            "If a request genuinely requires live data fetch or web search tool use, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        } else if (!codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            "You do not have code execution tools in this conversation. " +
+            `You may still use ${webLabel} tools when they are available and useful. ` +
+            "If a request genuinely requires running code or code execution tool use, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        }
+      }
+      if (disabledToolGuard) {
+        const firstMessage = outboundMessages[0];
+        if (firstMessage?.role === "system") {
+          if (typeof firstMessage.content === "string") {
+            outboundMessages[0] = {
+              ...firstMessage,
+              content: `${firstMessage.content}\n\n${disabledToolGuard}`,
+            };
+          } else {
+            outboundMessages[0] = {
+              ...firstMessage,
+              content: [
+                ...firstMessage.content,
+                { type: "text", text: `\n\n${disabledToolGuard}` },
+              ],
+            };
+          }
+        } else {
+          outboundMessages.unshift({
+            role: "system",
+            content: disabledToolGuard,
+          });
+        }
       }
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
@@ -1137,13 +1242,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // (sent as `container` on /v1/messages).
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
-            const codeExecEnabledForThisTurn =
-              codeToolsEnabled &&
-              providerSupportsBuiltinCodeExecution(
-                externalProvider.providerType,
-                externalSelection.modelId,
-                externalProvider.baseUrl,
-              );
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
                 const thread = await getStoredChatThread(resolvedThreadId);
@@ -1313,25 +1411,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // translates enabled_tools into each provider's tool
               // schema — for Anthropic that's the entries appended to
               // body["tools"] inside _stream_anthropic.
-              ...((toolsEnabled &&
-                providerSupportsBuiltinWebSearch(
-                  externalProvider.providerType,
-                )) ||
-              (codeToolsEnabled &&
-                providerSupportsBuiltinCodeExecution(
-                  externalProvider.providerType,
-                  externalSelection.modelId,
-                  externalProvider.baseUrl,
-                ))
+              ...(webSearchEnabledForThisTurn ||
+              webFetchEnabledForThisTurn ||
+              codeExecEnabledForThisTurn ||
+              imageGenerationEnabledForThisTurn
                 ? {
                     enable_tools: true,
                     enabled_tools: [
-                      ...(toolsEnabled &&
-                      providerSupportsBuiltinWebSearch(
-                        externalProvider.providerType,
-                      )
-                        ? ["web_search"]
-                        : []),
+                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
                       // Pair web_fetch with the Search pill on any
                       // provider that ships it (Anthropic today). The
                       // common workflow is "search returns URLs, fetch
@@ -1339,19 +1426,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       // surface a citation but cannot quote from the
                       // page body, which is the whole point of the
                       // tool. There is no separate UI toggle yet.
-                      ...(toolsEnabled &&
-                      providerSupportsBuiltinWebFetch(
-                        externalProvider.providerType,
-                      )
-                        ? ["web_fetch"]
-                        : []),
-                      ...(codeToolsEnabled &&
-                      providerSupportsBuiltinCodeExecution(
-                        externalProvider.providerType,
-                        externalSelection.modelId,
-                        externalProvider.baseUrl,
-                      )
-                        ? ["code_execution"]
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
+                      // OpenAI Responses-API only: `image_generation`
+                      // returns inline image_generation_call output
+                      // items; the backend's _stream_openai_responses
+                      // path translates them to assistant tool events.
+                      ...(imageGenerationEnabledForThisTurn
+                        ? ["image_generation"]
                         : []),
                     ],
                   }
@@ -1384,6 +1466,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_prompt_caching:
                       externalProvider.enablePromptCaching ?? true,
                   }
+                : {}),
+              // Anthropic-only: pass the cache TTL the user picked in
+              // Configuration → Provider. Omitted = inherit the default
+              // 5-minute pool. The backend's `_stream_anthropic` only
+              // attaches `cache_control.ttl` when the value is one of
+              // "5m" / "1h" (see external_provider.py near line 1375),
+              // so unknown values are a no-op end-to-end.
+              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              (externalProvider.enablePromptCaching ?? true) &&
+              isPromptCacheTtl(externalProvider.promptCacheTtl)
+                ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
@@ -1530,8 +1623,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     let parsedResult:
                       | string
-                      | { text: string; images: string[]; sessionId: string };
-                    if (imgIdx !== -1) {
+                      | { text: string; images: string[]; sessionId: string }
+                      | {
+                          image_b64: string;
+                          image_mime: string;
+                          size?: string;
+                          quality?: string;
+                          background?: string;
+                        };
+                    const imageB64 = toolEvent.image_b64 as string | undefined;
+                    if (
+                      toolCallParts[idx].toolName === "image_generation" &&
+                      typeof imageB64 === "string" &&
+                      imageB64
+                    ) {
+                      // OpenAI Responses image_generation_call: the
+                      // backend stashes the base64 PNG/WebP/JPEG on
+                      // separate `image_b64` / `image_mime` fields on
+                      // the synthetic _toolEvent so the JSON result
+                      // string stays small enough to log. Repackage as
+                      // a structured result for the dedicated tool UI.
+                      parsedResult = {
+                        image_b64: imageB64,
+                        image_mime:
+                          (toolEvent.image_mime as string | undefined) ??
+                          "image/png",
+                        size: toolEvent.size as string | undefined,
+                        quality: toolEvent.quality as string | undefined,
+                        background: toolEvent.background as string | undefined,
+                      };
+                    } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox directory
                       // used when no session_id is provided (see tools.py _get_workdir).
