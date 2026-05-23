@@ -826,6 +826,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
               completionTokens: number;
               totalTokens: number;
               cachedTokens: number;
+              cacheWriteTokens?: number;
               modelId?: string;
             }
           | undefined;

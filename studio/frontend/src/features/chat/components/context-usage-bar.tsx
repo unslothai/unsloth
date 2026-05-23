@@ -30,10 +30,24 @@ export const ContextUsageBar: FC<{
   used: number;
   total: number;
   cached?: number;
+  /**
+   * Anthropic-only cache-write count (tokens written into the prompt cache
+   * on this turn, billed at the cache-write premium). Shown as a separate
+   * tooltip line so users can tell a cache miss from a cache hit.
+   */
+  cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;
   className?: string;
-}> = ({ used, total, cached, promptTokens, completionTokens, className }) => {
+}> = ({
+  used,
+  total,
+  cached,
+  cacheWrites,
+  promptTokens,
+  completionTokens,
+  className,
+}) => {
   if (total <= 0) return null;
 
   const percent = Math.min((used / total) * 100, 100);
@@ -95,6 +109,14 @@ export const ContextUsageBar: FC<{
               <span className="text-muted-foreground">Cache hits</span>
               <span className="font-mono tabular-nums">
                 {formatTokenCountFull(cached)}
+              </span>
+            </div>
+          )}
+          {cacheWrites !== undefined && cacheWrites > 0 && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Cache writes</span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCountFull(cacheWrites)}
               </span>
             </div>
           )}

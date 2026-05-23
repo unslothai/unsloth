@@ -70,6 +70,21 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /**
+   * External providers (Anthropic / OpenAI Responses / Gemini) surface
+   * prompt-cache accounting on the same `usage` envelope via
+   * `_build_usage_chunk` in `studio/backend/core/inference/external_provider.py`.
+   * `prompt_tokens_details.cached_tokens` is the normalised cache-read count
+   * present for every provider that supports it; `cache_creation_input_tokens`
+   * / `cache_read_input_tokens` are the Anthropic-native keys (cache_read
+   * mirrors `prompt_tokens_details.cached_tokens`; cache_creation is
+   * Anthropic-only and billed at the cache-write premium).
+   */
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 /** Server-side timing data from llama-server's timings object. */
@@ -1881,6 +1896,26 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
+        // Cache-hit count. llama-server reports it on `timings.cache_n`;
+        // external providers (Anthropic, OpenAI Responses, Gemini) report
+        // it on `usage.prompt_tokens_details.cached_tokens` -- see the
+        // `_build_usage_chunk` helper in
+        // studio/backend/core/inference/external_provider.py. Prefer the
+        // local-runtime value when it is present (so llama.cpp keeps
+        // populating the bar mid-stream) and fall back to the external
+        // usage envelope otherwise. cache_read_input_tokens is Anthropic's
+        // native key for the same value; read it as a last resort for
+        // providers that only emit the Anthropic shape.
+        const cachedTokens =
+          meta?.timings?.cache_n ??
+          meta?.usage?.prompt_tokens_details?.cached_tokens ??
+          meta?.usage?.cache_read_input_tokens ??
+          0;
+        // Anthropic-only: tokens written into the prompt cache on this
+        // turn, billed at the cache-write premium. Surfaced separately so
+        // users can tell a cache miss from a cache hit.
+        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+
         // Update context usage in store if we got valid server data
         if (
           meta?.usage &&
@@ -1892,7 +1927,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
-            cachedTokens: meta.timings?.cache_n ?? 0,
+            cachedTokens,
+            cacheWriteTokens,
           });
         }
 
@@ -1922,7 +1958,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
-                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    cachedTokens,
+                    cacheWriteTokens,
                     modelId: params.checkpoint,
                   }
                 : undefined,

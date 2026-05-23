@@ -1496,6 +1496,7 @@ export function ChatPage(): ReactElement {
                 used={contextUsage.totalTokens}
                 total={ggufContextLength}
                 cached={contextUsage.cachedTokens}
+                cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
                 className="h-[34px]"
