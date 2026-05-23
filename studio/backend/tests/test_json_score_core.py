@@ -58,3 +58,65 @@ def test_options_tuple_takes_best_alternative():
 def test_options_empty_tuple_is_zero():
     node = _score((), "anything", normalize_schema("string"), "string")
     assert node.score == 0.0 and node.note == "empty alternatives tuple"
+
+
+from eval.json_score.core import _mismatch, _score_object
+
+
+def test_object_all_correct():
+    schema = normalize_schema({"total": "money", "currency": "categorical"})
+    gt = {"total": 100, "currency": "USD"}
+    pred = {"total": 100, "currency": "USD"}
+    node = _score_object(gt, pred, schema, "string")
+    assert node.score == 1.0 and node.n_leaves == 2
+
+
+def test_object_one_field_wrong():
+    schema = normalize_schema({"total": "money", "currency": "categorical"})
+    gt = {"total": 100, "currency": "USD"}
+    pred = {"total": 100, "currency": "EUR"}
+    node = _score_object(gt, pred, schema, "string")
+    assert node.score == 0.5  # one of two leaves correct
+
+
+def test_object_missing_key_penalized_proportionally():
+    schema = normalize_schema(
+        {"total": "money", "vendor": {"name": "string", "vat": "categorical"}}
+    )
+    gt = {"total": 100, "vendor": {"name": "Acme", "vat": "X1"}}
+    pred = {"total": 100}  # whole vendor subtree (2 leaves) missing
+    node = _score_object(gt, pred, schema, "string")
+    # 3 leaves total, 1 correct -> 1/3
+    assert abs(node.score - (1 / 3)) < 1e-9 and node.n_leaves == 3
+
+
+def test_object_hallucinated_key_costs_one_leaf():
+    schema = normalize_schema({"total": "money"})
+    gt = {"total": 100}
+    pred = {"total": 100, "extra": "junk"}
+    node = _score_object(gt, pred, schema, "string")
+    # 1 correct leaf + 1 hallucinated zero-leaf -> 1/2
+    assert node.score == 0.5 and node.n_leaves == 2
+
+
+def test_object_empty_both_is_perfect():
+    node = _score_object({}, {}, normalize_schema({}), "string")
+    assert node.score == 1.0 and node.n_leaves == 0
+
+
+def test_dispatch_infers_object_when_no_schema():
+    node = _score({"a": "x"}, {"a": "x"}, None, "string")
+    assert node.score == 1.0 and node.n_leaves == 1
+
+
+def test_options_at_object_level():
+    schema = normalize_schema({"name": "string"})
+    gt = ({"name": "A"}, {"name": "B"})
+    node = _score(gt, {"name": "B"}, schema, "string")
+    assert node.score == 1.0 and node.matched_option == 1
+
+
+def test_mismatch_schema_object_data_scalar():
+    schema = normalize_schema({"a": "string", "b": "string"})
+    node = _mismatch(7, "x", schema)
+    assert node.score == 0.0 and node.note == "type mismatch"

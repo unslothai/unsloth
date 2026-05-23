@@ -88,3 +88,30 @@ def _score(gt: Any, pred: Any, node: Node | None, default: str) -> ScoreNode:
     if isinstance(node, LeafNode):
         return _score_leaf(gt, pred, node.comparator, node.params)
     return _score_leaf(gt, pred, default, {})
+
+
+def _mismatch(gt: Any, pred: Any, node: Node | None) -> ScoreNode:
+    n = _leaf_count(gt, node) if gt is not None else 1
+    return ScoreNode(0.0, max(n, 1), note="type mismatch")
+
+
+def _score_object(gt: dict, pred: dict, node: Node | None, default: str) -> ScoreNode:
+    children: dict[str, ScoreNode] = {}
+    total_sum, total_n = 0.0, 0
+    keys = list(dict.fromkeys([*gt.keys(), *pred.keys()]))  # ordered union
+    for k in keys:
+        child_node = node.fields.get(k) if isinstance(node, ObjectNode) else None
+        if k in gt and k in pred:
+            cn = _score(gt[k], pred[k], child_node, default)
+        elif k in gt:  # present in gt, missing from prediction
+            cn = ScoreNode(
+                0.0, _leaf_count(gt[k], child_node), note="missing in prediction"
+            )
+        else:  # present in prediction only -> hallucinated, one zero-leaf
+            cn = ScoreNode(0.0, 1, note="hallucinated")
+        children[k] = cn
+        total_sum += cn.score * cn.n_leaves
+        total_n += cn.n_leaves
+    if total_n == 0:
+        return ScoreNode(1.0, 0, children=children)
+    return ScoreNode(total_sum / total_n, total_n, children=children)
