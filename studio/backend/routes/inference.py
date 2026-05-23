@@ -427,9 +427,15 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call XML from assistant messages/stream
+# Regex for stripping leaked tool-call markup from assistant
+# messages/stream. Handles XML, Mistral [TOOL_CALLS], and rehearsal
+# name[ARGS] forms (one level of nested JSON objects). Keep in sync
+# with _TOOL_CLOSED_PATS in core/inference/tool_call_parser.py.
 _TOOL_XML_RE = _re.compile(
-    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    r"<tool_call>.*?</tool_call>"
+    r"|<function=\w+>.*?</function>"
+    r"|\[TOOL_CALLS\]\w+\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+    r"|\b\w+\[ARGS\]\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}",
     _re.DOTALL,
 )
 logger = get_logger(__name__)

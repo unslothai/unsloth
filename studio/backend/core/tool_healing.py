@@ -1,30 +1,44 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# Bracket-tag, rehearsal, and thinking-block-strip logic adapted from forge
+# (https://github.com/antoinezambelli/forge), Copyright (c) 2025-2026
+# Antoine Zambelli, used under the MIT License.
 
-"""Tool-call XML parsing and stripping helpers.
+"""Tool-call parsing and stripping helpers for external reusers.
 
-Extracted verbatim from studio/backend/core/inference/llama_cpp.py so that
-external inference servers (llama-server wrappers, llama-swap, custom
-shims) can reuse the same logic without importing the inference
-orchestrator, structlog, httpx, or the rest of the studio backend.
+Kept in lockstep with ``core/inference/tool_call_parser.py`` so external
+inference servers (llama-server wrappers, llama-swap, custom shims) can
+reuse the same logic without importing the studio backend. Any change
+here must also land there.
 
-The regexes and function bodies are byte-for-byte identical to the
-original inline implementation in llama_cpp.py. Any change made here must
-preserve that equivalence; tests/python/test_tool_healing_extraction_is_exact.py
-verifies it with AST comparison.
+Handles four serializations (see ``parse_tool_calls_from_text``):
+
+* ``<tool_call>{json}</tool_call>``
+* ``<function=name><parameter=k>v</parameter></function>``
+* ``[TOOL_CALLS]name{json}`` (Mistral / Devstral fallback)
+* ``name[ARGS]{json}`` (reasoning-model rehearsal)
 """
 
 import json
 import re
 
-# Pre-compiled patterns for tool XML stripping.
+# One level of nested JSON objects in the strip regexes. Deeper nesting
+# may leak partial markup, but the call is still parsed correctly.
+_BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+
+# Pre-compiled patterns for tool markup stripping.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+    re.compile(r"\[TOOL_CALLS\]\w+\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    re.compile(r"\b\w+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=\w+>.*$", re.DOTALL),
+    re.compile(r"\[TOOL_CALLS\]\w+\s*\{.*$", re.DOTALL),
+    re.compile(r"\b\w+\[ARGS\]\s*\{.*$", re.DOTALL),
 ]
 
 # Pre-compiled patterns for tool-call XML parsing.
@@ -35,17 +49,68 @@ _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
+# Thinking blocks stripped before any tool-call pattern is matched.
+# Accept an unclosed trailing block during streaming. Without that, a
+# rehearsed tool call inside an open <think> survives this pass and
+# may be executed as a real call when the surrounding parser sees it.
+_THINK_TAG_RE = re.compile(
+    r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL
+)
+
+# Mistral ``[TOOL_CALLS]name{json}`` prefix.
+_MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")
+
+# Rehearsal ``name[ARGS]{json}`` prefix.
+_REHEARSAL_RE = re.compile(r"\b(\w+)\[ARGS\]\s*(?=\{)")
+
+
+def _balanced_json_span(text: str, start: int) -> int | None:
+    """Return the end index of a balanced JSON object opening at ``start``,
+    or ``None`` if the braces don't balance. Honors escapes and strings.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for j in range(start, len(text)):
+        ch = text[j]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if in_string:
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
 
 def parse_tool_calls_from_text(content: str) -> list[dict]:
-    """
-    Parse tool calls from XML markup in content text.
+    """Parse tool calls from a mix of XML, bracket-tag, and rehearsal
+    markup. Each strategy runs only when the prior one found nothing:
 
-    Handles formats like:
-      <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
-      <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-    Closing tags (</tool_call>, </function>, </parameter>) are all optional
-    since models frequently omit them.
+    1. ``<tool_call>{json}</tool_call>``
+    2. ``<function=name><parameter=k>v</parameter></function>``
+    3. ``[TOOL_CALLS]name{json}``
+    4. ``name[ARGS]{json}``
+
+    Closing tags are optional. ``<think>`` and ``[THINK]`` blocks are
+    stripped first so post-reasoning calls are recognised.
     """
+    # Strip thinking blocks so post-reasoning calls are recognised.
+    content = _THINK_TAG_RE.sub("", content)
+
     tool_calls = []
 
     # Pattern 1: JSON inside <tool_call> tags.
@@ -157,6 +222,57 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 },
             }
             tool_calls.append(tc)
+
+    # Pattern 3: Mistral bracket-tag [TOOL_CALLS]name{json}.
+    if not tool_calls:
+        for m in _MISTRAL_BRACKET_RE.finditer(content):
+            tool_name = m.group(1)
+            args_start = m.end()
+            args_end = _balanced_json_span(content, args_start)
+            if args_end is None:
+                continue
+            try:
+                args = json.loads(content[args_start : args_end + 1])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(args, dict):
+                continue
+            tool_calls.append(
+                {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
+
+    # Pattern 4: Rehearsal name[ARGS]{json}.
+    if not tool_calls:
+        for m in _REHEARSAL_RE.finditer(content):
+            tool_name = m.group(1)
+            args_start = m.end()
+            args_end = _balanced_json_span(content, args_start)
+            if args_end is None:
+                continue
+            try:
+                args = json.loads(content[args_start : args_end + 1])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(args, dict):
+                continue
+            tool_calls.append(
+                {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
+
     return tool_calls
 
 

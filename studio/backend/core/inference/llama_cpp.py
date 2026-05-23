@@ -4453,11 +4453,13 @@ class LlamaCppBackend:
                 return text
             return strip_tool_call_markup(text, final = final)
 
-        # XML prefixes that signal a tool call in content.
-        # Empty when auto_heal is disabled so the buffer never
-        # speculatively holds content for XML detection.
+        # Prefixes that signal a tool call in content. Empty when
+        # auto_heal is disabled. Keep in sync with TOOL_XML_SIGNALS in
+        # core/inference/tool_call_parser.py.
         _TOOL_XML_SIGNALS = (
-            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
+            ("<tool_call>", "<function=", "[TOOL_CALLS]", "[ARGS]")
+            if auto_heal_tool_calls
+            else ()
         )
         _MAX_BUFFER_CHARS = 32
 
@@ -4701,7 +4703,17 @@ class LlamaCppBackend:
                                             if not stripped_buf:
                                                 continue
 
-                                            # Check tool signal prefixes
+                                            # Check tool signal prefixes. Most
+                                            # signals are emitted at the start
+                                            # of a tool call (so `startswith`
+                                            # is the right test), but rehearsal
+                                            # tags like `[ARGS]` arrive in the
+                                            # middle of the buffer (e.g.
+                                            # `web_search[ARGS]{...}`). For
+                                            # those, fall back to a substring
+                                            # check so the BUFFERING window can
+                                            # still catch rehearsal markup
+                                            # before it streams out as content.
                                             is_prefix = False
                                             is_match = False
                                             for sig in _TOOL_XML_SIGNALS:
@@ -4710,6 +4722,12 @@ class LlamaCppBackend:
                                                     break
                                                 if sig.startswith(stripped_buf):
                                                     is_prefix = True
+                                                    break
+                                                if (
+                                                    sig.startswith("[")
+                                                    and sig in stripped_buf
+                                                ):
+                                                    is_match = True
                                                     break
 
                                             if is_match:
