@@ -57,6 +57,7 @@ import {
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import { ChatRuntimeProvider } from "./runtime-provider";
@@ -71,6 +72,7 @@ import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -779,6 +781,9 @@ export function ChatPage(): ReactElement {
         selection.modelId,
         provider?.baseUrl,
       );
+    const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+      provider?.providerType,
+    );
     // Kimi's k2.6/k2.5 default to thinking enabled on the server side
     // (per https://platform.kimi.ai/docs/models). Mirror that default
     // in the UI so the Think pill comes up clicked when the user picks
@@ -800,6 +805,9 @@ export function ChatPage(): ReactElement {
     const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
     const storedImageToolsEnabled = loadOptionalBool(
       CHAT_IMAGE_TOOLS_ENABLED_KEY,
+    );
+    const storedWebFetchToolsEnabled = loadOptionalBool(
+      CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
@@ -834,12 +842,19 @@ export function ChatPage(): ReactElement {
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
+      supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: supportsBuiltinCodeExecution
         ? (storedCodeToolsEnabled ?? false)
         : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
+        : false,
+      // Default Fetch off when the user has not chosen one yet. Anthropic
+      // bills per fetch; surfacing the toggle visible but inactive keeps
+      // it a deliberate opt-in rather than an implicit cost.
+      webFetchToolsEnabled: supportsBuiltinWebFetch
+        ? (storedWebFetchToolsEnabled ?? false)
         : false,
     });
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
@@ -1008,6 +1023,9 @@ export function ChatPage(): ReactElement {
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
           );
+        const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+          selectedProvider?.providerType,
+        );
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
@@ -1025,6 +1043,9 @@ export function ChatPage(): ReactElement {
         );
         const storedImageToolsEnabled = loadOptionalBool(
           CHAT_IMAGE_TOOLS_ENABLED_KEY,
+        );
+        const storedWebFetchToolsEnabled = loadOptionalBool(
+          CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
         const nextToolsEnabled = supportsBuiltinWebSearch
           ? isKimi
@@ -1063,12 +1084,16 @@ export function ChatPage(): ReactElement {
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
+          supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
           codeToolsEnabled: supportsBuiltinCodeExecution
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
             ? (storedImageToolsEnabled ?? false)
+            : false,
+          webFetchToolsEnabled: supportsBuiltinWebFetch
+            ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });

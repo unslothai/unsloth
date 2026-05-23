@@ -833,7 +833,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        webFetchToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -889,14 +895,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               externalProvider.baseUrl,
             ),
         );
-      // web_fetch shares the Search pill with web_search (no separate
-      // UI toggle), so it follows toolsEnabled. Anthropic is the only
-      // provider that ships it today; on others providerSupportsBuiltinWebFetch
-      // returns false and this stays inert.
+      // Fetch pill is independent of Search. Anthropic bills per
+      // web_fetch invocation separately from web_search hits, so
+      // bundling them used to make the cost surface confusing and
+      // blocked "just fetch this URL" workflows where the user knows
+      // exactly which page they want read. Source from
+      // `webFetchToolsEnabled` directly; on providers that don't ship
+      // web_fetch `providerSupportsBuiltinWebFetch` returns false and
+      // the toggle is forced off in chat-page's runtime setState.
       const webFetchEnabledForThisTurn =
         Boolean(
           externalProvider &&
-            toolsEnabled &&
+            webFetchToolsEnabled &&
             providerSupportsBuiltinWebFetch(externalProvider.providerType),
         );
       const providerShipsWebFetch = Boolean(
@@ -1419,13 +1429,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // Pair web_fetch with the Search pill on any
-                      // provider that ships it (Anthropic today). The
-                      // common workflow is "search returns URLs, fetch
-                      // reads them"; without web_fetch the model can
-                      // surface a citation but cannot quote from the
-                      // page body, which is the whole point of the
-                      // tool. There is no separate UI toggle yet.
+                      // web_fetch ships as a standalone toggle (Fetch
+                      // pill), independent of Search. Anthropic is the
+                      // only provider that ships it today and bills it
+                      // per invocation separately from web_search hits.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                       // OpenAI Responses-API only: `image_generation`
