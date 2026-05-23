@@ -687,6 +687,20 @@ def run(
         "-y",
         help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
     ),
+    parallel: int = typer.Option(
+        4,
+        "--parallel",
+        "--n-parallel",
+        "-np",
+        min = 1,
+        max = 64,
+        help = (
+            "llama-server parallel decode slots. Lets N requests share "
+            "one loaded model concurrently; each slot gets ctx/N KV "
+            "cache, so higher N reduces per-call context. Default 4 "
+            "(matches the previous hardcoded value)."
+        ),
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
@@ -800,7 +814,7 @@ def run(
     # ── 2. Start server (always suppress built-in banner) ─────────────
     from studio.backend.run import run_server, _resolve_external_ip
 
-    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = 4)
+    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = parallel)
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
