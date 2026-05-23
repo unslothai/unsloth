@@ -7,6 +7,11 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
+import {
+  GeneratedImageOverlayProvider,
+  useGeneratedImageOverlay,
+} from "@/components/assistant-ui/generated-image-overlay-context";
+import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
@@ -39,13 +44,14 @@ import {
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
-import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
-import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -79,30 +85,30 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  Copy01Icon,
+  Delete02Icon,
+  Edit03Icon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ChangeEvent,
+  type ComponentProps,
   type CompositionEvent,
   type FC,
-  type FormEvent,
   type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
-import { toast } from "@/lib/toast";
 
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({
-  hideComposer,
-  hideWelcome,
-  targetThreadId,
-}) => {
+}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
@@ -115,83 +121,189 @@ export const Thread: FC<{
   );
 
   return (
-    <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
-      style={{
-        ["--thread-max-width" as string]: "48rem",
-        ["--thread-content-max-width" as string]:
-          "calc(var(--thread-max-width) - 1.5rem)",
-      }}
-    >
-      <IntentAwareScrollProvider value={autoScrollContext}>
-        <ThreadPrimitive.Viewport
-          ref={viewportRef}
-          autoScroll={false}
-          scrollToBottomOnRunStart={false}
-          scrollToBottomOnInitialize={false}
-          scrollToBottomOnThreadSwitch={false}
-          className={cn(
-            "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
-            hideComposer ? "pt-4" : "pt-[48px]",
-          )}
-        >
-          {!hideWelcome && (
-            <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
-              <ThreadWelcome hideComposer={hideComposer} />
-            </AuiIf>
-          )}
+    <GeneratedImageOverlayProvider>
+      <ThreadPrimitive.Root
+        className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+        style={{
+          ["--thread-max-width" as string]: "48rem",
+          ["--thread-content-max-width" as string]:
+            "calc(var(--thread-max-width) - 1.5rem)",
+        }}
+      >
+        <IntentAwareScrollProvider value={autoScrollContext}>
+          <ThreadPrimitive.Viewport
+            ref={viewportRef}
+            autoScroll={false}
+            scrollToBottomOnRunStart={false}
+            scrollToBottomOnInitialize={false}
+            scrollToBottomOnThreadSwitch={false}
+            className={cn(
+              "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              hideComposer ? "pt-4" : "pt-[48px]",
+            )}
+          >
+            {!hideWelcome && (
+              <AuiIf
+                condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+              >
+                <ThreadWelcome hideComposer={hideComposer} />
+              </AuiIf>
+            )}
 
-          <ThreadPrimitive.Messages
-            components={{
-              UserMessage,
-              EditComposer,
-              AssistantMessage,
-            }}
-          />
+            <ThreadPrimitive.Messages
+              components={{
+                UserMessage,
+                EditComposer,
+                AssistantMessage,
+              }}
+            />
 
-          {/* Bottom slack so the last message has breathing room above the
+            {/* Bottom slack so the last message has breathing room above the
             sticky scroll-to-bottom button (and the floating composer in
             single mode). Without this, content would butt against the
             sticky footer and feel cramped. */}
-          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-            <div
-              className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
-              aria-hidden={true}
-            />
-          </AuiIf>
-
-          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-            <ThreadPrimitive.ViewportFooter
-              className={cn(
-                "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                hideComposer ? "bottom-3" : "bottom-[140px]",
-              )}
-            >
-              <ThreadScrollToBottom />
-            </ThreadPrimitive.ViewportFooter>
-          </AuiIf>
-        </ThreadPrimitive.Viewport>
-
-        {!hideComposer && (
-          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-            <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px] z-20">
+            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
+                className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
                 aria-hidden={true}
-                className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
               />
-              <div className="relative px-5 pb-2">
-                <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                  <ComposerAnimated disabled={isComposerAttachPending} />
-                </div>
-                <p className="composer-footer-note">
-                  LLMs can make mistakes. Double-check responses.
-                </p>
-              </div>
-            </div>
-          </AuiIf>
+            </AuiIf>
+
+            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+              <ThreadPrimitive.ViewportFooter
+                className={cn(
+                  "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+                  hideComposer ? "bottom-3" : "bottom-[140px]",
+                )}
+              >
+                <ThreadScrollToBottom />
+              </ThreadPrimitive.ViewportFooter>
+            </AuiIf>
+          </ThreadPrimitive.Viewport>
+
+          <GeneratedImageViewportOverlay hideComposer={hideComposer} />
+
+          {!hideComposer && (
+            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+              <ThreadComposerDock disabled={isComposerAttachPending} />
+            </AuiIf>
+          )}
+        </IntentAwareScrollProvider>
+      </ThreadPrimitive.Root>
+    </GeneratedImageOverlayProvider>
+  );
+};
+
+const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
+  hideComposer,
+}) => {
+  const { overlay, closeOverlay } = useGeneratedImageOverlay();
+
+  useEffect(() => {
+    if (!overlay) {
+      return;
+    }
+    document.querySelector<HTMLTextAreaElement>(".aui-composer-input")?.focus();
+  }, [overlay]);
+
+  if (!overlay) {
+    return null;
+  }
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30">
+      <button
+        type="button"
+        className="pointer-events-auto absolute inset-0 bg-background/65 backdrop-blur-[1px] dark:bg-background/55"
+        onClick={closeOverlay}
+        aria-label="Close generated image preview"
+      />
+      <section
+        className={cn(
+          "pointer-events-none absolute inset-x-5 top-[48px] flex flex-col items-center",
+          hideComposer ? "bottom-4" : "bottom-[150px]",
         )}
-      </IntentAwareScrollProvider>
-    </ThreadPrimitive.Root>
+        aria-label="Generated image preview"
+      >
+        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 items-center justify-center rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
+          <div className="absolute inset-x-3 top-3 z-10 flex justify-end">
+            <div className="flex shrink-0 items-center gap-1 rounded-full bg-background/70 p-1 ring-1 ring-border/20 backdrop-blur-sm">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 rounded-full"
+                onClick={() =>
+                  downloadImagePart({
+                    image: overlay.image,
+                    filename: overlay.filename,
+                  })
+                }
+                aria-label="Download generated image"
+              >
+                <DownloadIcon className="size-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 rounded-full"
+                onClick={closeOverlay}
+                aria-label="Close generated image preview"
+              >
+                <XIcon className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+          <img
+            src={overlay.image}
+            alt={overlay.title}
+            className="max-h-full max-w-full object-contain"
+          />
+        </div>
+        <div className="mt-2 max-w-[min(100%,46rem)] text-center" title={overlay.title}>
+          <p className="truncate font-medium text-foreground/70 text-xs">
+            Generated image
+          </p>
+          {overlay.metadata ? (
+            <p className="truncate text-[11px] text-muted-foreground/75">
+              {overlay.metadata}
+            </p>
+          ) : null}
+        </div>
+        {hideComposer ? null : (
+          <p className="mt-1 text-center text-muted-foreground text-xs">
+            Type edits below, then send.
+          </p>
+        )}
+      </section>
+    </div>
+  );
+};
+
+const ThreadComposerDock: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const { overlay } = useGeneratedImageOverlay();
+
+  return (
+    <div
+      className={cn(
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
+        overlay ? "z-40" : "z-20",
+      )}
+    >
+      <div
+        aria-hidden={true}
+        className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
+      />
+      <div className="relative px-5 pb-2">
+        <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+          <ComposerAnimated disabled={disabled} />
+        </div>
+        <p className="composer-footer-note">
+          LLMs can make mistakes. Double-check responses.
+        </p>
+      </div>
+    </div>
   );
 };
 
@@ -225,7 +337,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   useEffect(() => {
     const hour = new Date().getHours();
     if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
-    else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
+    else if (hour >= 12 && hour < 17)
+      setCurrentEmoji("sloth magnify final.png");
     else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
     else setCurrentEmoji("unsloth-gem.png");
   }, []);
@@ -240,11 +353,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
-            <img
-              src={currentEmojiSrc}
-              alt="Sloth mascot"
-              className="size-20"
-            />
+            <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
@@ -294,7 +403,13 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
-  const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const aui = useAui();
+  const { overlay, closeOverlay } = useGeneratedImageOverlay();
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  const { inputProps, isComposing, isComposingRef } =
+    useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
@@ -304,12 +419,14 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       (attachment) => attachment.status.type === "running",
     ),
   );
-  const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const hasPendingAudio = useChatRuntimeStore((s) =>
+    Boolean(s.pendingAudioName),
+  );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
   const handleSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
+    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
       if (
         disabled ||
         !hasSendableContent ||
@@ -317,9 +434,37 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         hasPendingAttachments
       ) {
         event.preventDefault();
+        return;
+      }
+
+      if (overlay) {
+        const trimmed = composerText.trim();
+        if (!trimmed) {
+          event.preventDefault();
+          return;
+        }
+        setImageToolsEnabled(true);
+        flushResourcesSync(() => {
+          aui
+            .composer()
+            .setText(
+              `Use the previous generated image as the reference and apply this edit: ${trimmed}. Preserve everything else exactly.`,
+            );
+        });
+        closeOverlay();
       }
     },
-    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
+    [
+      aui,
+      closeOverlay,
+      composerText,
+      disabled,
+      hasPendingAttachments,
+      hasSendableContent,
+      isComposingRef,
+      overlay,
+      setImageToolsEnabled,
+    ],
   );
 
   const composerContent = (
@@ -342,7 +487,10 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       />
       <ComposerAction
         disabled={
-          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+          disabled ||
+          !hasSendableContent ||
+          isComposing ||
+          hasPendingAttachments
         }
         blockSend={() =>
           !hasSendableContent || isComposingRef.current || hasPendingAttachments
@@ -553,7 +701,6 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -565,8 +712,12 @@ const ReasoningToggle: FC = () => {
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
+  const reasoningEffortLevels = useChatRuntimeStore(
+    (s) => s.reasoningEffortLevels,
+  );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
@@ -619,7 +770,8 @@ const ReasoningToggle: FC = () => {
     effectiveReasoningEnabled && reasoningEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
-    if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
+    if (level !== "xhigh")
+      return level.charAt(0).toUpperCase() + level.slice(1);
     const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
     if (
       normalized.startsWith("claude-opus-4-6") ||
@@ -677,23 +829,25 @@ const ReasoningToggle: FC = () => {
           {effectiveReasoningEffortLevels
             .filter((level) => level !== "none")
             .map((level) => (
-            <DropdownMenuItem
-              key={level}
-              onSelect={() => {
-                setReasoningEffort(level);
-                setReasoningEnabled(true);
-                applyQwenThinkingParams(true);
-                // Kimi's $web_search builtin forbids thinking, so
-                // enabling thinking flips the Search pill off.
-                if (isKimiExternal && toolsEnabled) {
-                  setToolsEnabled(false);
-                }
-              }}
-            >
-              {formatEffortLabel(level)}
-              {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
-            </DropdownMenuItem>
-          ))}
+              <DropdownMenuItem
+                key={level}
+                onSelect={() => {
+                  setReasoningEffort(level);
+                  setReasoningEnabled(true);
+                  applyQwenThinkingParams(true);
+                  // Kimi's $web_search builtin forbids thinking, so
+                  // enabling thinking flips the Search pill off.
+                  if (isKimiExternal && toolsEnabled) {
+                    setToolsEnabled(false);
+                  }
+                }}
+              >
+                {formatEffortLabel(level)}
+                {effectiveReasoningVisualEnabled && reasoningEffort === level
+                  ? " \u2713"
+                  : ""}
+              </DropdownMenuItem>
+            ))}
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -808,8 +962,7 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  const disabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  const disabled = !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
@@ -899,7 +1052,9 @@ const ImagesToggle: FC = () => {
       className="composer-pill-btn"
       data-active={imageToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+        imageToolsEnabled
+          ? "Disable image generation"
+          : "Enable image generation"
       }
     >
       <ImageIcon className="size-3.5" />
@@ -1284,7 +1439,11 @@ const UserActionBar: FC = () => {
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon
+            icon={Edit03Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
       <DeleteMessageButton />

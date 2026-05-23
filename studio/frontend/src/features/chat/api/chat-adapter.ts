@@ -1782,6 +1782,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           size?: string;
                           quality?: string;
                           background?: string;
+                          prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     if (
@@ -1803,6 +1804,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         size: toolEvent.size as string | undefined,
                         quality: toolEvent.quality as string | undefined,
                         background: toolEvent.background as string | undefined,
+                        prompt: toolEvent.prompt as string | undefined,
                       };
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
@@ -1820,8 +1822,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     } else {
                       parsedResult = rawResult;
                     }
+                    const nextArgs =
+                      toolEvent.arguments && typeof toolEvent.arguments === "object"
+                        ? (toolEvent.arguments as ToolCallMessagePart["args"])
+                        : undefined;
+                    const mergedArgs = nextArgs
+                      ? { ...(toolCallParts[idx].args ?? {}), ...nextArgs }
+                      : toolCallParts[idx].args;
                     toolCallParts[idx] = {
                       ...toolCallParts[idx],
+                      args: mergedArgs,
+                      argsText: mergedArgs
+                        ? JSON.stringify(mergedArgs)
+                        : toolCallParts[idx].argsText,
                       result: parsedResult,
                     };
                   }

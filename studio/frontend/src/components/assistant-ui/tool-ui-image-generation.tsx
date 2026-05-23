@@ -4,19 +4,12 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
-import { useChatRuntimeStore } from "@/features/chat";
 import { cn } from "@/lib/utils";
-import { type ToolCallMessagePartComponent, useAui } from "@assistant-ui/react";
+import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { DownloadIcon, ImageIcon, LoaderIcon, PencilIcon } from "lucide-react";
-import type { ComponentProps, MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import { memo, useState } from "react";
+import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { Image, downloadImagePart } from "./image";
 import {
   ToolFallbackContent,
@@ -58,7 +51,40 @@ interface ImageGenerationResult {
   size?: string;
   quality?: string;
   background?: string;
+  prompt?: string;
 }
+
+type GeneratedImagePart = {
+  type: "image";
+  image: string;
+  filename?: string;
+};
+
+const extensionForMime = (mime: string): string => {
+  switch (mime.toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    case "image/svg+xml":
+      return "svg";
+    default:
+      return "png";
+  }
+};
+
+const imageFilenameFromPrompt = (prompt: string, mime: string): string => {
+  const slug = prompt
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+  return `${slug || "generated-image"}.${extensionForMime(mime)}`;
+};
 
 function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
@@ -88,10 +114,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const aui = useAui();
-  const setImageToolsEnabled = useChatRuntimeStore(
-    (s) => s.setImageToolsEnabled,
-  );
+  const { openOverlay } = useGeneratedImageOverlay();
   const parsedArgs = (args as ImageGenerationArgs) ?? {};
   const prompt = parsedArgs.prompt ?? "";
   const isRunning = status?.type === "running";
@@ -105,13 +128,21 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
     : null;
-  const imagePart = imageSrc
-    ? { type: "image" as const, image: imageSrc }
+  const imageTitle =
+    imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
+  const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
+    .filter(Boolean)
+    .join(" · ");
+  const imagePart: GeneratedImagePart | null = imageSrc
+    ? {
+        type: "image",
+        image: imageSrc,
+        filename: imageFilenameFromPrompt(prompt, mime),
+      }
     : null;
 
   const [open, setOpen] = useState(true);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editText, setEditText] = useState("");
+  const isPendingImage = !imagePart && status?.type === "running";
 
   const runningLabel = "Generating image…";
   const completedLabel = prompt
@@ -119,6 +150,18 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       ? `Generated image: ${prompt.slice(0, 80)}…`
       : `Generated image: ${prompt}`
     : "Generated image";
+
+  const showPreview = () => {
+    if (!imagePart) {
+      return;
+    }
+    openOverlay({
+      image: imagePart.image,
+      title: imageTitle,
+      metadata: imageMetadata,
+      filename: imagePart.filename,
+    });
+  };
 
   const stopActionClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -134,124 +177,58 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
 
   const handleEditClick = (event: MouseEvent<HTMLButtonElement>) => {
     stopActionClick(event);
-    setDialogOpen(true);
-  };
-
-  const handleSubmitEdit: NonNullable<ComponentProps<"form">["onSubmit"]> = (
-    event,
-  ) => {
-    event.preventDefault();
-    const trimmed = editText.trim();
-    if (!trimmed) {
-      return;
-    }
-    setImageToolsEnabled(true);
-    aui.thread().append({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `Use the previous generated image as the reference and apply this edit: ${trimmed}. Preserve everything else exactly.`,
-        },
-      ],
-      createdAt: new Date(),
-    } as never);
-    setEditText("");
-    setDialogOpen(false);
+    showPreview();
   };
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
-        toolName={isRunning ? runningLabel : completedLabel}
-        status={status}
+        toolName={isPendingImage || isRunning ? runningLabel : completedLabel}
+        status={isPendingImage ? { type: "running" } : status}
         icon={ImageIcon}
       />
       <ToolFallbackContent>
-        {isRunning && !imagePart ? (
+        {isPendingImage ? (
           <GeneratedImagePlaceholder label={runningLabel} />
         ) : imagePart ? (
           <figure className="m-0 flex flex-col gap-2">
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/30 shadow-sm">
-                <button
+            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/30 shadow-sm">
+              <button
+                type="button"
+                className="block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                onClick={showPreview}
+                aria-label="Open generated image preview"
+              >
+                <Image.Preview
+                  src={imagePart.image}
+                  alt={imageTitle}
+                  containerClassName="size-full min-h-0 bg-background"
+                  className="size-full object-cover"
+                />
+              </button>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
+                <Button
                   type="button"
-                  className="block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                  onClick={() => setDialogOpen(true)}
-                  aria-label="Open generated image preview"
+                  variant="dark"
+                  size="sm"
+                  className="pointer-events-auto h-8 rounded-full bg-black/70 text-white hover:bg-black/85"
+                  onClick={handleEditClick}
                 >
-                  <Image.Preview
-                    src={imagePart.image}
-                    alt={prompt || "Generated image"}
-                    containerClassName="size-full min-h-0 bg-background"
-                    className="size-full object-contain"
-                  />
-                </button>
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
-                  <Button
-                    type="button"
-                    variant="dark"
-                    size="sm"
-                    className="pointer-events-auto h-8 rounded-full bg-black/70 text-white hover:bg-black/85"
-                    onClick={handleEditClick}
-                  >
-                    <PencilIcon className="size-3.5" />
-                    Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="dark"
-                    size="icon-sm"
-                    className="pointer-events-auto rounded-full bg-black/70 text-white hover:bg-black/85"
-                    onClick={handleDownload}
-                    aria-label="Download generated image"
-                  >
-                    <DownloadIcon className="size-4" />
-                  </Button>
-                </div>
+                  <PencilIcon className="size-3.5" />
+                  Edit
+                </Button>
+                <Button
+                  type="button"
+                  variant="dark"
+                  size="icon-sm"
+                  className="pointer-events-auto rounded-full bg-black/70 text-white hover:bg-black/85"
+                  onClick={handleDownload}
+                  aria-label="Download generated image"
+                >
+                  <DownloadIcon className="size-4" />
+                </Button>
               </div>
-              <DialogContent className="flex max-h-[calc(100vh-2rem)] max-w-[1100px] grid-rows-none flex-col gap-4 rounded-3xl p-4 sm:max-w-[1100px]">
-                <DialogTitle className="sr-only">
-                  Generated image preview
-                </DialogTitle>
-                <DialogDescription className="sr-only">
-                  Preview the generated image and describe follow-up edits.
-                </DialogDescription>
-                <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl bg-muted/30">
-                  <img
-                    src={imagePart.image}
-                    alt={prompt || "Generated image"}
-                    className="max-h-[min(1100px,calc(100vh-12rem))] max-w-full object-contain"
-                  />
-                </div>
-                <form
-                  onSubmit={handleSubmitEdit}
-                  className="flex flex-col gap-2"
-                >
-                  <Textarea
-                    value={editText}
-                    onChange={(event) => setEditText(event.target.value)}
-                    placeholder="Describe edits…"
-                    fieldSizing="fixed"
-                    className="min-h-20 resize-none rounded-2xl bg-background/80"
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => imagePart && downloadImagePart(imagePart)}
-                    >
-                      <DownloadIcon className="size-4" />
-                      Download
-                    </Button>
-                    <Button type="submit" size="sm" disabled={!editText.trim()}>
-                      Apply edit
-                    </Button>
-                  </div>
-                </form>
-              </DialogContent>
-            </Dialog>
+            </div>
             {prompt ? (
               <figcaption className="max-w-[480px] text-xs leading-snug text-muted-foreground">
                 {prompt}
