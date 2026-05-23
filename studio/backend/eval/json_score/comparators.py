@@ -117,6 +117,11 @@ def _to_date(x: Any) -> datetime | None:
 
 
 def date_comparator(granularity: str = "day", day_tol: int = 0) -> Comparator:
+    if granularity not in ("year", "month", "day"):
+        raise ValueError(
+            f"Unknown granularity {granularity!r}; expected 'year', 'month', or 'day'"
+        )
+
     def score(gt: Any, pred: Any) -> float:
         da, db = _to_date(gt), _to_date(pred)
         if da is None or db is None:

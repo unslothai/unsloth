@@ -164,3 +164,28 @@ def test_date_granularity_month():
 def test_date_unparseable_is_zero():
     cmp = get_comparator("date")
     assert cmp("not a date", "2024-01-15") == 0.0
+
+
+def test_date_unknown_granularity_raises():
+    with pytest.raises(ValueError, match="Unknown granularity"):
+        get_comparator("date", granularity="week")
+
+
+def test_date_accepts_date_objects():
+    from datetime import date, datetime
+
+    cmp = get_comparator("date")
+    assert cmp(date(2024, 1, 15), "2024-01-15") == 1.0
+    assert cmp(datetime(2024, 1, 15, 9, 30), date(2024, 1, 15)) == 1.0
+
+
+def test_date_year_granularity_ignores_day_tol():
+    cmp = get_comparator("date", granularity="year", day_tol=999)
+    assert cmp("2024-06-01", "2024-12-31") == 1.0
+    assert cmp("2024-06-01", "2025-06-01") == 0.0
+
+
+def test_string_none_and_empty_mix():
+    cmp = get_comparator("string")
+    assert cmp(None, "") == 1.0
+    assert cmp(None, "x") == 0.0
