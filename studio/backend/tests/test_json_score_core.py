@@ -120,3 +120,45 @@ def test_mismatch_schema_object_data_scalar():
     schema = normalize_schema({"a": "string", "b": "string"})
     node = _mismatch(7, "x", schema)
     assert node.score == 0.0 and node.note == "type mismatch"
+
+
+from eval.json_score.core import _score_array
+
+
+def _items_schema():
+    return normalize_schema([{"desc": "string", "price": "money"}])
+
+
+def test_array_order_invariant():
+    schema = _items_schema()
+    gt = [{"desc": "Apple", "price": 10}, {"desc": "Banana", "price": 20}]
+    pred = [{"desc": "Banana", "price": 20}, {"desc": "Apple", "price": 10}]
+    node = _score_array(gt, pred, schema, "string")
+    assert node.score == 1.0 and node.n_leaves == 2
+
+
+def test_array_extra_predicted_item_penalized():
+    schema = _items_schema()
+    gt = [{"desc": "Apple", "price": 10}]
+    pred = [{"desc": "Apple", "price": 10}, {"desc": "Ghost", "price": 99}]
+    node = _score_array(gt, pred, schema, "string")
+    # 1 matched slot scores 1.0, divided by max(1, 2) = 2 -> 0.5
+    assert node.score == 0.5 and node.n_leaves == 2
+
+
+def test_array_missing_item_penalized():
+    schema = _items_schema()
+    gt = [{"desc": "Apple", "price": 10}, {"desc": "Banana", "price": 20}]
+    pred = [{"desc": "Apple", "price": 10}]
+    node = _score_array(gt, pred, schema, "string")
+    assert node.score == 0.5 and node.n_leaves == 2
+
+
+def test_array_empty_both_is_perfect():
+    node = _score_array([], [], _items_schema(), "string")
+    assert node.score == 1.0 and node.n_leaves == 0
+
+
+def test_dispatch_infers_array_when_no_schema():
+    node = _score([1, 2], [2, 1], None, "string")
+    assert node.score == 1.0 and node.n_leaves == 2

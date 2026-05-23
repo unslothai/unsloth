@@ -115,3 +115,29 @@ def _score_object(gt: dict, pred: dict, node: Node | None, default: str) -> Scor
     if total_n == 0:
         return ScoreNode(1.0, 0, children=children)
     return ScoreNode(total_sum / total_n, total_n, children=children)
+
+
+def _score_array(gt: list, pred: list, node: Node | None, default: str) -> ScoreNode:
+    item_node = node.item if isinstance(node, ArrayNode) else None
+    n_g, n_p = len(gt), len(pred)
+    slots = max(n_g, n_p)
+    if slots == 0:
+        return ScoreNode(1.0, 0, children=[])
+    if n_g == 0 or n_p == 0:
+        # all hallucinated or all missing
+        return ScoreNode(0.0, slots, children=[])
+
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    # full ScoreNode for every (gt_i, pred_j) pair; matching maximises mean score
+    node_matrix = [
+        [_score(g, p, item_node, default) for p in pred] for g in gt
+    ]
+    score_matrix = np.array([[n.score for n in row] for row in node_matrix])
+    row_ind, col_ind = linear_sum_assignment(score_matrix, maximize=True)
+
+    matched = list(zip(row_ind.tolist(), col_ind.tolist()))
+    total = sum(score_matrix[i][j] for i, j in matched)
+    children = [node_matrix[i][j] for i, j in matched]
+    return ScoreNode(float(total) / slots, slots, children=children)
