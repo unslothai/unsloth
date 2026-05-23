@@ -100,3 +100,67 @@ def test_get_comparator_unknown_raises():
 def test_get_comparator_bad_param_raises():
     with pytest.raises(ValueError, match="Invalid params"):
         get_comparator("money", bogus=1)
+
+
+def test_categorical_exact():
+    cmp = get_comparator("categorical")
+    assert cmp("USD", "USD") == 1.0
+    assert cmp("USD", "EUR") == 0.0
+
+
+def test_categorical_case_insensitive_and_strip():
+    cmp = get_comparator("categorical", case_insensitive=True, strip=True)
+    assert cmp("USD", " usd ") == 1.0
+
+
+def test_categorical_non_string_equality():
+    cmp = get_comparator("categorical")
+    assert cmp(True, True) == 1.0
+    assert cmp(5, 5) == 1.0
+
+
+def test_string_identical():
+    cmp = get_comparator("string")
+    assert cmp("Acme Inc", "Acme Inc") == 1.0
+
+
+def test_string_below_threshold_is_zero():
+    cmp = get_comparator("string", threshold=0.5)
+    assert cmp("abcdefgh", "zzzzzzzz") == 0.0
+
+
+def test_string_high_similarity_kept():
+    cmp = get_comparator("string", threshold=0.5)
+    assert cmp("Acme Incorporated", "Acme Incorporatd") > 0.9
+
+
+def test_string_handles_none_as_empty():
+    cmp = get_comparator("string")
+    assert cmp(None, None) == 1.0
+
+
+def test_date_format_agnostic_equal():
+    cmp = get_comparator("date")
+    assert cmp("2024-01-15", "Jan 15, 2024") == 1.0
+    assert cmp("2024-01-15", "15 January 2024") == 1.0
+
+
+def test_date_different_days():
+    cmp = get_comparator("date")
+    assert cmp("2024-01-15", "2024-01-16") == 0.0
+
+
+def test_date_day_tolerance():
+    cmp = get_comparator("date", day_tol=1)
+    assert cmp("2024-01-15", "2024-01-16") == 1.0
+
+
+def test_date_granularity_month():
+    cmp = get_comparator("date", granularity="month")
+    assert cmp("2024-01-15", "2024-01-28") == 1.0
+    assert cmp("2024-01-15", "2024-02-15") == 0.0
+
+
+def test_date_unparseable_is_zero():
+    cmp = get_comparator("date")
+    assert cmp("not a date", "2024-01-15") == 0.0

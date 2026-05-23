@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date, datetime
 from typing import Any, Callable
 
 Comparator = Callable[[Any, Any], float]  # returns a score in [0, 1]
@@ -72,9 +73,70 @@ def money_comparator(rel_tol: float = 0.0, abs_tol: float = 0.0) -> Comparator:
     return score
 
 
+def categorical_comparator(case_insensitive: bool = False, strip: bool = False) -> Comparator:
+    def score(gt: Any, pred: Any) -> float:
+        a, b = gt, pred
+        if isinstance(a, str) and isinstance(b, str):
+            if strip:
+                a, b = a.strip(), b.strip()
+            if case_insensitive:
+                a, b = a.lower(), b.lower()
+        return 1.0 if a == b else 0.0
+
+    return score
+
+
+def string_comparator(threshold: float = 0.5) -> Comparator:
+    from rapidfuzz.distance import Levenshtein
+
+    def score(gt: Any, pred: Any) -> float:
+        a = "" if gt is None else str(gt)
+        b = "" if pred is None else str(pred)
+        if not a and not b:
+            return 1.0
+        sim = Levenshtein.normalized_similarity(a, b)  # 1 - dist/max(len), in [0,1]
+        return sim if sim >= threshold else 0.0
+
+    return score
+
+
+def _to_date(x: Any) -> datetime | None:
+    if isinstance(x, datetime):
+        return x
+    if isinstance(x, date):
+        return datetime(x.year, x.month, x.day)
+    if isinstance(x, str):
+        try:
+            from dateutil import parser as _dateparser
+
+            # fixed default so absent components are deterministic
+            return _dateparser.parse(x, default=datetime(2000, 1, 1))
+        except (ValueError, OverflowError, TypeError):
+            return None
+    return None
+
+
+def date_comparator(granularity: str = "day", day_tol: int = 0) -> Comparator:
+    def score(gt: Any, pred: Any) -> float:
+        da, db = _to_date(gt), _to_date(pred)
+        if da is None or db is None:
+            return 0.0
+        if granularity == "year":
+            return 1.0 if da.year == db.year else 0.0
+        if granularity == "month":
+            return 1.0 if (da.year, da.month) == (db.year, db.month) else 0.0
+        delta = abs((da.date() - db.date()).days)
+        return 1.0 if delta <= day_tol else 0.0
+
+    return score
+
+
 _REGISTRY: dict[str, Callable[..., Comparator]] = {
     "money": money_comparator,
     "numeric": money_comparator,  # semantic alias
+    "categorical": categorical_comparator,
+    "string": string_comparator,
+    "date": date_comparator,
 }
 
 
