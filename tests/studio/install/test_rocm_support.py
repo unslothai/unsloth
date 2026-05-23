@@ -346,6 +346,14 @@ class TestRuntimePatterns:
         patterns = runtime_patterns_for_choice(choice)
         assert "llama-server" in patterns
         assert "llama-quantize" in patterns
+        # Upstream split entry code into ``libllama-<binary>-impl.so``
+        # shared libraries (b9261+). llama-server and llama-quantize
+        # are NEEDED-linked against ``libllama-server-impl.so`` and
+        # ``libllama-quantize-impl.so`` respectively with RUNPATH
+        # ``$ORIGIN``, so the prebuilt overlay MUST copy them
+        # alongside the binaries or ldd reports them missing and
+        # preflight forces a source-build fallback.
+        assert "libllama-*-impl.so*" in patterns
 
     def test_linux_cuda_patterns(self):
         choice = AssetChoice(

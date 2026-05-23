@@ -5,7 +5,11 @@ import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useRef, useState } from "react";
 import type { MessageRecord, ThreadRecord } from "./types";
 
-const db = new Dexie("unsloth-chat") as Dexie & {
+// Legacy browser-only chat storage. Replaced by studio.db (see
+// chat-history-storage.ts), kept read-only for the one-shot import path.
+export const DEXIE_DB_NAME = "unsloth-chat";
+
+const db = new Dexie(DEXIE_DB_NAME) as Dexie & {
   threads: EntityTable<ThreadRecord, "id">;
   messages: EntityTable<MessageRecord, "id">;
 };
