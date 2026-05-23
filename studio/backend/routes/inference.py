@@ -429,7 +429,7 @@ _TOOL_ACTION_NUDGE = (
 
 # Regex for stripping leaked tool-call XML from assistant messages/stream.
 #
-# Three leak shapes are handled, all caused by the speculative-buffer
+# Four leak shapes are handled, all caused by the speculative-buffer
 # state machine in `core/inference/llama_cpp.py` boundary-slicing the
 # tool_call XML between content_accum (visible) and the silent
 # DRAINING buffer:
@@ -442,11 +442,22 @@ _TOOL_ACTION_NUDGE = (
 # 3. Orphan close (`...</function>\n</tool_call>`) -- the opening was
 #    DRAINED and only the trailing close leaked; matched by the bare
 #    `</tool_call>` / `</function>` alternatives.
+# 4. Tail-only `</parameter>` orphan (gdpval sweep, 7/192 trials) --
+#    `<tool_call><function=...><parameter=...>...content...</parameter>`
+#    where the OUTER `</function>\n</tool_call>` was truncated by EOS
+#    and the INNER `<parameter=...>` open got DRAINED, leaving just
+#    `</parameter>\n\n` at end-of-buffer. We strip ONLY when anchored
+#    to end-of-string (`\s*\Z`) so legitimate mid-text uses of
+#    `<parameter>...</parameter>` in user code samples survive.
 _TOOL_XML_RE = _re.compile(
-    r"<tool_call>.*?(?:</tool_call>|\Z)"
-    r"|<function=\w+>.*?(?:</function>|\Z)"
-    r"|</tool_call>"
-    r"|</function>",
+    # opening + body + close-or-EOF; close tag may be tool_call OR function
+    # (well-formed pairs nest; non-greedy stops at the inner one and the
+    # outer dangling close gets picked up by the next alternative).
+    r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # bare orphan closes (opening was DRAINED, close leaked alone)
+    r"|</(?:tool_call|function)>"
+    # tail-only </parameter> (anchored to EOF; mid-text uses preserved)
+    r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
 logger = get_logger(__name__)

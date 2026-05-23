@@ -142,9 +142,61 @@ def test_strips_orphan_closing_tag():
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "</tool_call>" not in cleaned
     assert "</function>" not in cleaned
-    # </parameter> is NOT stripped (it's a separator inside tool_call XML
-    # but harmless on its own; stripping it could accidentally remove
-    # user-supplied XML samples in code blocks).
+    # Mid-string </parameter> is intentionally NOT stripped here -- a user
+    # could legitimately have <parameter>...</parameter> XML in a code
+    # sample. Only the end-of-buffer orphan (test below) is stripped.
+
+
+# ── Tail-only </parameter> orphan (gdpval sweep, 7/192 trials) ────
+
+
+def test_strips_tail_only_parameter_orphan():
+    """`</parameter>\\n\\n` at end-of-buffer with no enclosing tags.
+
+    Real example from the 2026-05-22 gdpval sweep on
+    Qwen3.5-27B Q8 / worldbank seed00 -- the OUTER `</function>\\n</tool_call>`
+    was truncated by EOS (max_tokens=4096) and the INNER `<parameter=...>`
+    open got DRAINED, leaving just `</parameter>\\n\\n` as the visible tail.
+    """
+    text = "and the text is not readable.\n</parameter>\n\n"
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "</parameter>" not in cleaned, "tail orphan </parameter> must be stripped"
+    assert "and the text is not readable." in cleaned
+
+
+def test_strips_tail_only_parameter_orphan_single_newline():
+    text = "Global Economic Prospects\n</parameter>\n"
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "</parameter>" not in cleaned
+    assert "Global Economic Prospects" in cleaned
+
+
+def test_strips_tail_only_parameter_orphan_no_trailing_ws():
+    text = "Final answer.</parameter>"
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "</parameter>" not in cleaned
+    assert "Final answer." in cleaned
+
+
+def test_preserves_mid_string_parameter_in_code_sample():
+    """A user-supplied XML code sample with </parameter> mid-text must survive.
+
+    Stripping every </parameter> would corrupt documentation pages, model
+    chat-template examples, or any prose discussing tool-call XML shapes.
+    """
+    text = (
+        "Here is the Qwen tool-call format:\n"
+        "```xml\n"
+        "<tool_call><function=foo><parameter=arg>value</parameter></function></tool_call>\n"
+        "```\n"
+        "Note the closing </parameter> sits inside <function>."
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    # The fenced sample DOES get its <tool_call>...</tool_call> stripped
+    # (legacy behaviour, well-formed pattern). What we need is the
+    # SECOND `</parameter>` (in prose, mid-text, NOT end-of-buffer) to
+    # survive.
+    assert "Note the closing </parameter> sits inside" in cleaned
 
 
 def test_strips_well_formed_then_orphan():
@@ -213,3 +265,79 @@ def test_real_world_sweep_leaks_get_stripped(leak):
     cleaned = _TOOL_XML_RE.sub("", leak)
     assert "<tool_call>" not in cleaned, f"leak survived: {cleaned!r}"
     assert "<function=" not in cleaned, f"leak survived: {cleaned!r}"
+
+
+# ── Real-world tail-only </parameter> orphans (gdpval sweep) ──────
+
+
+# All 7 of these are end-anchored: `</parameter>` followed only by
+# whitespace to end-of-buffer. The opening `<tool_call><function=...>
+# <parameter=...>` was DRAINED but `</parameter>...EOS` truncation
+# left a bare close visible.
+GDPVAL_PARAMETER_LEAKS = [
+    # Qwen3.5-27B Q8_0 / worldbank seed00
+    "the page contains image data and the text is not readable.\n</parameter>\n\n",
+    # Qwen3.5-27B Q8_0 / worldbank seed42 (preceded by mojibake)
+    "...some mojibake content here...\n</parameter>\n\n",
+    # Qwen3.5-27B UD-Q4_K_XL / coppa seed07
+    "blocked, while others may still be in effect. The law is currently under further review by the Ninth Circuit.\n</parameter>\n\n",
+    # Qwen3.5-27B UD-Q4_K_XL / police_training seed00
+    "comprehensive training report\n</parameter>\n\n",
+    # Qwen3.5-27B UD-Q4_K_XL / worldbank seed00
+    "Global Economic Prospects\nJune 2025\nGlobal Economic Prospects\n</parameter>\n",
+    # Qwen3.6-27B Q8_0 / overpass seed07
+    "Let me create a comprehensive query and instructions document.\n</parameter>\n\n",
+]
+
+
+@pytest.mark.parametrize(
+    "leak",
+    GDPVAL_PARAMETER_LEAKS,
+    ids = [f"gdpval_param_orphan_{i}" for i in range(len(GDPVAL_PARAMETER_LEAKS))],
+)
+def test_gdpval_parameter_orphans_get_stripped(leak):
+    """The 6 distinct tail-only </parameter> orphans from the
+    2026-05-22 gdpval sweep (7 trial hits across 6 patterns).
+
+    Pre-fix these leaked `</parameter>\\n\\n` visible to the user.
+    """
+    cleaned = _TOOL_XML_RE.sub("", leak)
+    assert "</parameter>" not in cleaned, f"leak survived: {cleaned!r}"
+
+
+# ── Performance regression guards ────────────────────────────────
+
+
+def test_no_catastrophic_backtracking_on_open_bracket_spam():
+    """A long run of '<' chars with no close tag must not blow up.
+
+    Each '<' could conceivably start a `<tool_call>` or `<function=...>`
+    match attempt; we need the engine to fail fast (literal mismatch on
+    char 2) rather than backtracking.
+    """
+    import time
+
+    adv = "<" * (1024 * 256) + "X"  # 256 KB of '<'
+    t0 = time.perf_counter()
+    _TOOL_XML_RE.sub("", adv)
+    elapsed = time.perf_counter() - t0
+    # generous bound: 256KB should complete in well under 100ms on any
+    # reasonable hardware. Real numbers seen: ~5ms.
+    assert elapsed < 0.5, f"regex took {elapsed*1000:.0f}ms on 256KB '<' spam"
+
+
+def test_no_catastrophic_backtracking_on_orphan_opening_spam():
+    """1000 unclosed `<tool_call>X` openings -- non-greedy could regress here.
+
+    Each opening matches via the `\\Z` branch, but only one (the last
+    one before EOF). The engine should not retry every prior opening.
+    """
+    import time
+
+    adv = "<tool_call>X" * 1000
+    t0 = time.perf_counter()
+    cleaned = _TOOL_XML_RE.sub("", adv)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
+    # All openings must be stripped (greedy first alt consumes them all).
+    assert "<tool_call>" not in cleaned
