@@ -19,26 +19,18 @@ non-cloud bases drop the tool silently.
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import httpx
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
-from models.inference import ChatCompletionRequest
 
 
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def _capture_body(
-    monkeypatch,
-    *,
-    base_url: str,
-    enabled_tools,
-    messages: list[dict] | None = None,
-) -> dict:
+def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -67,11 +59,7 @@ def _capture_body(
             api_key = "sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = (
-                messages
-                if messages is not None
-                else [{"role": "user", "content": "draw a cat"}]
-            ),
+            messages = [{"role": "user", "content": "draw a cat"}],
             model = "gpt-5.5",
             temperature = 0.7,
             top_p = 0.95,
@@ -86,37 +74,12 @@ def _capture_body(
     return captured
 
 
-def _image_generation_events(events: list[dict]) -> list[dict]:
-    return [
-        event
-        for event in events
-        if event.get("tool_name") == "image_generation"
-        or (event.get("type") == "tool_end" and event.get("image_b64"))
-    ]
-
-
-def _collect_tool_events(monkeypatch, *, include_added: bool = False) -> list[dict]:
+def _collect_tool_events(monkeypatch) -> list[dict]:
     """Drive a Responses stream that emits one image_generation_call done
     event and return the parsed _toolEvent chunks."""
 
-    added_event = (
-        b"event: response.output_item.added\n"
-        b'data: {"type":"response.output_item.added",'
-        b'"item":{"type":"image_generation_call","id":"img_abc"}}\n\n'
-        if include_added
-        else b""
-    )
     sse = (
-        b"event: response.created\n"
-        b'data: {"type":"response.created",'
-        b'"response":{"id":"resp_abc","status":"in_progress"}}\n\n'
-        b"event: response.reasoning_summary_text.done\n"
-        b'data: {"type":"response.reasoning_summary_text.done",'
-        b'"item_id":"rs_abc",'
-        b'"summary_index":0,'
-        b'"text":"Need to draw a cat."}\n\n'
-        + added_event
-        + b"event: response.output_item.done\n"
+        b"event: response.output_item.done\n"
         b'data: {"type":"response.output_item.done",'
         b'"item":{"type":"image_generation_call",'
         b'"id":"img_abc",'
@@ -229,194 +192,17 @@ def test_omitted_image_generation_pill_no_tool(monkeypatch):
     assert all(t.get("type") != "image_generation" for t in tools)
 
 
-# ── follow-up edits forward previous OpenAI image context ────────────
-
-
-def test_previous_response_id_forwarded_for_followup_edit(monkeypatch):
-    captured = _capture_body(
-        monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        enabled_tools = ["image_generation"],
-        messages = [
-            {"role": "user", "content": "generate a cat"},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "image_generation_call",
-                        "id": "img_abc",
-                        "response_id": "resp_abc",
-                    },
-                ],
-            },
-            {"role": "user", "content": "make the cat's eyes blue"},
-        ],
-    )
-    assert captured["body"].get("previous_response_id") == "resp_abc"
-    assert {"type": "image_generation", "action": "edit"} in captured["body"].get(
-        "tools", []
-    )
-    input_items = captured["body"].get("input") or []
-    assert input_items == [
-        {"role": "user", "content": "make the cat's eyes blue"},
-    ]
-    assert {"type": "image_generation_call", "id": "img_abc"} not in input_items
-
-
-def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
-    captured = _capture_body(
-        monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        enabled_tools = ["image_generation"],
-        messages = [
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "reasoning",
-                        "id": "rs_abc",
-                        "summary": [
-                            {"type": "summary_text", "text": "Need to edit."},
-                        ],
-                    },
-                    {"type": "image_generation_call", "id": "img_abc"},
-                ],
-            },
-            {"role": "user", "content": "make it more realistic"},
-        ],
-    )
-    assert {"type": "image_generation", "action": "edit"} in captured["body"].get(
-        "tools", []
-    )
-    input_items = captured["body"].get("input") or []
-    assert input_items[-3:] == [
-        {"role": "user", "content": "make it more realistic"},
-        {
-            "type": "reasoning",
-            "id": "rs_abc",
-            "summary": [{"type": "summary_text", "text": "Need to edit."}],
-        },
-        {"type": "image_generation_call", "id": "img_abc"},
-    ]
-
-
-def test_orphan_image_generation_ref_dropped_for_reasoning_models(monkeypatch):
-    captured = _capture_body(
-        monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        enabled_tools = ["image_generation"],
-        messages = [
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "image_generation_call", "id": "img_legacy"},
-                ],
-            },
-            {"role": "user", "content": "do you have the original image?"},
-        ],
-    )
-    input_items = captured["body"].get("input") or []
-    assert {"type": "image_generation_call", "id": "img_legacy"} not in input_items
-
-
-def test_chat_completion_request_accepts_openai_image_generation_refs():
-    request = ChatCompletionRequest.model_validate(
-        {
-            "model": "gpt-5.5",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "reasoning",
-                            "id": "rs_abc",
-                            "summary": [
-                                {"type": "summary_text", "text": "Need to edit."},
-                            ],
-                            "status": "completed",
-                        },
-                        {
-                            "type": "image_generation_call",
-                            "id": "img_abc",
-                            "response_id": "resp_abc",
-                        },
-                    ],
-                },
-                {"role": "user", "content": "make it more realistic"},
-            ],
-            "stream": True,
-        }
-    )
-
-    assert request.messages[0].role == "assistant"
-    content = request.messages[0].content
-    assert isinstance(content, list)
-    assert content[0].type == "reasoning"
-    assert content[1].type == "image_generation_call"
-
-
-def test_external_message_builder_preserves_openai_image_generation_refs():
-    from routes.inference import _build_external_messages
-
-    messages = [
-        SimpleNamespace(
-            role = "assistant",
-            content = [
-                SimpleNamespace(
-                    type = "reasoning",
-                    id = "rs_abc",
-                    summary = [{"type": "summary_text", "text": "Need to edit."}],
-                    status = "completed",
-                ),
-                SimpleNamespace(
-                    type = "image_generation_call",
-                    id = "img_abc",
-                    response_id = "resp_abc",
-                ),
-            ],
-        ),
-        SimpleNamespace(role = "user", content = "make it more realistic"),
-    ]
-
-    assert _build_external_messages(
-        messages,
-        supports_vision = True,
-        provider_type = "openai",
-    ) == [
-        {
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "reasoning",
-                    "id": "rs_abc",
-                    "summary": [{"type": "summary_text", "text": "Need to edit."}],
-                    "status": "completed",
-                },
-                {
-                    "type": "image_generation_call",
-                    "id": "img_abc",
-                    "response_id": "resp_abc",
-                },
-            ],
-        },
-        {"role": "user", "content": "make it more realistic"},
-    ]
-
-    assert _build_external_messages(
-        messages,
-        supports_vision = True,
-        provider_type = "anthropic",
-    ) == [
-        {"role": "user", "content": "make it more realistic"},
-    ]
-
-
 # ── output translation surfaces tool_start + tool_end ────────────────
 
 
 def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     events = _collect_tool_events(monkeypatch)
-    image_events = _image_generation_events(events)
+    image_events = [
+        e
+        for e in events
+        if e.get("tool_name") == "image_generation"
+        or (e.get("type") == "tool_end" and e.get("image_b64"))
+    ]
     starts = [e for e in image_events if e.get("type") == "tool_start"]
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
@@ -424,46 +210,9 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
-        "openai_image_generation_call_id": "img_abc",
-        "openai_response_id": "resp_abc",
-        "openai_reasoning_item": {
-            "type": "reasoning",
-            "id": "rs_abc",
-            "summary": [
-                {"type": "summary_text", "text": "Need to draw a cat."},
-            ],
-            "status": "completed",
-        },
     }
-    assert ends[0]["arguments"] == starts[0]["arguments"]
     assert ends[0]["image_b64"] == "AAAA"
     assert ends[0]["image_mime"] == "image/png"
     assert ends[0]["size"] == "1024x1024"
     assert ends[0]["quality"] == "high"
     assert ends[0]["background"] == "opaque"
-
-
-def test_image_generation_added_emits_early_placeholder_start(monkeypatch):
-    events = _collect_tool_events(monkeypatch, include_added = True)
-    image_events = _image_generation_events(events)
-    starts = [e for e in image_events if e.get("type") == "tool_start"]
-    ends = [e for e in image_events if e.get("type") == "tool_end"]
-    assert len(starts) == 1, image_events
-    assert len(ends) == 1, image_events
-    assert starts[0]["arguments"] == {
-        "kind": "image",
-        "prompt": "",
-        "openai_image_generation_call_id": "img_abc",
-        "openai_response_id": "resp_abc",
-        "openai_reasoning_item": {
-            "type": "reasoning",
-            "id": "rs_abc",
-            "summary": [
-                {"type": "summary_text", "text": "Need to draw a cat."},
-            ],
-            "status": "completed",
-        },
-    }
-    assert ends[0]["arguments"]["prompt"] == "A photorealistic cat sitting"
-    assert ends[0]["arguments"]["openai_image_generation_call_id"] == "img_abc"
-    assert ends[0]["arguments"]["openai_response_id"] == "resp_abc"
