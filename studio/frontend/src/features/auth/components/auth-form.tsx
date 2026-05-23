@@ -194,7 +194,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
+    (currentPassword.length < 8 ||
+      newPassword.length < 8 ||
+      newPassword !== confirmPassword ||
+      currentPassword === newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
