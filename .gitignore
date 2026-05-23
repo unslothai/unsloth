@@ -149,6 +149,7 @@ env.bak/
 venv.bak/
 .venv_overlay/
 .venv_t5/
+.venv312/
 environment.yaml
 
 # Spyder project settings
