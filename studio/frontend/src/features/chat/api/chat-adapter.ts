@@ -70,16 +70,9 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  /**
-   * External providers (Anthropic / OpenAI Responses / Gemini) surface
-   * prompt-cache accounting on the same `usage` envelope via
-   * `_build_usage_chunk` in `studio/backend/core/inference/external_provider.py`.
-   * `prompt_tokens_details.cached_tokens` is the normalised cache-read count
-   * present for every provider that supports it; `cache_creation_input_tokens`
-   * / `cache_read_input_tokens` are the Anthropic-native keys (cache_read
-   * mirrors `prompt_tokens_details.cached_tokens`; cache_creation is
-   * Anthropic-only and billed at the cache-write premium).
-   */
+  // External prompt-cache fields from `_build_usage_chunk` in
+  // studio/backend/core/inference/external_provider.py. cache_read mirrors
+  // prompt_tokens_details.cached_tokens; cache_creation is Anthropic-only.
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
@@ -1896,24 +1889,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Cache-hit count. llama-server reports it on `timings.cache_n`;
-        // external providers (Anthropic, OpenAI Responses, Gemini) report
-        // it on `usage.prompt_tokens_details.cached_tokens` -- see the
-        // `_build_usage_chunk` helper in
-        // studio/backend/core/inference/external_provider.py. Prefer the
-        // local-runtime value when it is present (so llama.cpp keeps
-        // populating the bar mid-stream) and fall back to the external
-        // usage envelope otherwise. cache_read_input_tokens is Anthropic's
-        // native key for the same value; read it as a last resort for
-        // providers that only emit the Anthropic shape.
+        // Cache-hit count: prefer llama-server timings, fall back to the
+        // external-provider usage envelope (Anthropic-native key last).
         const cachedTokens =
           meta?.timings?.cache_n ??
           meta?.usage?.prompt_tokens_details?.cached_tokens ??
           meta?.usage?.cache_read_input_tokens ??
           0;
-        // Anthropic-only: tokens written into the prompt cache on this
-        // turn, billed at the cache-write premium. Surfaced separately so
-        // users can tell a cache miss from a cache hit.
+        // Anthropic-only cache-write count (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
         // Update context usage in store if we got valid server data

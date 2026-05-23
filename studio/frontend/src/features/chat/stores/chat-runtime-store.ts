@@ -291,9 +291,7 @@ type ChatRuntimeStore = {
     completionTokens: number;
     totalTokens: number;
     cachedTokens: number;
-    // Anthropic-only cache-write count from
-    // `usage.cache_creation_input_tokens`. Optional so older persisted
-    // entries from llama-server / pre-cache-stats builds keep loading.
+    // Anthropic-only; optional so pre-cache-stats persisted entries load.
     cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;

@@ -1494,12 +1494,7 @@ export function ChatPage(): ReactElement {
             {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
-                // ggufContextLength is the local llama-server's KV-cache size;
-                // external providers (Anthropic / OpenAI Responses / Gemini)
-                // don't expose a stable per-model context window through the
-                // picker, so it is null in that mode. Pass it as-is -- the bar
-                // drops the "/ total" ratio + percentage when total is absent
-                // and still renders the per-turn counters + cache stats.
+                // null on external providers; the bar handles that.
                 total={ggufContextLength}
                 cached={contextUsage.cachedTokens}
                 cacheWrites={contextUsage.cacheWriteTokens}

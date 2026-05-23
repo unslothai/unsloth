@@ -45,14 +45,9 @@ export const MessageTiming: FC<{
       }
     | undefined;
   const st = custom?.serverTimings;
-  // Cache-hit / cache-write counts. llama-server reports hits on
-  // timings.cache_n; external providers (Anthropic / OpenAI Responses /
-  // Gemini) report them on the include_usage envelope that the adapter
-  // normalizes into custom.contextUsage. Prefer the local-runtime value
-  // when present (so llama.cpp keeps populating the badge mid-stream)
-  // and fall back to the external envelope otherwise.
+  // Prefer llama-server timings, fall back to external usage envelope.
   const cacheHits = (st?.cache_n ?? 0) || (custom?.contextUsage?.cachedTokens ?? 0);
-  // Anthropic-only: tokens written into the prompt cache on this turn.
+  // Anthropic-only cache-write count.
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
 
   // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op

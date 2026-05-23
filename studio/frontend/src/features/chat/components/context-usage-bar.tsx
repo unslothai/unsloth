@@ -28,21 +28,11 @@ function getSeverityColor(percent: number): {
 
 export const ContextUsageBar: FC<{
   used: number;
-  /**
-   * Context window size. Optional because external providers don't expose a
-   * stable per-model limit through the chat picker -- the local llama-server
-   * path is the only one that populates ggufContextLength. When omitted, the
-   * bar drops the "/ total" ratio + percentage bar and just shows the token
-   * counts (so cache hits / writes from Anthropic / OpenAI Responses still
-   * land in the tooltip).
-   */
+  // Optional: only local llama-server knows the context window. When absent
+  // the bar shows token counts without the "/ total" ratio.
   total?: number | null;
   cached?: number;
-  /**
-   * Anthropic-only cache-write count (tokens written into the prompt cache
-   * on this turn, billed at the cache-write premium). Shown as a separate
-   * tooltip line so users can tell a cache miss from a cache hit.
-   */
+  // Anthropic-only cache-write count (billed at the write premium).
   cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;

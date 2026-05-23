@@ -831,11 +831,8 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // External-provider threads have ggufContextLength === null because
-        // external picker selections don't carry a context-window number.
-        // Restore the persisted usage as long as it belongs to the active
-        // checkpoint; when a local GGUF context window IS known, also keep
-        // the original sanity check that the saved total fits inside it.
+        // Only enforce the fits-in-window check when a local GGUF window
+        // is known; external providers have ggufContextLength === null.
         const withinLocalLimit =
           !store.ggufContextLength ||
           (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
