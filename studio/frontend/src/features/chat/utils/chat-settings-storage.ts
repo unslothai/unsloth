@@ -40,9 +40,20 @@ const NUMERIC_INFERENCE_FIELDS = [
   "minP",
   "repetitionPenalty",
   "presencePenalty",
+  "frequencyPenalty",
   "maxSeqLength",
   "maxTokens",
 ] as const satisfies readonly (keyof PersistedInferenceParams)[];
+
+// `seed` is numeric but nullable (null = "no seed field on the wire") so
+// it can't go through the NUMERIC_INFERENCE_FIELDS Finite-number filter.
+const VALID_SERVICE_TIERS = new Set([
+  "auto",
+  "default",
+  "flex",
+  "priority",
+  "scale",
+]);
 
 const CHAT_PRESET_SOURCES = new Set<string>([
   "builtin-default",
@@ -139,6 +150,29 @@ function sanitizeInferenceParams(
   }
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
+  }
+  // seed: nullable integer (null = no seed on the wire).
+  if (value.seed === null) {
+    params.seed = null;
+  } else if (typeof value.seed === "number" && Number.isInteger(value.seed)) {
+    params.seed = value.seed;
+  }
+  // stop: capped string array per OpenAI's max-4 rule.
+  if (Array.isArray(value.stop)) {
+    const stops = value.stop.filter((s): s is string => typeof s === "string");
+    if (stops.length > 0) params.stop = stops.slice(0, 4);
+  }
+  // serviceTier: nullable enum string.
+  if (value.serviceTier === null) {
+    params.serviceTier = null;
+  } else if (
+    typeof value.serviceTier === "string" &&
+    VALID_SERVICE_TIERS.has(value.serviceTier)
+  ) {
+    params.serviceTier = value.serviceTier as PersistedInferenceParams["serviceTier"];
+  }
+  if (typeof value.parallelToolCalls === "boolean") {
+    params.parallelToolCalls = value.parallelToolCalls;
   }
   return hasKeys(params) ? params : undefined;
 }
