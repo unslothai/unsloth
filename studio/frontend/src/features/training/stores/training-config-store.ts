@@ -701,6 +701,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
+        setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
         setLearningRate: (learningRate) => {
           _learningRateManuallySet = true;
           set({ learningRate });
@@ -755,7 +756,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          set({ modelDefaultsAppliedFor: null });
+          set({
+            modelDefaultsAppliedFor: null,
+            visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
+          });
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {

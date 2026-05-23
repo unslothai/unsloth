@@ -58,25 +58,31 @@ export function serializeConfigToYaml(
     lora.finetune_mlp_modules = state.finetuneMLPModules;
   }
 
+  const training: Record<string, unknown> = {
+    max_seq_length: state.contextLength,
+    num_epochs: state.epochs,
+    learning_rate: state.learningRate,
+    batch_size: state.batchSize,
+    gradient_accumulation_steps: state.gradientAccumulation,
+    warmup_steps: state.warmupSteps,
+    max_steps: state.maxSteps,
+    save_steps: state.saveSteps,
+    eval_steps: state.evalSteps,
+    weight_decay: state.weightDecay,
+    random_seed: state.randomSeed,
+    packing: state.packing,
+    train_on_completions: state.trainOnCompletions,
+    gradient_checkpointing: state.gradientCheckpointing,
+    optim: state.optimizerType,
+    lr_scheduler_type: state.lrSchedulerType,
+  };
+
+  if (includeVisionFields) {
+    training.vision_image_size = state.visionImageSize;
+  }
+
   const config = {
-    training: {
-      max_seq_length: state.contextLength,
-      num_epochs: state.epochs,
-      learning_rate: state.learningRate,
-      batch_size: state.batchSize,
-      gradient_accumulation_steps: state.gradientAccumulation,
-      warmup_steps: state.warmupSteps,
-      max_steps: state.maxSteps,
-      save_steps: state.saveSteps,
-      eval_steps: state.evalSteps,
-      weight_decay: state.weightDecay,
-      random_seed: state.randomSeed,
-      packing: state.packing,
-      train_on_completions: state.trainOnCompletions,
-      gradient_checkpointing: state.gradientCheckpointing,
-      optim: state.optimizerType,
-      lr_scheduler_type: state.lrSchedulerType,
-    },
+    training,
     lora,
   };
 

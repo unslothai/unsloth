@@ -28,6 +28,7 @@ type ModelDefaultsPatch = Partial<
     | "trainOnCompletions"
     | "gradientCheckpointing"
     | "randomSeed"
+    | "visionImageSize"
     | "enableWandb"
     | "wandbProject"
     | "enableTensorboard"
@@ -128,6 +129,13 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
+
+  if (Object.hasOwn(training ?? {}, "vision_image_size")) {
+    const visionImageSize = training?.vision_image_size == null
+      ? null
+      : toNumber(training.vision_image_size);
+    if (visionImageSize !== undefined) patch.visionImageSize = visionImageSize;
+  }
 
   const packing = toBoolean(training?.packing);
   if (packing !== undefined) patch.packing = packing;

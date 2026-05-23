@@ -3123,7 +3123,17 @@ class UnslothTrainer:
                 from unsloth.trainer import UnslothVisionDataCollator
 
                 FastVisionModel.for_training(self.model)
-                data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+                vision_image_size = training_args.get("vision_image_size")
+                if vision_image_size is None:
+                    data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+                else:
+                    logger.info(f"Vision image resize: {vision_image_size} (max dimension)\n")
+                    data_collator = UnslothVisionDataCollator(
+                        self.model,
+                        self.tokenizer,
+                        resize = vision_image_size,
+                        resize_dimension = "max",
+                    )
                 logger.info("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========

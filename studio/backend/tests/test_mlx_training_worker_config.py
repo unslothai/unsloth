@@ -66,6 +66,7 @@ def _load_worker_module():
 _worker = _load_worker_module()
 _normalize_mlx_studio_optimizer = _worker._normalize_mlx_studio_optimizer
 _normalize_mlx_studio_scheduler = _worker._normalize_mlx_studio_scheduler
+_mlx_vlm_max_resized_size = _worker._mlx_vlm_max_resized_size
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -82,3 +83,11 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
+
+
+def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
+    assert _mlx_vlm_max_resized_size(1000, 500, 512) == (512, 256)
+    assert _mlx_vlm_max_resized_size(500, 1000, 512) == (256, 512)
+    assert _mlx_vlm_max_resized_size(1000, 1000, 512) == (512, 512)
+    assert _mlx_vlm_max_resized_size(256, 128, 1536) == (256, 128)
+    assert _mlx_vlm_max_resized_size(512, 256, 512) == (512, 256)

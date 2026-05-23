@@ -18,6 +18,9 @@ _MAX_SEQ_LENGTH = 2_000_000
 _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
+_MIN_VISION_IMAGE_SIZE = 256
+# 2048 was the most I could get most llms to work at without getting unstable
+_MAX_VISION_IMAGE_SIZE = 2048
 
 
 def _parse_lr(v: Any) -> float:
@@ -58,6 +61,10 @@ class TrainingStartRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description = "Maximum sequence length")
+    vision_image_size: Optional[int] = Field(
+        None,
+        description = "Optional maximum image side length for VLM training. Null uses model default.",
+    )
     trust_remote_code: bool = Field(
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
@@ -156,6 +163,20 @@ class TrainingStartRequest(BaseModel):
         if v is None or v < 1 or v > _MAX_SEQ_LENGTH:
             raise ValueError(
                 f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})"
+            )
+        return v
+
+    @field_validator("vision_image_size")
+    @classmethod
+    def _check_vision_image_size(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError("vision_image_size must be an integer or null")
+        if v < _MIN_VISION_IMAGE_SIZE or v > _MAX_VISION_IMAGE_SIZE:
+            raise ValueError(
+                f"vision_image_size must be in [{_MIN_VISION_IMAGE_SIZE}, "
+                f"{_MAX_VISION_IMAGE_SIZE}] (got {v!r})"
             )
         return v
 

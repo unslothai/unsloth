@@ -55,6 +55,10 @@ export function buildTrainingStartPayload(
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
+    vision_image_size:
+      config.isVisionModel && config.isDatasetImage === true
+        ? config.visionImageSize
+        : null,
     trust_remote_code: config.trustRemoteCode ?? false,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,

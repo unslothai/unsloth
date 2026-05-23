@@ -139,6 +139,7 @@ export function ParamsSection(): ReactElement {
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
+  const visionImageSizePresets = [384, 512, 768, 1024, 1536, 2048];
 
   // Keep input in sync when the store value changes externally
   // (e.g. model defaults being applied after model selection).
@@ -915,6 +916,52 @@ export function ParamsSection(): ReactElement {
                 </TabsContent>
 
                 <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
+                  {showVisionLora && (
+                    <Row
+                      label="Image Size"
+                      tooltip={
+                        <>
+                          Resize images by maximum side length. Default uses the
+                          model image size. Larger images use up more context. Does not upscale or change aspect ratio.{" "}
+                          <a
+                            href="https://unsloth.ai/docs/basics/vision-fine-tuning"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline"
+                          >
+                            Read more
+                          </a>
+                        </>
+                      }
+                    >
+                      <Select
+                        value={
+                          store.visionImageSize == null
+                            ? "default"
+                            : String(store.visionImageSize)
+                        }
+                        onValueChange={(value) => {
+                          if (value === "default") {
+                            store.setVisionImageSize(null);
+                            return;
+                          }
+                          store.setVisionImageSize(Number(value));
+                        }}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default</SelectItem>
+                          {visionImageSizePresets.map((size) => (
+                            <SelectItem key={size} value={String(size)}>
+                              {size}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                  )}
                   <Row
                     label="Grad Checkpoint"
                     tooltip={
