@@ -8,41 +8,44 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 type ApiObject = Record<string, unknown>;
-
-let versionsPromise: Promise<{
+type StudioVersions = {
   packageVersion: string | null;
   studioVersion: string | null;
-}> | null = null;
+};
 
-async function fetchStudioVersions(): Promise<{
-  packageVersion: string | null;
-  studioVersion: string | null;
-}> {
+const EMPTY_VERSIONS: StudioVersions = {
+  packageVersion: null,
+  studioVersion: null,
+};
+
+let versionsPromise: Promise<StudioVersions> | null = null;
+
+async function requestStudioVersions(): Promise<StudioVersions> {
+  const token = getAuthToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(apiUrl("/api/health"), { headers });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Studio versions (${res.status})`);
+  }
+  const data = (await res.json()) as ApiObject;
+  const packageVersion = data["version"];
+  const studioVersion = data["studio_version"];
+  return {
+    packageVersion: typeof packageVersion === "string" ? packageVersion : null,
+    studioVersion: typeof studioVersion === "string" ? studioVersion : null,
+  };
+}
+
+async function fetchStudioVersions(): Promise<StudioVersions> {
   if (versionsPromise) {
     return versionsPromise;
   }
 
-  versionsPromise = (async () => {
-    try {
-      const token = getAuthToken();
-      const headers = new Headers();
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-      const res = await fetch(apiUrl("/api/health"), { headers });
-      if (!res.ok) {
-        return { packageVersion: null, studioVersion: null };
-      }
-      const data = (await res.json()) as ApiObject;
-      const packageVersion = data["version"];
-      const studioVersion = data["studio_version"];
-      return {
-        packageVersion:
-          typeof packageVersion === "string" ? packageVersion : null,
-        studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-      };
-    } catch {
-      return { packageVersion: null, studioVersion: null };
-    }
-  })();
+  versionsPromise = requestStudioVersions().catch(() => {
+    versionsPromise = null;
+    return EMPTY_VERSIONS;
+  });
 
   return versionsPromise;
 }
