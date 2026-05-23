@@ -63,16 +63,24 @@ reimplementation on pure-string documents.
 
 ## Module layout
 
+The scorer is a **Studio feature**, so it lives under the (torch-free) Studio
+backend. `studio/__init__.py` and `studio/backend/__init__.py` are empty, and the
+backend uses **flat imports** (the backend root is on `sys.path`), so the package
+is imported as `eval.json_score`, not `studio.backend.eval.json_score`.
+
 ```
-unsloth/eval/json_score/
-├── __init__.py        # exports json_anls_score, score_from_text, Schema helpers
-├── comparators.py     # money, numeric, categorical, string(ANLS), date + registry
-├── schema.py          # parse/normalize the user schema into internal nodes
-├── core.py            # recursive traversal, list matching, aggregation, ScoreNode
-└── api.py             # json_anls_score(), score_from_text()
+studio/backend/eval/
+├── __init__.py
+└── json_score/
+    ├── __init__.py        # exports json_anls_score, score_from_text, Schema helpers
+    ├── comparators.py     # money, numeric, categorical, string(ANLS), date + registry
+    ├── schema.py          # parse/normalize the user schema into internal nodes
+    ├── core.py            # recursive traversal, list matching, aggregation, ScoreNode
+    └── api.py             # json_anls_score(), score_from_text()
 ```
 
-Tests live alongside under `tests/` (see Testing).
+All files use Studio's `SPDX-License-Identifier: AGPL-3.0-only` header. Tests live
+under `studio/backend/tests/` (see Testing).
 
 ## Schema format
 
@@ -119,7 +127,7 @@ Uncoercible input → `0.0`. Registered by name in a registry.
 | `numeric` | same formula as `money` (semantic alias) | `rel_tol`, `abs_tol` |
 | `categorical` | exact equal → `1.0` else `0.0` | `case_insensitive`, `strip` |
 | `string` | ANLS normalized Levenshtein; `0` below threshold τ | `threshold` (default `0.5`) |
-| `date` | parse both (format-agnostic), equal/within tolerance → `1.0` | `granularity` (`day`/`month`/`year`), `day_tol` |
+| `date` | parse both (format-agnostic, e.g. `2024-01-15` == `Jan 15, 2024`), equal/within tolerance → `1.0` | `granularity` (`day`/`month`/`year`), `day_tol` |
 
 ## Core algorithm
 
@@ -221,7 +229,8 @@ Pytest, alongside the module.
 
 1. **Per-comparator unit tests** — money tolerance, sign, and zero edge cases;
    categorical case-insensitivity/strip; string ANLS at/around threshold τ; date
-   across formats (`2024-01-05` == `05/01/2024`) and day-tolerance.
+   across formats (`2024-01-15` == `Jan 15, 2024` == `15 January 2024`) and
+   day-tolerance.
 2. **Core traversal tests** — nested objects; missing key; hallucinated key; list
    **order-invariance** (shuffled `line_items` → same score); list length mismatch
    penalty; `None` handling; type mismatch; tuple-of-alternatives (max over
@@ -236,16 +245,15 @@ Pytest, alongside the module.
 ## Dependencies
 
 - `rapidfuzz` — fast, permissively-licensed Levenshtein for the `string` comparator.
-- `scipy` — `optimize.linear_sum_assignment` for list matching (likely already a
-  transitive dependency).
+- `scipy` — `optimize.linear_sum_assignment` for list matching.
 - `python-dateutil` — format-agnostic date parsing.
-- `anls_star` — **test-only**, for the reference cross-check.
+- `numpy` — already in Studio's `no-torch-runtime.txt`.
+- `anls_star` — **test/dev-only**, for the reference cross-check.
 
-Declared as a new optional extra `unsloth[eval] = ["rapidfuzz", "scipy",
-"python-dateutil"]` (not added to the minimal core `dependencies`). Because the
-module lives under the `unsloth` package, importing it runs `unsloth/__init__.py`
-and therefore requires the full unsloth/torch install; the scorer submodules
-themselves stay torch-free. Unit tests live under `tests/` and rely on the
-existing GPU-free `tests/conftest.py` harness so `import unsloth` works without an
-accelerator.
-```
+`rapidfuzz`, `scipy`, and `python-dateutil` are added to
+`studio/backend/requirements/no-torch-runtime.txt` (`numpy` is already there). The
+scorer is **fully torch-free**: `studio/__init__.py` and `studio/backend/__init__.py`
+are empty, so importing `eval.json_score` pulls in only these light deps — no
+torch, no `unsloth` import chain. Tests live under `studio/backend/tests/` and use
+the backend's flat-import convention (`from eval.json_score import ...`), enabled
+by `studio/backend/tests/conftest.py` which puts the backend root on `sys.path`.
