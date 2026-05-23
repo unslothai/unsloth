@@ -209,11 +209,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setError(null);
 
     if (!isLoginMode) {
-      // Mirror the disable gate's length check on the submit path. The
-      // button is normally kept disabled in this state, but native form
-      // submission (Enter on a focused input, browser autofill replaying
-      // a form post) can bypass the disabled attribute and reach the
-      // handler with a short / missing current_password.
+      // Mirror the disable gate: Enter / autofill can bypass the button.
       if (currentPassword.length < 8) {
         setError(
           currentPassword
