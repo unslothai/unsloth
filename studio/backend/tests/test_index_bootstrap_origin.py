@@ -37,21 +37,21 @@ def _build_request(host: str, origin: str | None) -> MagicMock:
 def test_is_same_origin_request_missing_origin_is_same_origin(monkeypatch):
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8888", origin=None)
+    req = _build_request("127.0.0.1:8888", origin = None)
     assert _is_same_origin_request(req) is True
 
 
 def test_is_same_origin_request_matching_origin_is_same_origin():
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8888", origin="http://127.0.0.1:8888")
+    req = _build_request("127.0.0.1:8888", origin = "http://127.0.0.1:8888")
     assert _is_same_origin_request(req) is True
 
 
 def test_is_same_origin_request_evil_origin_is_cross_origin():
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8888", origin="https://evil.example")
+    req = _build_request("127.0.0.1:8888", origin = "https://evil.example")
     assert _is_same_origin_request(req) is False
 
 
@@ -59,7 +59,7 @@ def test_is_same_origin_request_scheme_mismatch_is_cross_origin():
     """https origin against an http listener must NOT be treated as same."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8888", origin="https://127.0.0.1:8888")
+    req = _build_request("127.0.0.1:8888", origin = "https://127.0.0.1:8888")
     assert _is_same_origin_request(req) is False
 
 
@@ -67,5 +67,5 @@ def test_is_same_origin_request_port_mismatch_is_cross_origin():
     """Same host different port is NOT same-origin per the web platform."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8888", origin="http://127.0.0.1:5173")
+    req = _build_request("127.0.0.1:8888", origin = "http://127.0.0.1:5173")
     assert _is_same_origin_request(req) is False
