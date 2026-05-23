@@ -102,7 +102,9 @@ def test_strips_orphan_tool_call_no_close():
 
 
 def test_strips_orphan_function_no_close():
-    text = "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    text = (
+        "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    )
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "<function=" not in cleaned
     assert "I'll call python:" in cleaned
@@ -197,7 +199,9 @@ REAL_LEAKS = [
 ]
 
 
-@pytest.mark.parametrize("leak", REAL_LEAKS, ids=[f"sweep_sample_{i}" for i in range(len(REAL_LEAKS))])
+@pytest.mark.parametrize(
+    "leak", REAL_LEAKS, ids = [f"sweep_sample_{i}" for i in range(len(REAL_LEAKS))]
+)
 def test_real_world_sweep_leaks_get_stripped(leak):
     """Each of these triggered the XML-leak bug in the 2026-05-22 sweep.
 
