@@ -213,9 +213,9 @@ def test_reprompts_on_intent_with_open_fence():
 def test_artifact_regex_handles_crlf_code_fence():
     """Windows / CRLF-converted content still detects a closed fence."""
     content = "First, let me code.\r\n```python\r\nimport sys\r\nprint('hi')\r\n```"
-    assert _HAS_ANSWER_ARTIFACT.search(content), (
-        "CRLF (\\r\\n) line endings inside a code fence must still match"
-    )
+    assert _HAS_ANSWER_ARTIFACT.search(
+        content
+    ), "CRLF (\\r\\n) line endings inside a code fence must still match"
 
 
 def test_artifact_regex_handles_crlf_numbered_list():
@@ -239,6 +239,7 @@ def test_no_backtrack_on_crlf_spam():
     keeps it linear.
     """
     import time
+
     payload = "\r\n" * 5000
     t0 = time.time()
     _HAS_ANSWER_ARTIFACT.search(payload)
@@ -258,6 +259,6 @@ def test_no_reprompt_on_crlf_complete_python_game():
         "        if e.type == pygame.QUIT: break\r\n"
         "```"
     )
-    assert not _would_reprompt(content), (
-        "CRLF-encoded complete fence must also suppress the re-prompt"
-    )
+    assert not _would_reprompt(
+        content
+    ), "CRLF-encoded complete fence must also suppress the re-prompt"
