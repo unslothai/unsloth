@@ -345,15 +345,21 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     let isMounted = true;
-    const syncFromBackend = async () => {
-      setRegistryLoading(true);
-      setSyncingProviders(true);
+    const syncFromBackend = async ({
+      showSpinner = true,
+    }: { showSpinner?: boolean } = {}) => {
+      if (showSpinner) {
+        setRegistryLoading(true);
+        setSyncingProviders(true);
+      }
+      let syncSucceeded = false;
       try {
         const [registryRows, configRows] = await Promise.all([
           listProviderRegistry(),
           listProviderConfigs(),
         ]);
         if (!isMounted) return;
+        syncSucceeded = true;
         setRegistry(registryRows);
         setProviderType((current) => {
           if (
@@ -406,25 +412,45 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
-        // Don't wipe localStorage providers when the server has no rows.
-        if (syncedProviders.length === 0 && providersRef.current.length > 0) {
-          return;
-        }
+        // Trust the backend response when it succeeds. An empty array means
+        // every connection was removed (often from another browser/tab) and
+        // the local cache should mirror that, otherwise the stale entries
+        // become un-removable in this browser until localStorage is cleared.
         onProvidersChange(syncedProviders);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-        toast.error(`Failed to load connections: ${message}`);
+        // Only surface a toast for real failures, not for the silent
+        // background re-sync on tab focus.
+        if (showSpinner) {
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          toast.error(`Failed to load connections: ${message}`);
+        }
       } finally {
-        if (isMounted) {
+        if (isMounted && showSpinner) {
           setRegistryLoading(false);
           setSyncingProviders(false);
         }
       }
+      return syncSucceeded;
     };
     void syncFromBackend();
+    // Re-sync silently when the tab regains focus so deletes made in
+    // another browser propagate without forcing the user to reopen the
+    // dialog. Skip when the document is hidden to avoid background work.
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.hidden) return;
+      void syncFromBackend({ showSpinner: false });
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleVisibilityChange);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleVisibilityChange);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
     };
   }, [onProvidersChange]);
 

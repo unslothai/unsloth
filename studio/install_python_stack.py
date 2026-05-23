@@ -1439,6 +1439,27 @@ def install_python_stack() -> int:
             package_name,
             "unsloth-zoo",
         )
+        # Pydantic ships its core as a separate compiled wheel
+        # (pydantic-core), and pydantic's ``_ensure_pydantic_core_version``
+        # checks the installed core matches the exact version pinned in
+        # its own metadata. With ``--no-deps`` plus an unpinned
+        # ``pydantic`` / ``pydantic-core`` pair in no-torch-runtime.txt,
+        # pip resolved each to the newest available version and the two
+        # drifted (pydantic 2.13.4 pins pydantic-core==2.46.4 today, but
+        # pydantic-core 2.47.0 was the latest). On a fresh Windows venv
+        # the next ``import pydantic`` raised ``SystemError: ...
+        # incompatible with the current pydantic version``.
+        #
+        # Resolve them WITH deps in a focused pip call so pip picks a
+        # compatible pair. pydantic's own deps are
+        # ``annotated-types``, ``pydantic-core``, ``typing-extensions``,
+        # ``typing-inspection`` -- none of which transitively pull
+        # torch, so this is safe for the no-torch path.
+        pip_install(
+            "Installing pydantic (with deps for compatible core)",
+            "--no-cache-dir",
+            "pydantic",
+        )
         pip_install(
             "Installing no-torch runtime deps",
             "--no-cache-dir",
