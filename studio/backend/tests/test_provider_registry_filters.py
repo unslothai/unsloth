@@ -77,23 +77,28 @@ def test_openai_keeps_every_known_chat_family():
 
 def test_openai_audio_and_realtime_families_split_on_streaming_support():
     # Pin the chat/non-chat split: Studio always sends `stream: true`,
-    # so the picker keeps gpt-audio* (chat streams over /v1/chat/
-    # completions) and gpt-4o-realtime-preview (chat streams via the
-    # /v1/responses adapter), but drops the new gpt-realtime* family
-    # and gpt-audio-mini, which OpenAI's model cards mark Streaming:
-    # Not supported (Realtime API / WebSocket only).
+    # so the picker keeps the audio chat families (gpt-audio* without
+    # -mini, plus gpt-4o-audio-preview*) which stream over
+    # /v1/chat/completions and /v1/responses, but drops the entire
+    # Realtime family (gpt-realtime*, gpt-4o-realtime-preview*,
+    # gpt-4o-mini-realtime-preview*) and gpt-audio-mini, which OpenAI's
+    # model cards mark Streaming: Not supported (Realtime API only,
+    # WebRTC/WebSocket transport).
     kept = _apply(
         "openai",
         [
             "gpt-audio",
             "gpt-audio-1.5",
-            "gpt-4o-realtime-preview",
+            "gpt-4o-audio-preview",
+            "gpt-4o-audio-preview-2024-12-17",
         ],
     )
     assert kept == [
         "gpt-audio",
         "gpt-audio-1.5",
-        "gpt-4o-realtime-preview",
+        "gpt-4o-audio-preview",
+        # Dated audio-preview snapshot is dropped by the date-suffix rule;
+        # the canonical id above survives.
     ], kept
 
     dropped = _apply(
@@ -104,6 +109,8 @@ def test_openai_audio_and_realtime_families_split_on_streaming_support():
             "gpt-realtime-mini",
             "gpt-realtime-1.5",
             "gpt-realtime-2",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-mini-realtime-preview",
             "gpt-4o-transcribe",
             "gpt-4o-mini-transcribe",
         ],
@@ -114,9 +121,9 @@ def test_openai_audio_and_realtime_families_split_on_streaming_support():
 def test_openai_drops_non_chat_ids():
     noise = [
         # Embeddings / TTS / image / moderation / whisper / etc.
-        # gpt-audio (no -mini) and gpt-4o-realtime-preview are
-        # intentionally OMITTED from this list -- they DO stream chat.
-        # See test_openai_audio_and_realtime_families_split_on_streaming_support.
+        # gpt-audio (no -mini) and gpt-4o-audio-preview are intentionally
+        # OMITTED from this list -- they DO stream chat. See
+        # test_openai_audio_and_realtime_families_split_on_streaming_support.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -166,8 +173,9 @@ def test_openai_realtime_translate_variants_are_dropped_but_parent_chat_family_s
     """gpt-audio is chat-capable (streams over /v1/chat/completions)
     and stays, but the audio-translation variants share the chat
     picker's transport and would 4xx, so they must be filtered. The
-    new gpt-realtime* family and gpt-audio-mini are Realtime-only and
-    are dropped by a sibling assertion."""
+    full Realtime family (gpt-realtime*, gpt-4o*-realtime-preview*)
+    plus gpt-audio-mini are Realtime-only and dropped by a sibling
+    assertion."""
     kept = _apply("openai", ["gpt-audio"])
     assert kept == ["gpt-audio"], kept
 

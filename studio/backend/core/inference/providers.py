@@ -75,11 +75,15 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"transcribe|translate|instruct|sora)\b"
             # OpenAI realtime/audio variants that don't support chat
             # streaming. Studio always sends `stream: true`, and OpenAI
-            # marks `gpt-realtime*` and `gpt-audio-mini` as Streaming:
-            # Not supported (Realtime API only); surfacing them in the
-            # picker would 4xx at request time. `gpt-audio` and
-            # `gpt-4o-realtime-preview` still stream and are kept.
+            # marks the full Realtime family as Streaming: Not supported
+            # (Realtime API only, WebRTC/WebSocket transport): `gpt-realtime`,
+            # `gpt-realtime-mini`, `gpt-4o-realtime-preview*` and
+            # `gpt-4o-mini-realtime-preview*`, plus `gpt-audio-mini`.
+            # Selecting them from the picker would 4xx at request time.
+            # `gpt-audio` and `gpt-4o-audio-preview` are kept -- they
+            # stream over Chat Completions / Responses.
             r"|^gpt-realtime(?:$|-)"
+            r"|^gpt-4o(?:-mini)?-realtime\b"
             r"|^gpt-audio-mini\b"
             # Legacy completion bases -- ^-anchored to avoid false
             # positives on hypothetical future chat ids containing
