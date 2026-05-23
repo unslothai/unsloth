@@ -744,28 +744,15 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
 
 
 def _is_same_origin_request(request: Request) -> bool:
-    """Return True when the request is same-origin (or has no Origin header).
+    """True when Origin is missing or matches request's scheme://host:port.
 
-    The HTML returned by ``/`` and the SPA fallback may carry an inline
-    ``window.__UNSLOTH_BOOTSTRAP__`` script with the seeded admin password.
-    Default web mode runs CORS with ``allow_origins=["*"]`` and
-    ``allow_credentials=True`` so that the local frontend works on any
-    deployment, but that policy reflects an attacker-controlled Origin back
-    on every request -- meaning a cross-origin page could `fetch('/')` with
-    credentials and read the bootstrap password out of the HTML body.
-
-    Browsers omit ``Origin`` on top-level same-document GET navigations on
-    most engines, so the absence of the header is the common legitimate
-    case. When the header IS present and does not match the request's own
-    scheme://host:port, treat it as cross-origin and skip the bootstrap
-    injection. Callers MUST also emit ``Vary: Origin`` so intermediary
-    caches do not serve a same-origin response to a cross-origin caller.
+    Top-level same-document GETs omit Origin on most engines, so a missing
+    header counts as same-origin. Callers must also emit ``Vary: Origin``.
     """
     origin = request.headers.get("origin")
     if not origin:
         return True
-    same_origin = f"{request.url.scheme}://{request.url.netloc}"
-    return origin == same_origin
+    return origin == f"{request.url.scheme}://{request.url.netloc}"
 
 
 def setup_frontend(app: FastAPI, build_path: Path):
@@ -781,14 +768,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Only inject the bootstrap admin password into HTML returned to a
-        # same-origin caller. See _is_same_origin_request for the rationale.
+        # Bootstrap pw only ships to same-origin callers; Vary: Origin
+        # keeps caches from mixing the two response shapes.
         if _is_same_origin_request(request):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None
-        # Vary on Origin so a same-origin response cached upstream is not
-        # served to a later cross-origin caller (and vice versa).
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Vary": "Origin",
