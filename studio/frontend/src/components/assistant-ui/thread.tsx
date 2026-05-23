@@ -225,7 +225,7 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
         )}
         aria-label="Generated image preview"
       >
-        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 items-center justify-center rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
+        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
           <div className="absolute inset-x-3 top-3 z-10 flex justify-end">
             <div className="flex shrink-0 items-center gap-1 rounded-full bg-background/70 p-1 ring-1 ring-border/20 backdrop-blur-sm">
               <Button
@@ -255,27 +255,32 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
               </Button>
             </div>
           </div>
-          <img
-            src={overlay.image}
-            alt={overlay.title}
-            className="max-h-full max-w-full object-contain"
-          />
-        </div>
-        <div className="mt-2 max-w-[min(100%,46rem)] text-center" title={overlay.title}>
-          <p className="truncate font-medium text-foreground/70 text-xs">
-            Generated image
-          </p>
-          {overlay.metadata ? (
-            <p className="truncate text-[11px] text-muted-foreground/75">
-              {overlay.metadata}
+          <div className="flex min-h-0 flex-1 items-center justify-center pt-1">
+            <img
+              src={overlay.image}
+              alt={overlay.title}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+          <div
+            className="w-full max-w-[min(100%,46rem)] shrink-0 text-center"
+            title={overlay.title}
+          >
+            <p className="truncate font-medium text-foreground/70 text-xs">
+              Generated image
             </p>
-          ) : null}
+            {overlay.metadata ? (
+              <p className="truncate text-[11px] text-muted-foreground/75">
+                {overlay.metadata}
+              </p>
+            ) : null}
+            {hideComposer ? null : (
+              <p className="mt-1 text-muted-foreground text-xs">
+                Type edits below, then send.
+              </p>
+            )}
+          </div>
         </div>
-        {hideComposer ? null : (
-          <p className="mt-1 text-center text-muted-foreground text-xs">
-            Type edits below, then send.
-          </p>
-        )}
       </section>
     </div>
   );

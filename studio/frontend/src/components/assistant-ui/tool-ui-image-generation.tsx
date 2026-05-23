@@ -6,8 +6,8 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { DownloadIcon, ImageIcon, LoaderIcon, PencilIcon } from "lucide-react";
-import type { MouseEvent } from "react";
+import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
+import type { CSSProperties, MouseEvent } from "react";
 import { memo, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { Image, downloadImagePart } from "./image";
@@ -87,23 +87,35 @@ const imageFilenameFromPrompt = (prompt: string, mime: string): string => {
 };
 
 function GeneratedImagePlaceholder({ label }: { label: string }) {
+  const dots = Array.from({ length: 64 }, (_, index) => {
+    const row = Math.floor(index / 8);
+    const col = index % 8;
+    return (
+      <span
+        key={index}
+        className="generated-image-loading-dot"
+        style={
+          {
+            "--dot-row": row,
+            "--dot-col": col,
+          } as CSSProperties
+        }
+      />
+    );
+  });
+
   return (
     <div
       className={cn(
-        "relative flex aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70",
-        "bg-gradient-to-br from-primary/15 via-muted to-background",
+        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl border border-border/70 bg-muted/15",
       )}
       aria-busy="true"
       aria-label={label}
+      aria-live="polite"
     >
-      <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.24)_42%,transparent_70%)]" />
-      <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(148,163,184,0.36)_1px,transparent_1px)] [background-size:22px_22px] opacity-45" />
-      <div className="relative z-10 m-auto flex flex-col items-center gap-3 rounded-2xl border border-border/60 bg-background/70 px-5 py-4 shadow-sm backdrop-blur-md">
-        <LoaderIcon className="size-5 animate-spin text-primary" />
-        <span className="text-sm font-medium text-foreground/85">{label}</span>
-        <span className="text-xs text-muted-foreground">
-          Preparing a 480×480 preview
-        </span>
+      <span className="sr-only">{label}</span>
+      <div className="generated-image-loading-wave" aria-hidden={true}>
+        {dots}
       </div>
     </div>
   );
@@ -180,17 +192,23 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     showPreview();
   };
 
+  if (isPendingImage) {
+    return (
+      <div className="aui-tool-fallback-root w-full py-1">
+        <GeneratedImagePlaceholder label={runningLabel} />
+      </div>
+    );
+  }
+
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
-        toolName={isPendingImage || isRunning ? runningLabel : completedLabel}
-        status={isPendingImage ? { type: "running" } : status}
+        toolName={isRunning ? runningLabel : completedLabel}
+        status={status}
         icon={ImageIcon}
       />
       <ToolFallbackContent>
-        {isPendingImage ? (
-          <GeneratedImagePlaceholder label={runningLabel} />
-        ) : imagePart ? (
+        {imagePart ? (
           <figure className="m-0 flex flex-col gap-2">
             <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/30 shadow-sm">
               <button
