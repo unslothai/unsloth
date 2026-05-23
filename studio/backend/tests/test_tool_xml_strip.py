@@ -77,7 +77,9 @@ def test_strips_orphan_tool_call_no_close():
 
 
 def test_strips_orphan_function_no_close():
-    text = "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    text = (
+        "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    )
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "<function=" not in cleaned
     assert "I'll call python:" in cleaned
@@ -241,6 +243,7 @@ def test_gdpval_parameter_orphans_get_stripped(leak):
 def test_no_catastrophic_backtracking_on_open_bracket_spam():
     # 256KB of '<' must fail fast (literal mismatch char 2), not backtrack.
     import time
+
     adv = "<" * (1024 * 256) + "X"
     t0 = time.perf_counter()
     _TOOL_XML_RE.sub("", adv)
@@ -251,6 +254,7 @@ def test_no_catastrophic_backtracking_on_open_bracket_spam():
 def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     # 1000 unclosed openings: first alt must consume them all greedily.
     import time
+
     adv = "<tool_call>X" * 1000
     t0 = time.perf_counter()
     cleaned = _TOOL_XML_RE.sub("", adv)
