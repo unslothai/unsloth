@@ -1866,6 +1866,15 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.5.6" unsloth-zoo
+        # Install pydantic WITH deps so pip pins pydantic-core to the
+        # exact version pydantic's own metadata requires. The --no-deps
+        # install below would otherwise pick the latest of each
+        # independently and trip pydantic's _ensure_pydantic_core_version
+        # check on the next import. pydantic's deps (annotated-types,
+        # pydantic-core, typing-extensions, typing-inspection) are
+        # torch-free, so this is safe on the no-torch path.
+        run_install_cmd "install pydantic (with deps for compatible core)" \
+            uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -2042,6 +2051,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "unsloth>=2026.5.6" unsloth-zoo
+        # Install pydantic WITH deps so pip pins pydantic-core to the
+        # exact version pydantic requires (see migrated branch above).
+        run_install_cmd "install pydantic (with deps for compatible core)" \
+            uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
