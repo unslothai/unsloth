@@ -23,6 +23,12 @@ import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { PendingDocChips } from "@/features/chat/components/pending-doc-chips";
+import {
+  DOCUMENT_ACCEPT,
+  isDocumentFile,
+  useThreadDocUploads,
+} from "@/features/chat/hooks/use-thread-doc-uploads";
 import {
   IntentAwareScrollProvider,
   useIntentAwareAutoScroll,
@@ -71,6 +77,7 @@ import {
   GlobeIcon,
   HeadphonesIcon,
   ImageIcon,
+  PaperclipIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -306,8 +313,17 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
     ),
   );
   const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
+  const { pendingDocs, addDoc, removeDoc, clearDocs, isIndexing } =
+    useThreadDocUploads();
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+  const sendBlocked =
+    disabled ||
+    !hasSendableContent ||
+    isComposing ||
+    hasPendingAttachments ||
+    isIndexing;
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -315,18 +331,31 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         disabled ||
         !hasSendableContent ||
         isComposingRef.current ||
-        hasPendingAttachments
+        hasPendingAttachments ||
+        isIndexing
       ) {
         event.preventDefault();
+        return;
       }
+      // Send is going through — drop the chips. The docs themselves
+      // remain in the backend thread KB and stay searchable.
+      clearDocs();
     },
-    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
+    [
+      disabled,
+      hasPendingAttachments,
+      hasSendableContent,
+      isComposingRef,
+      isIndexing,
+      clearDocs,
+    ],
   );
 
   const composerContent = (
     <>
       <ComposerAttachments />
       <PendingAudioChip />
+      <PendingDocChips docs={pendingDocs} onRemove={removeDoc} />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
         placeholder="Send a message..."
@@ -342,12 +371,15 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={
-          disabled || !hasSendableContent || isComposing || hasPendingAttachments
-        }
+        disabled={sendBlocked}
         blockSend={() =>
-          !hasSendableContent || isComposingRef.current || hasPendingAttachments
+          !hasSendableContent ||
+          isComposingRef.current ||
+          hasPendingAttachments ||
+          isIndexing
         }
+        ragModeOn={ragToolEnabled}
+        onAddDoc={addDoc}
       />
     </>
   );
@@ -1005,14 +1037,61 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
-  disabled,
-  blockSend,
+// Custom + button used when RAG is on: opens a picker accepting
+// doc formats the ingester handles and routes selected files to
+// the RAG thread-document pipeline. Replaces the stock
+// ComposerAddAttachment (which base64-attaches files inline) so
+// docs become indexed chunks instead of one-shot model context.
+const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
+  onSelect,
 }) => {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={DOCUMENT_ACCEPT}
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = e.target.files;
+          if (!files) return;
+          for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            if (f && isDocumentFile(f)) onSelect(f);
+          }
+          // Reset so re-selecting the same file fires onChange.
+          e.target.value = "";
+        }}
+      />
+      <TooltipIconButton
+        tooltip="Attach document for RAG"
+        aria-label="Attach document for RAG"
+        variant="ghost"
+        className="size-8 rounded-full text-muted-foreground"
+        onClick={() => inputRef.current?.click()}
+      >
+        <PaperclipIcon className="size-4" />
+      </TooltipIconButton>
+    </>
+  );
+};
+
+const ComposerAction: FC<{
+  disabled?: boolean;
+  blockSend?: () => boolean;
+  ragModeOn?: boolean;
+  onAddDoc?: (file: File) => void;
+}> = ({ disabled, blockSend, ragModeOn, onAddDoc }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-0.5">
-        <ComposerAddAttachment />
+        {ragModeOn && onAddDoc ? (
+          <RagDocAttachment onSelect={onAddDoc} />
+        ) : (
+          <ComposerAddAttachment />
+        )}
         <ComposerAudioUpload />
         <ReasoningToggle />
         <PreserveThinkingToggle />
