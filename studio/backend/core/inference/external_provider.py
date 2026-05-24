@@ -2956,11 +2956,7 @@ class ExternalProviderClient:
             body["tools"] = tools_array
         # Tool-choice mapping: OpenAI "auto"/"none"/"required"/{name=...}
         # -> Gemini toolConfig.functionCallingConfig.mode + allowedFunctionNames.
-        if (
-            tool_choice is not None
-            and function_declarations
-            and text_tools_allowed
-        ):
+        if tool_choice is not None and function_declarations and text_tools_allowed:
             _mode: Optional[str] = None
             _allowed: Optional[list[str]] = None
             if isinstance(tool_choice, str):
@@ -2972,8 +2968,7 @@ class ExternalProviderClient:
                 elif _tc_lc in ("required", "any"):
                     _mode = "ANY"
             elif (
-                isinstance(tool_choice, dict)
-                and tool_choice.get("type") == "function"
+                isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
             ):
                 _fn_pick = tool_choice.get("function") or {}
                 _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
@@ -3246,7 +3241,7 @@ class ExternalProviderClient:
                                     if isinstance(text, str) and text:
                                         yield _text_chunk(
                                             text,
-                                            extra_content=_gemini_part_extra(part),
+                                            extra_content = _gemini_part_extra(part),
                                         )
                                     # functionCall -> OpenAI tool_calls
                                     # delta envelope.
@@ -3335,10 +3330,9 @@ class ExternalProviderClient:
                                             # (Gemini rejects a generic
                                             # functionCall echo for code
                                             # execution history).
-                                            _exec_thought_sig = (
-                                                part.get("thoughtSignature")
-                                                or part.get("thought_signature")
-                                            )
+                                            _exec_thought_sig = part.get(
+                                                "thoughtSignature"
+                                            ) or part.get("thought_signature")
                                             _exec_native: dict[str, Any] = {
                                                 "executableCode": exec_code,
                                             }
@@ -3414,10 +3408,9 @@ class ExternalProviderClient:
                                                     },
                                                 }
                                             )
-                                        _result_thought_sig = (
-                                            part.get("thoughtSignature")
-                                            or part.get("thought_signature")
-                                        )
+                                        _result_thought_sig = part.get(
+                                            "thoughtSignature"
+                                        ) or part.get("thought_signature")
                                         _result_native: dict[str, Any] = {
                                             "codeExecutionResult": exec_result,
                                         }
@@ -3469,10 +3462,9 @@ class ExternalProviderClient:
                                             # message; persist it on the
                                             # tool_end so the frontend
                                             # can replay it.
-                                            _img_thought_sig = (
-                                                part.get("thoughtSignature")
-                                                or part.get("thought_signature")
-                                            )
+                                            _img_thought_sig = part.get(
+                                                "thoughtSignature"
+                                            ) or part.get("thought_signature")
                                             _img_tool_end: dict[str, Any] = {
                                                 "type": "tool_end",
                                                 "tool_call_id": img_id,

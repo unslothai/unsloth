@@ -1322,9 +1322,7 @@ def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
     assert usage["prompt_tokens"] == 110, usage
     assert usage["completion_tokens"] == 7, usage
     assert usage["total_tokens"] == 117, usage
-    assert (
-        usage["completion_tokens_details"]["reasoning_tokens"] == 2
-    ), usage
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 2, usage
 
 
 def test_usage_chunk_reasoning_tokens_surfaced(monkeypatch):
@@ -1354,9 +1352,7 @@ def test_usage_chunk_reasoning_tokens_surfaced(monkeypatch):
     assert len(usage_chunks) == 1, chunks
     usage = usage_chunks[0]["usage"]
     assert usage["completion_tokens"] == 25, usage
-    assert (
-        usage["completion_tokens_details"]["reasoning_tokens"] == 20
-    ), usage
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 20, usage
 
 
 def test_prompt_block_pairs_web_search_tool_end(monkeypatch):
@@ -1481,9 +1477,7 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
     image_ends = [
-        e
-        for e in tool_events
-        if e.get("type") == "tool_end" and e.get("image_b64")
+        e for e in tool_events if e.get("type") == "tool_end" and e.get("image_b64")
     ]
     assert image_ends, tool_events
     assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
