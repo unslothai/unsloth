@@ -1439,6 +1439,7 @@ shell.Run cmd, 0, False
     # Wheels bundle their own ROCm runtime and support all Python versions.
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
+    $ROCmTorchFloor = $null
     if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
@@ -1448,11 +1449,23 @@ shell.Run cmd, 0, False
             "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
             "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
         }
+        # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
+        # torch._C._grouped_mm on torch <2.11.0 (rocm7.12 and rocm7.1 respectively).
+        # TheRock issues #5284 and #3284. Force torch>=2.11.0 so pip never resolves
+        # to the broken 2.10.0 wheels even though they exist on the AMD index.
+        $torchFloorMap = @{
+            "gfx1201" = "torch>=2.11.0"; "gfx1200" = "torch>=2.11.0"
+            "gfx1151" = "torch>=2.11.0"; "gfx1150" = "torch>=2.11.0"
+        }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+            $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
             $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
             substep "$archLabel -- AMD repo.amd.com index selected" "Cyan"
+            if ($ROCmTorchFloor) {
+                substep "  enforcing $ROCmTorchFloor (known _grouped_mm bug in older wheels)" "Cyan"
+            }
         } elseif ($ROCmGfxArch) {
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         } else {
@@ -1565,7 +1578,8 @@ shell.Run cmd, 0, False
         } elseif ($ROCmIndexUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $ROCmIndexUrl..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl torch torchvision torchaudio }
+            $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
