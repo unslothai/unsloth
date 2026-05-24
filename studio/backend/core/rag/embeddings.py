@@ -28,19 +28,126 @@ _embedding_dim: int | None = None
 
 
 def _load(model_name: str) -> Any:
+    logger.info("Loading RAG embedder: %s", model_name)
+
+    # BGE-VL ships a sentence-transformers shim that's tightly coupled
+    # to a specific ST internal API and breaks across ST version bumps.
+    # Bypass ST entirely and load via the canonical transformers
+    # AutoModel path, wrapped to match the SentenceTransformer API
+    # slice the RAG ingester uses.
+    if model_name.startswith("BAAI/BGE-VL"):
+        return _BGEVLAdapter(model_name)
+
     from unsloth import FastSentenceTransformer
 
-    logger.info("Loading RAG embedder: %s", model_name)
-    # trust_remote_code is required for the multimodal / late-chunking
-    # embedders in RAG_EMBEDDER_MATRIX: BGE-VL ships a custom
-    # `bge_vl_clip_transformer` module and nomic-embed-text-v1.5 ships
-    # a custom modeling file. Both repos are pinned in our config — we
-    # control which names land here — so opting in is safe.
+    # trust_remote_code is required for nomic-embed-text-v1.5 (custom
+    # modeling for 8K context). Safe to enable because the embedder
+    # matrix is config-pinned — users don't supply arbitrary names.
     return FastSentenceTransformer.from_pretrained(
         model_name,
         for_inference = True,
         trust_remote_code = True,
     )
+
+
+class _BGEVLAdapter:
+    """Adapter exposing the slice of SentenceTransformer API the RAG
+    ingester depends on, backed by BGE-VL's transformers AutoModel.
+
+    Supports:
+      - ``encode(list_of_strings, ...)``  → text embeddings
+      - ``encode(list_of_PIL_images, ...)`` → image embeddings
+      - ``get_sentence_embedding_dimension()``
+      - ``tokenize([text])`` for token-aware chunking (best-effort)
+
+    Auto-detects image vs text inputs from the first element. Returns
+    L2-normalized numpy arrays when ``normalize_embeddings=True``.
+    """
+
+    def __init__(self, hf_model_name: str):
+        from transformers import AutoModel
+        import torch
+
+        self._model = AutoModel.from_pretrained(
+            hf_model_name,
+            trust_remote_code = True,
+        )
+        # BGE-VL's encode() requires set_processor to install the
+        # tokenizer / image processor on the model. Without it, the
+        # first encode() raises with a missing-processor error.
+        self._model.set_processor(hf_model_name)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model.to(device).eval()
+        self._device = device
+        self._dim: int | None = None
+
+    def _normalize(self, tensor):
+        import torch.nn.functional as F
+
+        return F.normalize(tensor, p = 2.0, dim = -1)
+
+    def encode(
+        self,
+        inputs,
+        *,
+        batch_size: int = 32,
+        normalize_embeddings: bool = True,
+        convert_to_numpy: bool = True,
+        show_progress_bar: bool = False,
+        **_ignored,
+    ):
+        import io
+
+        import numpy as np
+        import torch
+        from PIL import Image
+
+        if inputs is None or len(inputs) == 0:
+            return np.zeros((0, self.get_sentence_embedding_dimension()), dtype = np.float32)
+
+        sample = inputs[0]
+        is_image = isinstance(sample, Image.Image) or isinstance(sample, (bytes, bytearray))
+
+        chunks_out = []
+        for start in range(0, len(inputs), batch_size):
+            batch = list(inputs[start : start + batch_size])
+            if is_image:
+                pil_batch = [
+                    Image.open(io.BytesIO(b)).convert("RGB")
+                    if isinstance(b, (bytes, bytearray))
+                    else b
+                    for b in batch
+                ]
+                with torch.no_grad():
+                    vecs = self._model.encode(images = pil_batch)
+            else:
+                with torch.no_grad():
+                    vecs = self._model.encode(text = [str(t) for t in batch])
+            if normalize_embeddings:
+                vecs = self._normalize(vecs)
+            chunks_out.append(vecs.detach().cpu())
+
+        out = torch.cat(chunks_out, dim = 0)
+        return out.numpy() if convert_to_numpy else out
+
+    def get_sentence_embedding_dimension(self) -> int:
+        if self._dim is None:
+            v = self.encode(["dim-probe"], batch_size = 1)
+            self._dim = int(v.shape[-1])
+        return self._dim
+
+    def tokenize(self, texts):
+        """Best-effort tokenize for the token_counter chunking path.
+
+        Falls back gracefully — the caller already handles exceptions
+        by approximating tokens as ``len(text) // 4`` when this raises.
+        """
+        processor = getattr(self._model, "processor", None) or getattr(
+            self._model, "tokenizer", None
+        )
+        if processor is None:
+            raise AttributeError("BGE-VL adapter has no tokenizer attached")
+        return processor(text = texts, return_tensors = "pt", padding = True)
 
 
 def get_embedder(model_name: str | None = None) -> Any:
