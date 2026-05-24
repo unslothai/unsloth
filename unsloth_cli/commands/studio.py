@@ -649,14 +649,14 @@ def run(
     model: str = typer.Option(
         ...,
         "--model",
-        "-m",
         "-hf",
-        "-hfr",
         "--hf-repo",
+        # `-m` and `-hfr` removed: Click cluster-ate llama-server shorts
+        # like `-mg`, `-md`, `-mu`. `-hf` is kept (2-char, no clustering).
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
-            "`org/repo:variant` syntax. The `-hf` / `--hf-repo` aliases "
-            "match llama-server's spelling."
+            "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
+            "llama-server's spelling."
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
@@ -671,7 +671,9 @@ def run(
     ),
     port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
-    frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
+    # `-f` removed: Click clustered `-fa`/`-fit*` (llama-server) into
+    # `--frontend a`/`it*` under pass-through. studio_default keeps `-f`.
+    frontend: Optional[Path] = typer.Option(None, "--frontend"),
     silent: bool = typer.Option(False, "--silent", "-q"),
     enable_tools: Optional[bool] = typer.Option(
         None,
@@ -795,6 +797,10 @@ def run(
         # re-runs the resolver and prompts a second time.
         if yes or (enable_tools and is_external_host(host)):
             args.append("--yes")
+        # Forward --parallel: typer claims it outside ctx.args, so the
+        # child re-execs at the default 4 without this, silently losing
+        # any user value (including pre-PR `-np N` pass-through users).
+        args.extend(["--parallel", str(parallel)])
         # Forward unknown args (llama-server pass-through) to the
         # re-exec'd command so the studio venv sees them in ctx.args
         # and the re-execed run() can include them in the load payload.

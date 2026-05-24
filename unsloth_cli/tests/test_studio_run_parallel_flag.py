@@ -99,3 +99,144 @@ def test_run_kwargs_use_parallel_value(monkeypatch):
     assert (
         "llama_parallel_slots = parallel" in src
     ), "run_kwargs must use the parallel variable from the typer option"
+
+
+# Re-exec arg-builder coverage. `unsloth studio run` is normally invoked
+# outside the Studio venv; run() rebuilds argv and re-execs into the
+# Studio venv via os.execvp (POSIX) or subprocess.Popen (Windows).
+# Typer claims --parallel/--n-parallel/-np in the outer process, so
+# without explicit forwarding the child re-execs at the typer default 4
+# (silently dropping any user value -- including pre-PR `-np N` users
+# who relied on llama-server pass-through).
+
+
+class _ExecCaptured(SystemExit):
+    def __init__(self, argv):
+        super().__init__(0)
+        self.argv = list(argv)
+
+
+def _install_reexec_capture(monkeypatch, *, platform):
+    studio_mod = _load_run_command()
+    captured = []
+
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    fake_python = fake_venv / "bin" / "python"
+    fake_bin = fake_venv / "bin" / "unsloth"
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
+
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
+    )
+
+    # resolve_tool_policy is imported lazily inside run(); patch the source.
+    from unsloth_cli import _tool_policy as _tp_mod
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    monkeypatch.setattr(sys, "platform", platform)
+
+    def fake_execvp(file, argv):
+        captured.append({"kind": "execvp", "argv": list(argv)})
+        raise _ExecCaptured(argv)
+
+    class _FakePopen:
+        def __init__(self, argv, *a, **kw):
+            captured.append({"kind": "popen", "argv": list(argv)})
+            self._argv = argv
+
+        def wait(self):
+            raise _ExecCaptured(self._argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", _FakePopen)
+
+    return captured
+
+
+def _invoke_run(monkeypatch, args, *, platform = "linux"):
+    import typer as _typer
+    studio_mod = _load_run_command()
+    captured = _install_reexec_capture(monkeypatch, platform = platform)
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    result = CliRunner(mix_stderr = False).invoke(app, args, catch_exceptions = True)
+    return result, captured
+
+
+def _value_after(argv, flag):
+    for i, tok in enumerate(argv):
+        if tok == flag and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+_BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [("--parallel", "8"), ("--n-parallel", "16"), ("-np", "32")],
+)
+def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
+    """Every alias the user can type must reach the re-exec'd child."""
+    result, captured = _invoke_run(monkeypatch, _BASE + [flag, value])
+    assert len(captured) == 1, (
+        f"expected one launch via re-exec, got {captured}; output={result.output!r}"
+    )
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--parallel") == value, (
+        f"{flag} {value} was dropped on re-exec; argv = {argv}"
+    )
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
+    """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
+    result, captured = _invoke_run(
+        monkeypatch, _BASE + ["--parallel", "12"], platform = platform
+    )
+    assert len(captured) == 1
+    expected_kind = "popen" if platform == "win32" else "execvp"
+    assert captured[0]["kind"] == expected_kind, (
+        f"{platform}: expected launcher {expected_kind}, got {captured[0]['kind']}"
+    )
+    assert _value_after(captured[0]["argv"], "--parallel") == "12"
+
+
+def test_reexec_pre_pr_np_passthrough_regression(monkeypatch):
+    """Pre-PR `-np 8` worked because typer ignored it and llama-server
+    last-wins parsing made it stick. Post-PR typer claims `-np`; without
+    forwarding the child silently boots with 4."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["-np", "8"])
+    assert len(captured) == 1
+    assert _value_after(captured[0]["argv"], "--parallel") == "8", (
+        "REGRESSION: -np 8 silently became 4 after re-exec; argv = "
+        f"{captured[0]['argv']}"
+    )
+
+
+def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
+    """--parallel (typer-claimed) + pass-through llama-server flags must both reach the child."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--parallel", "8", "--top-k", "20", "--temp", "0.7"],
+    )
+    assert len(captured) == 1
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--parallel") == "8", argv
+    assert _value_after(argv, "--top-k") == "20", argv
+    assert _value_after(argv, "--temp") == "0.7", argv
