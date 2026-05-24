@@ -347,10 +347,6 @@ def test_reprompts_on_incomplete_html_intent():
     assert _would_reprompt(content)
 
 
-
-
-
-
 def test_plan_framing_requires_apostrophe_in_ill():
     """The ``i['’]ll`` plan-framing alternative requires an apostrophe so
     the regex does not match the word "ill" (sick). Without this, a
@@ -428,8 +424,6 @@ def test_no_reprompt_on_here_is_the_plan_prose_answer():
     ]
     for s in samples:
         assert not _would_reprompt(s), s
-
-
 
 
 # ── Cross-platform line endings ────────────────────────────────────
