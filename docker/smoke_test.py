@@ -52,6 +52,17 @@ def check_imports() -> None:
     import triton
 
     print(f"triton      {triton.__version__}")
+    # Import order matters: unsloth must be imported BEFORE transformers / trl /
+    # peft so its monkey-patches land, and BEFORE unsloth_zoo so the latter sees
+    # the UNSLOTH_IS_PRESENT env marker that unsloth/__init__.py sets. Doing it
+    # otherwise trips an explicit guard in unsloth_zoo/__init__.py with
+    # "ImportError: Please install Unsloth via `pip install unsloth`!".
+    import unsloth
+
+    print(f"unsloth     {unsloth.__version__}")
+    import unsloth_zoo
+
+    print(f"unsloth_zoo {unsloth_zoo.__version__}")
     import xformers
 
     print(f"xformers    {xformers.__version__}")
@@ -67,16 +78,12 @@ def check_imports() -> None:
     import peft
 
     print(f"peft        {peft.__version__}")
-    import unsloth_zoo
-
-    print(f"unsloth_zoo {unsloth_zoo.__version__}")
 
 
 def check_unsloth_import() -> None:
-    banner("unsloth import")
-    # Unsloth must be imported BEFORE transformers in real training scripts,
-    # but here we already imported transformers above for the version check.
-    # That's fine for this smoke -- we're not training Unsloth-patched models yet.
+    banner("unsloth FastLanguageModel reachable")
+    # unsloth itself was already imported in check_imports() above (it has to be
+    # imported first for unsloth_zoo to load). This re-import is a no-op.
     import unsloth
     from unsloth import FastLanguageModel
 
