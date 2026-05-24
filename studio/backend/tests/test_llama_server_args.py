@@ -166,10 +166,16 @@ def test_denylist_rejects_all_aliases(denied):
         (["--n-parallel", "16"], "--n-parallel"),
         (["--n-parallel=16"], "--n-parallel"),
         (["-np", "32"], "-np"),
+        # Attached short-option form. Click clusters this in the CLI;
+        # over HTTP /load with llama_extra_args=["-np8"] the validator
+        # must still recognise it as the managed --parallel flag.
+        (["-np8"], "-np"),
+        (["-np64"], "-np"),
         # Out-of-range value that would bypass the typer 1..64 guard
         # if accepted as a pass-through.
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
+        (["-np999"], "-np"),
     ],
 )
 def test_parallel_flags_are_managed(args, offending):

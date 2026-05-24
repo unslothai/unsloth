@@ -101,12 +101,17 @@ def _flag_name(token: str) -> Optional[str]:
     Peels ``--key=value`` to the bare ``--key``. Plain numeric values
     like ``-1`` or ``-0.5`` (e.g. ``--seed -1``) are values, not flags;
     llama-server short-form flags always start with a letter.
+    Also normalises the attached short-option form ``-np<N>`` to
+    ``-np`` so the denylist catches both ``-np 8`` and ``-np8``.
     """
     if not token.startswith("-") or token in {"-", "--"}:
         return None
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
-    return token.split("=", 1)[0]
+    name = token.split("=", 1)[0]
+    if len(name) > 3 and name.startswith("-np") and name[3:].isdigit():
+        return "-np"
+    return name
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
