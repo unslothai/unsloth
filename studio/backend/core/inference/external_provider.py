@@ -256,6 +256,40 @@ def _apply_mistral_reasoning_controls(
 _http_client = httpx.AsyncClient()
 
 
+# Server-side builtin tool names that external providers emit
+# synthetic tool events for. Used by `_stamp_server_tool_marker` to
+# tag the outbound `_toolEvent.arguments` so the frontend serializer
+# can tell synthetic provider-side cards from real user-declared tool
+# calls of the same name (local llama.cpp web_search, OpenAI
+# function-calling tool literally named `web_search`, etc.).
+_SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
+    {"web_search", "code_execution", "image_generation"}
+)
+
+
+def _stamp_server_tool_marker(payload: dict[str, Any]) -> None:
+    """Tag synthetic provider-side tool events so the frontend can
+    distinguish them from real user-declared / local function tools of
+    the same name. The marker rides on `arguments._server_tool` and is
+    only added for known server-side builtin names; user-supplied
+    tool calls echoed back through these helpers (e.g. Kimi
+    `$web_search`) keep their existing shape because we keep this scoped
+    to the canonical builtin names.
+    """
+    if not isinstance(payload, dict):
+        return
+    if payload.get("type") != "tool_start":
+        return
+    name = payload.get("tool_name")
+    if not isinstance(name, str) or name not in _SERVER_SIDE_BUILTIN_TOOL_NAMES:
+        return
+    args = payload.get("arguments")
+    if not isinstance(args, dict):
+        args = {}
+        payload["arguments"] = args
+    args["_server_tool"] = True
+
+
 def _build_kimi_tool_end(
     synthetic_chunk_fn: Any,
     tool_call_id: str,
@@ -671,6 +705,7 @@ class ExternalProviderClient:
                 web_search_tool_ended = False
 
                 def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
+                    _stamp_server_tool_marker(payload)
                     chunk = {
                         "id": f"chatcmpl-{self.provider_type}-synthetic",
                         "object": "chat.completion.chunk",
@@ -1883,6 +1918,7 @@ class ExternalProviderClient:
                     return f"data: {_json.dumps(chunk)}"
 
                 def _emit_tool_event(payload: dict[str, Any]) -> str:
+                    _stamp_server_tool_marker(payload)
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
@@ -2951,9 +2987,15 @@ class ExternalProviderClient:
         model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
         # `image_generation` is meaningful only on image-capable model
-        # IDs. A stale enabled_tools=["image_generation"] on a text
-        # model is dropped (text models 400 on responseModalities).
-        is_image_model = is_image_picker_model
+        # IDs AND when the caller opted into image output via the
+        # Images pill (enabled_tools includes "image_generation"). A
+        # text-only model 400s on responseModalities, and an
+        # image-capable model with the Images pill off should not
+        # silently bill image output the UI says is disabled.
+        image_tool_requested = bool(
+            enabled_tools and "image_generation" in enabled_tools
+        )
+        is_image_model = is_image_picker_model and image_tool_requested
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
 
@@ -3230,6 +3272,7 @@ class ExternalProviderClient:
         )
 
         def _emit_tool_event(payload: dict[str, Any]) -> str:
+            _stamp_server_tool_marker(payload)
             chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -4379,6 +4422,7 @@ class ExternalProviderClient:
                     container_id_emitted = False
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
+                        _stamp_server_tool_marker(payload)
                         chunk = {
                             "id": completion_id,
                             "object": "chat.completion.chunk",

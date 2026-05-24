@@ -323,7 +323,7 @@ function isGeminiImageModel(modelId: string): boolean {
  * responseModalities) never reach them. Hide the corresponding
  * Studio pills here so the request, builder, and UI agree.
  */
-function isGeminiCustomOpenAICompatBase(
+export function isGeminiCustomOpenAICompatBase(
   baseUrl: string | null | undefined,
 ): boolean {
   if (!baseUrl) return false;

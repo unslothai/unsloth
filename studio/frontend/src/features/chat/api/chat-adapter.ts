@@ -24,6 +24,7 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  isGeminiCustomOpenAICompatBase,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
@@ -374,25 +375,18 @@ function collectAssistantToolCalls(
         typeof argsGoogle.native_part === "object" &&
         argsGoogle.native_part !== null,
     );
-    // Server-side builtins are not user-declared functions and must
-    // not round-trip as functionCall/functionResponse on the next
-    // turn — providers reject that history because no matching
-    // declaration exists.
-    //  - web_search: grounding is in the assistant text + provider
-    //    grounding metadata; the synthetic tool card is UI-only. Drop
-    //    by name. A caller-supplied function literally named
-    //    "web_search" must use a different name.
-    //  - code_execution / image_generation: only round-trip when the
-    //    backend stowed the native Gemini part (executableCode /
-    //    codeExecutionResult / inlineData) on args.google.native_part.
-    if (toolNameLower === "web_search") {
-      continue;
-    }
-    if (
-      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower) &&
-      !hasNativePart
-    ) {
-      continue;
+    // Server-side provider builtins (Gemini grounding, Anthropic /
+    // OpenAI hosted tools) are tagged with args._server_tool by the
+    // backend so we can tell them apart from real user-declared
+    // functions or local llama.cpp tools that happen to share the
+    // name. web_search has no replay path (grounding rides in the
+    // assistant text); code_execution / image_generation only
+    // round-trip when the backend stowed args.google.native_part.
+    const isServerSideBuiltin = Boolean(
+      argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
+    );
+    if (isServerSideBuiltin) {
+      if (!hasNativePart) continue;
     }
     const argumentsStr =
       typeof tc.argsText === "string" && tc.argsText.length > 0
@@ -424,19 +418,6 @@ function collectAssistantToolCalls(
   return out;
 }
 
-// Tool names whose results are produced server-side by the provider
-// (web search grounding, code execution, image generation) rather than
-// by a user-supplied function tool. The provider's history already
-// contains the matching native result on the same assistant turn, so
-// we do NOT emit a separate `role="tool"` message for these on
-// follow-up requests. Forwarding one would 400 on Gemini (no matching
-// user-defined function) and is redundant on OpenAI/Anthropic.
-const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
-  "code_execution",
-  "image_generation",
-  "web_search",
-]);
-
 function collectToolResultMessages(
   message: RunMessage,
 ): Array<{
@@ -455,13 +436,15 @@ function collectToolResultMessages(
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
     const result = (tc as { result?: unknown }).result;
-    // Mirror collectAssistantToolCalls: web_search server-side
-    // grounding never round-trips as a tool result; code_execution
-    // and image_generation only round-trip on the assistant
-    // tool_calls native-part path, never as a separate
-    // role="tool" message.
-    const toolNameLower = tc.toolName ? tc.toolName.toLowerCase() : "";
-    if (SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
+    // Skip provider-side builtins (tagged with args._server_tool by
+    // the backend). User-declared functions and local llama.cpp
+    // tools have no marker so they round-trip their result
+    // normally.
+    const argsObj =
+      tc.args && typeof tc.args === "object"
+        ? (tc.args as Record<string, unknown>)
+        : null;
+    if (argsObj && argsObj._server_tool === true) {
       continue;
     }
     if (result === undefined || result === null) continue;
@@ -1059,10 +1042,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Connection not found.");
       }
       // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
+      // Custom non-Google Gemini bases (LiteLLM, OAI-compat gateways)
+      // also allow an empty key because the backend routes them through
+      // the OpenAI-compatible path and skips the Authorization header
+      // when api_key is empty.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
         : false;
-      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
+      const externalProviderIsGeminiCustomBase = Boolean(
+        externalProvider &&
+          externalProvider.providerType === "gemini" &&
+          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
+      );
+      if (
+        isExternalRequest &&
+        !externalApiKey &&
+        !externalProviderIsCustom &&
+        !externalProviderIsGeminiCustomBase
+      ) {
         toast.error("Missing API key for selected connection.", {
           description: "Open Settings → Connections and set the API key again.",
         });

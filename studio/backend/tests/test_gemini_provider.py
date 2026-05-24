@@ -411,13 +411,30 @@ def test_thinking_default_omits_thinking_config(monkeypatch):
 
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
     """`nano-banana-pro-preview` is an alias for the Pro image model and
-    must set responseModalities=[TEXT,IMAGE] same as the `*-image` ids."""
+    must set responseModalities=[TEXT,IMAGE] when the Images pill is on
+    (enabled_tools includes "image_generation")."""
     captured = _capture_body(
         monkeypatch,
         model = "nano-banana-pro-preview",
+        enabled_tools = ["image_generation"],
     )
     gc = captured["body"]["generationConfig"]
     assert gc.get("responseModalities") == ["TEXT", "IMAGE"], gc
+
+
+def test_image_capable_model_without_image_pill_stays_text_only(monkeypatch):
+    """When the Images pill is off (enabled_tools has no
+    image_generation), an image-capable model id (gemini-2.5-flash-image)
+    must NOT force responseModalities=[TEXT,IMAGE]. The UI state and
+    backend request must agree so users do not get image output and
+    billing they did not opt into."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = [],
+    )
+    gc = captured["body"]["generationConfig"]
+    assert gc.get("responseModalities") is None, gc
 
 
 def test_image_models_skip_thinking_config(monkeypatch):
@@ -435,6 +452,7 @@ def test_image_models_skip_thinking_config(monkeypatch):
             model = model,
             reasoning_effort = "high",
             enable_thinking = False,
+            enabled_tools = ["image_generation"],
         )
         gc = captured["body"]["generationConfig"]
         assert "thinkingConfig" not in gc, (model, gc)
@@ -454,7 +472,7 @@ def test_image_models_drop_code_execution(monkeypatch):
         captured = _capture_body(
             monkeypatch,
             model = model,
-            enabled_tools = ["code_execution"],
+            enabled_tools = ["image_generation", "code_execution"],
         )
         tools_arr = captured["body"].get("tools") or []
         names = [list(t.keys())[0] for t in tools_arr]
@@ -486,7 +504,7 @@ def test_gemini3_image_models_allow_google_search(monkeypatch):
         captured = _capture_body(
             monkeypatch,
             model = model,
-            enabled_tools = ["web_search", "code_execution"],
+            enabled_tools = ["image_generation", "web_search", "code_execution"],
         )
         tools_arr = captured["body"].get("tools") or []
         names = [list(t.keys())[0] for t in tools_arr]
@@ -500,7 +518,7 @@ def test_legacy_image_models_block_google_search(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
-        enabled_tools = ["web_search", "code_execution"],
+        enabled_tools = ["image_generation", "web_search", "code_execution"],
     )
     assert "tools" not in captured["body"], captured["body"].get("tools")
 
@@ -640,7 +658,7 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
         monkeypatch,
         sse,
         model = "gemini-2.5-flash-image",
-        enabled_tools = ["web_search", "code_execution"],
+        enabled_tools = ["image_generation", "web_search", "code_execution"],
     )
     chunks = _parse_chunks(lines)
     tool_evs = [
@@ -773,6 +791,7 @@ def test_image_model_sets_response_modalities(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
+        enabled_tools = ["image_generation"],
     )
     assert captured["body"]["generationConfig"]["responseModalities"] == [
         "TEXT",
@@ -2256,6 +2275,7 @@ def test_image_models_drop_function_declarations(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
+        enabled_tools = ["image_generation"],
         tools = [
             {
                 "type": "function",
