@@ -64,10 +64,17 @@ _SDK_MODULE_NAMES: tuple[str, ...] = ("openai_codex", "codex_app_server")
 # Studio's parent env contains secrets (HF_TOKEN, GH_TOKEN, WANDB_API_KEY,
 # OPENAI key for non-codex providers, etc.); a malicious or shimmed codex
 # binary earlier on PATH would receive all of them via plain os.environ
-# inheritance. We pass only what codex actually needs: PATH for spawning
-# its own helpers, HOME / USER for auth config lookup, the Windows /
-# macOS equivalents, the codex-specific CODEX_HOME override, and the
-# OPENAI_API_KEY that codex's own ``--with-api-key`` flow expects.
+# inheritance. We pass only what codex needs to spawn its own helpers
+# (PATH), resolve its auth/config dir (HOME / USER / Windows equivalents
+# plus CODEX_HOME), and emit log output in the user's locale.
+#
+# OPENAI_API_KEY is DELIBERATELY excluded. The codex CLI authenticates
+# via its own `codex login --device-auth` ChatGPT flow or via stdin
+# (`--with-api-key`); Studio's stored OpenAI key belongs to the OpenAI
+# provider, not Codex. Forwarding it would let a shimmed `codex` binary
+# on PATH exfiltrate the user's OpenAI credential. Users who want to
+# wire the same key into Codex should set CODEX_OPENAI_API_KEY or feed
+# the key via `codex login --with-api-key` themselves.
 _SAFE_CODEX_ENV_KEYS: tuple[str, ...] = (
     "PATH",
     "HOME",
@@ -85,8 +92,7 @@ _SAFE_CODEX_ENV_KEYS: tuple[str, ...] = (
     "LOCALAPPDATA",
     "PROGRAMDATA",
     "CODEX_HOME",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
+    "CODEX_OPENAI_API_KEY",
 )
 
 
@@ -236,7 +242,14 @@ async def _detect_logged_in() -> bool:
     if negative.search(combined):
         return False
 
-    positive = re.compile(r"\b(logged in|authenticated as|signed in)\b")
+    positive = re.compile(
+        r"\b("
+        r"logged in|"
+        r"authenticated as|"
+        r"authenticated:\s*yes|"
+        r"signed in"
+        r")\b"
+    )
     if positive.search(combined):
         return True
 
@@ -255,9 +268,12 @@ async def probe_codex_availability() -> dict[str, Any]:
 
     Returns a dict with keys:
 
-    * ``installed`` (bool) -- True iff both CLI and SDK are present.
-      Note this is the gate the frontend uses to surface the provider
-      at all, so if EITHER is missing the picker hides the entry.
+    * ``installed`` (bool) -- True iff Studio can actually drive Codex.
+      The SDK's `openai-codex-cli-bin` runtime is what backs
+      `AsyncCodex(...)`, so an importable SDK alone is sufficient even
+      with no standalone `codex` on PATH. We still report `cli_path`
+      separately so the UI can surface "CLI also present" / "SDK
+      bundled runtime only" without changing the gate.
     * ``cli_path`` (str | None) -- absolute path to the CLI, or None.
     * ``sdk_importable`` (bool) -- the Python SDK is importable.
     * ``logged_in`` (bool) -- best-effort auth check; meaningless when
@@ -269,7 +285,9 @@ async def probe_codex_availability() -> dict[str, Any]:
     sdk_ok = _sdk_importable()
 
     payload: dict[str, Any] = {
-        "installed": bool(cli_path) and sdk_ok,
+        # SDK alone is enough -- it bundles the codex runtime. A
+        # standalone CLI on PATH is additional but optional.
+        "installed": sdk_ok,
         "cli_path": cli_path,
         "sdk_importable": sdk_ok,
         "logged_in": False,

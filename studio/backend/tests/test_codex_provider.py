@@ -173,9 +173,10 @@ class TestCodexAvailability:
         monkeypatch.setattr(ca, "_detect_logged_in", fake_logged_in)
 
         payload = asyncio.run(ca.probe_codex_availability())
-        # installed requires BOTH CLI and SDK -- this is the gate the
-        # frontend uses to decide whether to surface the provider entry
-        # at all, so missing-SDK means hide.
+        # The SDK is what backs `AsyncCodex(...)`, so installed=False
+        # when the SDK is missing -- even if a standalone CLI is on
+        # PATH there is no way for Studio to drive it without the
+        # Python bindings.
         assert payload["installed"] is False
         assert payload["cli_path"] == "/usr/local/bin/codex"
         assert payload["sdk_importable"] is False
@@ -671,14 +672,21 @@ class TestCodexHardenedRegressions:
         assert "Codex tab failed" in body or "exception_type" in body
 
     def test_codex_subprocess_env_scrubbed(self, monkeypatch):
-        """The codex subprocess env must not include other-provider secrets."""
+        """The codex subprocess env must not include other-provider secrets.
+
+        OPENAI_API_KEY is intentionally excluded too: a shimmed `codex`
+        binary on PATH must not receive Studio's stored OpenAI provider
+        key. Users wire Codex auth via `codex login` or the
+        codex-specific CODEX_OPENAI_API_KEY override instead.
+        """
         from core.inference.codex_availability import _codex_subprocess_env
 
         monkeypatch.setenv("HF_TOKEN", "hf_should_not_leak")
         monkeypatch.setenv("GH_TOKEN", "gh_should_not_leak")
         monkeypatch.setenv("WANDB_API_KEY", "wandb_should_not_leak")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic_should_not_leak")
-        monkeypatch.setenv("OPENAI_API_KEY", "openai_codex_uses_this")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai_provider_key_not_for_codex")
+        monkeypatch.setenv("CODEX_OPENAI_API_KEY", "codex_specific_key")
         monkeypatch.setenv("CODEX_HOME", "/custom/.codex")
         monkeypatch.setenv("PATH", "/usr/bin")
 
@@ -688,10 +696,12 @@ class TestCodexHardenedRegressions:
             "GH_TOKEN",
             "WANDB_API_KEY",
             "ANTHROPIC_API_KEY",
+            # OPENAI_API_KEY belongs to the OpenAI provider, not Codex.
+            "OPENAI_API_KEY",
         ):
             assert secret not in env, f"{secret} leaked into codex env"
         # Codex-relevant keys must be preserved.
-        assert env.get("OPENAI_API_KEY") == "openai_codex_uses_this"
+        assert env.get("CODEX_OPENAI_API_KEY") == "codex_specific_key"
         assert env.get("CODEX_HOME") == "/custom/.codex"
         assert env.get("PATH") == "/usr/bin"
 
@@ -827,11 +837,15 @@ class TestCodexHardenedRegressions:
                 tab_outputs = ["Paris", "Paris."],
             )
         )
-        # Either the kwargs carried the system prompt or it was
-        # prepended to the synthesis prompt as a fallback.
-        system_seen = any(
-            "Spanish" in (kw.get("system") or "") for kw in seen_kwargs
-        ) or any("Always answer in Spanish" in p for p in seen_prompts)
+        # The upstream openai_codex SDK uses `base_instructions` for the
+        # system prompt; the legacy alias accepts `system`; the last-resort
+        # fallback inlines the system text into the user prompt. Accept
+        # any of those paths.
+        system_seen = (
+            any("Spanish" in (kw.get("base_instructions") or "") for kw in seen_kwargs)
+            or any("Spanish" in (kw.get("system") or "") for kw in seen_kwargs)
+            or any("Always answer in Spanish" in p for p in seen_prompts)
+        )
         assert system_seen, (
             f"system prompt dropped in synthesis. kwargs={seen_kwargs} "
             f"prompts={seen_prompts}"
@@ -846,7 +860,11 @@ class TestCodexHardenedRegressions:
         """
         monkeypatch.setenv("HF_TOKEN", "should_be_scrubbed")
         monkeypatch.setenv("GH_TOKEN", "should_be_scrubbed")
-        monkeypatch.setenv("OPENAI_API_KEY", "ok_for_codex")
+        # OPENAI_API_KEY is now ALSO scrubbed -- it belongs to the
+        # OpenAI provider, not Codex. CODEX_OPENAI_API_KEY is the
+        # codex-specific override that survives.
+        monkeypatch.setenv("OPENAI_API_KEY", "openai_provider_key_not_for_codex")
+        monkeypatch.setenv("CODEX_OPENAI_API_KEY", "codex_specific_key")
 
         seen_configs: list[Any] = []
 
@@ -903,9 +921,14 @@ class TestCodexHardenedRegressions:
             "HF_TOKEN" in cfg.env and cfg.env["HF_TOKEN"] == ""
         ), "HF_TOKEN not overridden to empty in SDK env"
         assert "GH_TOKEN" in cfg.env and cfg.env["GH_TOKEN"] == ""
-        # Safe-listed keys must NOT appear in the override dict (so the
-        # SDK keeps their os.environ values intact).
-        assert "OPENAI_API_KEY" not in cfg.env
+        # OPENAI_API_KEY is intentionally overridden to empty in the
+        # SDK env so the app-server cannot use it as a Codex credential
+        # by accident. The OpenAI provider still reads its own key from
+        # Studio's storage; nothing in this path needs the env var.
+        assert cfg.env.get("OPENAI_API_KEY") == ""
+        # CODEX_OPENAI_API_KEY is the Codex-specific override and must
+        # survive untouched so users can wire that key into Codex.
+        assert "CODEX_OPENAI_API_KEY" not in cfg.env
 
     def test_thread_turn_stream_path_taken(self, monkeypatch):
         """The canonical openai_codex API uses thread.turn(prompt).stream();
@@ -967,6 +990,238 @@ class TestCodexHardenedRegressions:
         # Each text chunk wraps in its own SSE delta, so check both pieces.
         assert '"content": "hello "' in body
         assert '"content": "from turn.stream"' in body
+
+    def test_installed_true_when_sdk_only(self, monkeypatch):
+        """SDK alone is sufficient: openai-codex-cli-bin ships the
+        runtime that backs `AsyncCodex(...)`, so the picker must be
+        shown even when no standalone `codex` lives on PATH.
+        """
+        from core.inference import codex_availability as ca
+
+        monkeypatch.setattr(ca, "_which_codex", lambda: None)
+        monkeypatch.setattr(ca, "_sdk_importable", lambda: True)
+
+        payload = asyncio.run(ca.probe_codex_availability())
+        assert payload["installed"] is True
+        assert payload["cli_path"] is None
+        assert payload["sdk_importable"] is True
+        # logged_in stays False because the version/login probes only
+        # run when a CLI is present (they shell out to it). That is the
+        # expected behaviour, not a bug.
+        assert payload["logged_in"] is False
+
+    def test_base_instructions_kwarg_preferred(self, monkeypatch):
+        """The upstream openai_codex SDK uses `base_instructions` for
+        the system prompt. The provider must try that name first; only
+        if the SDK rejects it should it fall back to `system`.
+        """
+        seen_kwargs: list[dict] = []
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _FakeThread(chunks = ["ok"])
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "hi"},
+                ],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        # The first (and only, since this fake accepts any kwargs)
+        # call must use base_instructions, not the legacy `system`.
+        assert seen_kwargs, "thread_start was never called"
+        assert (
+            "base_instructions" in seen_kwargs[0]
+        ), f"upstream-canonical kwarg not used: {seen_kwargs[0]}"
+        assert seen_kwargs[0]["base_instructions"] == "You are helpful."
+        assert (
+            "system" not in seen_kwargs[0]
+        ), "legacy `system` kwarg was sent even though base_instructions worked"
+
+    def test_base_instructions_falls_back_to_system(self, monkeypatch):
+        """When the SDK rejects `base_instructions` with TypeError the
+        helper must retry with the legacy `system` kwarg before giving
+        up and inlining the system text in the prompt.
+        """
+        call_log: list[dict] = []
+
+        class _StrictSDK:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                call_log.append(dict(kw))
+                if "base_instructions" in kw:
+                    raise TypeError(
+                        "thread_start() got an unexpected keyword 'base_instructions'"
+                    )
+                return _FakeThread(chunks = ["ok"])
+
+        _install_fake_codex_sdk(monkeypatch, _StrictSDK)
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "hi"},
+                ],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        assert len(call_log) >= 2, "fallback to `system` kwarg never tried"
+        assert "base_instructions" in call_log[0]
+        assert "system" in call_log[1] and call_log[1]["system"] == "You are helpful."
+
+    def test_scrubbed_env_wrapper_strips_secrets_before_construction(self, monkeypatch):
+        """When AppServerConfig is missing the fail-closed wrapper must
+        remove secret env vars BEFORE the SDK constructor runs (the
+        SDK starts its app-server with `env = os.environ.copy()`).
+        """
+        observed_env_during_init: dict[str, str | None] = {}
+
+        class _NoConfigAsync:
+            def __init__(self):
+                # Capture the environment exactly as the SDK would see
+                # it at construction time.
+                observed_env_during_init["HF_TOKEN"] = os.environ.get("HF_TOKEN")
+                observed_env_during_init["GH_TOKEN"] = os.environ.get("GH_TOKEN")
+                observed_env_during_init["WANDB_API_KEY"] = os.environ.get(
+                    "WANDB_API_KEY"
+                )
+                observed_env_during_init["PATH"] = os.environ.get("PATH")
+                observed_env_during_init["CODEX_HOME"] = os.environ.get("CODEX_HOME")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _FakeThread(chunks = ["ok"])
+
+        monkeypatch.setenv("HF_TOKEN", "should_be_gone")
+        monkeypatch.setenv("GH_TOKEN", "should_be_gone")
+        monkeypatch.setenv("WANDB_API_KEY", "should_be_gone")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("CODEX_HOME", "/home/u/.codex")
+        # No AppServerConfig in the fake module -- forces the wrapper path.
+        _install_fake_codex_sdk(monkeypatch, _NoConfigAsync)
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        # Secrets must have been removed from os.environ BEFORE the
+        # SDK constructor captured the env.
+        assert (
+            observed_env_during_init["HF_TOKEN"] is None
+        ), "HF_TOKEN visible to SDK constructor -- env scrub failed"
+        assert observed_env_during_init["GH_TOKEN"] is None
+        assert observed_env_during_init["WANDB_API_KEY"] is None
+        # Safe-listed keys must survive.
+        assert observed_env_during_init["PATH"] == "/usr/bin"
+        assert observed_env_during_init["CODEX_HOME"] == "/home/u/.codex"
+        # And the wrapper must restore them after exit.
+        assert os.environ.get("HF_TOKEN") == "should_be_gone"
+        assert os.environ.get("GH_TOKEN") == "should_be_gone"
+
+    def test_coerce_text_drops_non_answer_event_types(self):
+        """Tool / command / plan deltas have their own `delta` fields
+        that must NOT be rendered as assistant text -- otherwise local
+        stdout, file paths, or tool-call arguments would leak into the
+        Chat Completions reply.
+        """
+        from core.inference.codex_provider import _coerce_text
+
+        # Allowed answer-bearing event types contribute text.
+        assert _coerce_text({"type": "message.delta", "delta": "hello"}) == "hello"
+        assert _coerce_text({"type": "completed", "text": "done"}) == "done"
+        assert _coerce_text({"type": "text_delta", "delta": "x"}) == "x"
+
+        # Non-answer event types are silenced even when they expose a
+        # delta string that looks like prose.
+        for ev_type in (
+            "command.delta",
+            "command_output",
+            "file_write.delta",
+            "tool_call.delta",
+            "plan.update",
+            "exec.stdout",
+            "exec.stderr",
+            "patch.apply",
+            "thread.tool_call",
+            "agent_reasoning",
+        ):
+            payload = {"type": ev_type, "delta": "this should NOT leak"}
+            assert _coerce_text(payload) == "", (
+                f"{ev_type} leaked text into assistant reply: "
+                f"{_coerce_text(payload)!r}"
+            )
+        # Plain strings and untyped dicts still pass through (legacy path).
+        assert _coerce_text("raw text") == "raw text"
+        assert _coerce_text({"text": "no type tag"}) == "no type tag"
+
+    def test_authenticated_yes_wording_is_detected(self):
+        """An `Authenticated: Yes` line (a wording the CLI ships in
+        some locales / versions) must be parsed as logged-in.
+        """
+        from core.inference import codex_availability as av
+
+        async def _fake_run_cli(args, **kw):
+            return (0, "Authenticated: Yes\nuser@example.com", "")
+
+        orig = av._run_cli
+        av._run_cli = _fake_run_cli  # type: ignore[assignment]
+        try:
+            assert asyncio.run(av._detect_logged_in()) is True
+        finally:
+            av._run_cli = orig  # type: ignore[assignment]
+
+    def test_codex_openai_api_key_overrides_openai_provider_key(self, monkeypatch):
+        """Studio's `OPENAI_API_KEY` must NOT reach codex -- but the
+        codex-specific `CODEX_OPENAI_API_KEY` MUST be forwarded so
+        users can deliberately wire a key into Codex.
+        """
+        from core.inference.codex_availability import _codex_subprocess_env
+
+        monkeypatch.setenv("OPENAI_API_KEY", "belongs_to_openai_provider")
+        monkeypatch.setenv("CODEX_OPENAI_API_KEY", "explicit_codex_key")
+
+        env = _codex_subprocess_env()
+        assert (
+            "OPENAI_API_KEY" not in env
+        ), "OpenAI provider key leaked into codex subprocess env"
+        assert env.get("CODEX_OPENAI_API_KEY") == "explicit_codex_key"
 
 
 async def _consume_first(gen):

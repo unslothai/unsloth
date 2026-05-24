@@ -93,15 +93,61 @@ def _codex_sdk_env_override() -> dict[str, str]:
     return {key: "" for key in os.environ if key not in safe}
 
 
-def _open_async_codex(async_codex_cls: Any) -> Any:
-    """Construct an AsyncCodex with a scrubbed env config.
+class _ScrubbedEnvAsyncCodex:
+    """Async-context wrapper that swaps `os.environ` for the lifetime
+    of a Codex SDK session.
 
-    Tries `AsyncCodex(config=AppServerConfig(env=...))` first; falls
-    back to the bare `AsyncCodex()` form when either the SDK does not
-    expose AppServerConfig or its signature does not accept the env
-    kwarg. The fallback is a soft degradation: the app-server will see
-    the full Studio env, but every other Codex hardening still
-    applies.
+    Used as the fail-closed fallback when the SDK does not expose
+    `AppServerConfig(env=...)`. The SDK starts its app-server with
+    `env = os.environ.copy()`, so removing secrets from the parent
+    process env right before construction keeps them out of the child.
+    Restore happens on exit, and the restore is `setdefault`-style so
+    concurrent wrappers do not clobber each other's state.
+    """
+
+    def __init__(self, async_codex_cls: Any):
+        self._async_codex_cls = async_codex_cls
+        self._inner: Any = None
+        self._saved_env: dict[str, str] | None = None
+
+    async def __aenter__(self) -> Any:
+        import os
+
+        overrides = _codex_sdk_env_override()
+        saved: dict[str, str] = {}
+        for key in overrides:
+            if key in os.environ:
+                saved[key] = os.environ[key]
+                del os.environ[key]
+        self._saved_env = saved
+        self._inner = self._async_codex_cls()
+        return await self._inner.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        import os
+
+        try:
+            if self._inner is not None:
+                return await self._inner.__aexit__(exc_type, exc, tb)
+        finally:
+            saved = self._saved_env or {}
+            for key, value in saved.items():
+                # Only restore keys we removed; setdefault avoids
+                # clobbering a concurrent caller's value.
+                os.environ.setdefault(key, value)
+
+
+def _open_async_codex(async_codex_cls: Any) -> Any:
+    """Construct an AsyncCodex whose spawned app-server cannot see
+    Studio's secrets.
+
+    Preferred path: `AsyncCodex(config=AppServerConfig(env=...))`
+    which scopes the override to the spawned subprocess only.
+    Fail-closed fallback: `_ScrubbedEnvAsyncCodex` swaps `os.environ`
+    for the lifetime of the session so the SDK's internal
+    `os.environ.copy()` spawn never sees HF_TOKEN / GH_TOKEN /
+    WANDB_API_KEY / etc. There is no code path that lets the SDK
+    inherit those secrets.
     """
     try:
         sdk_mod = sys.modules.get("openai_codex") or sys.modules.get("codex_app_server")
@@ -113,7 +159,7 @@ def _open_async_codex(async_codex_cls: Any) -> Any:
                 )
     except TypeError:
         # Older SDK: AppServerConfig may not accept the env kwarg yet.
-        # Fall through to the bare constructor.
+        # Fall through to the os.environ-swap wrapper.
         pass
     except Exception as exc:
         logger.warning(
@@ -121,7 +167,7 @@ def _open_async_codex(async_codex_cls: Any) -> Any:
             exc_type = type(exc).__name__,
             error = str(exc),
         )
-    return async_codex_cls()
+    return _ScrubbedEnvAsyncCodex(async_codex_cls)
 
 
 def _import_codex() -> Any:
@@ -320,20 +366,51 @@ def _chunk_usage(
     return f"data: {json.dumps(payload)}"
 
 
+# Event types Codex emits that carry the assistant's natural-language
+# answer (or its stream-time deltas). Other event types -- command
+# execution, file edits, tool calls, plan steps -- have their own
+# `delta` fields that the OpenAI Chat Completions surface must NOT
+# render as visible assistant text or local stdout / paths would leak
+# into the chat reply.
+_ANSWER_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "message.delta",
+        "message.completed",
+        "assistant.message.delta",
+        "assistant.message.completed",
+        "thread.message.delta",
+        "thread.message.completed",
+        "text_delta",
+        "completed",
+        # Some SDK revs use a bare "message" / "delta" wrapper without
+        # qualifying the role; we accept those too because the legacy
+        # tests rely on the shape.
+        "message",
+        "delta",
+    }
+)
+
+
 def _coerce_text(payload: Any) -> str:
     """Pull text out of a Codex streaming event or result.
 
-    The SDK shape isn't pinned across versions: events expose ``delta``
-    or ``text`` or ``content`` depending on whether the model is in
-    plan / answer / tool-use mode. Be defensive -- read whichever
-    field is present and fall back to ``str()`` so we never crash
-    while translating.
+    Only events whose ``type`` is in `_ANSWER_EVENT_TYPES` (or have no
+    ``type`` field at all, i.e. raw text containers) are translated to
+    visible text. Tool / command / plan deltas are dropped so local
+    stdout, file paths, or tool-call arguments never flow into the
+    Chat Completions content stream.
     """
     if payload is None:
         return ""
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
+        # If the dict carries a typed event tag, gate on it: only
+        # answer-bearing types contribute visible text. Untyped dicts
+        # (legacy / raw text wrappers) fall through to the field walk.
+        ev_type = payload.get("type")
+        if isinstance(ev_type, str) and ev_type not in _ANSWER_EVENT_TYPES:
+            return ""
         for key in ("delta", "text", "content", "message", "final_response"):
             if key in payload:
                 value = _coerce_text(payload[key])
@@ -444,6 +521,40 @@ async def _stream_thread_run(
         yield text
 
 
+async def _start_thread_with_system(
+    codex: Any,
+    model: str,
+    system: str,
+    prompt: str,
+) -> tuple[Any, str]:
+    """Start a Codex thread carrying the system prompt.
+
+    Upstream ``openai_codex.AsyncCodex.thread_start`` accepts the system
+    prompt under the kwarg ``base_instructions``. Some pre-release / alias
+    SDK revisions historically used ``system`` instead. We try the
+    canonical kwarg first, then the legacy one, then drop both and
+    prepend the system text to the user prompt so the model still sees
+    it. The returned (thread, prompt) tuple lets the caller use the
+    possibly-rewritten prompt.
+    """
+    if not system:
+        thread = await codex.thread_start(model = model)
+        return thread, prompt
+
+    for kw_name in ("base_instructions", "system"):
+        try:
+            thread = await codex.thread_start(model = model, **{kw_name: system})
+            return thread, prompt
+        except TypeError:
+            continue
+        except Exception:
+            raise
+    # Last-resort fallback: inline the system text in the user prompt so
+    # the role intent reaches Codex even on an SDK with no kwarg for it.
+    thread = await codex.thread_start(model = model)
+    return thread, f"{system}\n\n{prompt}"
+
+
 async def _stream_codex_single(
     model: str,
     system: str,
@@ -463,22 +574,14 @@ async def _stream_codex_single(
     async with _open_async_codex(async_codex_cls) as codex:
         # ``thread_start`` accepts a model id; system prompts are
         # passed when supported by the SDK rev (older revs ignore the
-        # extra kwarg). Be tolerant about kwargs that may not exist.
-        thread_kwargs: dict[str, Any] = {"model": model}
-        if system:
-            # Try the canonical kwargs first; the SDK shapes vary
-            # across versions and we'd rather accept the system prompt
-            # being dropped than crash on a missing kwarg.
-            thread_kwargs["system"] = system
-        try:
-            thread = await codex.thread_start(**thread_kwargs)
-        except TypeError:
-            # Older SDK: only the ``model`` kwarg is accepted. Drop
-            # extras and retry; the system prompt then lives only in
-            # the prompt itself (we prepend it below).
-            thread = await codex.thread_start(model = model)
-            if system:
-                prompt = f"{system}\n\n{prompt}"
+        # Upstream `openai_codex.AsyncCodex.thread_start` uses
+        # `base_instructions` for the system prompt (see
+        # openai/codex/sdk/python/src/openai_codex/api.py). Older / alias
+        # SDKs may use `system` instead. We try `base_instructions`
+        # first, then `system`, and finally fall through to inlining
+        # the system text in the user prompt if neither kwarg is
+        # accepted.
+        thread, prompt = await _start_thread_with_system(codex, model, system, prompt)
         async for text in _stream_thread_run(thread, prompt):
             completion_text_chars += len(text)
             yield _chunk_text(completion_id, text)
@@ -594,16 +697,9 @@ async def _stream_codex_parallel(
             sdk = _import_codex()
             async_codex_cls = getattr(sdk, "AsyncCodex")
             async with _open_async_codex(async_codex_cls) as codex:
-                thread_kwargs: dict[str, Any] = {"model": model}
-                if system:
-                    thread_kwargs["system"] = system
-                inner_prompt = prompt
-                try:
-                    thread = await codex.thread_start(**thread_kwargs)
-                except TypeError:
-                    thread = await codex.thread_start(model = model)
-                    if system:
-                        inner_prompt = f"{system}\n\n{prompt}"
+                thread, inner_prompt = await _start_thread_with_system(
+                    codex, model, system, prompt
+                )
                 async for text in _stream_thread_run(thread, inner_prompt):
                     collected.append(text)
                     await queue.put(
@@ -786,17 +882,9 @@ async def _run_codex_synthesis(
         sdk = _import_codex()
         async_codex_cls = getattr(sdk, "AsyncCodex")
         async with _open_async_codex(async_codex_cls) as codex:
-            thread_kwargs: dict[str, Any] = {"model": model}
-            if system:
-                thread_kwargs["system"] = system
-            try:
-                thread = await codex.thread_start(**thread_kwargs)
-            except TypeError:
-                # Older SDK rev: no `system` kwarg. Fall back to model-only
-                # and prepend the system prompt to the synthesis text.
-                thread = await codex.thread_start(model = model)
-                if system:
-                    synthesis_prompt = f"{system}\n\n{synthesis_prompt}"
+            thread, synthesis_prompt = await _start_thread_with_system(
+                codex, model, system, synthesis_prompt
+            )
             result = await thread.run(synthesis_prompt)
         return (
             _coerce_text(result) or getattr(result, "final_response", "") or str(result)
