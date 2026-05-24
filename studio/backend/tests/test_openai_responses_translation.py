@@ -427,7 +427,7 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
                                 "type": "function",
                                 "function": {
                                     "name": "get_weather",
-                                    "arguments": "{\"city\":\"SF\"}",
+                                    "arguments": '{"city":"SF"}',
                                 },
                             }
                         ],
@@ -457,7 +457,7 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
     fc = next(it for it in items if it.get("type") == "function_call")
     assert fc["call_id"] == "call_xyz"
     assert fc["name"] == "get_weather"
-    assert fc["arguments"] == "{\"city\":\"SF\"}"
+    assert fc["arguments"] == '{"city":"SF"}'
     fco = next(it for it in items if it.get("type") == "function_call_output")
     assert fco["call_id"] == "call_xyz"
     assert fco["output"] == "sunny"
