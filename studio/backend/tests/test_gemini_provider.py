@@ -2576,3 +2576,494 @@ def test_image_models_drop_function_declarations(monkeypatch):
         "TEXT",
         "IMAGE",
     ]
+
+
+def test_safe_fetch_image_rejects_malformed_bracketed_url():
+    """Round 17: bracketed IPv6 garbage like `https://[bad/x.png` makes
+    urlparse raise ValueError. The fetch helper must catch it and drop
+    the image rather than crashing the request mid-build."""
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://[bad/x.png", "image/png"
+        )
+    )
+    assert res is None
+
+
+def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(
+    monkeypatch,
+):
+    """Round 17: the fetch helper must pin the validated IP into the
+    outgoing request URL (with a Host header carrying the original
+    hostname). A second hostname-style getaddrinfo after the validate
+    step would be a DNS-rebinding gap, so we assert the urllib opener
+    is called with an IP-rewritten URL."""
+    import socket
+
+    captured: dict = {"requests": []}
+
+    # Public IP during validate; record every getaddrinfo call.
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        captured.setdefault("dns", []).append(host)
+        if host == "cdn.example.com":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("8.8.8.8", 0),
+                )
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _StubResp:
+        status = 200
+        headers = {"content-type": "image/png", "content-length": "3"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n=None):
+            return b"PNG"
+
+    class _StubOpener:
+        def open(self, req, timeout=None):
+            captured["requests"].append(
+                {
+                    "url": req.full_url,
+                    "host_header": req.get_header("Host"),
+                }
+            )
+            return _StubResp()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
+
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
+    assert res is not None
+    assert res[0] == "image/png"
+    # The outgoing URL must use the pinned IP literal, not the hostname.
+    assert any(
+        "8.8.8.8" in r["url"] for r in captured["requests"]
+    ), captured
+    assert all(
+        "cdn.example.com" not in r["url"] for r in captured["requests"]
+    ), captured
+    # Host header still carries the original hostname for vhost/SNI.
+    assert captured["requests"][0]["host_header"] == "cdn.example.com"
+
+
+def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
+    """Round 17: each redirect hop must re-validate the new host. A
+    public hop that redirects to an internal address must be dropped."""
+    import socket
+    import urllib.error
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("1.1.1.1", 0),
+                )
+            ]
+        if host == "internal.bad":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("10.0.0.5", 0),
+                )
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _StubOpener:
+        def open(self, req, timeout=None):
+            # Simulate a 302 to a private host.
+            raise urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                {"Location": "https://internal.bad/secret.png"},
+                None,
+            )
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
+
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
+    assert res is None
+
+
+def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
+    """Round 17: a CDN URL whose path/query merely contains the Files
+    API substring must NOT be sent as `fileData.fileUri`; it must be
+    routed through the safe-fetch path. Previously the substring check
+    `"generativelanguage.googleapis.com/" in url.lower()` matched any
+    URL carrying that text anywhere."""
+    captured_outbound: dict = {}
+    fetch_calls: list[str] = []
+
+    async def fake_fetch(url, fallback_mime):
+        fetch_calls.append(url)
+        return "image/png", base64.b64encode(b"DATA").decode("ascii")
+
+    monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_outbound["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _gemini_sse(
+                [
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [{"text": "ok"}],
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 1,
+                            "candidatesTokenCount": 1,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = _make_gemini_client()
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                # Looks like a Files API URL in the path
+                                # but the host is an attacker CDN.
+                                "url": "https://evil.example/path/generativelanguage.googleapis.com/v1beta/files/abc.png",
+                            },
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                # Looks YouTube-ish in the path.
+                                "url": "https://cdn.example.com/youtube.com/cat.png",
+                            },
+                        },
+                    ],
+                }
+            ],
+            model = "gemini-2.5-flash",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    parts = captured_outbound["body"]["contents"][-1]["parts"]
+    assert not any("fileData" in p for p in parts), parts
+    inline_count = sum(1 for p in parts if "inlineData" in p)
+    assert inline_count == 2, parts
+    assert len(fetch_calls) == 2, fetch_calls
+
+
+def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
+    """Round 17: OpenAI/Pydantic emit `anyOf: [{X}, {"type":"null"}]`
+    for Optional[X]. Gemini's OpenAPI subset rejects `"type":"null"`
+    inside anyOf. The sanitizer must collapse a singleton-plus-null
+    union back to the non-null branch with `nullable: true`."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "label": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "null"},
+                                ]
+                            },
+                            "count": {
+                                "anyOf": [
+                                    {"type": "integer"},
+                                    {"type": "null"},
+                                ]
+                            },
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    decls = next(
+        t["functionDeclarations"]
+        for t in captured["body"].get("tools") or []
+        if "functionDeclarations" in t
+    )
+    params = decls[0]["parameters"]["properties"]
+    assert params["label"]["type"] == "string"
+    assert params["label"]["nullable"] is True
+    assert "anyOf" not in params["label"]
+    assert params["count"]["type"] == "integer"
+    assert params["count"]["nullable"] is True
+
+
+def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
+    """Round 17: legacy `gemini-3-pro*` (including `-preview`, shut down
+    2026-03-09) only accepted low/high. 3.1+ Pro added medium. The
+    backend must coerce medium → high for the legacy model so stale UI
+    state does not 400 the request."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3-pro-preview",
+        reasoning_effort = "medium",
+    )
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high",
+    }
+
+
+def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
+    """Round 17 regression: 3.1+ Pro accepts medium; coercion must NOT
+    apply when the model id is gemini-3.1-pro*."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.1-pro-preview",
+        reasoning_effort = "medium",
+    )
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium",
+    }
+
+
+def test_tool_calls_extra_content_stripped_for_non_native_gemini():
+    """Round 17: per-tool-call `extra_content` (Gemini thoughtSignature
+    carrier) must not leak through `_build_external_messages` to
+    non-native-Gemini providers; OpenAI / Anthropic / custom Gemini
+    OAI-compat gateways would 400 on the unknown key."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                        "extra_content": {
+                            "google": {"thought_signature": "SIG"},
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+
+    # Non-native providers (openai, custom Gemini OAI-compat proxy)
+    # must have extra_content stripped from the tool_call entry.
+    for provider_type, base_url in [
+        ("openai", None),
+        ("gemini", "https://litellm.example/v1"),
+    ]:
+        result = _build_external_messages(
+            req.messages,
+            supports_vision = True,
+            provider_type = provider_type,
+            base_url = base_url,
+        )
+        assert len(result) == 1
+        tc = result[0]["tool_calls"][0]
+        assert "extra_content" not in tc, (provider_type, tc)
+
+    # Native Gemini still receives extra_content for the round-trip.
+    result_native = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    tc_native = result_native[0]["tool_calls"][0]
+    assert tc_native["extra_content"]["google"]["thought_signature"] == "SIG"
+
+
+def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
+    """Round 17: the OpenAI Responses translator must NOT drop a user
+    function whose JSON arguments happen to contain `_server_tool:
+    true` UNLESS the function name is also one of the canonical
+    builtin names. Otherwise a user schema with an `_server_tool` field
+    becomes invisible to the model."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_user",
+                            "type": "function",
+                            "function": {
+                                "name": "user_function",
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "q": "x"}
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "result",
+                    "tool_call_id": "call_user",
+                    "name": "user_function",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    items = captured["input_items"] or []
+    fn_calls = [i for i in items if i.get("type") == "function_call"]
+    fn_outs = [i for i in items if i.get("type") == "function_call_output"]
+    # User function call must survive (matching call + output).
+    assert any(c.get("name") == "user_function" for c in fn_calls), items
+    assert len(fn_outs) == 1, items
+
+
+def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
+    """Round 17 control: a builtin (web_search) tagged with
+    `_server_tool: true` continues to be filtered from outbound
+    history."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "search please"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "query": "x"}
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"role": "user", "content": "continue"},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    items = captured["input_items"] or []
+    fn_calls = [i for i in items if i.get("type") == "function_call"]
+    # Builtin server-side tool call must be filtered out.
+    assert all(c.get("name") != "web_search" for c in fn_calls), items

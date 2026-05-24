@@ -770,6 +770,8 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 export interface ExternalReasoningResolveOptions {
   /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
+  /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
+  baseUrl?: string | null;
 }
 
 // vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
@@ -846,6 +848,13 @@ export function getExternalReasoningCapabilities(
   if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
   if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
   if (normalizedProvider === "gemini") {
+    // Custom Gemini OAI-compat gateways (LiteLLM, proxies) route
+    // through /chat/completions which drops the Gemini-native
+    // thinkingConfig payload. Hide the native thinking ladder so the
+    // UI does not advertise a control the backend cannot honor.
+    if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
+      return withEnableThinkingStyle();
+    }
     return resolveGeminiReasoningCapabilities(modelForMatching);
   }
   if (!isOpenAIProvider && !isAnthropicProvider) {

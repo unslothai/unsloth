@@ -92,6 +92,19 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+// Canonical names for synthetic provider-side tool cards (Gemini
+// grounding/code/image, Anthropic web_search/web_fetch/code_execution,
+// OpenAI hosted code/image). The backend stamps these with
+// args._server_tool so we can drop them from outbound history without
+// also dropping a user function that happens to share the name. Keep
+// in sync with _SERVER_SIDE_BUILTIN_TOOL_NAMES on the backend.
+const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
+  "web_search",
+  "web_fetch",
+  "code_execution",
+  "image_generation",
+]);
+
 /**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
@@ -379,12 +392,30 @@ function collectAssistantToolCalls(
     // OpenAI hosted tools) are tagged with args._server_tool by the
     // backend so we can tell them apart from real user-declared
     // functions or local llama.cpp tools that happen to share the
-    // name. web_search has no replay path (grounding rides in the
-    // assistant text); code_execution / image_generation only
-    // round-trip when the backend stowed args.google.native_part.
-    const isServerSideBuiltin = Boolean(
+    // name. We also scope on the canonical builtin tool names so a
+    // user function with an _server_tool argument is not dropped.
+    // Pre-PR persisted cards have no marker; fall back to argsGoogle
+    // native_part (Gemini code_execution / image_generation always
+    // stow it) or kind/code/command shape heuristics so reopening an
+    // older chat does not serialise the card as a real user function
+    // call and reject downstream.
+    const isKnownServerToolName = SERVER_SIDE_BUILTIN_TOOL_NAMES.has(
+      toolNameLower,
+    );
+    const hasServerToolMarker = Boolean(
       argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
     );
+    let isServerSideBuiltin = isKnownServerToolName && hasServerToolMarker;
+    if (!isServerSideBuiltin && isKnownServerToolName && !hasServerToolMarker) {
+      // Backward-compat for cards persisted before _server_tool stamp.
+      if (hasNativePart) {
+        isServerSideBuiltin = true;
+      } else if (
+        toolNameLower === "web_search" || toolNameLower === "web_fetch"
+      ) {
+        isServerSideBuiltin = true;
+      }
+    }
     if (isServerSideBuiltin) {
       if (!hasNativePart) continue;
     }
@@ -437,20 +468,52 @@ function collectToolResultMessages(
     const tc = part as ToolCallMessagePart;
     const result = (tc as { result?: unknown }).result;
     // Skip provider-side builtins (tagged with args._server_tool by
-    // the backend). User-declared functions and local llama.cpp
-    // tools have no marker so they round-trip their result
-    // normally.
+    // the backend, scoped on the canonical builtin names so a user
+    // function called e.g. `web_search` with `_server_tool` in its
+    // schema isn't dropped). User-declared functions and local
+    // llama.cpp tools have no marker so they round-trip their result
+    // normally. Pre-PR persisted cards lack the marker too; for the
+    // canonical builtin names we still treat them as server-side so
+    // reopening an older chat does not forward unsupported tool roles.
     const argsObj =
       tc.args && typeof tc.args === "object"
         ? (tc.args as Record<string, unknown>)
         : null;
-    if (argsObj && argsObj._server_tool === true) {
+    const argsGoogle =
+      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+        ? (argsObj.google as Record<string, unknown>)
+        : null;
+    const toolNameLower = (tc.toolName ?? "").toLowerCase();
+    const isKnownServerToolName = SERVER_SIDE_BUILTIN_TOOL_NAMES.has(
+      toolNameLower,
+    );
+    const hasServerToolMarker = Boolean(
+      argsObj && argsObj._server_tool === true,
+    );
+    const hasNativePart = Boolean(
+      argsGoogle &&
+        typeof argsGoogle.native_part === "object" &&
+        argsGoogle.native_part !== null,
+    );
+    const looksLegacyServerTool =
+      isKnownServerToolName &&
+      !hasServerToolMarker &&
+      (hasNativePart ||
+        toolNameLower === "web_search" ||
+        toolNameLower === "web_fetch");
+    if (
+      (isKnownServerToolName && hasServerToolMarker) ||
+      looksLegacyServerTool
+    ) {
       continue;
     }
     if (result === undefined || result === null) continue;
     let content: string;
     if (typeof result === "string") {
-      content = result;
+      // Backend ChatMessage validator rejects role="tool" with empty
+      // content; serialise a sentinel JSON so legitimately empty tool
+      // outputs still round-trip the follow-up turn to the provider.
+      content = result.length > 0 ? result : JSON.stringify({ result: "" });
     } else {
       try {
         content = JSON.stringify(result);
@@ -1445,6 +1508,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 {
                   isReasoningProvider:
                     externalProvider.isReasoningModel === true,
+                  baseUrl: externalProvider.baseUrl ?? null,
                 },
               )
             : {

@@ -265,136 +265,181 @@ _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
 
 
-def _is_disallowed_target_ip(host: str) -> bool:
-    """SSRF guard: refuse any host that resolves to a private,
-    loopback, link-local, multicast, reserved, or unspecified IP.
-    Also refuses IP literals that are private. Resolves the hostname
-    once at validation time; subsequent redirects are blocked via
-    follow_redirects=False on the fetch.
-    """
-    import ipaddress
-    import socket
+def _safe_fetch_image_for_gemini_sync(
+    url: str, fallback_mime: str
+) -> Optional[tuple[str, str]]:
+    """Synchronous IP-pinned HTTPS image fetch with SSRF guards.
 
-    if not host:
-        return True
-    # IP literal in URL.
+    Uses the same pinned-IP + SNI pattern as `tools._fetch_page_text` so
+    DNS rebinding between validation and the actual connection cannot
+    redirect us to a private/metadata address. Follows up to 4 hops,
+    re-validating each redirect target. Returns (mime, base64) or None.
+    """
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urljoin, urlunparse
+
+    # Reuse the pinned-IP helpers in tools.py so both fetchers share the
+    # same hardening (validate-once-then-pin, no httpx hostname re-resolve).
+    from .tools import (
+        _NoRedirect,
+        _SNIHTTPSHandler,
+        _validate_and_resolve_host,
+    )
+
+    # urlparse can raise ValueError on bracketed IPv6 garbage like
+    # "https://[bad/x.png"; treat any parse failure as "drop the image".
     try:
-        _ip = ipaddress.ip_address(host.strip("[]"))
-        return bool(
-            _ip.is_private
-            or _ip.is_loopback
-            or _ip.is_link_local
-            or _ip.is_multicast
-            or _ip.is_reserved
-            or _ip.is_unspecified
+        parsed = urlparse(url)
+    except (ValueError, UnicodeError) as _err:
+        logger.info(
+            "Gemini image fetch: refusing malformed url err=%s",
+            type(_err).__name__,
         )
-    except ValueError:
-        pass
-    # Hostname: resolve and check every address record.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        # Treat resolution failure as "do not fetch" -- safer to drop
-        # the image than to leak DNS attempts for invalid hosts.
-        return True
-    for fam, _stype, _proto, _canon, sockaddr in infos:
-        _addr = sockaddr[0]
+        return None
+    scheme = (parsed.scheme or "").lower()
+    if scheme != "https":
+        logger.info(
+            "Gemini image fetch: refusing non-https scheme=%s",
+            scheme,
+        )
+        return None
+    if not parsed.hostname:
+        logger.info("Gemini image fetch: refusing url with no hostname")
+        return None
+
+    current_host = parsed.hostname
+    current_port = parsed.port or 443
+    current_url = url
+    ok, reason, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+    if not ok:
+        logger.warning(
+            "Gemini image fetch: refusing host=%s reason=%s",
+            current_host,
+            reason,
+        )
+        return None
+
+    for _hop in range(4):
+        # Pin to the validated IP so a hostile DNS cannot rebind between
+        # the address check and the TCP connect. SNI + cert verification
+        # still use the original hostname via _SNIHTTPSHandler.
+        cp = urlparse(current_url)
+        ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+        ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
+        pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+
+        opener = urllib.request.build_opener(
+            _NoRedirect,
+            _SNIHTTPSHandler(current_host),
+        )
+        req = urllib.request.Request(
+            pinned_url,
+            headers = {"Host": current_host},
+            method = "GET",
+        )
+
         try:
-            _ip = ipaddress.ip_address(_addr)
-        except ValueError:
+            resp = opener.open(req, timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308):
+                logger.info(
+                    "Gemini image fetch: status=%d host=%s",
+                    e.code,
+                    current_host,
+                )
+                return None
+            location = e.headers.get("Location")
+            if not location:
+                return None
+            current_url = urljoin(current_url, location)
+            rp = urlparse(current_url)
+            if rp.scheme.lower() != "https" or not rp.hostname:
+                logger.info(
+                    "Gemini image fetch: redirect not https host=%s",
+                    rp.hostname or "",
+                )
+                return None
+            current_host = rp.hostname
+            current_port = rp.port or 443
+            ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                current_host, current_port
+            )
+            if not ok2:
+                logger.warning(
+                    "Gemini image fetch: refusing redirect host=%s reason=%s",
+                    current_host,
+                    reason2,
+                )
+                return None
             continue
-        if (
-            _ip.is_private
-            or _ip.is_loopback
-            or _ip.is_link_local
-            or _ip.is_multicast
-            or _ip.is_reserved
-            or _ip.is_unspecified
-        ):
-            return True
-    return False
+        except (urllib.error.URLError, OSError) as _err:
+            logger.warning(
+                "Gemini image fetch failed host=%s err=%s",
+                current_host,
+                type(_err).__name__,
+            )
+            return None
+
+        with resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            if status != 200:
+                logger.info(
+                    "Gemini image fetch: status=%s host=%s", status, current_host
+                )
+                return None
+            _hdr_mime = (
+                resp.headers.get("content-type") or ""
+            ).split(";")[0].strip().lower()
+            if not _hdr_mime.startswith("image/"):
+                logger.info(
+                    "Gemini image fetch: non-image content-type=%s host=%s",
+                    _hdr_mime or "<none>",
+                    current_host,
+                )
+                return None
+            _hdr_len = resp.headers.get("content-length")
+            if (
+                _hdr_len
+                and _hdr_len.isdigit()
+                and int(_hdr_len) > _GEMINI_REMOTE_IMAGE_MAX_BYTES
+            ):
+                logger.info(
+                    "Gemini image fetch: declared %s bytes exceeds cap host=%s",
+                    _hdr_len,
+                    current_host,
+                )
+                return None
+            # Read at most cap+1 bytes so we can detect oversize without
+            # buffering unbounded data from a missing/lying Content-Length.
+            raw = resp.read(_GEMINI_REMOTE_IMAGE_MAX_BYTES + 1)
+            if len(raw) > _GEMINI_REMOTE_IMAGE_MAX_BYTES:
+                logger.info(
+                    "Gemini image fetch: streamed bytes exceed cap host=%s",
+                    current_host,
+                )
+                return None
+            _final_mime = _hdr_mime if _hdr_mime else fallback_mime
+            return _final_mime, base64.b64encode(raw).decode("ascii")
+
+    logger.info("Gemini image fetch: too many redirects host=%s", current_host)
+    return None
 
 
 async def _safe_fetch_image_for_gemini(
     url: str, fallback_mime: str
 ) -> Optional[tuple[str, str]]:
-    """Fetch a user-supplied public image URL for inlining into a
-    Gemini `inlineData` part. Applies SSRF guards (https only, no
-    private/loopback/link-local/metadata hosts), caps the response
-    body, refuses non-image Content-Type, and disables redirects so a
-    302 to a private host cannot bypass the address check.
-    Returns (mime, base64) on success, or None on any failure.
+    """Async wrapper: runs the IP-pinned fetch on a worker thread so the
+    event loop is not blocked by getaddrinfo / TLS handshake / blocking
+    socket reads. SSRF guards (https only, validated + pinned IP,
+    per-hop redirect re-check, size cap, image/* content-type) live in
+    `_safe_fetch_image_for_gemini_sync`.
     """
-    parsed = urlparse(url)
-    scheme = (parsed.scheme or "").lower()
-    if scheme != "https":
-        # http:// allows downgrade + cleartext leak; data:/file:/ftp:
-        # are nonsense here. Reject anything that isn't https.
-        logger.info(
-            "Gemini image fetch: refusing non-https scheme=%s host=%s",
-            scheme,
-            parsed.hostname or "",
-        )
-        return None
-    host = (parsed.hostname or "").lower()
-    if _is_disallowed_target_ip(host):
-        logger.warning("Gemini image fetch: refusing private/internal host=%s", host)
-        return None
-    try:
-        async with httpx.AsyncClient(
-            timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S,
-            follow_redirects = False,
-            limits = httpx.Limits(max_connections = 4, max_keepalive_connections = 1),
-        ) as _client:
-            async with _client.stream("GET", url) as _resp:
-                if _resp.status_code != 200:
-                    logger.info(
-                        "Gemini image fetch: status=%d host=%s",
-                        _resp.status_code,
-                        host,
-                    )
-                    return None
-                _hdr_mime = (
-                    (_resp.headers.get("content-type") or "")
-                    .split(";")[0]
-                    .strip()
-                    .lower()
-                )
-                if not _hdr_mime.startswith("image/"):
-                    logger.info(
-                        "Gemini image fetch: non-image content-type=%s host=%s",
-                        _hdr_mime or "<none>",
-                        host,
-                    )
-                    return None
-                _hdr_len = _resp.headers.get("content-length")
-                if (
-                    _hdr_len
-                    and _hdr_len.isdigit()
-                    and int(_hdr_len) > _GEMINI_REMOTE_IMAGE_MAX_BYTES
-                ):
-                    logger.info(
-                        "Gemini image fetch: declared %s bytes exceeds cap host=%s",
-                        _hdr_len,
-                        host,
-                    )
-                    return None
-                _buf = bytearray()
-                async for _chunk in _resp.aiter_bytes(chunk_size = 64 * 1024):
-                    _buf.extend(_chunk)
-                    if len(_buf) > _GEMINI_REMOTE_IMAGE_MAX_BYTES:
-                        logger.info(
-                            "Gemini image fetch: streamed bytes exceed cap host=%s",
-                            host,
-                        )
-                        return None
-                _final_mime = _hdr_mime if _hdr_mime else fallback_mime
-                return _final_mime, base64.b64encode(bytes(_buf)).decode("ascii")
-    except (httpx.HTTPError, OSError) as _err:
-        logger.warning(
-            "Gemini image fetch failed host=%s err=%s", host, type(_err).__name__
-        )
-        return None
+    import asyncio
+
+    return await asyncio.to_thread(
+        _safe_fetch_image_for_gemini_sync, url, fallback_mime
+    )
 
 
 # Server-side builtin tool names that external providers emit
@@ -2932,16 +2977,38 @@ class ExternalProviderClient:
                             # pre-PR OpenAI-compat endpoint did the
                             # download server-side, so preserve that
                             # behaviour on the native path too.
-                            _url_lc = url.lower()
+                            #
+                            # Parse scheme/host/path so attacker URLs
+                            # like https://evil.com/path/youtube.com/x.png
+                            # are correctly fetched + inlined instead of
+                            # being misclassified as a YouTube fileUri.
+                            try:
+                                _parsed_image_url = urlparse(url)
+                            except (ValueError, UnicodeError):
+                                _parsed_image_url = None
+                            if _parsed_image_url is None:
+                                _img_scheme = ""
+                                _img_host = ""
+                                _img_path = ""
+                            else:
+                                _img_scheme = (
+                                    _parsed_image_url.scheme or ""
+                                ).lower()
+                                _img_host = (
+                                    _parsed_image_url.hostname or ""
+                                ).lower()
+                                _img_path = _parsed_image_url.path or ""
                             _is_native_uri = (
-                                "generativelanguage.googleapis.com/" in _url_lc
-                                and "/files/" in _url_lc
+                                _img_scheme == "https"
+                                and _img_host == "generativelanguage.googleapis.com"
+                                and _img_path.startswith("/v1beta/files/")
                             )
-                            _is_youtube = (
-                                "youtube.com/" in _url_lc or "youtu.be/" in _url_lc
+                            _is_youtube = _img_scheme == "https" and (
+                                _img_host == "youtu.be"
+                                or _img_host == "youtube.com"
+                                or _img_host.endswith(".youtube.com")
                             )
-                            _path = urlparse(url).path
-                            _guessed, _ = mimetypes.guess_type(_path)
+                            _guessed, _ = mimetypes.guess_type(_img_path)
                             _media_type = (
                                 _guessed
                                 if isinstance(_guessed, str)
@@ -3254,8 +3321,20 @@ class ExternalProviderClient:
             elif effort_lc == "max":
                 level = "high"
             elif effort_lc in _G3_LEVELS:
+                # Legacy Gemini 3 Pro (`gemini-3-pro*`, including
+                # `gemini-3-pro-preview*`; shut down 2026-03-09) only
+                # accepted low/high. 3.1+ Pro added medium. Coerce
+                # both unsupported endpoints to the closest level so
+                # stale UI state does not 400 the request.
+                _is_legacy_gemini3_pro = model_lc.startswith(
+                    ("gemini-3-pro-preview", "gemini-3-pro")
+                ) and not model_lc.startswith(
+                    ("gemini-3.1-pro", "gemini-3.5-pro")
+                )
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
+                elif _is_legacy_gemini3_pro and effort_lc == "medium":
+                    level = "high"
                 else:
                     level = effort_lc
             elif enable_thinking is True:
@@ -3400,7 +3479,32 @@ class ExternalProviderClient:
                     elif _k == "items":
                         cleaned[_k] = _sanitize_gemini_schema(_v)
                     elif _k == "anyOf" and isinstance(_v, list):
-                        cleaned[_k] = [_sanitize_gemini_schema(_entry) for _entry in _v]
+                        # OpenAI/Pydantic emit `anyOf: [{X}, {"type":"null"}]`
+                        # for Optional[X]. Gemini's OpenAPI subset rejects
+                        # `"type": "null"` inside anyOf, so collapse a
+                        # singleton-plus-null union back to the non-null
+                        # branch with `nullable: true`.
+                        _non_null_entries = [
+                            _entry
+                            for _entry in _v
+                            if not (
+                                isinstance(_entry, dict)
+                                and _entry.get("type") == "null"
+                            )
+                        ]
+                        if (
+                            len(_non_null_entries) == 1
+                            and len(_non_null_entries) != len(_v)
+                        ):
+                            _inner = _sanitize_gemini_schema(_non_null_entries[0])
+                            if isinstance(_inner, dict):
+                                for _ik, _iv in _inner.items():
+                                    cleaned.setdefault(_ik, _iv)
+                                cleaned.setdefault("nullable", True)
+                        else:
+                            cleaned[_k] = [
+                                _sanitize_gemini_schema(_entry) for _entry in _v
+                            ]
                     elif _k in ("required", "enum", "propertyOrdering"):
                         # Lists of plain strings; copy verbatim.
                         cleaned[_k] = _v
@@ -4323,8 +4427,10 @@ class ExternalProviderClient:
             # Assistant turns that returned tool_calls translate each
             # call as a `function_call` item (carrying name + JSON
             # arguments + call_id). Skip builtin server-side cards
-            # (marked `args._server_tool`) which never round-trip as
-            # user functions.
+            # (canonical builtin name + `args._server_tool` marker)
+            # which never round-trip as user functions. We require both
+            # checks so a user function literally named `_server_tool`
+            # in its argument schema is not dropped.
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
                 for _tc in _tool_calls:
@@ -4339,16 +4445,18 @@ class ExternalProviderClient:
                             _args_raw = _json.dumps(_args_raw)
                         except Exception:
                             _args_raw = ""
+                    _fn_name_lc = (_fn.get("name") or "").lower()
                     _is_server_builtin = False
-                    try:
-                        _args_obj = _json.loads(_args_raw) if _args_raw else {}
-                        if (
-                            isinstance(_args_obj, dict)
-                            and _args_obj.get("_server_tool") is True
-                        ):
-                            _is_server_builtin = True
-                    except Exception:
-                        _is_server_builtin = False
+                    if _fn_name_lc in _SERVER_SIDE_BUILTIN_TOOL_NAMES:
+                        try:
+                            _args_obj = _json.loads(_args_raw) if _args_raw else {}
+                            if (
+                                isinstance(_args_obj, dict)
+                                and _args_obj.get("_server_tool") is True
+                            ):
+                                _is_server_builtin = True
+                        except Exception:
+                            _is_server_builtin = False
                     if _is_server_builtin:
                         continue
                     _call_id_out = _tc.get("id") or f"call_{time.time_ns()}"

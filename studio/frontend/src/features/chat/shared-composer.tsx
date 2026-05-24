@@ -376,6 +376,7 @@ export function SharedComposer({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
       : null;

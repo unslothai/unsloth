@@ -1734,6 +1734,34 @@ def _build_external_messages(
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini
+
+    def _filter_tool_calls(tool_calls: Any) -> Optional[list]:
+        """Strip per-tool-call `extra_content` for non-native-Gemini providers.
+
+        `msg.extra_content` is already gated above, but `tool_calls[i]`
+        can carry its own `extra_content.google.thought_signature` from
+        a prior Gemini turn. Forwarding that to OpenAI / Anthropic /
+        custom Gemini OAI-compat proxies sends an unknown key into
+        /chat/completions that some gateways reject.
+        """
+        if not tool_calls:
+            return None
+        if not isinstance(tool_calls, list):
+            return tool_calls
+        if emit_extra_content:
+            return tool_calls
+        cleaned: list = []
+        for _tc in tool_calls:
+            if not isinstance(_tc, dict):
+                cleaned.append(_tc)
+                continue
+            if "extra_content" not in _tc:
+                cleaned.append(_tc)
+                continue
+            _stripped = {k: v for k, v in _tc.items() if k != "extra_content"}
+            cleaned.append(_stripped)
+        return cleaned
+
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1749,7 +1777,9 @@ def _build_external_messages(
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.role == "assistant" and msg.tool_calls:
-                out["tool_calls"] = msg.tool_calls
+                _tcs = _filter_tool_calls(msg.tool_calls)
+                if _tcs:
+                    out["tool_calls"] = _tcs
             if msg.role == "tool":
                 if msg.tool_call_id:
                     out["tool_call_id"] = msg.tool_call_id
@@ -1766,7 +1796,7 @@ def _build_external_messages(
             _assistant_only: dict[str, Any] = {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": msg.tool_calls,
+                "tool_calls": _filter_tool_calls(msg.tool_calls) or msg.tool_calls,
             }
             if emit_extra_content and msg.extra_content:
                 _assistant_only["extra_content"] = msg.extra_content
@@ -1808,7 +1838,9 @@ def _build_external_messages(
                         parts.append({"type": "compaction", "content": part.content})
                 entry: dict[str, Any] = {"role": msg.role, "content": parts}
                 if msg.role == "assistant" and msg.tool_calls:
-                    entry["tool_calls"] = msg.tool_calls
+                    _tcs = _filter_tool_calls(msg.tool_calls)
+                    if _tcs:
+                        entry["tool_calls"] = _tcs
                 if msg.role == "tool":
                     if msg.tool_call_id:
                         entry["tool_call_id"] = msg.tool_call_id
@@ -1836,7 +1868,9 @@ def _build_external_messages(
                 else:
                     entry = {"role": msg.role, "content": preserved}
                 if msg.role == "assistant" and msg.tool_calls:
-                    entry["tool_calls"] = msg.tool_calls
+                    _tcs = _filter_tool_calls(msg.tool_calls)
+                    if _tcs:
+                        entry["tool_calls"] = _tcs
                 if msg.role == "tool":
                     if msg.tool_call_id:
                         entry["tool_call_id"] = msg.tool_call_id
