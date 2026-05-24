@@ -274,7 +274,7 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
     """True if ``matched`` is just an empty <html></html> / <svg></svg>
     (optionally with a `<!doctype>` prefix and surrounding whitespace).
     These read as plan-only mentions, not substantive answers."""
-    candidate = _DOCTYPE_PREFIX.sub("", matched.strip(), count=1).strip()
+    candidate = _DOCTYPE_PREFIX.sub("", matched.strip(), count = 1).strip()
     return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
 
