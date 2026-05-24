@@ -328,28 +328,52 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         head_allowlist = _load_allowlist(head_allowlist_path)
-        base_allowlist = _load_allowlist(base_allowlist_path)
     except ValueError as exc:
         print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
         return 2
 
-    # Refuse a PR that adds new allowlist entries on its own head branch.
-    # Allowlist deltas must land in a separate, trusted commit on base
-    # first; otherwise the same PR could approve its own postinstall.
-    added_head_only = sorted(head_allowlist - base_allowlist)
-    if added_head_only:
+    # Bootstrap: if the BASE ref has no allowlist file at all, this is
+    # the PR that creates it. There is no prior allowlist to diff
+    # against, and refusing every head entry here would make the gate
+    # unlandable. The workflow signals "missing on base" by NOT writing
+    # the temp file (rm -f after a failed ``git show``), which is what
+    # we detect here. Once the file exists on base, future PRs must
+    # land allowlist deltas there first.
+    if not base_allowlist_path.exists():
         print(
-            "[install-script-diff] FAIL: install-script allowlist entries "
-            "must already exist on the base branch; do not let a PR "
-            "allowlist its own new postinstall dependency.",
-            file = sys.stderr,
+            f"[install-script-diff] bootstrap: {base_allowlist_path} "
+            "missing on base; accepting head allowlist as-is for this run.",
+            flush = True,
         )
-        for entry in added_head_only:
-            print(f"  head-only allowlist entry: {entry}", file = sys.stderr)
-        return 1
+        allowlist = head_allowlist
+    else:
+        try:
+            base_allowlist = _load_allowlist(base_allowlist_path)
+        except ValueError as exc:
+            print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
+            return 2
 
-    # Only the trusted base allowlist participates in the skip set.
-    allowlist = base_allowlist
+        # Refuse a PR that adds new allowlist entries on its own head
+        # branch. Allowlist deltas must land in a separate trusted
+        # commit on base first; otherwise the same PR could approve
+        # its own postinstall dependency.
+        added_head_only = sorted(head_allowlist - base_allowlist)
+        if added_head_only:
+            print(
+                "[install-script-diff] FAIL: install-script allowlist "
+                "entries must already exist on the base branch; do not "
+                "let a PR allowlist its own new postinstall dependency.",
+                file = sys.stderr,
+            )
+            for entry in added_head_only:
+                print(
+                    f"  head-only allowlist entry: {entry}",
+                    file = sys.stderr,
+                )
+            return 1
+
+        # Only the trusted base allowlist participates in the skip set.
+        allowlist = base_allowlist
 
     findings = diff_new_install_scripts(base_lock, head_lock)
     if allowlist:
