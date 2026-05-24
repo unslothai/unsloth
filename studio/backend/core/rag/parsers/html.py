@@ -1,26 +1,98 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""HTML parsing via markdownify.
+
+Converts HTML to Markdown so headings (`<h1>`…`<h6>`), tables, and lists
+arrive at the chunker as Markdown structure. The previous
+`BeautifulSoup.get_text()` approach stripped all tags and made every
+heading indistinguishable from body text.
+
+Image extraction (when `want_images=True`) only handles local file
+references — remote URLs are skipped to avoid network calls during
+ingestion. Phase 3B-multimodal can revisit this if HTML inputs with
+remote images become a common pattern.
+"""
+
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
-from . import ParsedPage
+from . import ParsedImage, ParsedPage, ParseResult
+
+logger = logging.getLogger(__name__)
+
+_SKIP_TAGS = ("script", "style", "noscript", "template")
 
 
-_SKIP_TAGS = {"script", "style", "noscript", "template"}
+def _collect_local_images(soup, html_path: Path) -> list[ParsedImage]:
+    images: list[ParsedImage] = []
+    base_dir = html_path.parent
+    for tag in soup.find_all("img"):
+        src = tag.get("src") or ""
+        parsed = urlparse(src)
+        if parsed.scheme and parsed.scheme not in ("file", ""):
+            # Remote / data URLs — skip; we don't fetch over network.
+            continue
+        local_path = (base_dir / unquote(parsed.path or src)).resolve()
+        try:
+            local_path.relative_to(base_dir.resolve())
+        except ValueError:
+            # Refuse to read outside the source's own directory.
+            continue
+        if not local_path.is_file():
+            continue
+        try:
+            blob = local_path.read_bytes()
+        except OSError:
+            continue
+        suffix = local_path.suffix.lower().lstrip(".")
+        mime = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+            "svg": "image/svg+xml",
+        }.get(suffix, f"image/{suffix or 'octet-stream'}")
+        caption = tag.get("alt") or tag.get("title") or ""
+        images.append(
+            ParsedImage(
+                image_bytes = blob,
+                mime_type = mime,
+                page_number = None,
+                nearest_caption = caption,
+            )
+        )
+    return images
 
 
-def extract(path: Path) -> list[ParsedPage]:
+def extract(path: Path, *, want_images: bool = False) -> ParseResult:
     from bs4 import BeautifulSoup
+    from markdownify import markdownify
 
     raw = path.read_bytes()
     soup = BeautifulSoup(raw, "lxml")
-    for tag in soup(_SKIP_TAGS):
-        tag.decompose()
-    text = soup.get_text(separator = "\n").strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    cleaned = "\n".join(lines)
-    if not cleaned:
-        return []
-    return [ParsedPage(text = cleaned, page_number = None)]
+    for tag_name in _SKIP_TAGS:
+        for tag in soup.find_all(tag_name):
+            tag.decompose()
+
+    images: list[ParsedImage] = []
+    if want_images:
+        images = _collect_local_images(soup, path)
+
+    md = markdownify(
+        str(soup),
+        heading_style = "ATX",
+        strip = list(_SKIP_TAGS),
+    )
+    md = re.sub(r"\n{3,}", "\n\n", md).strip()
+    if not md:
+        return ParseResult(pages = [], images = images)
+    return ParseResult(
+        pages = [ParsedPage(text = md, page_number = None)],
+        images = images,
+    )

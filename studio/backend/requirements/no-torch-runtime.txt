@@ -83,6 +83,15 @@ pillow
 # server. bm25s persists per-scope indices to disk.
 qdrant-client>=1.12
 bm25s>=0.2
+# RAG parsers (Phase 3A): layout-aware Markdown extraction so the chunker
+# can split on real headings instead of running paragraphs together.
+# pymupdf4llm preserves headings + pipe-tables; mammoth handles DOCX
+# Heading styles; markdownify converts HTML <h*>/<table>/<ul> faithfully.
+pymupdf>=1.24
+pymupdf4llm>=0.0.17
+mammoth>=1.7
+markdownify>=0.13
+# pypdf is kept as a fallback for malformed PDFs that defeat pymupdf.
 pypdf>=4.0
 python-docx>=1.1
 beautifulsoup4>=4.12

@@ -60,7 +60,11 @@ def _subprocess_worker(
         from core.rag.parsers import parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        pages = parse(Path(stored_path))
+        # want_images stays False for the text-only ingestion path; the
+        # multimodal path (Phase 3B-multimodal) will flip this based on
+        # the KB's mode.
+        parsed = parse(Path(stored_path), want_images = False)
+        pages = parsed.pages
         if not pages:
             out_queue.put({"type": "error", "error": "no extractable text in document"})
             return

@@ -106,7 +106,22 @@ def chunk_pages(
     max_tokens: int,
     overlap_tokens: int,
     token_counter: TokenCounter | None = None,
-    separators: tuple[str, ...] = ("\n\n", "\n", ". ", " ", ""),
+    separators: tuple[str, ...] = (
+        # Markdown heading boundaries first — when the parser emits
+        # layout-aware Markdown (PDF via pymupdf4llm, DOCX via mammoth,
+        # HTML via markdownify) chunks split at section breaks rather
+        # than mid-paragraph. Falls back to the original separators on
+        # plain text input where headings are absent.
+        "\n# ",
+        "\n## ",
+        "\n### ",
+        "\n#### ",
+        "\n\n",
+        "\n",
+        ". ",
+        " ",
+        "",
+    ),
 ) -> list[Chunk]:
     """Split parsed pages into overlapping chunks.
 

@@ -1,4 +1,8 @@
-"""Document parser tests — each format skipped if its lib is unavailable."""
+"""Document parser tests — each format skipped if its lib is unavailable.
+
+Phase 3A: parsers now return ParseResult (iterable over .pages) and
+emit Markdown so the chunker can split on heading boundaries.
+"""
 
 import sys
 from pathlib import Path
@@ -16,19 +20,22 @@ def test_text_parser_utf8(tmp_path):
 
     file = tmp_path / "sample.txt"
     file.write_text("hello world\n\nsecond paragraph", encoding = "utf-8")
-    pages = parse(file)
-    assert len(pages) == 1
-    assert "hello world" in pages[0].text
-    assert "second paragraph" in pages[0].text
+    result = parse(file)
+    assert len(result) == 1
+    assert "hello world" in result.pages[0].text
+    assert "second paragraph" in result.pages[0].text
+    assert result.images == []
 
 
-def test_markdown_parser_treated_as_text(tmp_path):
+def test_markdown_parser_preserves_headings(tmp_path):
     from core.rag.parsers import parse
 
     file = tmp_path / "sample.md"
     file.write_text("# Title\n\nBody text with **emphasis**.", encoding = "utf-8")
-    pages = parse(file)
-    assert pages and "Title" in pages[0].text
+    result = parse(file)
+    assert result.pages
+    # Markdown should pass through unchanged — heading marker preserved.
+    assert "# Title" in result.pages[0].text
 
 
 def test_unsupported_format_raises(tmp_path):
@@ -40,23 +47,41 @@ def test_unsupported_format_raises(tmp_path):
         parse(file)
 
 
-def test_html_parser_strips_scripts(tmp_path):
+def test_html_parser_emits_markdown_headings(tmp_path):
     pytest.importorskip("bs4")
     pytest.importorskip("lxml")
+    pytest.importorskip("markdownify")
     from core.rag.parsers import parse
 
     file = tmp_path / "sample.html"
     file.write_text(
-        "<html><body><script>alert(1)</script><p>visible text</p></body></html>",
+        "<html><body>"
+        "<script>alert(1)</script>"
+        "<h1>Main Title</h1>"
+        "<h2>Sub Section</h2>"
+        "<p>visible text</p>"
+        "<ul><li>one</li><li>two</li></ul>"
+        "</body></html>",
         encoding = "utf-8",
     )
-    pages = parse(file)
-    assert pages
-    assert "visible text" in pages[0].text
-    assert "alert" not in pages[0].text
+    result = parse(file)
+    assert result.pages
+    md = result.pages[0].text
+    # markdownify converts <h1> → '# ', <h2> → '## '
+    assert "# Main Title" in md
+    assert "## Sub Section" in md
+    assert "visible text" in md
+    # script content scrubbed
+    assert "alert" not in md
+    # list items become Markdown bullets
+    assert "one" in md and "two" in md
 
 
 def test_pdf_parser_extracts_pages(tmp_path):
+    pytest.importorskip("pymupdf")
+    pytest.importorskip("pymupdf4llm")
+    from core.rag.parsers import parse
+
     pypdf = pytest.importorskip("pypdf")
     from pypdf import PdfWriter
 
@@ -65,25 +90,46 @@ def test_pdf_parser_extracts_pages(tmp_path):
     writer.add_blank_page(width = 72, height = 72)
     with open(file, "wb") as f:
         writer.write(f)
-    from core.rag.parsers import parse
 
-    # blank page yields no extractable text — should return [] without error
-    pages = parse(file)
-    assert isinstance(pages, list)
+    # Blank page yields no extractable text — should return empty pages
+    # without error.
+    result = parse(file)
+    assert isinstance(result.pages, list)
+    assert isinstance(result.images, list)
 
 
-def test_docx_parser_extracts_paragraphs(tmp_path):
-    docx = pytest.importorskip("docx")
+def test_docx_parser_emits_markdown_headings(tmp_path):
+    pytest.importorskip("docx")
+    pytest.importorskip("mammoth")
+    pytest.importorskip("markdownify")
     from docx import Document
 
     file = tmp_path / "sample.docx"
     doc = Document()
+    doc.add_heading("Top Level Heading", level = 1)
     doc.add_paragraph("First paragraph here.")
+    doc.add_heading("Sub Heading", level = 2)
     doc.add_paragraph("Second paragraph here.")
     doc.save(str(file))
     from core.rag.parsers import parse
 
-    pages = parse(file)
-    assert pages
-    assert "First paragraph" in pages[0].text
-    assert "Second paragraph" in pages[0].text
+    result = parse(file)
+    assert result.pages
+    md = result.pages[0].text
+    # mammoth via _STYLE_MAP maps Heading 1/2 → h1/h2 → '# '/'## '.
+    assert "# Top Level Heading" in md
+    assert "## Sub Heading" in md
+    assert "First paragraph" in md
+    assert "Second paragraph" in md
+
+
+def test_parse_result_is_iterable_for_backcompat(tmp_path):
+    """Code that does `for page in parse(path)` should keep working."""
+    from core.rag.parsers import parse
+
+    file = tmp_path / "sample.txt"
+    file.write_text("hello", encoding = "utf-8")
+    result = parse(file)
+    pages = list(result)
+    assert len(pages) == 1
+    assert pages[0].text == "hello"

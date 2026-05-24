@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import ParsedPage
+from . import ParsedPage, ParseResult
 
 
-def extract(path: Path) -> list[ParsedPage]:
+def extract(path: Path, *, want_images: bool = False) -> ParseResult:
+    # want_images is ignored — plain text / Markdown have no embedded images.
     raw = path.read_bytes()
     try:
         text = raw.decode("utf-8")
@@ -23,5 +24,8 @@ def extract(path: Path) -> list[ParsedPage]:
         text = raw.decode(encoding, errors = "replace")
     text = text.strip()
     if not text:
-        return []
-    return [ParsedPage(text = text, page_number = None)]
+        return ParseResult(pages = [], images = [])
+    return ParseResult(
+        pages = [ParsedPage(text = text, page_number = None)],
+        images = [],
+    )
