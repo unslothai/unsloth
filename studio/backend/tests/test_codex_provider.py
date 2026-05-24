@@ -521,10 +521,11 @@ class TestCodexHardenedRegressions:
 
         monkeypatch.setattr("importlib.util.find_spec", _shim)
         from core.inference.codex_availability import _sdk_importable
+
         assert _sdk_importable() is False
-        assert calls and calls[0] == "openai_codex", (
-            f"availability probe must check openai_codex first; saw {calls}"
-        )
+        assert (
+            calls and calls[0] == "openai_codex"
+        ), f"availability probe must check openai_codex first; saw {calls}"
 
     def test_login_status_uses_login_subcommand(self):
         """Upstream is `codex login status`, NOT `codex auth status`."""
@@ -533,9 +534,9 @@ class TestCodexHardenedRegressions:
             "studio/backend/core/inference/codex_availability.py"
         )
         text = open(src).read()
-        assert '"auth", "status"' not in text, (
-            "_detect_logged_in must use `codex login status`, not `codex auth status`"
-        )
+        assert (
+            '"auth", "status"' not in text
+        ), "_detect_logged_in must use `codex login status`, not `codex auth status`"
         assert '"login", "status"' in text
 
     def test_device_login_uses_login_subcommand(self):
@@ -544,9 +545,9 @@ class TestCodexHardenedRegressions:
             "studio/backend/core/inference/codex_provider.py"
         )
         text = open(src).read()
-        assert '"auth", "login", "--device-auth"' not in text, (
-            "stream_codex_device_login must use `codex login --device-auth`"
-        )
+        assert (
+            '"auth", "login", "--device-auth"' not in text
+        ), "stream_codex_device_login must use `codex login --device-auth`"
         assert '"login", "--device-auth"' in text
 
     def test_not_logged_in_not_misparsed_as_logged_in(self):
@@ -594,9 +595,9 @@ class TestCodexHardenedRegressions:
         ]
         prompt = _last_user_prompt(msgs)
         assert "and germany?" in prompt
-        assert "Paris" in prompt, (
-            f"PRIOR ASSISTANT TURN DROPPED — multi-turn broken. Prompt:\n{prompt}"
-        )
+        assert (
+            "Paris" in prompt
+        ), f"PRIOR ASSISTANT TURN DROPPED — multi-turn broken. Prompt:\n{prompt}"
         assert "capital of france" in prompt.lower()
 
     def test_single_turn_prompt_unchanged(self):
@@ -611,9 +612,9 @@ class TestCodexHardenedRegressions:
         from core.inference.providers import PROVIDER_REGISTRY
 
         codex = PROVIDER_REGISTRY["codex"]
-        assert "o3" not in codex["default_models"], (
-            "o3 is not a Codex model; remove from default_models"
-        )
+        assert (
+            "o3" not in codex["default_models"]
+        ), "o3 is not a Codex model; remove from default_models"
         assert "gpt-5.5" in codex["default_models"]
 
     def test_inference_route_no_raw_exc_leak(self):

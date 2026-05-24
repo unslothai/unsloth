@@ -353,8 +353,7 @@ async def _stream_codex_single(
     async_codex_cls = getattr(sdk, "AsyncCodex", None)
     if async_codex_cls is None:
         raise CodexUnavailableError(
-            "Codex SDK is installed but AsyncCodex is missing -- "
-            "upgrade the SDK."
+            "Codex SDK is installed but AsyncCodex is missing -- " "upgrade the SDK."
         )
 
     completion_text_chars = 0
@@ -746,7 +745,9 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     # Anchor on the upstream URL shape: ``.../codex/device`` (optionally
     # with a query string). The pattern accepts any host because some
     # builds redirect via a staging host.
-    url_re = re.compile(r"https?://[^\s\x1b]+?/codex/device(?:\?[^\s\x1b]*)?", re.IGNORECASE)
+    url_re = re.compile(
+        r"https?://[^\s\x1b]+?/codex/device(?:\?[^\s\x1b]*)?", re.IGNORECASE
+    )
     # One-time-code format from upstream device_code_auth.rs: 4 chars,
     # dash, 4 chars. Pattern is tolerant of any uppercase alphanum.
     code_re = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")

@@ -88,11 +88,17 @@ async def codex_device_login(
                 exc_type = type(exc).__name__,
                 error = str(exc),
             )
-            yield "data: " + json.dumps({
-                "type": "error",
-                "message": "Codex login failed",
-                "exception_type": type(exc).__name__,
-            }) + "\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "error",
+                        "message": "Codex login failed",
+                        "exception_type": type(exc).__name__,
+                    }
+                )
+                + "\n\n"
+            )
             yield "data: " + json.dumps({"type": "done", "ok": False}) + "\n\n"
         # Frontend treats the trailing [DONE] the same way it does for
         # chat streams, so we emit it for parity.
