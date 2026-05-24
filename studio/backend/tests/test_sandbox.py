@@ -425,6 +425,23 @@ def test_get_shell_cmd_uses_absolute_bin_bash():
 # ---------------------------------------------------------------------------
 
 
+def _slice_top_form(text: str, opener: str) -> str:
+    """Return the substring of *text* spanning the top-level Scheme form
+    that begins with *opener*. Counts parens so it skips past nested
+    `(subpath ...)` entries inside the form."""
+    start = text.index(opener)
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    raise AssertionError(f"unterminated form starting with {opener!r}")
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason = "Seatbelt is macOS-only")
 def test_macos_profile_allows_workdir_exec(tmp_path):
     sandbox = _load_sandbox_module()
@@ -435,12 +452,10 @@ def test_macos_profile_allows_workdir_exec(tmp_path):
     profile = sandbox._macos_seatbelt_profile(str(tmp_path))
     # Workdir should appear inside both (allow process-exec ...) and
     # (allow file-map-executable ...), not just file-read*/file-write*.
-    process_exec_idx = profile.index("(allow process-exec")
-    process_exec_close = profile.index(")", process_exec_idx)
-    file_map_idx = profile.index("(allow file-map-executable")
-    file_map_close = profile.index(")", file_map_idx)
-    assert wd in profile[process_exec_idx:process_exec_close], profile
-    assert wd in profile[file_map_idx:file_map_close], profile
+    process_exec_form = _slice_top_form(profile, "(allow process-exec")
+    file_map_form = _slice_top_form(profile, "(allow file-map-executable")
+    assert wd in process_exec_form, process_exec_form
+    assert wd in file_map_form, file_map_form
 
 
 # ---------------------------------------------------------------------------
