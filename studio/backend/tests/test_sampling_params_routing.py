@@ -830,6 +830,7 @@ def test_local_anthropic_disable_parallel_tool_use_translation():
     invert it into OpenAI-shaped `parallel_tool_calls` so third-party
     clients (Claude SDK, LiteLLM in passthrough mode) opt out of
     parallel calls successfully even on the local model."""
+
     # Mirror the extraction logic in routes/inference.py:anthropic_messages.
     def _extract(tc):
         if isinstance(tc, dict):
