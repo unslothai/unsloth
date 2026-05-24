@@ -513,3 +513,66 @@ def test_no_backtrack_on_tilde_fence_spam():
     _has_answer_artifact(payload)
     elapsed_ms = (time.time() - t0) * 1000
     assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
+
+
+# ── Closing-fence-must-end-line edge cases ────────────────────────
+
+
+def test_artifact_regex_rejects_backtick_close_with_trailing_text():
+    """``\\n```not actually closed`` must NOT match a closed fence.
+
+    The closing fence must end the line (only trailing whitespace
+    before a newline or end-of-string). Otherwise an unclosed fence
+    where a later line begins with three backticks plus prose is
+    treated as a complete artifact and the re-prompt is wrongly
+    suppressed."""
+    samples = [
+        "First, let me write it.\n```python\nprint('hi')\n```not actually closed",
+        "First, let me show:\n```python\nprint('hi')\n```more text after",
+    ]
+    for s in samples:
+        assert not _has_answer_artifact(s), s
+        assert _would_reprompt(s), s
+
+
+def test_artifact_regex_rejects_tilde_close_with_trailing_text():
+    """Same rule for tilde fences."""
+    text = "First, let me write it.\n~~~python\nprint('hi')\n~~~not actually closed"
+    assert not _has_answer_artifact(text)
+    assert _would_reprompt(text)
+
+
+# ── Freshness-gated find / check / verify lookup plans ────────────
+
+
+def test_reprompts_on_numbered_lookup_plan_with_freshness_verbs():
+    """``find the current``, ``check the latest``, ``verify today's`` in a
+    numbered plan are tool-lookup framing and STILL re-prompt."""
+    samples = [
+        "Here's my plan:\n1. Find the current Billboard chart.\n2. Summarise.",
+        "First, I'll do these:\n1. Check the latest release notes.\n2. Answer.",
+        "Let me proceed:\n1. Verify today's USD/EUR rate.\n2. Cite the source.",
+        "I'll do this:\n1. Find the up-to-date docs.\n2. Quote the change.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_no_reprompt_on_numbered_answer_with_bare_find_or_check():
+    """Bare ``find`` / ``check`` / ``verify`` without a freshness word
+    stay valid answer verbs ("find the bug", "check the answer")."""
+    samples = [
+        (
+            "Here's how I'd debug this:\n"
+            "1. Find the failing test.\n"
+            "2. Check the stack trace."
+        ),
+        (
+            "First, here are common steps:\n"
+            "1. Verify your input.\n"
+            "2. Check each assertion."
+        ),
+    ]
+    for s in samples:
+        assert _has_answer_artifact(s), s
+        assert not _would_reprompt(s), s

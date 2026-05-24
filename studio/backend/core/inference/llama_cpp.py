@@ -56,13 +56,18 @@ logger = get_logger(__name__)
 # numbered lists ("1. search the docs", "1. fetch the data") from
 # answer numbered lists ("1. Apple", "1. Use BFS", "1. Write a poem").
 # Kept intentionally narrow: only verbs that strongly imply an actual
-# tool invocation.  Broad verbs like ``use``, ``compare``, ``check``,
-# ``find``, ``write``, ``create``, ``make``, ``build``, ``think``,
-# ``respond``, ``answer``, ``analyse``, ``explore`` are deliberately
-# excluded because real answer lists use them ("1. Use BFS",
-# "1. Compare versions", "1. Write a poem").
+# tool invocation.  Broad verbs like ``use``, ``compare``, ``write``,
+# ``create``, ``make``, ``build``, ``think``, ``respond``, ``answer``,
+# ``analyse``, ``explore`` are deliberately excluded because real
+# answer lists use them ("1. Use BFS", "1. Compare versions",
+# "1. Write a poem"). ``find`` / ``check`` / ``verify`` are admitted
+# ONLY when paired with a freshness signal (current / latest /
+# today's / up-to-date / live / online / web), so "find the bug" or
+# "check the answer" still read as valid answer text.
 _TOOL_ACTION_VERBS = (
     r"search|look up|fetch|browse|web[ _-]?search|"
+    r"(?:find|check|verify) (?:for )?(?:the |a |an )?"
+    r"(?:current|latest|today['’]?s?|up[- ]to[- ]date|live|online|web)|"
     r"call (?:a |the )?tool|run (?:python|the code)|execute (?:python|the code)"
 )
 
@@ -106,11 +111,14 @@ _MAX_REPROMPTS = 3
 #   * All `[\s\S]{...}?` runs are length-bounded so the search stays
 #     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
 _HAS_ANSWER_ARTIFACT = re.compile(
-    # Closed backtick code fence (any markdown info string, optional indent on close).
-    r"```[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*```"
+    # Closed backtick code fence (any markdown info string, optional indent
+    # on close).  The closing fence must end the line: only optional
+    # trailing whitespace before a newline or end-of-string, so spam
+    # like ``` ```not actually closed ``` does not count.
+    r"```[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*```[ \t]*(?:\r?\n|\Z)"
     # Closed tilde code fence (CommonMark also allows ~~~ fences; several
     # models emit them when the body itself contains backticks).
-    r"|~~~[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*~~~"
+    r"|~~~[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*~~~[ \t]*(?:\r?\n|\Z)"
     # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
     # Complete SVG document.
@@ -4894,15 +4902,19 @@ class LlamaCppBackend:
                         # like "4" or "Hello!" won't trigger this.
                         # Use content if available, otherwise fall back
                         # to reasoning text (reasoning-only stalls).
-                        _stripped = content_accum.strip()
-                        if not _stripped:
-                            _stripped = reasoning_accum.strip()
+                        # Artifact check uses VISIBLE content only:
+                        # a closed code fence inside hidden reasoning is
+                        # not a user-visible answer, so it must not
+                        # suppress the re-prompt.
+                        _visible = content_accum.strip()
+                        _stripped = _visible if _visible else reasoning_accum.strip()
+                        _visible_has_artifact = bool(_visible) and _has_answer_artifact(_visible)
                         if (
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped)
-                            and not _has_answer_artifact(_stripped)
+                            and not _visible_has_artifact
                         ):
                             _reprompt_count += 1
                             logger.info(
