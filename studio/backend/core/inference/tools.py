@@ -17,6 +17,7 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 import random
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
@@ -91,6 +92,13 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "rsync",
         "eval",
         "source",
+        # macOS-specific escape vectors. `open URL` uses LaunchServices to
+        # spawn a browser outside the sandbox (bypasses network-deny).
+        # `security` reads Keychain credentials. `osascript` evaluates
+        # AppleScript with the user's normal privileges.
+        "open",
+        "security",
+        "osascript",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -321,10 +329,16 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec_impl(apply_no_new_privs: bool):
+def _sandbox_preexec_impl(apply_no_new_privs: bool, apply_nproc: bool = True):
     """Best-effort sandbox setup for sandboxed subprocesses.
 
     Modules are resolved at import time so the forked child runs no imports.
+    ``apply_nproc`` is False on the bwrap path because the cap is per-real-UID
+    and bwrap must fork its own helper before unshare; on a busy multi-tenant
+    box where the user already has many processes, applying NPROC=10000 to
+    the parent can deny bwrap that fork with EAGAIN ("Resource temporarily
+    unavailable"). bwrap reapplies its own per-namespace limits to the
+    inner payload, so the inner tool is still bounded.
     """
     try:
         os.setsid()
@@ -354,11 +368,12 @@ def _sandbox_preexec_impl(apply_no_new_privs: bool):
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(
                 _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
@@ -403,7 +418,10 @@ def _sandbox_preexec():
 def _sandbox_preexec_for_bwrap():
     # Setuid bwrap can't acquire helper privileges with NNP set pre-execve.
     # bwrap reapplies NNP to the inner payload, so the child still runs NNP=1.
-    _sandbox_preexec_impl(apply_no_new_privs = False)
+    # NPROC is also skipped because the cap is per-real-UID and would block
+    # bwrap's own helper fork on busy multi-tenant hosts; bwrap enforces
+    # per-namespace process limits on the inner payload instead.
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
 
 
 # Sentinel returned by tool entry points when the operator asked for
@@ -434,20 +452,38 @@ def _strict_sandbox_required() -> bool:
     return value in _TRUTHY_ENV_VALUES
 
 
-def _get_shell_cmd(command: str) -> list[str]:
-    """Return the platform-appropriate shell invocation for a command string.
+_RESOLVED_BASH_PATH: str | None = None
 
-    Uses an absolute /bin/bash on Unix so the Seatbelt profile's /bin
-    allowlist actually matches; bare "bash" would resolve to whatever
-    PATH lookup finds first, e.g. /usr/local/bin/bash from Homebrew on
-    Intel macs, which Seatbelt denies. /bin/bash is ABI-stable on both
-    macOS (SIP-protected) and Linux (usrmerge symlink or real binary).
+
+def _resolve_bash_path() -> str:
+    """Return the bash binary the tool subprocess should exec.
+
+    Order:
+      1. shutil.which("bash") in the parent PATH; this picks up Homebrew
+         bash (5.x) on Intel macs so scripts using bash 4+ features keep
+         working. Both /usr/local/bin and /opt/homebrew/bin are allowed
+         by the macOS Seatbelt profile so the sandbox is satisfied.
+      2. /bin/bash if present (covers stock macOS where shutil.which
+         returns nothing because PATH was stripped, and every Linux
+         layout we ship for).
+      3. Bare "bash" as a last resort so the child's PATH lookup still
+         runs (probably broken, but no worse than before).
     """
+    global _RESOLVED_BASH_PATH
+    if _RESOLVED_BASH_PATH is not None:
+        return _RESOLVED_BASH_PATH
+    candidate = shutil.which("bash")
+    if not candidate and os.path.exists("/bin/bash"):
+        candidate = "/bin/bash"
+    _RESOLVED_BASH_PATH = candidate or "bash"
+    return _RESOLVED_BASH_PATH
+
+
+def _get_shell_cmd(command: str) -> list[str]:
+    """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
         return ["cmd", "/c", command]
-    if os.path.exists("/bin/bash"):
-        return ["/bin/bash", "-c", command]
-    return ["bash", "-c", command]
+    return [_resolve_bash_path(), "-c", command]
 
 
 # Per-session working directories so each chat thread gets its own sandbox.

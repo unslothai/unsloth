@@ -440,11 +440,17 @@ def test_strict_mode_off_falls_back_unsandboxed(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "Unix-only")
-def test_get_shell_cmd_uses_absolute_bin_bash():
+def test_get_shell_cmd_resolves_absolute_bash_path(monkeypatch):
+    """Bash must resolve to an absolute path so the Seatbelt /bin or
+    Homebrew prefix allowlist matches. Bare "bash" is the only
+    forbidden answer (PATH lookup inside the sandboxed child is
+    unreliable because _build_safe_env reshuffles PATH)."""
     from core.inference import tools
 
+    monkeypatch.setattr(tools, "_RESOLVED_BASH_PATH", None)
     cmd = tools._get_shell_cmd("echo hi")
-    assert cmd[0] == "/bin/bash", cmd
+    assert os.path.isabs(cmd[0]), cmd
+    assert "bash" in os.path.basename(cmd[0]), cmd
 
 
 # ---------------------------------------------------------------------------

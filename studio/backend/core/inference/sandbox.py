@@ -376,10 +376,13 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow file-write* (subpath "{wd}"))
 (allow file-ioctl (subpath "{wd}"))
 
+; coreservices.launchservicesd + lsd.mapdb are intentionally NOT allowed:
+; together with (allow process-exec /usr/bin) they let a tool run
+; `open URL` and have LaunchServices spawn a browser outside the
+; sandbox, bypassing (deny network-outbound).
+; SecurityServer is also NOT allowed: with `/usr/bin/security` reachable
+; it would expose Keychain reads of stored credentials.
 (allow mach-lookup
-    (global-name "com.apple.coreservices.launchservicesd")
-    (global-name "com.apple.lsd.mapdb")
-    (global-name "com.apple.SecurityServer")
     (global-name "com.apple.trustd.agent")
     (global-name "com.apple.trustd")
     (global-name "com.apple.system.opendirectoryd.libinfo")
