@@ -1205,9 +1205,9 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "studio.txt",
     )
 
-    # 8b. RAG dependencies (vector store + lexical index + layout-aware
-    #     parsers). Skipped in no-torch mode because RAG embeddings go
-    #     through sentence-transformers, which requires torch.
+    # 9. RAG dependencies (vector store + lexical index + layout-aware
+    #    parsers). Skipped in no-torch mode because RAG embeddings go
+    #    through sentence-transformers, which requires torch.
     if not NO_TORCH:
         _progress("rag deps")
         pip_install(
@@ -1216,7 +1216,7 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "rag.txt",
         )
 
-    # 9. Data-designer dependencies
+    # 10. Data-designer dependencies
     _progress("data designer deps")
     pip_install(
         "Installing data-designer base dependencies",
@@ -1224,7 +1224,7 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer-deps.txt",
     )
 
-    # 10. Data-designer packages (no-deps to avoid conflicts)
+    # 11. Data-designer packages (no-deps to avoid conflicts)
     _progress("data designer")
     pip_install(
         "Installing data-designer",
@@ -1233,7 +1233,7 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer.txt",
     )
 
-    # 11. Local Data Designer seed plugins
+    # 12. Local Data Designer seed plugins
     local_dd_plugins = [
         ("unstructured", LOCAL_DD_UNSTRUCTURED_PLUGIN),
         ("github", LOCAL_DD_GITHUB_PLUGIN),
@@ -1256,14 +1256,14 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 12. Patch metadata for single-env compatibility
+    # 13. Patch metadata for single-env compatibility
     _progress("finalizing")
     run(
         "Patching single-env metadata",
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 13. AMD ROCm: final torch repair.  Multiple install steps above can
+    # 14. AMD ROCm: final torch repair.  Multiple install steps above can
     #     pull in CUDA torch from PyPI (base packages, extras, overrides,
     #     studio deps, etc.).  Running the repair as the very last step
     #     ensures ROCm torch is in place at runtime, regardless of which
@@ -1272,7 +1272,7 @@ def install_python_stack() -> int:
         _progress("ROCm torch (final)")
         _ensure_rocm_torch()
 
-    # 14. Final check (silent; third-party conflicts are expected)
+    # 15. Final check (silent; third-party conflicts are expected)
     subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         stdout = subprocess.DEVNULL,
