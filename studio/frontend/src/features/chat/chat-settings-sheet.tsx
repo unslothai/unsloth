@@ -633,7 +633,8 @@ export function ChatSettingsPanel({
       activeExternalProvider.baseUrl,
     ) &&
     activeExternalProvider.providerType === "openai";
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  // (activeThreadId is declared earlier in this component — see the
+  // RAG retrieval-section block above.)
   const openAiApiKeyForSection = activeExternalProvider
     ? getExternalProviderApiKey(activeExternalProvider.id) || null
     : null;

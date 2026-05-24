@@ -322,8 +322,10 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
   },
 
   subscribeJob(jobId, onComplete) {
-    const existing = get().jobUnsubscribers[jobId];
-    if (existing) return;
+    // Object indexing in TS returns V (not V|undefined) without
+    // noUncheckedIndexedAccess, so we test membership explicitly to
+    // avoid the "always-truthy function reference" lint.
+    if (jobId in get().jobUnsubscribers) return;
     const unsubscribe = subscribeToJobEvents(jobId, {
       onEvent: (event) => {
         set((state) => ({ jobs: { ...state.jobs, [jobId]: event } }));
