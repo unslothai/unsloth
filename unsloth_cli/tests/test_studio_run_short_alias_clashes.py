@@ -306,7 +306,10 @@ def test_legacy_m_inline_value_form(monkeypatch):
 def test_consume_helper_exact_match_space_form():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
-        ["-m", "FOO", "--top-k", "20"], ("-m",), None, "--model",
+        ["-m", "FOO", "--top-k", "20"],
+        ("-m",),
+        None,
+        "--model",
     )
     assert value == "FOO"
     assert remaining == ["--top-k", "20"]
@@ -315,7 +318,10 @@ def test_consume_helper_exact_match_space_form():
 def test_consume_helper_exact_match_inline_form():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
-        ["-m=FOO", "--top-k", "20"], ("-m",), None, "--model",
+        ["-m=FOO", "--top-k", "20"],
+        ("-m",),
+        None,
+        "--model",
     )
     assert value == "FOO"
     assert remaining == ["--top-k", "20"]
@@ -324,7 +330,10 @@ def test_consume_helper_exact_match_inline_form():
 def test_consume_helper_leaves_clusters_alone():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
-        ["-mg", "0", "-md", "/x"], ("-m",), None, "--model",
+        ["-mg", "0", "-md", "/x"],
+        ("-m",),
+        None,
+        "--model",
     )
     assert value is None
     assert remaining == ["-mg", "0", "-md", "/x"]
@@ -349,7 +358,10 @@ def test_consume_helper_missing_value_raises():
 def test_consume_helper_multiple_aliases_in_group():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
-        ["-hfr", "FOO", "--top-k", "20"], ("-m", "-hfr"), None, "--model",
+        ["-hfr", "FOO", "--top-k", "20"],
+        ("-m", "-hfr"),
+        None,
+        "--model",
     )
     assert value == "FOO"
     assert remaining == ["--top-k", "20"]
@@ -358,7 +370,10 @@ def test_consume_helper_multiple_aliases_in_group():
 def test_consume_helper_preserves_value_when_no_match():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
-        ["--top-k", "20"], ("-m",), "PRESET", "--model",
+        ["--top-k", "20"],
+        ("-m",),
+        "PRESET",
+        "--model",
     )
     assert value == "PRESET"
     assert remaining == ["--top-k", "20"]
@@ -372,11 +387,19 @@ def test_consume_helper_preserves_value_when_no_match():
 
 def test_expand_np_rewrites_attached_form(monkeypatch):
     monkeypatch.setattr(
-        sys, "argv", ["unsloth", "studio", "run", "--model", "X", "-np8"],
+        sys,
+        "argv",
+        ["unsloth", "studio", "run", "--model", "X", "-np8"],
     )
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == [
-        "unsloth", "studio", "run", "--model", "X", "-np", "8",
+        "unsloth",
+        "studio",
+        "run",
+        "--model",
+        "X",
+        "-np",
+        "8",
     ]
 
 
@@ -414,7 +437,9 @@ def test_expand_np_leaves_bare_np_alone(monkeypatch):
 
 def test_expand_np_handles_multiple_occurrences(monkeypatch):
     monkeypatch.setattr(
-        sys, "argv", ["unsloth", "run", "-np8", "-np16"],
+        sys,
+        "argv",
+        ["unsloth", "run", "-np8", "-np16"],
     )
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-np", "8", "-np", "16"]
@@ -424,7 +449,9 @@ def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
     """Behavioural pin: after _expand_attached_np_short runs in the
     entry-point gate, `-np8` produces --parallel=8 (not --port=8)."""
     monkeypatch.setattr(
-        sys, "argv", ["unsloth", "studio", "run", "--model", "X", "-np8"],
+        sys,
+        "argv",
+        ["unsloth", "studio", "run", "--model", "X", "-np8"],
     )
     _studio_mod()._expand_attached_np_short()
     captured = _invoke(monkeypatch, sys.argv[2:])  # skip "unsloth studio"
