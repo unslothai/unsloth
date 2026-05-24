@@ -45,6 +45,11 @@ export interface SearchHit {
   score: number;
   page_number: number | null;
   filename: string | null;
+  // Phase 3B-multimodal: "image" hits have an image_url (served by
+  // GET /api/rag/images/{document_id}/{filename}); "caption" hits
+  // carry the paired image's caption text and are LLM-friendly.
+  kind?: "text" | "image" | "caption";
+  image_url?: string | null;
 }
 
 export interface SearchRequest {

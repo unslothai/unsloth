@@ -29,6 +29,7 @@ class Hit:
     score: float
     document_id: str | None = None
     chunk_index: int | None = None
+    kind: str = "text"
 
 
 def retrieve_bm25(scope: str, query: str, k: int | None = None) -> list[Hit]:
@@ -60,6 +61,7 @@ def retrieve_dense(
                 score = r["score"],
                 document_id = payload.get("document_id"),
                 chunk_index = payload.get("chunk_index"),
+                kind = payload.get("kind", "text"),
             )
         )
     return out
@@ -85,6 +87,7 @@ def _rrf_fuse(
             score = score,
             document_id = seen[cid].document_id,
             chunk_index = seen[cid].chunk_index,
+            kind = seen[cid].kind,
         )
         for cid, score in ordered
     ]

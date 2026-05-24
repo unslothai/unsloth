@@ -1233,6 +1233,7 @@ export function ChatSettingsPanel({
                   {knowledgeBases.map((kb) => {
                     const isActive = kb.id === activeKbId;
                     const isLate = kb.chunking_strategy === "late";
+                    const isMultimodal = kb.mode === "multimodal";
                     return (
                       <DropdownMenuItem
                         key={kb.id}
@@ -1252,6 +1253,14 @@ export function ChatSettingsPanel({
                               title="Late chunking enabled"
                             >
                               ⚡ Late
+                            </span>
+                          ) : null}
+                          {isMultimodal ? (
+                            <span
+                              className="rounded-sm bg-violet-500/15 px-1 text-[10px] font-medium text-violet-700 dark:text-violet-300"
+                              title="Multimodal mode — text + image embeddings"
+                            >
+                              🖼️ MM
                             </span>
                           ) : null}
                         </span>

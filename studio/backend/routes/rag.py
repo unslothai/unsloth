@@ -29,7 +29,7 @@ from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject, get_current_subject_sse
@@ -141,6 +141,8 @@ class SearchHit(BaseModel):
     score: float
     page_number: int | None = None
     filename: str | None = None
+    kind: str = "text"
+    image_url: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -513,6 +515,33 @@ def list_thread_documents(
     return DocumentListResponse(documents = [_row_to_document(r) for r in rows])
 
 
+@router.get("/images/{document_id}/{filename}")
+def get_rag_image(
+    document_id: str,
+    filename: str,
+    current_subject: str = Depends(get_current_subject),
+) -> FileResponse:
+    """Serve an image extracted during multimodal ingestion.
+
+    Files live under ``rag_uploads_root() / 'images' / <document_id>``.
+    We realpath-check the resolved file against that root to refuse
+    path-traversal attempts (``..`` segments, symlinks pointing
+    elsewhere). Filenames are constrained to a single path component.
+    """
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code = 400, detail = "Invalid filename")
+    root = Path(os.path.realpath(rag_uploads_root() / "images"))
+    candidate = (rag_uploads_root() / "images" / document_id / filename)
+    try:
+        real = Path(os.path.realpath(candidate))
+        real.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code = 404, detail = "Image not found") from exc
+    if not real.is_file():
+        raise HTTPException(status_code = 404, detail = "Image not found")
+    return FileResponse(str(real))
+
+
 @router.delete("/documents/{document_id}")
 def delete_document(
     document_id: str,
@@ -706,7 +735,8 @@ def search(
             rows = conn.execute(
                 f"""
                 SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.text,
-                       c.page_number, d.filename
+                       c.page_number, c.kind, c.image_path, c.linked_chunk_id,
+                       d.filename
                 FROM rag_chunks c
                 JOIN rag_documents d ON d.id = c.document_id
                 WHERE c.id IN ({placeholders})
@@ -736,15 +766,24 @@ def search(
         meta = chunk_lookup.get(hit.chunk_id)
         if not meta:
             continue
+        kind = meta.get("kind", "text") or "text"
+        image_url: str | None = None
+        if kind == "image" and meta.get("image_path"):
+            image_url = (
+                f"/api/rag/images/{meta['document_id']}/"
+                f"{Path(meta['image_path']).name}"
+            )
         out.append(
             SearchHit(
                 chunk_id = hit.chunk_id,
                 document_id = meta["document_id"],
                 chunk_index = meta["chunk_index"],
-                text = meta["text"],
+                text = meta["text"] or "",
                 score = hit.score,
                 page_number = meta.get("page_number"),
                 filename = meta.get("filename"),
+                kind = kind,
+                image_url = image_url,
             )
         )
     return SearchResponse(hits = out)

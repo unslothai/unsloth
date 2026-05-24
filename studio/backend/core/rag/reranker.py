@@ -86,28 +86,38 @@ def rerank(
     """
     if not pairs:
         return []
+    # CrossEncoder is text-only; image-kind hits get appended at the end
+    # in their original relative order so they're never dropped, just
+    # never reranked. Caption-kind hits are eligible (they carry text).
+    text_pairs = [(h, t) for h, t in pairs if h.kind != "image"]
+    image_hits = [h for h, _t in pairs if h.kind == "image"]
+
     model = get_reranker(model_name)
-    inputs = [(query, text) for _, text in pairs]
-    scores = model.predict(
-        inputs,
-        batch_size = RAG_RERANK_BATCH_SIZE,
-        show_progress_bar = False,
-    )
-    ranked = sorted(
-        zip(pairs, scores),
-        key = lambda item: float(item[1]),
-        reverse = True,
-    )
-    out: list[Hit] = []
-    for (hit, _text), score in ranked:
-        out.append(
-            Hit(
-                chunk_id = hit.chunk_id,
-                score = float(score),
-                document_id = hit.document_id,
-                chunk_index = hit.chunk_index,
-            )
+    if text_pairs:
+        inputs = [(query, text) for _, text in text_pairs]
+        scores = model.predict(
+            inputs,
+            batch_size = RAG_RERANK_BATCH_SIZE,
+            show_progress_bar = False,
         )
+        ranked = sorted(
+            zip(text_pairs, scores),
+            key = lambda item: float(item[1]),
+            reverse = True,
+        )
+        reranked_text = [
+            Hit(
+                chunk_id = h.chunk_id,
+                score = float(s),
+                document_id = h.document_id,
+                chunk_index = h.chunk_index,
+                kind = h.kind,
+            )
+            for (h, _t), s in ranked
+        ]
+    else:
+        reranked_text = []
+    out: list[Hit] = reranked_text + image_hits
     if top_k is not None:
         out = out[:top_k]
     return out

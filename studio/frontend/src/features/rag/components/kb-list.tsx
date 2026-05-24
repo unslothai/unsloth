@@ -68,6 +68,14 @@ export function KBList({
                         ⚡ Late
                       </span>
                     ) : null}
+                    {kb.mode === "multimodal" ? (
+                      <span
+                        className="shrink-0 rounded-sm bg-violet-500/15 px-1 text-[10px] font-medium text-violet-700 dark:text-violet-300"
+                        title="Multimodal — text + image embeddings"
+                      >
+                        🖼️ MM
+                      </span>
+                    ) : null}
                   </span>
                   {kb.description ? (
                     <span className="truncate text-xs text-muted-foreground">

@@ -47,6 +47,18 @@ _QUEUE_TIMEOUT_SECONDS = 300
 # Subprocess worker
 # ------------------------------------------------------------------
 
+_MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/svg+xml": ".svg",
+}
+
+
 def _subprocess_worker(
     stored_path: str,
     model_name: str,
@@ -56,20 +68,17 @@ def _subprocess_worker(
     out_queue: Any,
     chunking_strategy: str = "standard",
     mode: str = "text",
+    document_id: str = "",
 ) -> None:
     try:
-        from core.rag.chunking import chunk_pages, chunk_pages_with_spans
+        from core.rag.chunking import chunk_pages
         from core.rag.parsers import parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        # want_images is True only for multimodal KBs. The image side of
-        # the pipeline lands in Phase 3B-multimodal; for now the parser
-        # collects the bytes anyway in case we want them later, but only
-        # the text pages are consumed.
         parsed = parse(Path(stored_path), want_images = (mode == "multimodal"))
         pages = parsed.pages
-        if not pages:
-            out_queue.put({"type": "error", "error": "no extractable text in document"})
+        if not pages and not parsed.images:
+            out_queue.put({"type": "error", "error": "no extractable content in document"})
             return
 
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
@@ -94,17 +103,30 @@ def _subprocess_worker(
                 late_chunk_encode = late_chunk_encode,
                 out_queue = out_queue,
             )
-        else:
-            _run_standard_chunking(
-                pages = pages,
-                chunk_size = chunk_size,
-                overlap = overlap,
-                counter = counter,
-                batch_size = batch_size,
-                model = model,
-                chunk_pages = chunk_pages,
+            return
+
+        # Standard chunking path (text + optional images for multimodal mode).
+        text_count = _run_standard_chunking(
+            pages = pages,
+            chunk_size = chunk_size,
+            overlap = overlap,
+            counter = counter,
+            batch_size = batch_size,
+            model = model,
+            chunk_pages = chunk_pages,
+            out_queue = out_queue,
+            send_complete = False,
+        )
+        image_count = 0
+        if mode == "multimodal" and parsed.images and document_id:
+            image_count = _stream_image_chunks(
+                images = parsed.images,
+                document_id = document_id,
+                model_name = model_name,
                 out_queue = out_queue,
+                first_index = text_count,
             )
+        out_queue.put({"type": "complete", "num_chunks": text_count + image_count})
     except Exception as exc:  # noqa: BLE001
         logger.exception("ingestion subprocess failed")
         out_queue.put({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -120,7 +142,14 @@ def _run_standard_chunking(
     model,
     chunk_pages,
     out_queue,
-) -> None:
+    send_complete: bool = True,
+) -> int:
+    """Stream text chunks back to the parent. Returns the number streamed.
+
+    When called as part of the multimodal pipeline, `send_complete` is
+    False because image chunks still need to be streamed before the
+    document is marked complete.
+    """
     out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
     chunks = chunk_pages(
         pages,
@@ -129,8 +158,9 @@ def _run_standard_chunking(
         token_counter = counter,
     )
     if not chunks:
-        out_queue.put({"type": "error", "error": "chunker produced no chunks"})
-        return
+        if send_complete:
+            out_queue.put({"type": "error", "error": "chunker produced no chunks"})
+        return 0
 
     total = len(chunks)
     for i in range(0, total, batch_size):
@@ -151,6 +181,7 @@ def _run_standard_chunking(
                         "text": c.text,
                         "token_count": c.token_count,
                         "page_number": c.page_number,
+                        "kind": "text",
                     }
                     for c in batch
                 ],
@@ -160,7 +191,121 @@ def _run_standard_chunking(
         progress = 0.3 + 0.65 * min(1.0, (i + len(batch)) / total)
         out_queue.put({"type": "progress", "stage": "embed", "progress": progress})
 
-    out_queue.put({"type": "complete", "num_chunks": total})
+    if send_complete:
+        out_queue.put({"type": "complete", "num_chunks": total})
+    return total
+
+
+def _stream_image_chunks(
+    *,
+    images,
+    document_id: str,
+    model_name: str,
+    out_queue,
+    first_index: int,
+) -> int:
+    """Save extracted images to disk and stream image+caption chunks.
+
+    Each image becomes an `image`-kind chunk; if the parser found an
+    adjacent caption, a paired `caption`-kind chunk is also emitted.
+    Pairs share a ``pair_group`` so the parent can link them via
+    rag_chunks.linked_chunk_id.
+
+    Images are written to ``rag_uploads_root() / 'images' /
+    <document_id> / img-NNN.<ext>`` so the parent can serve them via
+    the static-image route without holding bytes in memory.
+    """
+    from core.rag.embeddings import encode, encode_images
+    from utils.paths.storage_roots import ensure_dir, rag_uploads_root
+
+    if not images:
+        return 0
+
+    out_queue.put({"type": "progress", "stage": "extract_images", "progress": 0.85})
+
+    img_dir = ensure_dir(rag_uploads_root() / "images" / document_id)
+
+    # Persist bytes, build parallel lists for encoding.
+    paths: list[str] = []
+    bytes_for_encoding: list[bytes] = []
+    captions: list[str] = []
+    pages: list[int | None] = []
+    for idx, img in enumerate(images):
+        ext = _MIME_TO_EXT.get(img.mime_type, ".bin")
+        path = img_dir / f"img-{idx:04d}{ext}"
+        try:
+            path.write_bytes(img.image_bytes)
+        except OSError:
+            logger.warning("failed to save image %s; skipping", path)
+            continue
+        paths.append(str(path))
+        bytes_for_encoding.append(img.image_bytes)
+        captions.append(img.nearest_caption or "")
+        pages.append(img.page_number)
+
+    if not paths:
+        return 0
+
+    image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
+
+    # Embed only the non-empty captions; track which images they map to.
+    caption_to_image: list[int] = [
+        i for i, cap in enumerate(captions) if cap.strip()
+    ]
+    if caption_to_image:
+        caption_vectors_arr = encode(
+            [captions[i] for i in caption_to_image],
+            model_name = model_name,
+        )
+        caption_vectors = caption_vectors_arr.tolist()
+    else:
+        caption_vectors = []
+
+    out_chunks: list[dict] = []
+    out_vectors: list[list[float]] = []
+    cap_iter = iter(zip(caption_to_image, caption_vectors))
+    next_cap = next(cap_iter, None)
+
+    for idx, (path, page, caption) in enumerate(zip(paths, pages, captions)):
+        group_id = f"img-{idx:04d}"
+        out_chunks.append(
+            {
+                "text": caption[:1000] if caption else "",
+                "token_count": 0,
+                "page_number": page,
+                "kind": "image",
+                "image_path": path,
+                "pair_group": group_id,
+            }
+        )
+        out_vectors.append(image_vectors[idx].tolist())
+        # Emit the caption chunk right after its image so the parent
+        # sees them adjacent (simplifies pair linking).
+        if next_cap is not None and next_cap[0] == idx:
+            _cap_index, cap_vec = next_cap
+            out_chunks.append(
+                {
+                    "text": caption,
+                    "token_count": max(1, len(caption.split())),
+                    "page_number": page,
+                    "kind": "caption",
+                    "image_path": None,
+                    "pair_group": group_id,
+                }
+            )
+            out_vectors.append(cap_vec)
+            next_cap = next(cap_iter, None)
+
+    out_queue.put(
+        {
+            "type": "chunks_batch",
+            "first_index": first_index,
+            "chunks": out_chunks,
+            "vectors": out_vectors,
+        }
+    )
+    out_queue.put({"type": "progress", "stage": "extract_images", "progress": 0.95})
+    return len(out_chunks)
 
 
 def _run_late_chunking(
@@ -303,13 +448,26 @@ def _insert_chunks_and_collect_for_bm25(
     chunks_meta: list[dict],
     vectors: list[list[float]],
 ) -> list[dict]:
-    """Insert chunks into sqlite + Qdrant; return [{id, text}] for BM25."""
+    """Insert chunks into sqlite + Qdrant; return [{id, text}] for BM25.
+
+    Image-kind chunks ship a stable image_path and skip BM25 (no text
+    body to tokenise). Paired image/caption chunks share a pair_group
+    field — the second pass links them via rag_chunks.linked_chunk_id
+    so retrieval can dereference an image hit to its caption.
+    """
     rows: list[tuple] = []
     points: list[dict] = []
     bm25_rows: list[dict] = []
+    pair_groups: dict[str, list[str]] = {}
+
     for offset, (meta, vec) in enumerate(zip(chunks_meta, vectors)):
         chunk_index = first_index + offset
         chunk_id = str(uuid4())
+        kind = meta.get("kind", "text")
+        image_path = meta.get("image_path")
+        pair_group = meta.get("pair_group")
+        if pair_group:
+            pair_groups.setdefault(pair_group, []).append(chunk_id)
         rows.append(
             (
                 chunk_id,
@@ -318,6 +476,8 @@ def _insert_chunks_and_collect_for_bm25(
                 meta["text"],
                 meta["token_count"],
                 meta["page_number"],
+                kind,
+                image_path,
             )
         )
         points.append(
@@ -329,19 +489,41 @@ def _insert_chunks_and_collect_for_bm25(
                     "chunk_index": chunk_index,
                     "text": meta["text"],
                     "page_number": meta["page_number"],
+                    "kind": kind,
+                    "image_path": image_path,
                 },
             }
         )
-        bm25_rows.append({"id": chunk_id, "text": meta["text"]})
+        # BM25 indexes text + caption chunks. Image chunks have no
+        # tokenisable body — their caption (if any) is in a separate
+        # caption-kind chunk that BM25 will index.
+        if kind in ("text", "caption") and meta["text"]:
+            bm25_rows.append({"id": chunk_id, "text": meta["text"]})
     with get_connection() as conn:
         conn.executemany(
             """
             INSERT INTO rag_chunks
-            (id, document_id, chunk_index, text, token_count, page_number)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (id, document_id, chunk_index, text, token_count, page_number,
+             kind, image_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
+        # Link image ↔ caption pairs. We only set linked_chunk_id when
+        # a pair_group has exactly two members; lone images stay
+        # unlinked (no caption was paired).
+        for ids in pair_groups.values():
+            if len(ids) != 2:
+                continue
+            id_a, id_b = ids
+            conn.execute(
+                "UPDATE rag_chunks SET linked_chunk_id = ? WHERE id = ?",
+                (id_b, id_a),
+            )
+            conn.execute(
+                "UPDATE rag_chunks SET linked_chunk_id = ? WHERE id = ?",
+                (id_a, id_b),
+            )
         conn.commit()
     vector_store.upsert_chunks(scope, points)
     return bm25_rows
@@ -536,6 +718,7 @@ def enqueue_ingestion(
             out_queue,
             chunking_strategy,
             mode,
+            document_id,
         ),
         daemon = True,
     )

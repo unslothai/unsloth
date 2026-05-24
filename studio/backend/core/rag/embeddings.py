@@ -81,6 +81,38 @@ def encode(
     )
 
 
+def encode_images(
+    image_bytes_list: list[bytes],
+    *,
+    model_name: str | None = None,
+    batch_size: int | None = None,
+    normalize: bool = True,
+):
+    """Embed raw image bytes via a multimodal SentenceTransformer.
+
+    Works with CLIP-family models (BGE-VL, openai/clip-*) whose
+    `encode` accepts PIL.Image objects in the same call as text. The
+    returned vectors live in the same 512-d (or model-specific) space
+    as text vectors from this model, so a single Qdrant collection
+    holds both kinds.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    if not image_bytes_list:
+        return []
+    model = get_embedder(model_name)
+    images = [Image.open(BytesIO(b)).convert("RGB") for b in image_bytes_list]
+    return model.encode(
+        images,
+        batch_size = batch_size or RAG_EMBED_BATCH_SIZE,
+        normalize_embeddings = normalize,
+        convert_to_numpy = True,
+        show_progress_bar = False,
+    )
+
+
 def token_counter(model_name: str | None = None):
     """Return a ``len(tokenize(text))`` callable using the embedder's tokenizer.
 

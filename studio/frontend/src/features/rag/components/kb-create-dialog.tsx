@@ -20,7 +20,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useState } from "react";
-import type { ChunkingStrategy, KnowledgeBase } from "../api/rag-api";
+import type {
+  ChunkingStrategy,
+  KBMode,
+  KnowledgeBase,
+} from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
 
 export function KBCreateDialog({
@@ -38,6 +42,7 @@ export function KBCreateDialog({
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [chunkingStrategy, setChunkingStrategy] =
     useState<ChunkingStrategy>("standard");
+  const [mode, setMode] = useState<KBMode>("text");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,9 +51,22 @@ export function KBCreateDialog({
     setDescription("");
     setEmbeddingModel("");
     setChunkingStrategy("standard");
+    setMode("text");
     setError(null);
     setSubmitting(false);
   };
+
+  // Forbidden combo: multimodal + late chunking. We disable each side
+  // when the other side is picking it, with a tooltip explaining why.
+  const lateDisabled = mode === "multimodal";
+  const multimodalDisabled = chunkingStrategy === "late";
+
+  const placeholderEmbedder =
+    mode === "multimodal"
+      ? "Defaults to BAAI/BGE-VL-base"
+      : chunkingStrategy === "late"
+        ? "Defaults to nomic-ai/nomic-embed-text-v1.5"
+        : "Defaults to BAAI/bge-small-en-v1.5";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,6 +79,7 @@ export function KBCreateDialog({
         description: description.trim() || undefined,
         embedding_model: embeddingModel.trim() || undefined,
         chunking_strategy: chunkingStrategy,
+        mode,
       });
       onCreated?.(kb);
       reset();
@@ -110,6 +129,40 @@ export function KBCreateDialog({
               />
             </div>
             <div className="flex flex-col gap-2">
+              <Label htmlFor="kb-mode">Mode</Label>
+              <Select
+                value={mode}
+                onValueChange={(v) => setMode(v as KBMode)}
+              >
+                <SelectTrigger id="kb-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="text">
+                    Text only — embed text chunks
+                  </SelectItem>
+                  <SelectItem
+                    value="multimodal"
+                    disabled={multimodalDisabled}
+                    title={
+                      multimodalDisabled
+                        ? "Multimodal cannot be combined with late chunking"
+                        : undefined
+                    }
+                  >
+                    Multimodal — also embed images alongside text
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Multimodal mode extracts figures from your documents and
+                embeds them in a shared text + image vector space (BGE-VL),
+                so retrieval can match visual content. Larger embedder
+                (~1.5&nbsp;GB VRAM) and cannot be combined with late
+                chunking.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
               <Label htmlFor="kb-strategy">Chunking strategy</Label>
               <Select
                 value={chunkingStrategy}
@@ -122,7 +175,15 @@ export function KBCreateDialog({
                   <SelectItem value="standard">
                     Standard — heading-aware recursive splitter
                   </SelectItem>
-                  <SelectItem value="late">
+                  <SelectItem
+                    value="late"
+                    disabled={lateDisabled}
+                    title={
+                      lateDisabled
+                        ? "Late chunking cannot be combined with multimodal mode"
+                        : undefined
+                    }
+                  >
                     Late chunking — single-pass embedder, slower ingest
                   </SelectItem>
                 </SelectContent>
@@ -141,11 +202,7 @@ export function KBCreateDialog({
                 id="kb-model"
                 value={embeddingModel}
                 onChange={(e) => setEmbeddingModel(e.target.value)}
-                placeholder={
-                  chunkingStrategy === "late"
-                    ? "Defaults to nomic-ai/nomic-embed-text-v1.5"
-                    : "Defaults to BAAI/bge-small-en-v1.5"
-                }
+                placeholder={placeholderEmbedder}
               />
             </div>
             {error ? (
