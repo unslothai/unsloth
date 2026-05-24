@@ -31,8 +31,12 @@ export interface CodexStatus {
 }
 
 export interface CodexLoginEvent {
-  type: "device_url" | "log" | "error" | "done";
+  // `device_code` is the one-time code the verification page asks for
+  // (separate from the URL); the backend extracts it from the CLI
+  // stdout via a dedicated regex and emits it as a structured event.
+  type: "device_url" | "device_code" | "log" | "error" | "done";
   url?: string;
+  code?: string;
   line?: string;
   message?: string;
   ok?: boolean;

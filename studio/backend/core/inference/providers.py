@@ -307,10 +307,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hidden": True,
         "notes": (
             "Dispatches chat turns through the local Codex CLI via "
-            "the OpenAI Codex Python SDK (pip install "
-            "`openai-codex-app-server-sdk`, import `openai_codex`, legacy "
-            "alias `codex_app_server`). Surfaced only when the CLI and "
-            "SDK are both installed; sign in with `codex login`."
+            "the OpenAI Codex Python SDK (pip install `openai-codex`, "
+            "imports as `openai_codex`; legacy alias `codex_app_server` "
+            "is accepted). Surfaced only when the CLI and SDK are both "
+            "installed; sign in with `codex login`."
         ),
     },
     "openrouter": {

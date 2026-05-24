@@ -226,8 +226,12 @@ async def _detect_logged_in() -> bool:
     # Negative prefixes win, regardless of rc. We anchor on word
     # boundaries so "not logged in" / "not authenticated" both match
     # without being fooled by the substring "logged in" inside them.
+    # Covers the variants seen across CLI releases and locales.
     negative = re.compile(
-        r"\b(not logged in|not authenticated|please log in|run\s+`?codex login`?)\b"
+        r"\b(not\s+(?:logged|signed)\s+in|"
+        r"not\s+authenticated|"
+        r"please\s+(?:log|sign)\s+in|"
+        r"run\s+`?codex\s+login`?)\b"
     )
     if negative.search(combined):
         return False

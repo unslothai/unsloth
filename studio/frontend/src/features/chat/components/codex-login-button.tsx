@@ -37,6 +37,7 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [deviceUrl, setDeviceUrl] = useState<string | null>(null);
+  const [deviceCode, setDeviceCode] = useState<string | null>(null);
   // Track the active stream's abort controller so a second click
   // (or an unmount) tears the SSE reader down cleanly. Without this
   // the long-running login subprocess would keep streaming into a
@@ -49,9 +50,15 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
     setError(null);
     setLogs([]);
     setDeviceUrl(null);
+    setDeviceCode(null);
     const controller = new AbortController();
     abortRef.current?.abort();
     abortRef.current = controller;
+    // Track the specific backend error inside the closure so the
+    // generic fallback message does not overwrite it: setError is
+    // async and reading `error` after `setError(event.message)` would
+    // still see the stale pre-stream value.
+    let lastStreamError: string | null = null;
     try {
       let lastOk: boolean | undefined;
       for await (const event of streamCodexDeviceLogin(
@@ -67,9 +74,12 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
           } catch {
             // Ignore -- the URL is still visible in the log.
           }
+        } else if (event.type === "device_code" && event.code) {
+          setDeviceCode(event.code);
         } else if (event.type === "log" && event.line) {
           setLogs((prev) => [...prev, event.line as string]);
         } else if (event.type === "error" && event.message) {
+          lastStreamError = event.message;
           setError(event.message);
         } else if (event.type === "done") {
           lastOk = event.ok;
@@ -77,7 +87,7 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
       }
       if (lastOk) {
         onLoggedIn?.();
-      } else if (!error) {
+      } else if (!lastStreamError) {
         setError("Codex login did not complete -- see log for details.");
       }
     } catch (exc) {
@@ -87,7 +97,7 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, error, onLoggedIn]);
+  }, [busy, onLoggedIn]);
 
   // Abort the in-flight SSE stream on unmount so the underlying
   // `codex login --device-auth` subprocess does not keep streaming
@@ -114,6 +124,12 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
           >
             {deviceUrl}
           </a>
+        </p>
+      )}
+      {deviceCode && (
+        <p className="text-xs text-muted-foreground">
+          One-time code:{" "}
+          <code className="font-mono text-foreground">{deviceCode}</code>
         </p>
       )}
       {error && (

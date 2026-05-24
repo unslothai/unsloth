@@ -37,6 +37,15 @@ _backend = os.path.join(os.path.dirname(__file__), "..")
 if _backend not in sys.path:
     sys.path.insert(0, _backend)
 
+# Resolved relative to this file so the source-inspection tests work in any
+# checkout location (CI, dev machines, the review worker, etc.).
+_BACKEND_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _backend_file(rel: str) -> str:
+    """Return an absolute path inside the backend tree, regardless of cwd."""
+    return os.path.join(_BACKEND_DIR, rel)
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -529,10 +538,7 @@ class TestCodexHardenedRegressions:
 
     def test_login_status_uses_login_subcommand(self):
         """Upstream is `codex login status`, NOT `codex auth status`."""
-        src = (
-            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
-            "studio/backend/core/inference/codex_availability.py"
-        )
+        src = _backend_file("core/inference/codex_availability.py")
         text = open(src).read()
         assert (
             '"auth", "status"' not in text
@@ -540,10 +546,7 @@ class TestCodexHardenedRegressions:
         assert '"login", "status"' in text
 
     def test_device_login_uses_login_subcommand(self):
-        src = (
-            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
-            "studio/backend/core/inference/codex_provider.py"
-        )
+        src = _backend_file("core/inference/codex_provider.py")
         text = open(src).read()
         assert (
             '"auth", "login", "--device-auth"' not in text
@@ -621,10 +624,7 @@ class TestCodexHardenedRegressions:
         """SSE error frame must NOT echo str(exc) verbatim (CodeQL)."""
         import re
 
-        src = (
-            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
-            "studio/backend/routes/inference.py"
-        )
+        src = _backend_file("routes/inference.py")
         text = open(src).read()
         bad = re.findall(r'f["\']Codex error:\s*\{exc\}["\']', text)
         assert not bad, f"raw exception in SSE: {bad}"
@@ -633,10 +633,7 @@ class TestCodexHardenedRegressions:
         """codex.py SSE stream wrapping must also not leak str(exc)."""
         import re
 
-        src = (
-            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
-            "studio/backend/routes/codex.py"
-        )
+        src = _backend_file("routes/codex.py")
         text = open(src).read()
         for line in text.splitlines():
             ls = line.strip()
@@ -749,6 +746,167 @@ class TestCodexHardenedRegressions:
         body = "".join(chunks)
         assert "partial output" in body
         assert "REPLAYED" not in body
+
+    def test_not_signed_in_wording_also_handled(self):
+        """`Not signed in` (alternative localisation) must also be
+        treated as logged-out, not as positive match.
+        """
+        import asyncio
+
+        from core.inference import codex_availability as av
+
+        async def _fake_run_cli(args, **kw):
+            return (0, "Not signed in.", "")
+
+        orig = av._run_cli
+        av._run_cli = _fake_run_cli  # type: ignore[assignment]
+        try:
+            assert asyncio.run(av._detect_logged_in()) is False
+        finally:
+            av._run_cli = orig  # type: ignore[assignment]
+
+    def test_device_url_accepts_generic_verification_url(self):
+        """The login parser must accept upstream's chatgpt.com/activate
+        URL as well as the canonical /codex/device shape.
+        """
+        import re
+
+        src = _backend_file("core/inference/codex_provider.py")
+        text = open(src).read()
+        # Find the url_re pattern literal and compile it.
+        m = re.search(r"url_re\s*=\s*re\.compile\(\s*\n?\s*r\"([^\"]+)\"", text)
+        assert m, "url_re definition not found"
+        pattern = re.compile(m.group(1), re.IGNORECASE)
+        # Upstream device URLs we expect to match.
+        for u in (
+            "https://auth.openai.com/codex/device",
+            "https://chatgpt.com/activate",
+            "https://auth.openai.com/device/verify?code=ABCD",
+        ):
+            assert pattern.search(u), f"device URL regex missed: {u}"
+
+    def test_synthesis_call_forwards_system_prompt(self, monkeypatch):
+        """`_run_codex_synthesis` must pass the system prompt so a
+        fan-out style instruction ("Always answer in Spanish") survives
+        the unification step.
+        """
+        seen_kwargs: list[dict] = []
+        seen_prompts: list[str] = []
+
+        class _SynThread:
+            async def run(self, prompt):
+                seen_prompts.append(prompt)
+                return "synth ok"
+
+            def turn(self, prompt):
+                # Force buffered path via no `stream` attr.
+                class _T:
+                    pass
+
+                return _T()
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(kw)
+                return _SynThread()
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import _run_codex_synthesis
+
+        out = asyncio.run(
+            _run_codex_synthesis(
+                model = "gpt-5.5",
+                system = "Always answer in Spanish.",
+                prompt = "What is the capital of France?",
+                tab_outputs = ["Paris", "Paris."],
+            )
+        )
+        # Either the kwargs carried the system prompt or it was
+        # prepended to the synthesis prompt as a fallback.
+        system_seen = (
+            any("Spanish" in (kw.get("system") or "") for kw in seen_kwargs)
+            or any("Always answer in Spanish" in p for p in seen_prompts)
+        )
+        assert system_seen, (
+            f"system prompt dropped in synthesis. kwargs={seen_kwargs} "
+            f"prompts={seen_prompts}"
+        )
+        # And the synthesis still returned the model's text.
+        assert "synth" in out.lower()
+
+    def test_sdk_env_scrubbed_via_appserverconfig(self, monkeypatch):
+        """The SDK construction path must wire AppServerConfig(env=...)
+        when the SDK exposes it, so HF_TOKEN / GH_TOKEN are not leaked
+        to the codex app-server subprocess.
+        """
+        monkeypatch.setenv("HF_TOKEN", "should_be_scrubbed")
+        monkeypatch.setenv("GH_TOKEN", "should_be_scrubbed")
+        monkeypatch.setenv("OPENAI_API_KEY", "ok_for_codex")
+
+        seen_configs: list[Any] = []
+
+        class _FakeAppServerConfig:
+            def __init__(self, env=None, **kw):
+                self.env = env or {}
+
+        class _Async:
+            def __init__(self, config=None):
+                seen_configs.append(config)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _FakeThread(chunks=["ok"])
+
+        # Inject a fake openai_codex module exposing AppServerConfig.
+        import importlib.util as _iu
+        import types as _types
+
+        fake_mod = _types.ModuleType("openai_codex")
+        fake_mod.AsyncCodex = _Async  # type: ignore[attr-defined]
+        fake_mod.AppServerConfig = _FakeAppServerConfig  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "openai_codex", fake_mod)
+        real_find_spec = _iu.find_spec
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda n, *a, **kw: (
+                _types.SimpleNamespace()
+                if n in ("openai_codex", "codex_app_server")
+                else real_find_spec(n, *a, **kw)
+            ),
+        )
+
+        from core.inference.codex_provider import stream_codex
+
+        asyncio.run(
+            _consume_first(
+                stream_codex(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="gpt-5.5",
+                    parallel_calls=1,
+                )
+            )
+        )
+        assert seen_configs, "AsyncCodex was never instantiated"
+        cfg = seen_configs[0]
+        assert cfg is not None, "AppServerConfig was not passed to AsyncCodex"
+        assert "HF_TOKEN" in cfg.env and cfg.env["HF_TOKEN"] == "", (
+            "HF_TOKEN not overridden to empty in SDK env"
+        )
+        assert "GH_TOKEN" in cfg.env and cfg.env["GH_TOKEN"] == ""
+        # Safe-listed keys must NOT appear in the override dict (so the
+        # SDK keeps their os.environ values intact).
+        assert "OPENAI_API_KEY" not in cfg.env
 
     def test_thread_turn_stream_path_taken(self, monkeypatch):
         """The canonical openai_codex API uses thread.turn(prompt).stream();

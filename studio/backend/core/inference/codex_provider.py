@@ -40,6 +40,7 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import sys
 import time
 from typing import Any, AsyncGenerator, Optional
 
@@ -71,6 +72,60 @@ class CodexUnavailableError(RuntimeError):
     """
 
 
+def _codex_sdk_env_override() -> dict[str, str]:
+    """Return an env update dict that scrubs sensitive vars from the
+    codex app-server subprocess env.
+
+    The upstream openai_codex SDK's `AppServerConfig.env` is merged on
+    top of `os.environ.copy()` (see openai/codex/sdk/python/src/openai_codex/client.py),
+    so providing an empty-string mapping for every non-safe key
+    effectively overrides them in the spawn env. Combined with
+    `_codex_subprocess_env()` (used for direct CLI calls) this gives
+    parity between the CLI and SDK code paths: neither sees HF_TOKEN,
+    GH_TOKEN, WANDB_API_KEY, ANTHROPIC_API_KEY, or any other secret
+    that lives in the Studio parent environment.
+    """
+    import os
+
+    from core.inference.codex_availability import _SAFE_CODEX_ENV_KEYS
+
+    safe = set(_SAFE_CODEX_ENV_KEYS)
+    return {key: "" for key in os.environ if key not in safe}
+
+
+def _open_async_codex(async_codex_cls: Any) -> Any:
+    """Construct an AsyncCodex with a scrubbed env config.
+
+    Tries `AsyncCodex(config=AppServerConfig(env=...))` first; falls
+    back to the bare `AsyncCodex()` form when either the SDK does not
+    expose AppServerConfig or its signature does not accept the env
+    kwarg. The fallback is a soft degradation: the app-server will see
+    the full Studio env, but every other Codex hardening still
+    applies.
+    """
+    try:
+        sdk_mod = sys.modules.get("openai_codex") or sys.modules.get(
+            "codex_app_server"
+        )
+        if sdk_mod is not None:
+            app_server_config = getattr(sdk_mod, "AppServerConfig", None)
+            if app_server_config is not None:
+                return async_codex_cls(
+                    config = app_server_config(env = _codex_sdk_env_override()),
+                )
+    except TypeError:
+        # Older SDK: AppServerConfig may not accept the env kwarg yet.
+        # Fall through to the bare constructor.
+        pass
+    except Exception as exc:
+        logger.warning(
+            "codex_provider.env_scrub_config_failed",
+            exc_type = type(exc).__name__,
+            error = str(exc),
+        )
+    return async_codex_cls()
+
+
 def _import_codex() -> Any:
     """Return the imported Codex SDK module or raise CodexUnavailableError.
 
@@ -88,9 +143,9 @@ def _import_codex() -> Any:
             return importlib.import_module(name)
     raise CodexUnavailableError(
         "Codex Python SDK is not installed on this host. "
-        "Install with `pip install openai-codex-app-server-sdk` "
-        "(import name `openai_codex`, legacy alias `codex_app_server`), "
-        "or use a different provider."
+        "Install with `pip install openai-codex` (canonical upstream "
+        "name, imports as `openai_codex`; legacy alias `codex_app_server` "
+        "is also accepted), or use a different provider."
     )
 
 
@@ -407,7 +462,7 @@ async def _stream_codex_single(
 
     completion_text_chars = 0
 
-    async with async_codex_cls() as codex:
+    async with _open_async_codex(async_codex_cls) as codex:
         # ``thread_start`` accepts a model id; system prompts are
         # passed when supported by the SDK rev (older revs ignore the
         # extra kwarg). Be tolerant about kwargs that may not exist.
@@ -540,7 +595,7 @@ async def _stream_codex_parallel(
         try:
             sdk = _import_codex()
             async_codex_cls = getattr(sdk, "AsyncCodex")
-            async with async_codex_cls() as codex:
+            async with _open_async_codex(async_codex_cls) as codex:
                 thread_kwargs: dict[str, Any] = {"model": model}
                 if system:
                     thread_kwargs["system"] = system
@@ -670,6 +725,7 @@ async def _stream_codex_parallel(
 
     synthesis_text = await _run_codex_synthesis(
         model = model,
+        system = system,
         prompt = prompt,
         tab_outputs = per_tab_texts,
     )
@@ -702,13 +758,16 @@ async def _stream_codex_parallel(
 async def _run_codex_synthesis(
     *,
     model: str,
+    system: str,
     prompt: str,
     tab_outputs: list[str],
 ) -> str:
     """Run one extra Codex call that consumes the N per-tab outputs and
     returns a unified synthesis. Returns the empty string on failure --
     the caller already surfaced the per-tab outputs so an empty
-    synthesis is recoverable.
+    synthesis is recoverable. The Studio system prompt is forwarded to
+    the synthesis thread so style/role instructions like "Always answer
+    in Spanish" survive the fan-out.
     """
     if not tab_outputs:
         return ""
@@ -728,11 +787,18 @@ async def _run_codex_synthesis(
     try:
         sdk = _import_codex()
         async_codex_cls = getattr(sdk, "AsyncCodex")
-        async with async_codex_cls() as codex:
+        async with _open_async_codex(async_codex_cls) as codex:
+            thread_kwargs: dict[str, Any] = {"model": model}
+            if system:
+                thread_kwargs["system"] = system
             try:
-                thread = await codex.thread_start(model = model)
+                thread = await codex.thread_start(**thread_kwargs)
             except TypeError:
-                thread = await codex.thread_start()
+                # Older SDK rev: no `system` kwarg. Fall back to model-only
+                # and prepend the system prompt to the synthesis text.
+                thread = await codex.thread_start(model = model)
+                if system:
+                    synthesis_prompt = f"{system}\n\n{synthesis_prompt}"
             result = await thread.run(synthesis_prompt)
         return (
             _coerce_text(result) or getattr(result, "final_response", "") or str(result)
@@ -809,11 +875,13 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     # Strip ANSI control sequences (the upstream login command wraps the
     # URL and code in `\x1b[34m...\x1b[0m`) before pattern matching.
     ansi_re = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
-    # Anchor on the upstream URL shape: ``.../codex/device`` (optionally
-    # with a query string). The pattern accepts any host because some
-    # builds redirect via a staging host.
+    # Accept any plausible device-auth URL the CLI prints. Upstream has
+    # used `.../codex/device`, `chatgpt.com/activate`, and
+    # `auth.openai.com/device`; rather than guess we look for any
+    # https URL whose path mentions `device`, `activate`, or `verify`.
     url_re = re.compile(
-        r"https?://[^\s\x1b]+?/codex/device(?:\?[^\s\x1b]*)?", re.IGNORECASE
+        r"https?://[^\s\x1b]+/(?:codex/)?(?:device|activate|verify)\b[^\s\x1b]*",
+        re.IGNORECASE,
     )
     # One-time-code format from upstream device_code_auth.rs: 4 chars,
     # dash, 4 chars. Pattern is tolerant of any uppercase alphanum.
