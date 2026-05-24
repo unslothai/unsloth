@@ -3939,6 +3939,12 @@ def _build_usage_chunk(
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
+        # Forward the 5m / 1h cache-write breakdown so downstream cost
+        # calculation can apply the 2x 1h premium instead of silently
+        # falling back to 5m default pricing on chat-style envelopes.
+        cc_breakdown = last_usage.get("cache_creation")
+        if isinstance(cc_breakdown, dict) and cc_breakdown:
+            usage_block["cache_creation"] = cc_breakdown
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
         cached = 0

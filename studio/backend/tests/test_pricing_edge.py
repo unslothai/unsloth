@@ -395,3 +395,108 @@ def test_empty_usage_dict_zero_bill():
     assert out["priced"] is True  # model is in the table
     assert out["billable_input_tokens"] == 0
     assert out["total_usd"] == 0.0
+
+
+# ── Defense-in-depth: Anthropic prompt_tokens_details.cached_tokens ──
+
+
+def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
+    """A chat-style envelope without ``cache_read_input_tokens`` but
+    with the mirrored ``prompt_tokens_details.cached_tokens`` should
+    still apply the cache_read discount instead of billing as full
+    uncached input.
+    """
+    r = calculate_cost(
+        provider = "anthropic",
+        model = "claude-opus-4-7",
+        usage = {
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 0,
+            # No cache_read_input_tokens; only the mirrored shape.
+            "prompt_tokens_details": {"cached_tokens": 1_000_000},
+            "cache_creation_input_tokens": 0,
+        },
+    )
+    assert r["billable_input_tokens"] == 1_000_000, r
+    # 1M cached tokens at 0.1x of $5 (opus 4.7 input rate) = $0.50
+    assert math.isclose(r["cache_read_usd"], 0.5, rel_tol = 1e-3), r
+
+
+def test_anthropic_native_key_takes_precedence_over_mirrored():
+    """When both ``cache_read_input_tokens`` and
+    ``prompt_tokens_details.cached_tokens`` are present, the native
+    Anthropic field wins (the mirror is only a fallback). Studio's
+    canonical envelope always sets both to the same value, so there is
+    no observable difference in production; the precedence rule just
+    keeps the math deterministic on off-spec inputs.
+    """
+    r = calculate_cost(
+        provider = "anthropic",
+        model = "claude-opus-4-7",
+        usage = {
+            "prompt_tokens": 1_000_000,
+            "cache_read_input_tokens": 800_000,
+            "prompt_tokens_details": {"cached_tokens": 1_000_000},
+            "cache_creation_input_tokens": 0,
+        },
+    )
+    # billable_input_tokens = uncached_input + cache_creation + cache_read
+    # uncached_input = prompt_tokens - cache_creation - cache_read
+    #               = 1_000_000 - 0 - 800_000 = 200_000
+    # billable = 200_000 + 0 + 800_000 = 1_000_000
+    assert r["billable_input_tokens"] == 1_000_000, r
+    # cache_read_usd uses 800_000 not 1_000_000 (native wins).
+    assert math.isclose(r["cache_read_usd"], 0.4, rel_tol = 1e-3), r
+
+
+# ── _build_usage_chunk preserves cache_creation breakdown ──
+
+
+def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
+    """Studio chat-style envelope must carry the 5m / 1h cache-write
+    breakdown so downstream cost calc can apply the 2x 1h premium.
+    """
+    import json
+    from core.inference.external_provider import _build_usage_chunk
+
+    chunk = _build_usage_chunk(
+        completion_id = "cmpl-x",
+        provider = "anthropic",
+        last_usage = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 250_000,
+                "ephemeral_1h_input_tokens": 750_000,
+            },
+        },
+    )
+    assert chunk is not None
+    payload = json.loads(chunk.split("data: ", 1)[1])
+    cc = payload["usage"]["cache_creation"]
+    assert cc["ephemeral_1h_input_tokens"] == 750_000, cc
+    assert cc["ephemeral_5m_input_tokens"] == 250_000, cc
+
+
+def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
+    """Re-emitted chat envelope must price 1h cache writes at 2x base.
+    """
+    r = calculate_cost(
+        provider = "anthropic",
+        model = "claude-opus-4-7",
+        usage = {
+            "prompt_tokens": 1_000_010,
+            "completion_tokens": 0,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 1_000_000,
+            },
+        },
+    )
+    # 1M tokens at 1h-premium (2x of $5 = $10/M = $10). 5m baseline
+    # would be 1.25x ($6.25). 2x means cache_write_usd ~= $10.
+    assert math.isclose(r["cache_write_usd"], 10.0, rel_tol = 1e-2), r

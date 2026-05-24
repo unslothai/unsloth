@@ -220,6 +220,18 @@ def calculate_cost(
     # session total tooltip.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
     cache_read = max(0, int(usage.get("cache_read_input_tokens") or 0))
+    # Defense in depth for Anthropic: a chat-style envelope arriving
+    # without the native ``cache_read_input_tokens`` key (e.g. via a
+    # proxy that only emits the mirrored ``prompt_tokens_details``
+    # block) would otherwise be billed as uncached input. Pull the
+    # cache-read count from the mirrored field when the native one is
+    # missing or zero. Studio's own ``_build_usage_chunk`` emits both
+    # so this never fires on canonical traffic; it just hardens the
+    # path against off-spec callers.
+    if cache_read == 0:
+        details = usage.get("prompt_tokens_details") or {}
+        if isinstance(details, dict):
+            cache_read = max(0, int(details.get("cached_tokens") or 0))
     has_input_tokens = "input_tokens" in usage and usage.get("input_tokens") is not None
     if has_input_tokens:
         # Raw upstream envelope.
