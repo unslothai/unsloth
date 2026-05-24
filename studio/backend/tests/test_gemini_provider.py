@@ -1647,9 +1647,7 @@ def test_remote_image_url_dropped_when_fetch_returns_none(monkeypatch):
 def test_safe_fetch_image_rejects_non_https():
     """SSRF guard: only https URLs may be fetched."""
     res = asyncio.new_event_loop().run_until_complete(
-        ep_mod._safe_fetch_image_for_gemini(
-            "http://cdn.example.com/x.png", "image/png"
-        )
+        ep_mod._safe_fetch_image_for_gemini("http://cdn.example.com/x.png", "image/png")
     )
     assert res is None
 

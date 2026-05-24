@@ -338,9 +338,7 @@ async def _safe_fetch_image_for_gemini(
         return None
     host = (parsed.hostname or "").lower()
     if _is_disallowed_target_ip(host):
-        logger.warning(
-            "Gemini image fetch: refusing private/internal host=%s", host
-        )
+        logger.warning("Gemini image fetch: refusing private/internal host=%s", host)
         return None
     try:
         async with httpx.AsyncClient(
@@ -357,8 +355,11 @@ async def _safe_fetch_image_for_gemini(
                     )
                     return None
                 _hdr_mime = (
-                    _resp.headers.get("content-type") or ""
-                ).split(";")[0].strip().lower()
+                    (_resp.headers.get("content-type") or "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
                 if not _hdr_mime.startswith("image/"):
                     logger.info(
                         "Gemini image fetch: non-image content-type=%s host=%s",
