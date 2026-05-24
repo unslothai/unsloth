@@ -45,13 +45,18 @@ def _load_sandbox_module():
     return module
 
 
+_TRUTHY_CI_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
 @pytest.fixture
 def sandboxed_workdir(tmp_path, monkeypatch):
     """Point tool execution's workdir lookup at a pytest tmp_path."""
     sandbox = _load_sandbox_module()
 
     if not sandbox.sandbox_available():
-        if os.environ.get("CI") == "true":
+        # Some CIs set CI=1 instead of the GitHub-default CI=true; accept
+        # both so the enforcement gate cannot be silently skipped.
+        if os.environ.get("CI", "").strip().lower() in _TRUTHY_CI_VALUES:
             pytest.fail(
                 "sandbox unavailable: CI must install/enable bubblewrap or "
                 "sandbox-exec so this enforcement test actually runs"
@@ -373,19 +378,43 @@ def test_get_workdir_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_strict_mode_refuses_when_sandbox_unavailable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("strict_value", ["1", "true", "TRUE", "yes", "On"])
+def test_strict_mode_refuses_when_sandbox_unavailable(
+    tmp_path, monkeypatch, strict_value
+):
     from core.inference import tools
 
     monkeypatch.setattr(tools, "sandbox_available", lambda: False)
-    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", "1")
-    monkeypatch.setattr(sys, "platform", "linux")
-    sid = "_strict_refuse"
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", strict_value)
+    sid = f"_strict_refuse_{strict_value.lower()}"
     monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
 
     py_out = tools._python_exec("print('would have leaked')", session_id = sid)
     assert "Execution blocked" in py_out, py_out
     assert "UNSLOTH_STUDIO_SANDBOX_STRICT" in py_out, py_out
 
+    bash_out = tools._bash_exec("echo would have leaked", session_id = sid)
+    assert "Execution blocked" in bash_out, bash_out
+    assert "would have leaked" not in bash_out, bash_out
+
+
+def test_strict_mode_refuses_on_unsupported_platform(tmp_path, monkeypatch):
+    """Strict mode must cover every platform, not just darwin/linux.
+
+    An operator opting into fail-closed expects refusal everywhere,
+    including Windows or future OS targets where the sandbox primitive
+    does not exist.
+    """
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "sandbox_available", lambda: False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", "1")
+    monkeypatch.setattr(tools.sys, "platform", "freebsd14")
+    sid = "_strict_refuse_unsupported"
+    monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
+
+    py_out = tools._python_exec("print('would have leaked')", session_id = sid)
+    assert "Execution blocked" in py_out, py_out
     bash_out = tools._bash_exec("echo would have leaked", session_id = sid)
     assert "Execution blocked" in bash_out, bash_out
     assert "would have leaked" not in bash_out, bash_out

@@ -418,20 +418,20 @@ _SANDBOX_REQUIRED_UNAVAILABLE_MSG = (
 )
 
 
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
 def _strict_sandbox_required() -> bool:
     """True iff the operator wants tool execution to fail closed.
 
     Opt-in: default is the original fail-open behavior so installs
     without bubblewrap (locked-down kernels, nested containers, hosts
     without bwrap) keep working. Operators who care about the security
-    boundary set UNSLOTH_STUDIO_SANDBOX_STRICT=1.
+    boundary set UNSLOTH_STUDIO_SANDBOX_STRICT=1. Accepts the usual
+    case-insensitive truthy values (1 / true / yes / on).
     """
-    return os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip() in (
-        "1",
-        "true",
-        "True",
-        "yes",
-    )
+    value = os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip().lower()
+    return value in _TRUTHY_ENV_VALUES
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -1956,11 +1956,10 @@ def _python_exec(
 
         inner_argv = [sys.executable, tmp_path]
         sandboxed = sandbox_available()
-        if (
-            not sandboxed
-            and _strict_sandbox_required()
-            and sys.platform in ("darwin", "linux")
-        ):
+        # Strict mode covers every platform: an operator who explicitly asked
+        # for fail-closed should not get an unsandboxed shell on Windows or a
+        # future OS just because the sandbox primitive does not exist there.
+        if not sandboxed and _strict_sandbox_required():
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)
@@ -2063,11 +2062,10 @@ def _bash_exec(
 
         inner_argv = _get_shell_cmd(command)
         sandboxed = sandbox_available()
-        if (
-            not sandboxed
-            and _strict_sandbox_required()
-            and sys.platform in ("darwin", "linux")
-        ):
+        # Strict mode covers every platform: an operator who explicitly asked
+        # for fail-closed should not get an unsandboxed shell on Windows or a
+        # future OS just because the sandbox primitive does not exist there.
+        if not sandboxed and _strict_sandbox_required():
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)

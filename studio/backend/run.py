@@ -691,18 +691,20 @@ def run_server(
         import threading
 
         from core.inference.sandbox import sandbox_available
+        from core.inference.tools import _strict_sandbox_required
 
         probe_result: list[bool] = []
         probe_done = threading.Event()
         notice_lock = threading.Lock()
         notice_printed = [False]
+        strict_at_startup = _strict_sandbox_required()
 
         def _print_notice_once() -> None:
             with notice_lock:
                 if notice_printed[0]:
                     return
                 notice_printed[0] = True
-            print_sandbox_unavailable_notice()
+            print_sandbox_unavailable_notice(strict = strict_at_startup)
 
         def _bg_probe():
             try:

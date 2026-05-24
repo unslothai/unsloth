@@ -33,12 +33,15 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
         print(msg)
 
 
-def print_sandbox_unavailable_notice() -> None:
-    """Notice that tool execution will run without an OS-level sandbox.
+def print_sandbox_unavailable_notice(strict: bool = False) -> None:
+    """Notice that tool execution cannot use the OS-level sandbox.
 
-    On Linux, includes install hints for bubblewrap. macOS users only
-    reach this if ``sandbox-exec`` is missing or the probe failed —
-    there's nothing to install on macOS, so no install lines are shown.
+    The header line flips to "blocked by strict mode" when
+    UNSLOTH_STUDIO_SANDBOX_STRICT is active so the banner does not
+    contradict the actual runtime refusal. On Linux, includes both
+    bubblewrap install hints and an AppArmor / unprivileged-userns
+    note for Ubuntu 23.10+ where bwrap can be installed but still
+    fail the probe with "RTM_NEWADDR: Operation not permitted".
     """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
@@ -47,25 +50,32 @@ def print_sandbox_unavailable_notice() -> None:
     def style(text: str) -> str:
         return f"{dim}{text}{reset}" if use_color else text
 
-    lines = [
-        "",
-        style("Sandbox unavailable: tool execution will run unsandboxed."),
-    ]
+    header = (
+        "Sandbox unavailable: tool execution is blocked by "
+        "UNSLOTH_STUDIO_SANDBOX_STRICT."
+        if strict
+        else "Sandbox unavailable: tool execution will run unsandboxed."
+    )
+    lines = ["", style(header)]
     if sys.platform == "linux":
         for line in (
             "  Install bubblewrap to enable the Linux sandbox:",
             "    Debian/Ubuntu:  sudo apt install bubblewrap",
             "    Fedora/RHEL:    sudo dnf install bubblewrap",
             "    Arch:           sudo pacman -S bubblewrap",
-            "  Restart this server after install.",
+            "  If bubblewrap is installed but the probe still fails",
+            "  (Ubuntu 23.10+ AppArmor blocks unprivileged user namespaces):",
+            "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+            "  Restart this server after install or kernel policy changes.",
         ):
             lines.append(style(line))
-    lines.append(
-        style(
-            "  Set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse tool calls "
-            "until the sandbox is available."
+    if not strict:
+        lines.append(
+            style(
+                "  Set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse tool calls "
+                "until the sandbox is available."
+            )
         )
-    )
     lines.append("")
     print("\n".join(lines))
 
