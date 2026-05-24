@@ -16,6 +16,8 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
+import { PaintBrush02Icon, SparklesIcon, GpuIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   fetchDiffusionStatus,
   generateDiffusionImage,
@@ -209,6 +211,7 @@ export function ImagesPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
       <SectionCard
+        icon={<HugeiconsIcon icon={GpuIcon} className="size-5" strokeWidth={1.5} />}
         title="Local image generation"
         description={
           "Run diffusion GGUFs from Hugging Face on your own GPU. " +
@@ -309,6 +312,7 @@ export function ImagesPage() {
       </SectionCard>
 
       <SectionCard
+        icon={<HugeiconsIcon icon={PaintBrush02Icon} className="size-5" strokeWidth={1.5} />}
         title="Prompt"
         description="The pipeline runs on the GPU you launched Unsloth Studio on."
       >
@@ -400,7 +404,11 @@ export function ImagesPage() {
       </SectionCard>
 
       {results.length > 0 && (
-        <SectionCard title="Results" description="Most recent first.">
+        <SectionCard
+          icon={<HugeiconsIcon icon={SparklesIcon} className="size-5" strokeWidth={1.5} />}
+          title="Results"
+          description="Most recent first."
+        >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {results.map((r, idx) => (
               <figure key={idx} className="flex flex-col gap-2">
