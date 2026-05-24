@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for remote MCP server configurations.
-
-Mirrors providers_db.py. ``headers_json`` is plaintext: Studio is a local
-single-user app and the headers are needed on every chat send, so the
-latency cost of round-tripping them through RSA outweighs the benefit
-on a local box.
-"""
-
 import sqlite3
 import threading
 from datetime import datetime, timezone

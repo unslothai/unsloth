@@ -28,20 +28,14 @@ def parse_server_headers(server: dict) -> Optional[dict]:
 
 
 def _oauth_store():
-    """Lazily create a FileTreeStore shared across all OAuth instances. Tokens
-    persist to ``<studio_root>/mcp-oauth-tokens/`` so sign-in survives restarts.
-
-    Both keys and collection names are SHA256-hashed because fastmcp uses the
-    full server URL (e.g. ``https://mcp.vercel.com``) as the storage key; left
-    raw, FileTreeStore treats the ``://`` as nested directories and fails to
-    create intermediates.
-    """
     global _oauth_token_store
     if _oauth_token_store is None:
         from key_value.aio._utils.sanitization import AlwaysHashStrategy
         from key_value.aio.stores.filetree import FileTreeStore
         from utils.paths.storage_roots import ensure_dir, studio_root
 
+        # Hash keys/collections — fastmcp uses raw URLs like https://x.com as
+        # keys and FileTreeStore would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
             key_sanitization_strategy = AlwaysHashStrategy(),

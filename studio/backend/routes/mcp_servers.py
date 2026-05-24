@@ -101,12 +101,6 @@ async def create_mcp_server(
 
 
 def _changes_from_payload(payload: McpServerUpdate) -> dict:
-    """Translate a PATCH-style payload into column updates.
-
-    Only fields the client explicitly sent become updates -- ``headers: None``
-    is a clear-headers instruction, while an omitted ``headers`` leaves the
-    existing value alone.
-    """
     sent = payload.model_fields_set
     changes: dict = {}
 
