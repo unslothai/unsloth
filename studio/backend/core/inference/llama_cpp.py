@@ -62,9 +62,17 @@ _INTENT_SIGNAL = re.compile(
     # appear frequently in direct answers / explanations.
     r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
     r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan", bare
-    # "Plan:" / "Approach:" as the first line of a structured reply.
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach)|(?:plan|approach):)"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan",
+    # "Here is the plan", "Here are my steps".
+    r"\b(?:first\b|step \d+:?|"
+    r"here['\u2019]?s (?:my |the |a )?(?:plan|approach)|"
+    r"here (?:is|are) (?:my |the |a )?(?:plan|approach|steps))"
+    r"|"
+    # Bare "Plan:" / "Approach:" (optionally preceded by a determiner
+    # like "My" / "The" / "Our") anchored to start of line so direct
+    # answers like "Here is a lesson plan:" or "meal plan:" do not trip
+    # the re-prompt path.
+    r"(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):"
     r"|"
     # "Now I" / "Next I" patterns
     r"\b(?:now i|next i)\b"
@@ -112,21 +120,25 @@ _NUMBERED_LIST_ARTIFACT = re.compile(
 )
 
 # Markers that a numbered list is a plan (still re-promptable), not a
-# final answer. Explicit "plan:" / "approach:" / "Here's my plan", OR
-# intent phrasing followed shortly by a plan / tool-action verb. The
+# final answer. The intent alternatives mirror _INTENT_SIGNAL above so
+# every recognised intent phrase can disqualify a numbered list. The
 # apostrophe in ``i['’]ll`` is required (no ``?``) so the regex does not
 # accidentally match the word "ill". The verb set is intentionally
 # conservative: ambiguous verbs like "write", "create", "make", "build"
 # are omitted because real answer lists use them ("1. Write a poem",
-# "1. Create directory").
+# "1. Create directory"). ``plan:`` / ``approach:`` is anchored to the
+# start of a line so "lesson plan:" / "meal plan:" do not trip the guard.
 _PLAN_LIST_FRAMING = re.compile(
-    r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|step \d+|"
-    r"i['’]ll|i will|i am going to|let me|now i|next i)\b"
+    r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|"
+    r"here (?:is|are) (?:my |the |a )?(?:plan|approach|steps)|"
+    r"step \d+|"
+    r"i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
+    r"i will|i shall|let me|allow me|now i|next i)\b"
     r"[\s\S]{0,80}"
     r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
     r"check|find|open|verify|compare|summari[sz]e|think|respond|"
     r"answer|analy[sz]e|explore|outline|gather|query|reason)\b"
-    r"|\b(?:plan|approach):",
+    r"|(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):",
     re.IGNORECASE,
 )
 

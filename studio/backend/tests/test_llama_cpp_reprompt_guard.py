@@ -376,6 +376,58 @@ def test_plan_framing_requires_apostrophe_in_ill():
         assert got == expected, f"{content!r} expected reprompt={expected} got {got}"
 
 
+def test_reprompts_on_all_intent_form_numbered_action_plans():
+    """``_PLAN_LIST_FRAMING`` must mirror every intent form that
+    ``_INTENT_SIGNAL`` accepts so numbered action plans phrased with
+    ``Allow me``, ``I'm going to``, ``I'm gonna``, ``I am gonna``,
+    ``I shall``, ``Now I``, ``Next I`` also re-prompt instead of being
+    silently classified as completed answers."""
+    samples = [
+        "Allow me to do this:\n1. search the docs\n2. fetch the result",
+        "I'm going to do this:\n1. search the docs\n2. fetch the result",
+        "I'm gonna do this:\n1. search the docs\n2. fetch the result",
+        "I am gonna do this:\n1. search the docs\n2. fetch the result",
+        "I shall do this:\n1. search the docs\n2. fetch the result",
+        "Now I will do these:\n1. search\n2. summarise",
+        "Next I will do these:\n1. fetch\n2. compare",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_plan_colon_intent_is_line_anchored():
+    """``Plan:`` / ``Approach:`` only counts as an intent marker when it
+    is at the start of a line. Without this anchor, normal direct
+    answers containing phrases like ``lesson plan:``, ``meal plan:``,
+    ``migration plan:``, or ``My approach:`` would trigger the
+    re-prompt path and risk wiping a valid response."""
+    # These mid-line "plan:" / "approach:" mentions are NOT intent signals.
+    # The qualifier before "plan" is a content noun ("lesson", "meal",
+    # "migration") rather than a generic determiner ("my", "the", ...).
+    direct_answers = [
+        "Here is a lesson plan:\n1. Warm-up\n2. Group practice\n3. Assessment",
+        "I prepared a meal plan: rice, beans, eggs.",
+        "Quick approach: top-down then bottom-up.",
+    ]
+    for s in direct_answers:
+        assert not _INTENT_SIGNAL.search(s), s
+        assert not _would_reprompt(s), s
+    # "Plan:" / "Approach:" with optional generic determiner at the start
+    # of a line IS an intent signal.
+    plan_starts = [
+        "Plan:\n1. search\n2. summarise",
+        "Approach:\n1. fetch\n2. compare",
+        "  Plan:\n1. think\n2. respond",  # leading indent OK
+        "Lorem ipsum\nPlan:\n1. step\n2. step",  # plan: on a later line
+        "My plan:\n1. search\n2. summarise",
+        "The plan:\n1. look up\n2. compare",
+        "Our approach:\n1. fetch\n2. verify",
+    ]
+    for s in plan_starts:
+        assert _INTENT_SIGNAL.search(s), s
+        assert _would_reprompt(s), s
+
+
 # ── Cross-platform line endings ────────────────────────────────────
 
 
