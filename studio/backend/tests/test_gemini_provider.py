@@ -2582,11 +2582,7 @@ def test_safe_fetch_image_rejects_malformed_bracketed_url():
     """Round 17: bracketed IPv6 garbage like `https://[bad/x.png` makes
     urlparse raise ValueError. The fetch helper must catch it and drop
     the image rather than crashing the request mid-build."""
-    res = _drive(
-        ep_mod._safe_fetch_image_for_gemini(
-            "https://[bad/x.png", "image/png"
-        )
-    )
+    res = _drive(ep_mod._safe_fetch_image_for_gemini("https://[bad/x.png", "image/png"))
     assert res is None
 
 
@@ -2631,11 +2627,11 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(
         def __exit__(self, *a):
             return False
 
-        def read(self, _n=None):
+        def read(self, _n = None):
             return b"PNG"
 
     class _StubOpener:
-        def open(self, req, timeout=None):
+        def open(self, req, timeout = None):
             captured["requests"].append(
                 {
                     "url": req.full_url,
@@ -2656,9 +2652,7 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(
     assert res is not None
     assert res[0] == "image/png"
     # The outgoing URL must use the pinned IP literal, not the hostname.
-    assert any(
-        "8.8.8.8" in r["url"] for r in captured["requests"]
-    ), captured
+    assert any("8.8.8.8" in r["url"] for r in captured["requests"]), captured
     assert all(
         "cdn.example.com" not in r["url"] for r in captured["requests"]
     ), captured
@@ -2700,7 +2694,7 @@ def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     class _StubOpener:
-        def open(self, req, timeout=None):
+        def open(self, req, timeout = None):
             # Simulate a 302 to a private host.
             raise urllib.error.HTTPError(
                 req.full_url,

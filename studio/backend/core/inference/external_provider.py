@@ -389,8 +389,8 @@ def _safe_fetch_image_for_gemini_sync(
                 )
                 return None
             _hdr_mime = (
-                resp.headers.get("content-type") or ""
-            ).split(";")[0].strip().lower()
+                (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            )
             if not _hdr_mime.startswith("image/"):
                 logger.info(
                     "Gemini image fetch: non-image content-type=%s host=%s",
@@ -2991,12 +2991,8 @@ class ExternalProviderClient:
                                 _img_host = ""
                                 _img_path = ""
                             else:
-                                _img_scheme = (
-                                    _parsed_image_url.scheme or ""
-                                ).lower()
-                                _img_host = (
-                                    _parsed_image_url.hostname or ""
-                                ).lower()
+                                _img_scheme = (_parsed_image_url.scheme or "").lower()
+                                _img_host = (_parsed_image_url.hostname or "").lower()
                                 _img_path = _parsed_image_url.path or ""
                             _is_native_uri = (
                                 _img_scheme == "https"
@@ -3328,9 +3324,7 @@ class ExternalProviderClient:
                 # stale UI state does not 400 the request.
                 _is_legacy_gemini3_pro = model_lc.startswith(
                     ("gemini-3-pro-preview", "gemini-3-pro")
-                ) and not model_lc.startswith(
-                    ("gemini-3.1-pro", "gemini-3.5-pro")
-                )
+                ) and not model_lc.startswith(("gemini-3.1-pro", "gemini-3.5-pro"))
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
                 elif _is_legacy_gemini3_pro and effort_lc == "medium":
@@ -3492,10 +3486,9 @@ class ExternalProviderClient:
                                 and _entry.get("type") == "null"
                             )
                         ]
-                        if (
-                            len(_non_null_entries) == 1
-                            and len(_non_null_entries) != len(_v)
-                        ):
+                        if len(_non_null_entries) == 1 and len(
+                            _non_null_entries
+                        ) != len(_v):
                             _inner = _sanitize_gemini_schema(_non_null_entries[0])
                             if isinstance(_inner, dict):
                                 for _ik, _iv in _inner.items():
