@@ -133,6 +133,14 @@ export function ParamsSection(): ReactElement {
   const isCpt = store.trainingMethod === "cpt";
   const isRawText = isRawTextDatasetFormat(store.datasetFormat);
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  // DeepSeek OCR's preset is a coupled tuple, so the backend ignores any
+  // user-selected image size for it. Hide the control rather than offer a
+  // setting that silently has no effect.
+  const _selectedModelLower = (store.selectedModel ?? "").toLowerCase();
+  const isDeepseekOcr =
+    _selectedModelLower.includes("deepseek") &&
+    _selectedModelLower.includes("ocr");
+  const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
   const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
@@ -917,7 +925,7 @@ export function ParamsSection(): ReactElement {
                 </TabsContent>
 
                 <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
-                  {showVisionLora && (
+                  {showVisionImageSize && (
                     <Row
                       label="Image Size"
                       tooltip={

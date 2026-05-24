@@ -1211,7 +1211,23 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
-    if is_vlm and vision_image_size is not None:
+    # Mirror the Torch trainer.py exclusion: DeepSeek OCR's preset is a tuple
+    # (image_size, base_size, crop_mode), so resizing dataset images outside
+    # that preset desyncs the token grid. Skip the resize on MLX too.
+    _model_name_lower = str(config.get("model_name", "")).lower()
+    _is_deepseek_ocr = (
+        "deepseek" in _model_name_lower and "ocr" in _model_name_lower
+    )
+    if is_vlm and vision_image_size is not None and _is_deepseek_ocr:
+        _send(
+            "status",
+            status_message = (
+                "MLX vision image resize ignored for DeepSeek OCR "
+                "(uses fixed Gundam preset)."
+            ),
+        )
+        vision_image_size = None
+    elif is_vlm and vision_image_size is not None:
         vision_image_size = int(vision_image_size)
         _send(
             "status",
