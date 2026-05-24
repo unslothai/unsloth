@@ -140,7 +140,7 @@ def _invoke(monkeypatch, args):
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    CliRunner(mix_stderr = False).invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions = True)
     return captured
 
 
@@ -198,3 +198,71 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     # before re-exec, so the child sees --model + --gguf-variant.
     assert argv[argv.index("--model") + 1] == ("unsloth/gemma-4-26B-A4B-it-GGUF"), argv
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
+
+
+# Legacy-alias backwards compatibility. -m / -hfr / -f were typer aliases
+# pre-PR. Dropping them from typer would break any script using the exact
+# tokens, so an in-function preprocessor promotes EXACT matches back into
+# their typer parameters while leaving clustered tokens (`-mg`, `-fa`, ...)
+# in the llama-server pass-through tail.
+
+
+@pytest.mark.parametrize(
+    "legacy_args,expected_model",
+    [
+        (["-m", "unsloth/Qwen3-1.7B-GGUF"], "unsloth/Qwen3-1.7B-GGUF"),
+        (["-m=unsloth/Qwen3-1.7B-GGUF"], "unsloth/Qwen3-1.7B-GGUF"),
+        (["-hfr", "unsloth/Qwen3-1.7B-GGUF"], "unsloth/Qwen3-1.7B-GGUF"),
+        (["-hfr=unsloth/Qwen3-1.7B-GGUF"], "unsloth/Qwen3-1.7B-GGUF"),
+    ],
+)
+def test_legacy_model_aliases_still_promote_to_model(
+    monkeypatch, legacy_args, expected_model,
+):
+    """Pre-PR `-m X` / `-hfr X` set --model X. The preprocessor must
+    keep those scripts working."""
+    captured = _invoke(monkeypatch, legacy_args)
+    assert len(captured) == 1, f"parent did not re-exec for {legacy_args}"
+    argv = captured[0]
+    assert argv[argv.index("--model") + 1] == expected_model, argv
+    # The legacy alias must not also leak into the pass-through tail.
+    for alias in ("-m", "-hfr"):
+        if alias in legacy_args:
+            assert alias not in argv, (
+                f"legacy {alias} leaked into child argv: {argv}"
+            )
+
+
+def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
+    """Pre-PR `-f dist` set --frontend dist. Preprocessor preserves it."""
+    captured = _invoke(monkeypatch, ["--model", "X", "-f", "/tmp/dist"])
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[argv.index("--frontend") + 1] == "/tmp/dist", argv
+    assert "-f" not in argv, f"-f leaked into child argv: {argv}"
+
+
+def test_legacy_model_alias_conflicts_with_long_form(monkeypatch):
+    """Passing both --model X and -m Y should error -- ambiguous intent."""
+    captured = _invoke(monkeypatch, ["--model", "X", "-m", "Y"])
+    # The preprocessor raises typer.BadParameter before reaching execvp.
+    assert len(captured) == 0, (
+        f"expected error before re-exec, got launch with argv = {captured}"
+    )
+
+
+def test_clustered_tokens_are_not_promoted(monkeypatch):
+    """`-mg 0`, `-fa`, `-fitt 1024` are llama-server flags, not legacy
+    aliases. They must pass through to llama-server even though they
+    start with `-m` / `-f`."""
+    captured = _invoke(
+        monkeypatch,
+        ["--model", "X", "-mg", "0", "-fa", "-fitt", "1024"],
+    )
+    assert len(captured) == 1
+    argv = captured[0]
+    # Studio --model came from --model X, not from `-mg` cluster.
+    assert argv[argv.index("--model") + 1] == "X", argv
+    # All three llama-server tokens survive verbatim in the tail.
+    for flag in ("-mg", "-fa", "-fitt"):
+        assert flag in argv, f"{flag!r} was promoted instead of passed through: {argv}"

@@ -11,6 +11,8 @@ managed flags are added.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from core.inference.llama_server_args import (
@@ -62,11 +64,13 @@ from core.inference.llama_server_args import (
         ["-rea", "auto"],
         # Soft-managed flags the user may want to override on the CLI;
         # llama.cpp's last-wins parsing means these win over Studio's
-        # auto-set version.
+        # auto-set version. NOTE: --parallel / -np / --n-parallel are
+        # NOT in this list -- they are hard-denied because Studio's
+        # KV-cache fitting + app.state.llama_parallel_slots would
+        # diverge from the running llama-server's slot count. Use the
+        # first-class `unsloth studio run --parallel N` typer flag.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
-        ["--parallel", "1"],
-        ["-np", "8"],
         ["--flash-attn", "off"],
         ["-fa", "on"],
         ["--no-context-shift"],
@@ -110,6 +114,10 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
+        # Parallel slot count -- managed by the typer --parallel flag.
+        "-np",
+        "--parallel",
+        "--n-parallel",
         # Model identity
         "-m",
         "--model",
@@ -144,6 +152,29 @@ def test_non_flag_token_passes_through():
 def test_denylist_rejects_all_aliases(denied):
     with pytest.raises(ValueError, match = denied):
         validate_extra_args([denied, "value"])
+
+
+@pytest.mark.parametrize(
+    "args,offending",
+    [
+        # Pass-through `--parallel` would last-win-override the actual
+        # llama-server slot count while Studio's KV-cache fitting and
+        # app.state.llama_parallel_slots stay at the typer value, so
+        # the resource plan and the running process disagree.
+        (["--parallel", "8"], "--parallel"),
+        (["--parallel=8"], "--parallel"),
+        (["--n-parallel", "16"], "--n-parallel"),
+        (["--n-parallel=16"], "--n-parallel"),
+        (["-np", "32"], "-np"),
+        # Out-of-range value that would bypass the typer 1..64 guard
+        # if accepted as a pass-through.
+        (["--parallel", "999"], "--parallel"),
+        (["-np", "0"], "-np"),
+    ],
+)
+def test_parallel_flags_are_managed(args, offending):
+    with pytest.raises(ValueError, match = re.escape(offending)):
+        validate_extra_args(args)
 
 
 def test_denylist_rejects_equals_form():
@@ -190,6 +221,10 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
+    # Parallel slot count is managed by the typer --parallel flag.
+    assert is_managed_flag("--parallel") is True
+    assert is_managed_flag("--n-parallel") is True
+    assert is_managed_flag("-np") is True
 
 
 def test_is_managed_flag_false_for_pass_through():
@@ -199,7 +234,6 @@ def test_is_managed_flag_false_for_pass_through():
     # Soft-managed flags pass through (last-wins override)
     assert is_managed_flag("-c") is False
     assert is_managed_flag("--ctx-size") is False
-    assert is_managed_flag("--parallel") is False
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False

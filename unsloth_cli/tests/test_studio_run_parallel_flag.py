@@ -175,7 +175,7 @@ def _invoke_run(monkeypatch, args, *, platform = "linux"):
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    result = CliRunner(mix_stderr = False).invoke(app, args, catch_exceptions = True)
+    result = CliRunner().invoke(app, args, catch_exceptions = True)
     return result, captured
 
 
@@ -219,16 +219,19 @@ def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     assert _value_after(captured[0]["argv"], "--parallel") == "12"
 
 
-def test_reexec_pre_pr_np_passthrough_regression(monkeypatch):
-    """Pre-PR `-np 8` worked because typer ignored it and llama-server
-    last-wins parsing made it stick. Post-PR typer claims `-np`; without
-    forwarding the child silently boots with 4."""
+def test_reexec_np_is_first_class_alias(monkeypatch):
+    """`-np` is now a first-class `--parallel` alias and must reach the
+    re-exec'd child as --parallel <N>. Pre-PR `-np 8` was clustered by
+    Click as `-p 8` (port=8) + stray `-n`, silently breaking the port
+    binding, so this also pins the no-collision behaviour."""
     result, captured = _invoke_run(monkeypatch, _BASE + ["-np", "8"])
     assert len(captured) == 1
-    assert _value_after(captured[0]["argv"], "--parallel") == "8", (
-        "REGRESSION: -np 8 silently became 4 after re-exec; argv = "
-        f"{captured[0]['argv']}"
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--parallel") == "8", (
+        f"-np 8 silently became 4 after re-exec; argv = {argv}"
     )
+    # Confirm `-np 8` did not collide with --port either way.
+    assert _value_after(argv, "--port") == "8888", argv
 
 
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):

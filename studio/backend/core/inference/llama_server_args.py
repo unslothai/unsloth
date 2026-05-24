@@ -32,11 +32,19 @@ from typing import Iterable, Optional
 # adds a new alias for an existing denied flag, extend the relevant
 # group.
 #
-# Flags NOT in this list (e.g. -c, --parallel, --flash-attn, -ngl,
+# Flags NOT in this list (e.g. -c, --flash-attn, -ngl,
 # -t/--threads, --jinja, --no-context-shift, --fit*, --cache-type-*,
 # --chat-template-*, --spec-*) pass through and override Studio's
 # auto-set version via llama.cpp's last-wins CLI parsing.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
+    # Parallel slot count -- Studio's KV-cache fitting + app.state.
+    # llama_parallel_slots come from the typer --parallel value (in
+    # unsloth_cli/commands/studio.py). A pass-through --parallel would
+    # last-win-override the running llama-server slot count while
+    # Studio's accounting stays at the typer value, so the resource
+    # plan and the running process disagree. Reject so the only path
+    # is the first-class typer flag with its 1..64 range guard.
+    frozenset({"-np", "--parallel", "--n-parallel"}),
     # Model identity -- Studio resolves the model from LoadRequest and
     # passes -m / mmproj after downloading from HF if needed. A second
     # -m would point at a different model than the one Studio thinks
