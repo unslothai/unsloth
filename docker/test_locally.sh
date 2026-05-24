@@ -219,22 +219,46 @@ pip install -q 'git+https://github.com/triton-lang/triton.git@0add68262ab0a2e33b
 
 echo
 echo "=== fetch + convert notebook ==="
-# Use nbformat directly instead of `jupyter nbconvert` -- nbconvert ships
-# with extra deps (mistune, pygments, traitlets, jinja2-related) and was
-# silently failing in earlier runs when --output landed in an unexpected
-# location. nbformat is a thin reader/writer with no shell-out involved.
+# Use nbformat directly. We then post-process to:
+#   1. Skip install cells -- the container already has unsloth + deps baked in;
+#      the notebook's install cell uses Jupyter !shell magic (raw `!pip install
+#      ...` lines) that nbformat dumps verbatim and Python cannot parse.
+#   2. Comment out any stray !cmd / %magic lines in non-install cells.
 pip install -q nbformat
 curl -fsSL 'https://raw.githubusercontent.com/unslothai/notebooks/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb' -o nb.ipynb
 test -s nb.ipynb || { echo "FAIL: nb.ipynb was not downloaded"; exit 1; }
 python - <<'PY'
-import nbformat
+import nbformat, re
 nb = nbformat.read('nb.ipynb', as_version=4)
-code = '\n\n'.join(c.source for c in nb.cells if c.cell_type == 'code')
-with open('nb.py', 'w') as f:
-    f.write(code + '\n')
-print(f"  converted nb.py: {code.count(chr(10)) + 1} lines, {len(code)} chars")
+out, skipped = [], 0
+INSTALL_MARKERS = (
+    "pip install", "uv pip install", "apt-get install",
+    "_original_packages", "COLAB_", "importlib.util.find_spec",
+)
+for c in nb.cells:
+    if c.cell_type != "code":
+        continue
+    src = c.source or ""
+    if any(m in src for m in INSTALL_MARKERS):
+        skipped += 1
+        first = next((ln for ln in src.splitlines() if ln.strip()), "")[:80]
+        out.append(f"# (skipped install/setup cell: {first!r})")
+        out.append("")
+        continue
+    for line in src.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("!", "%")):
+            out.append(f"# (jupyter magic stripped) {line}")
+        else:
+            out.append(line)
+    out.append("")
+with open("nb.py", "w") as f:
+    f.write("\n".join(out) + "\n")
+print(f"  converted nb.py: {sum(1 for _ in open('nb.py'))} lines, {skipped} install cell(s) skipped")
 PY
-test -s nb.py || { echo "FAIL: nb.py was not produced by nbformat conversion"; exit 1; }
+test -s nb.py || { echo "FAIL: nb.py was not produced"; exit 1; }
+# Sanity-check: nb.py must parse as valid Python before we try to run it.
+python -c "import ast; ast.parse(open('nb.py').read()); print('  nb.py is valid Python')"
 
 echo
 echo "=== patch nb.py: max_steps 30 -> 10, drop pre-train demo generations ==="
