@@ -407,10 +407,18 @@ export function ChatSettingsPanel({
   externalProviderType = null,
   onReloadModel,
 }: ChatSettingsPanelProps) {
+  const isMobile = useIsMobile();
+  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   // For non-external (local) models we show every knob — providerCapabilities
   // is only consulted when `isExternalModel` is true. An external model with an
   // unknown provider falls back to the OpenAI-compat shape via
   // getProviderCapabilities, so these flags never undercount support.
+  // GGUF (llama-server) honours frequency_penalty/seed/stop/parallel_tool_calls;
+  // the safetensors / HF transformers path does not, so we hide those toggles
+  // on local non-GGUF backends to keep the UI honest. Anything still set in
+  // params from a prior GGUF session is harmlessly ignored by the safetensors
+  // worker, so this is purely a presentation gate.
+  const localSamplerSupportsExtras = !isExternalModel ? isGguf : true;
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
   const showTopP = !isExternalModel || Boolean(providerCapabilities?.topP);
@@ -420,21 +428,25 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
-  const showFrequencyPenalty =
-    !isExternalModel || Boolean(providerCapabilities?.frequencyPenalty);
-  const showSeed = !isExternalModel || Boolean(providerCapabilities?.seed);
-  const showStop = !isExternalModel || Boolean(providerCapabilities?.stop);
+  const showFrequencyPenalty = isExternalModel
+    ? Boolean(providerCapabilities?.frequencyPenalty)
+    : localSamplerSupportsExtras;
+  const showSeed = isExternalModel
+    ? Boolean(providerCapabilities?.seed)
+    : localSamplerSupportsExtras;
+  const showStop = isExternalModel
+    ? Boolean(providerCapabilities?.stop)
+    : localSamplerSupportsExtras;
   const showServiceTier =
     isExternalModel && Boolean(providerCapabilities?.serviceTier);
-  const showParallelToolCalls =
-    !isExternalModel || Boolean(providerCapabilities?.parallelToolCalls);
+  const showParallelToolCalls = isExternalModel
+    ? Boolean(providerCapabilities?.parallelToolCalls)
+    : localSamplerSupportsExtras;
   // Per-provider stop cap from provider-capabilities.ts; backend
   // re-trims on the wire if a stale UI sends more than the upstream
   // accepts.
   const stopMaxEntries = getProviderStopMax(externalProviderType);
   const serviceTierOptions = getServiceTierOptions(externalProviderType);
-  const isMobile = useIsMobile();
-  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const hasModelContent =
     !isExternalModel && (isGguf || Boolean(params.checkpoint));
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
