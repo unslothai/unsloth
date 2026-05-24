@@ -518,6 +518,21 @@ def test_no_backtrack_on_tilde_fence_spam():
     assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
 
 
+def test_no_backtrack_on_plan_framing_long_preamble():
+    """``_PLAN_LIST_FRAMING`` scans up to _REPROMPT_MAX_CHARS chars between
+    the intent phrase and a tool-action verb. A pathological 2000-char
+    payload with many false intent triggers must still complete fast."""
+    import time
+
+    payload = (
+        "Here's my plan:\n" + ("long preamble text. " * 90) + "\nsearch the web for X"
+    )
+    t0 = time.time()
+    _has_answer_artifact(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on long-preamble plan"
+
+
 # ── Closing-fence-must-end-line edge cases ────────────────────────
 
 
