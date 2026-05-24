@@ -33,6 +33,13 @@ export interface ExternalProviderConfig {
    * OpenAI's hard default is 20. Only meaningful for OpenAI cloud.
    */
   openaiContainerTtlMinutes?: number;
+  /**
+   * Codex provider only: number of parallel Codex turns to fan a chat
+   * request out into. Clamped to [1, 20] by `clampCodexParallelCalls`.
+   * Omitted or 1 takes the single-call path; values > 1 emit per-tab
+   * `codex_tab_*` SSE events plus a final `codex_gather` synthesis.
+   */
+  codexParallelCalls?: number;
   createdAt: number;
   updatedAt: number;
 }

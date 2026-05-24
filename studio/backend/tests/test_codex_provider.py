@@ -643,6 +643,95 @@ class TestCodexHardenedRegressions:
             if ls.startswith("yield ") and re.search(r"\{exc\}|\{e\}", ls):
                 assert False, f"raw exception leaked: {ls}"
 
+    def test_parallel_tab_error_sanitised(self, monkeypatch):
+        """A worker that raises with a path-leaking message must NOT
+        send that text to the client; the SSE codex_tab_error event
+        must carry a generic message + exception_type.
+        """
+        fake = _FakeAsyncCodex(raise_on_start=RuntimeError(
+            "secret /home/alice/.codex/config.json token=abc"
+        ))
+        _install_fake_codex_sdk(monkeypatch, lambda: fake)
+        from core.inference.codex_provider import stream_codex
+
+        chunks: list[str] = []
+
+        async def _collect():
+            async for c in stream_codex(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                parallel_calls=2,
+            ):
+                chunks.append(c)
+
+        asyncio.run(_collect())
+        body = "".join(chunks)
+        assert "secret /home/alice" not in body, (
+            "raw exception text leaked into codex_tab_error SSE frame"
+        )
+        assert "Codex tab failed" in body or "exception_type" in body
+
+    def test_thread_turn_stream_path_taken(self, monkeypatch):
+        """The canonical openai_codex API uses thread.turn(prompt).stream();
+        the provider must prefer that over the legacy run_streaming hook.
+        """
+        events_seen = {"turn_called": False, "run_streaming_called": False}
+
+        class _TurnEvent:
+            def __init__(self, txt):
+                self.payload = {"text": txt}
+
+        class _TurnHandle:
+            def __init__(self, prompt):
+                self.prompt = prompt
+
+            async def stream(self):
+                yield _TurnEvent("hello ")
+                yield _TurnEvent("from turn.stream")
+
+        class _ThreadWithTurn:
+            def turn(self, prompt):
+                events_seen["turn_called"] = True
+                return _TurnHandle(prompt)
+
+            def run_streaming(self, prompt):
+                events_seen["run_streaming_called"] = True
+                raise AssertionError("should not be called when turn().stream() works")
+
+            async def run(self, prompt):
+                raise AssertionError("should not fall through to buffered run()")
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _ThreadWithTurn()
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        chunks: list[str] = []
+
+        async def _collect():
+            async for c in stream_codex(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                parallel_calls=1,
+            ):
+                chunks.append(c)
+
+        asyncio.run(_collect())
+        assert events_seen["turn_called"], "thread.turn() never called"
+        assert not events_seen["run_streaming_called"]
+        body = "".join(chunks)
+        # Each text chunk wraps in its own SSE delta, so check both pieces.
+        assert '"content": "hello "' in body
+        assert '"content": "from turn.stream"' in body
+
 
 async def _consume_first(gen):
     """Drive an async generator until it raises or yields its first

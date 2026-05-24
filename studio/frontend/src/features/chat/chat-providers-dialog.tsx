@@ -49,6 +49,7 @@ import {
 } from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CODEX_PROVIDER_TYPE,
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
@@ -57,6 +58,7 @@ import {
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
   getExternalProviderApiKey,
+  isCodexProviderType,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   removeExternalProviderApiKey,
@@ -66,6 +68,7 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { fetchCodexStatus } from "./api/codex-api";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
@@ -239,9 +242,15 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const isCodexProvider = isCodexProviderType(providerType);
   // Local presets (Ollama, llama.cpp) never use API keys — hide the field.
-  // vLLM may optionally use a bearer token on secured deployments.
-  const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
+  // vLLM may optionally use a bearer token on secured deployments. Codex
+  // dispatches via the local CLI / SDK, no HTTP API key either.
+  const showApiKeyField =
+    !customPresetSkipsApiKeyField(providerType) && !isCodexProvider;
+  // Codex behaves like a "custom" provider for the gate logic below: the
+  // backend skips the api_key requirement entirely for `provider_type=codex`.
+  const providerSkipsApiKey = isCustomProvider || isCodexProvider;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
@@ -279,7 +288,7 @@ export function ChatProvidersSettings({
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
   const missingModelCatalogApiKey =
-    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+    !providerSkipsApiKey && !isCuratedModelList && apiKey.trim().length === 0;
   const loadModelsDisabled =
     modelsLoading ||
     mutatingProvider ||
@@ -354,12 +363,41 @@ export function ChatProvidersSettings({
       }
       let syncSucceeded = false;
       try {
-        const [registryRows, configRows] = await Promise.all([
-          listProviderRegistry(),
-          listProviderConfigs(),
-        ]);
+        // Probe Codex availability in parallel with the registry / configs.
+        // Codex stays `hidden:true` in the backend registry so it is filtered
+        // out of `/api/providers/registry`; we synthesise a row here when
+        // the host has both the CLI and the SDK installed.
+        const [registryRowsRaw, configRows, codexStatusRaw] = await Promise.all(
+          [
+            listProviderRegistry(),
+            listProviderConfigs(),
+            fetchCodexStatus().catch(() => null),
+          ],
+        );
         if (!isMounted) return;
         syncSucceeded = true;
+        const registryRows: ProviderRegistryEntry[] =
+          codexStatusRaw && codexStatusRaw.installed &&
+          !registryRowsRaw.some(
+            (entry) => entry.provider_type === CODEX_PROVIDER_TYPE,
+          )
+            ? [
+                ...registryRowsRaw,
+                {
+                  provider_type: CODEX_PROVIDER_TYPE,
+                  display_name: "OpenAI Codex (local CLI)",
+                  base_url: "",
+                  default_models: codexStatusRaw.supported_models ?? [],
+                  supports_streaming: true,
+                  supports_vision: false,
+                  supports_tool_calling: true,
+                  model_list_mode: "curated",
+                  notes: codexStatusRaw.logged_in
+                    ? "Dispatches chat turns through the local Codex CLI."
+                    : "Sign in with `codex login` before chatting.",
+                } as ProviderRegistryEntry,
+              ]
+            : registryRowsRaw;
         setRegistry(registryRows);
         setProviderType((current) => {
           if (
@@ -553,7 +591,7 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!providerSkipsApiKey && !apiKey.trim()) {
       toast.error("Add an API key first.");
       return;
     }
@@ -625,7 +663,7 @@ export function ChatProvidersSettings({
     const displayName = isCustomProvider
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!providerSkipsApiKey && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }
@@ -734,7 +772,9 @@ export function ChatProvidersSettings({
     }
     const isEditingCustomProvider =
       isCustomProviderType(existing.providerType);
-    if (!isEditingCustomProvider && !apiKey.trim()) {
+    const editingProviderSkipsApiKey =
+      isEditingCustomProvider || isCodexProviderType(existing.providerType);
+    if (!editingProviderSkipsApiKey && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }

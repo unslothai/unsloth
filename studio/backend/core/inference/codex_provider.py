@@ -307,20 +307,51 @@ async def _stream_thread_run(
 ) -> AsyncGenerator[str, None]:
     """Yield raw text chunks from a Codex thread.
 
-    Prefers ``thread.run_streaming(prompt)`` because that's what the
-    docs surface for token-by-token delivery. When the installed SDK
-    doesn't have that helper, fall back to ``await thread.run(prompt)``
-    and yield the full text once -- this still works end-to-end, just
-    without streaming feedback in the UI.
+    Tries three SDK surfaces in order:
+
+    1. ``thread.turn(prompt).stream()`` -- the canonical streaming path
+       on the upstream ``openai_codex`` SDK (see
+       ``openai/codex/sdk/python/src/openai_codex/api.py``: AsyncThread.turn
+       returns an AsyncTurnHandle whose ``.stream()`` yields events).
+    2. ``thread.run_streaming(prompt)`` -- a legacy helper exposed by
+       some earlier SDK pre-releases. Kept for forward-compat.
+    3. ``await thread.run(prompt)`` -- the always-supported buffered
+       path. Used when neither streaming helper resolves and as the
+       final fallback.
+
+    On any streaming exception we log and fall through to the buffered
+    path so a partially-broken streaming helper does not take the
+    whole turn down.
     """
+    # 1. Canonical: thread.turn(prompt).stream()
+    turn_factory = getattr(thread, "turn", None)
+    if turn_factory is not None:
+        try:
+            turn_handle = turn_factory(prompt)
+            if asyncio.iscoroutine(turn_handle):
+                turn_handle = await turn_handle
+            stream_fn = getattr(turn_handle, "stream", None)
+            if stream_fn is not None:
+                stream_obj = stream_fn()
+                if asyncio.iscoroutine(stream_obj):
+                    stream_obj = await stream_obj
+                async for event in stream_obj:
+                    text = _coerce_text(getattr(event, "payload", event))
+                    if text:
+                        yield text
+                return
+        except Exception as exc:
+            logger.warning(
+                "codex_provider.turn_stream_failed_fallback",
+                exc_type = type(exc).__name__,
+                error = str(exc),
+            )
+
+    # 2. Legacy: thread.run_streaming(prompt)
     run_streaming = getattr(thread, "run_streaming", None)
     if run_streaming is not None:
         try:
             stream_obj = run_streaming(prompt)
-            # The SDK may return either an async iterator directly or a
-            # coroutine that resolves to one. Handle both shapes so a
-            # future SDK rev doesn't silently fall off the streaming
-            # path.
             if asyncio.iscoroutine(stream_obj):
                 stream_obj = await stream_obj
             async for event in stream_obj:
@@ -331,12 +362,11 @@ async def _stream_thread_run(
         except Exception as exc:
             logger.warning(
                 "codex_provider.run_streaming_failed_fallback",
+                exc_type = type(exc).__name__,
                 error = str(exc),
             )
-            # Intentional fallthrough to the non-streaming path so a
-            # broken streaming helper doesn't take the whole turn down.
 
-    # Non-streaming fallback: await the full TurnResult, emit one chunk.
+    # 3. Buffered fallback: await the full TurnResult, emit one chunk.
     result = await thread.run(prompt)
     text = _coerce_text(result) or getattr(result, "final_response", "") or str(result)
     if text:
@@ -516,10 +546,23 @@ async def _stream_codex_parallel(
                         )
                     )
         except Exception as exc:
+            # CodeQL: never echo str(exc) in client-facing SSE events.
+            # Log full reason server-side; surface a generic message plus
+            # an exception_type discriminator so the UI can still group
+            # failures without leaking file paths / env vars from the
+            # SDK traceback. CodexUnavailableError is the one exception
+            # we DO surface verbatim because it's a user-actionable
+            # install hint with no sensitive content.
             logger.warning(
                 "codex_provider.parallel_tab_failed",
                 tab_id = tab_id,
+                exc_type = type(exc).__name__,
                 error = str(exc),
+            )
+            public_error = (
+                str(exc)
+                if isinstance(exc, CodexUnavailableError)
+                else "Codex tab failed"
             )
             await queue.put(
                 _chunk_tool_event(
@@ -527,7 +570,8 @@ async def _stream_codex_parallel(
                     {
                         "type": "codex_tab_error",
                         "tab_id": tab_id,
-                        "error": str(exc),
+                        "error": public_error,
+                        "exception_type": type(exc).__name__,
                     },
                 )
             )

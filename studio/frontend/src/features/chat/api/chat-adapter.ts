@@ -7,7 +7,10 @@ import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
+  CODEX_DEFAULT_PARALLEL_CALLS,
+  clampCodexParallelCalls,
   getExternalProviderApiKey,
+  isCodexProviderType,
   isCustomProviderType,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -862,12 +865,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Connection not found.");
       }
       // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
+      // Codex dispatches via the local CLI / SDK, no HTTP API key.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
         : false;
-      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
+      const externalProviderIsCodex = externalProvider
+        ? isCodexProviderType(externalProvider.providerType)
+        : false;
+      const externalProviderNeedsApiKey =
+        isExternalRequest && !externalProviderIsCustom && !externalProviderIsCodex;
+      if (externalProviderNeedsApiKey && !externalApiKey) {
         toast.error("Missing API key for selected connection.", {
-          description: "Open Settings → Connections and set the API key again.",
+          description: "Open Settings > Connections and set the API key again.",
         });
         throw new Error("Missing connection API key.");
       }
@@ -1488,6 +1497,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           reasoning_effort: fallbackExternalEffort,
                         }
                   : { enable_thinking: reasoningEnabled }
+                : {}),
+              // Codex provider only: ask the backend to fan the turn out
+              // across N parallel Codex tasks and synthesise a unified
+              // answer. The picker UI uses the provider config's
+              // `codexParallelCalls` field; default of 1 keeps the
+              // single-call path. Backend clamps to [1, 20].
+              ...(externalProviderIsCodex
+                ? {
+                    parallel_calls: clampCodexParallelCalls(
+                      externalProvider.codexParallelCalls ??
+                        CODEX_DEFAULT_PARALLEL_CALLS,
+                    ),
+                  }
                 : {}),
             };
           }
