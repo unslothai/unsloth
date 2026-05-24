@@ -298,3 +298,138 @@ def test_legacy_m_inline_value_form(monkeypatch):
     assert len(captured) == 1
     argv = captured[0]
     assert argv[argv.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF", argv
+
+
+# Direct unit tests for the _consume_legacy_short_aliases helper.
+
+
+def test_consume_helper_exact_match_space_form():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-m", "FOO", "--top-k", "20"], ("-m",), None, "--model",
+    )
+    assert value == "FOO"
+    assert remaining == ["--top-k", "20"]
+
+
+def test_consume_helper_exact_match_inline_form():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-m=FOO", "--top-k", "20"], ("-m",), None, "--model",
+    )
+    assert value == "FOO"
+    assert remaining == ["--top-k", "20"]
+
+
+def test_consume_helper_leaves_clusters_alone():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-mg", "0", "-md", "/x"], ("-m",), None, "--model",
+    )
+    assert value is None
+    assert remaining == ["-mg", "0", "-md", "/x"]
+
+
+def test_consume_helper_value_already_set_raises():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    import typer as _typer
+
+    with pytest.raises(_typer.BadParameter):
+        helper(["-m", "Y"], ("-m",), "X", "--model")
+
+
+def test_consume_helper_missing_value_raises():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    import typer as _typer
+
+    with pytest.raises(_typer.BadParameter):
+        helper(["-m"], ("-m",), None, "--model")
+
+
+def test_consume_helper_multiple_aliases_in_group():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-hfr", "FOO", "--top-k", "20"], ("-m", "-hfr"), None, "--model",
+    )
+    assert value == "FOO"
+    assert remaining == ["--top-k", "20"]
+
+
+def test_consume_helper_preserves_value_when_no_match():
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["--top-k", "20"], ("-m",), "PRESET", "--model",
+    )
+    assert value == "PRESET"
+    assert remaining == ["--top-k", "20"]
+
+
+# _expand_attached_np_short: Click clusters `-np8` as `-n -p 8` because
+# `-p` is the typer short for `--port`. This silently sets port=8 and
+# drops the parallel value. The rewrite splits the attached form into
+# the space-separated form before Click parses.
+
+
+def test_expand_np_rewrites_attached_form(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["unsloth", "studio", "run", "--model", "X", "-np8"],
+    )
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == [
+        "unsloth", "studio", "run", "--model", "X", "-np", "8",
+    ]
+
+
+@pytest.mark.parametrize("value", ["1", "8", "64", "999"])
+def test_expand_np_rewrites_all_digit_values(monkeypatch, value):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "studio", "run", f"-np{value}"])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "studio", "run", "-np", value]
+
+
+def test_expand_np_leaves_space_form_alone(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-np", "8"])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np", "8"]
+
+
+def test_expand_np_leaves_equals_form_alone(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-np=8"])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np=8"]
+
+
+def test_expand_np_leaves_non_digit_suffix_alone(monkeypatch):
+    # `-npfoo` is not a valid attached value -- leave for typer to reject.
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-npfoo"])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-npfoo"]
+
+
+def test_expand_np_leaves_bare_np_alone(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-np"])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np"]
+
+
+def test_expand_np_handles_multiple_occurrences(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["unsloth", "run", "-np8", "-np16"],
+    )
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np", "8", "-np", "16"]
+
+
+def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
+    """Behavioural pin: after _expand_attached_np_short runs in the
+    entry-point gate, `-np8` produces --parallel=8 (not --port=8)."""
+    monkeypatch.setattr(
+        sys, "argv", ["unsloth", "studio", "run", "--model", "X", "-np8"],
+    )
+    _studio_mod()._expand_attached_np_short()
+    captured = _invoke(monkeypatch, sys.argv[2:])  # skip "unsloth studio"
+    assert len(captured) == 1, "parent did not re-exec"
+    argv = captured[0]
+    assert argv[argv.index("--parallel") + 1] == "8", argv
+    # Port must stay at the typer default (not silently rewritten to 8).
+    assert argv[argv.index("--port") + 1] == "8888", argv
