@@ -244,9 +244,26 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
         self.assertIn('if "dataset_order" in _supported_fields:', source)
         # The unconditional kwargs must NOT include either gated field.
+        # Use proper paren tracking; `source.find(")", ...)` would stop at
+        # the first close paren inside the dict body (e.g.
+        # `int(config.get("save_steps", 0) or 0)`) and miss any future
+        # unconditional addition of the gated fields later in the dict.
         unconditional_block_start = source.find("mlx_config_kwargs = dict(")
-        unconditional_block_end = source.find(")", unconditional_block_start)
-        unconditional = source[unconditional_block_start:unconditional_block_end]
+        self.assertNotEqual(unconditional_block_start, -1)
+        depth = 0
+        i = unconditional_block_start + len("mlx_config_kwargs = dict")
+        end = i
+        while i < len(source):
+            ch = source[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+            i += 1
+        unconditional = source[unconditional_block_start:end]
         self.assertNotIn("cast_norm_output_to_input_dtype", unconditional)
         self.assertNotIn("dataset_order", unconditional)
 
