@@ -481,8 +481,7 @@ def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
 
 
 def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
-    """Re-emitted chat envelope must price 1h cache writes at 2x base.
-    """
+    """Re-emitted chat envelope must price 1h cache writes at 2x base."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
