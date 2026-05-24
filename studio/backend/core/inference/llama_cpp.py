@@ -4908,7 +4908,9 @@ class LlamaCppBackend:
                         # suppress the re-prompt.
                         _visible = content_accum.strip()
                         _stripped = _visible if _visible else reasoning_accum.strip()
-                        _visible_has_artifact = bool(_visible) and _has_answer_artifact(_visible)
+                        _visible_has_artifact = bool(_visible) and _has_answer_artifact(
+                            _visible
+                        )
                         if (
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
