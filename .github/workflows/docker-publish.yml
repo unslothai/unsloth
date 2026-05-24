@@ -1,9 +1,10 @@
 # Builds and publishes the Blackwell-compatible Unsloth Docker image.
 #
-# The build runs on a free GitHub-hosted Ubuntu runner with NO GPU attached.
+# The build runs on free GitHub-hosted Ubuntu runners with NO GPU attached.
 # This is possible because:
 #   1. cu128 PyTorch wheels are fat binaries -- they already ship sm_70 through
-#      sm_120 SASS, cross-compiled upstream by the PyTorch team.
+#      sm_120 SASS on amd64 (and sm_80;90;100;120 on aarch64), cross-compiled
+#      upstream by the PyTorch team.
 #   2. The Dockerfile pins explicit wheel URLs (no --torch-backend=auto, no
 #      install.sh that introspects the host driver).
 #   3. The build-time sanity check uses torch._C._cuda_getArchFlags(), which
@@ -11,12 +12,13 @@
 #   4. UNSLOTH_COMPILE_DISABLE=1 prevents Unsloth from JIT-compiling a Triton
 #      kernel cache keyed to the (non-existent) build-host GPU.
 #
-# Multi-arch:
-#   We publish a single manifest with linux/amd64 + linux/arm64 children.
-#   The arm64 child is built via QEMU on the same x86_64 runner (~2-3x slower
-#   than native) and targets DGX Spark / GB10 / Grace-Hopper. Runtime
-#   emulation is NOT used: end users on aarch64 hosts pull the arm64 variant
-#   natively and CUDA works as normal.
+# Multi-arch: build amd64 and arm64 in parallel on NATIVE GitHub runners
+# (`ubuntu-latest` and `ubuntu-24.04-arm`, both free on public repos since
+# Aug-2025), then merge the per-arch digests into a single multi-platform
+# manifest. Native arm64 is ~3x faster than building aarch64 under QEMU,
+# and avoids QEMU's occasional flakiness on long-running cu* installs.
+# End users on DGX Spark / Grace pull the arm64 child natively; CUDA works
+# as normal (no runtime emulation).
 #
 # Required repository secrets:
 #   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
@@ -48,11 +50,25 @@ env:
   IMAGE_NAME: unsloth/unsloth
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Per-arch build. The matrix fans out two parallel jobs on the matching
+  # native runner. Each pushes a single-arch image *by digest* (no human-
+  # readable tag), and the merge job below stitches the two digests into one
+  # multi-arch manifest under the real tags. This is the canonical pattern
+  # from docker/build-push-action's docs and avoids the "last push wins" race
+  # that you get when two jobs push the same tag separately.
+  # ---------------------------------------------------------------------------
   build:
-    runs-on: ubuntu-latest          # no GPU, 16GB RAM, 4 vCPU
-    # arm64 leg goes through QEMU emulation -- empirically ~2.5x the amd64
-    # wall time. Bump the per-job timeout to leave headroom on a noisy runner.
-    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner:   ubuntu-latest
+          - platform: linux/arm64
+            runner:   ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -60,22 +76,88 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Free up ~20GB on the runner so cu128 wheels + cudnn fit (twice).
-      # The arm64 child build downloads its own copy of every wheel, and the
-      # builder/runtime CUDA layers add up to ~6GB per arch. With both arches
-      # in flight + buildx cache, the default 14GB free is not enough.
+      # Free up ~20GB on the runner so cu128 wheels + cudnn fit. Layout is
+      # similar between the amd64 and arm64 runners but not identical -- the
+      # arm64 image lacks /usr/share/dotnet, hence `|| true`.
       - name: Reclaim disk
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY"
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      # Registers binfmt_misc handlers for foreign archs (linux/arm64 here),
-      # so the same x86_64 runner can build aarch64 layers via QEMU. Equivalent
-      # to `docker run --privileged tonistiigi/binfmt --install all`.
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
         with:
-          platforms: arm64
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pull the image label/annotation set we'll attach to the FINAL manifest.
+      # We don't apply tags at this layer because each per-arch build pushes by
+      # digest only; tags get attached by the merge job.
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push (per-arch by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Per-arch build cache. Keying on the platform suffix lets the two
+          # matrix legs reuse their own caches without colliding.
+          cache-from: type=gha,scope=build-${{ matrix.platform }}
+          cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            CUDA_VERSION=12.8.1
+            UBUNTU_VERSION=24.04
+            PYTHON_VERSION=3.12
+            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || 'main' }}
+            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || 'main' }}
+
+      # Stash the per-arch digest as an artifact for the merge job to pick up.
+      # Filenames need to be unique across the matrix; `platform` contains a
+      # slash so substitute it for a dash.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Merge the two per-arch digests into a multi-platform manifest under the
+  # real, user-facing tag(s). This job runs only after both `build` matrix
+  # legs finish successfully.
+  # ---------------------------------------------------------------------------
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -95,37 +177,27 @@ jobs:
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
 
-      - name: Build and push (multi-arch)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./docker
-          file: ./docker/Dockerfile
-          # Single manifest, two child images: docker pull on an x86_64 host
-          # gets the amd64 layer; docker pull on DGX Spark / Grace gets arm64.
-          # TARGETARCH is injected into the Dockerfile by buildx; see Dockerfile
-          # for the per-arch unsloth extras switch (no xformers on arm64).
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            CUDA_VERSION=12.8.1
-            UBUNTU_VERSION=24.04
-            PYTHON_VERSION=3.12
-            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || 'main' }}
-            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || 'main' }}
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
-      - name: Image digest
-        run: echo "${{ steps.meta.outputs.tags }} -> ${{ steps.meta.outputs.digest }}"
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
 
+  # ---------------------------------------------------------------------------
   # Optional: pull the freshly published image onto a self-hosted GPU runner
-  # and run smoke_test.py. Keeps "did the image actually work" decoupled from
-  # "was a GPU available at build time". Skipped automatically when no GPU
-  # runner is registered.
+  # and run smoke_test.py. Skipped automatically when no GPU runner is
+  # registered. Architecture matches whatever the runner is.
+  # ---------------------------------------------------------------------------
   smoke-test:
-    needs: build
+    needs: merge
     if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
     runs-on: [self-hosted, gpu]
     timeout-minutes: 20

@@ -4,8 +4,11 @@
 # on both linux/amd64 and linux/arm64.
 #
 # Why this image works:
-#   * cu128 wheels are fat binaries: SASS for sm_75;80;86;89;90;100;120 on amd64
-#     and sm_90;100;120 on arm64 (Grace + Grace-Hopper + Grace-Blackwell SoCs).
+#   * cu128 wheels are fat binaries: SASS for sm_75;80;86;89;90;100;120 on
+#     amd64 and sm_80;90;100;120 on arm64 (confirmed against pytorch/pytorch
+#     v2.10.0 .ci/manywheel/build_cuda.sh: aarch64 builds drop 7.0/7.5/8.6).
+#     sm_120 is forward-compatible to sm_121 (GB10 / DGX Spark) -- a build
+#     containing sm_120 kernels runs fine on sm_121, per PyTorch maintainers.
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
 #     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX",
