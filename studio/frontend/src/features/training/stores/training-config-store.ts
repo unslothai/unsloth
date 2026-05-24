@@ -502,7 +502,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setSelectedModel: (selectedModel) => {
           const previousModel = get().selectedModel;
-          set({ selectedModel, modelDefaultsError: null });
+          // True model switch resets the image size sentinel so a stale
+          // value from a previous model does not silently apply to the new
+          // one. We do this here (not in mapBackendModelConfigToTrainingPatch)
+          // so same-model defaults reloads do not wipe the user's choice.
+          const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
+            selectedModel,
+            modelDefaultsError: null,
+          };
+          if (selectedModel !== previousModel) {
+            patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+          }
+          set(patch);
 
           if (!selectedModel) {
             _modelConfigController?.abort();

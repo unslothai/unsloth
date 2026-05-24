@@ -3057,22 +3057,24 @@ class UnslothTrainer:
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
-                    # Honor user-selected Image Size. Keep base_size + crop_mode
-                    # at the Gundam preset (1024 / True) so dynamic cropping of
-                    # large documents still works.
-                    vision_image_size = training_args.get("vision_image_size")
-                    deepseek_image_size = (
-                        640 if vision_image_size is None else int(vision_image_size)
-                    )
-                    if vision_image_size is not None:
+                    # DeepSeek OCR's (image_size, base_size, crop_mode) tuple
+                    # is a single preset (Tiny / Small / Base / Large / Gundam).
+                    # Changing image_size in isolation desynchronizes the per-
+                    # crop pixel grid from num_queries downstream, so the
+                    # user-selected vision_image_size is intentionally ignored
+                    # here. Default to the Gundam preset, which is the
+                    # recommended training configuration. Threading the Image
+                    # Size knob through DeepSeek OCR requires patching
+                    # dynamic_preprocess first.
+                    if training_args.get("vision_image_size") is not None:
                         logger.info(
-                            f"DeepSeek OCR image resize: "
-                            f"{deepseek_image_size} (per-crop tile size)\n"
+                            "Vision image resize ignored for DeepSeek OCR "
+                            "(uses fixed Gundam preset).\n"
                         )
                     data_collator = DeepSeekOCRDataCollator(
                         tokenizer = self.tokenizer,
                         model = self.model,
-                        image_size = deepseek_image_size,
+                        image_size = 640,
                         base_size = 1024,
                         crop_mode = True,
                         train_on_responses_only = training_args.get(
