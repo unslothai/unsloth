@@ -1521,7 +1521,7 @@ function McpServersSection() {
           className="panel-switch"
           checked={mcpEnabledForChat}
           onCheckedChange={setMcpEnabledForChat}
-          disabled={enabledServerCount === 0}
+          disabled={enabledServerCount === 0 && !mcpEnabledForChat}
         />
       </div>
       <div className="flex items-center justify-between">
