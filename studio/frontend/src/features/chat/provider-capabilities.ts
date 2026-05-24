@@ -101,11 +101,10 @@ export type ServiceTierOption =
 /**
  * Legal `service_tier` values per provider. Anthropic exposes only
  * `auto` and `standard_only`. OpenAI in Studio is routed through
- * `/v1/responses`; the openai-python SDK type
- * (`src/openai/types/responses/response_create_params.py`) lists
- * `auto|default|flex|scale|priority`, so the enterprise-gated `scale`
- * tier is surfaced for users who have it. Other providers fall
- * through to a permissive `auto` / `default` pair so the picker
+ * `/v1/responses`, which the live docs list as
+ * `auto|default|flex|priority`; `scale` is excluded here even though
+ * the openai-python SDK type happens to include it. Other providers
+ * fall through to a permissive `auto` / `default` pair so the picker
  * stays usable for OpenAI-compat backends.
  */
 export function getServiceTierOptions(
@@ -115,7 +114,7 @@ export function getServiceTierOptions(
     return ["auto", "standard_only"] as const;
   }
   if (providerType === "openai") {
-    return ["auto", "default", "flex", "scale", "priority"] as const;
+    return ["auto", "default", "flex", "priority"] as const;
   }
   return ["auto", "default"] as const;
 }
