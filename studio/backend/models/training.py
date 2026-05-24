@@ -185,6 +185,7 @@ class TrainingStartRequest(BaseModel):
             # numpy ints and other Integral subclasses (no hard numpy import).
             try:
                 import numbers
+
                 if isinstance(v, numbers.Integral):
                     coerced = int(v)
                 elif isinstance(v, numbers.Real) and float(v).is_integer():
@@ -192,9 +193,7 @@ class TrainingStartRequest(BaseModel):
                 else:
                     raise TypeError
             except Exception:
-                raise ValueError(
-                    "vision_image_size must be an integer or null"
-                )
+                raise ValueError("vision_image_size must be an integer or null")
         if coerced < _MIN_VISION_IMAGE_SIZE or coerced > _MAX_VISION_IMAGE_SIZE:
             raise ValueError(
                 f"vision_image_size must be in [{_MIN_VISION_IMAGE_SIZE}, "
