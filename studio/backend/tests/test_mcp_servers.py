@@ -249,9 +249,7 @@ def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
     asyncio.run(mcp_client.clear_oauth_tokens_async("https://example.com/mcp"))
 
 
-def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(
-    tmp_path, monkeypatch
-):
+def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypatch):
     """delete_mcp_server route helper should invoke clear_oauth_tokens_async
     when the deleted row had use_oauth=true."""
     import asyncio
@@ -283,9 +281,7 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(
     assert mcp_servers_db.get_server("oauth1") is None
 
 
-def test_delete_server_skips_oauth_cleanup_when_oauth_off(
-    tmp_path, monkeypatch
-):
+def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch):
     """No OAuth token cleanup when the deleted server never had OAuth."""
     import asyncio
 
