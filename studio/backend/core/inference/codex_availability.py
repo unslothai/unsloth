@@ -60,6 +60,50 @@ _DEFAULT_SUPPORTED_MODELS: tuple[str, ...] = (
 # an internal alpha may publish under it.
 _SDK_MODULE_NAMES: tuple[str, ...] = ("openai_codex", "codex_app_server")
 
+# Safe-list of environment variables forwarded to the codex subprocess.
+# Studio's parent env contains secrets (HF_TOKEN, GH_TOKEN, WANDB_API_KEY,
+# OPENAI key for non-codex providers, etc.); a malicious or shimmed codex
+# binary earlier on PATH would receive all of them via plain os.environ
+# inheritance. We pass only what codex actually needs: PATH for spawning
+# its own helpers, HOME / USER for auth config lookup, the Windows /
+# macOS equivalents, the codex-specific CODEX_HOME override, and the
+# OPENAI_API_KEY that codex's own ``--with-api-key`` flow expects.
+_SAFE_CODEX_ENV_KEYS: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "USERNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "WINDIR",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+)
+
+
+def _codex_subprocess_env() -> dict[str, str]:
+    """Return a scrubbed env mapping for codex subprocess spawning.
+
+    Forwards only keys from `_SAFE_CODEX_ENV_KEYS` that are actually set
+    in the parent environment, so secrets from other providers never
+    reach the codex CLI.
+    """
+    env: dict[str, str] = {}
+    for key in _SAFE_CODEX_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
+
 
 def _which_codex() -> Optional[str]:
     """Return absolute path to the ``codex`` CLI, or None if missing.
@@ -119,7 +163,7 @@ async def _run_cli(args: list[str], *, timeout: float = 4.0) -> tuple[int, str, 
             *args,
             stdout = asyncio.subprocess.PIPE,
             stderr = asyncio.subprocess.PIPE,
-            env = os.environ.copy(),
+            env = _codex_subprocess_env(),
         )
     except FileNotFoundError:
         return -1, "", "codex binary not on PATH"

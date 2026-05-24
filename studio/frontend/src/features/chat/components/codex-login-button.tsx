@@ -19,7 +19,7 @@
  * probe and flip back into the "ready" state automatically.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   streamCodexDeviceLogin,
@@ -88,6 +88,15 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
       setBusy(false);
     }
   }, [busy, error, onLoggedIn]);
+
+  // Abort the in-flight SSE stream on unmount so the underlying
+  // `codex login --device-auth` subprocess does not keep streaming
+  // (and consuming a device-auth session) after the dialog closes.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   return (
     <div className="space-y-2">

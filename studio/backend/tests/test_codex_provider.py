@@ -673,6 +673,83 @@ class TestCodexHardenedRegressions:
         ), "raw exception text leaked into codex_tab_error SSE frame"
         assert "Codex tab failed" in body or "exception_type" in body
 
+    def test_codex_subprocess_env_scrubbed(self, monkeypatch):
+        """The codex subprocess env must not include other-provider secrets."""
+        from core.inference.codex_availability import _codex_subprocess_env
+
+        monkeypatch.setenv("HF_TOKEN", "hf_should_not_leak")
+        monkeypatch.setenv("GH_TOKEN", "gh_should_not_leak")
+        monkeypatch.setenv("WANDB_API_KEY", "wandb_should_not_leak")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic_should_not_leak")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai_codex_uses_this")
+        monkeypatch.setenv("CODEX_HOME", "/custom/.codex")
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        env = _codex_subprocess_env()
+        for secret in (
+            "HF_TOKEN",
+            "GH_TOKEN",
+            "WANDB_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
+            assert secret not in env, f"{secret} leaked into codex env"
+        # Codex-relevant keys must be preserved.
+        assert env.get("OPENAI_API_KEY") == "openai_codex_uses_this"
+        assert env.get("CODEX_HOME") == "/custom/.codex"
+        assert env.get("PATH") == "/usr/bin"
+
+    def test_partial_stream_failure_does_not_replay_turn(self, monkeypatch):
+        """If turn.stream() fails after emitting some text, the buffered
+        run() fallback must NOT fire -- replaying would duplicate side
+        effects (file writes, shell commands).
+        """
+        run_calls = {"n": 0}
+
+        class _PartialStreamTurn:
+            async def stream(self):
+                yield {"text": "partial output "}
+                raise RuntimeError("network glitch mid-stream")
+
+        class _ThreadPartialFail:
+            def turn(self, prompt):
+                return _PartialStreamTurn()
+
+            async def run(self, prompt):
+                run_calls["n"] += 1
+                return "REPLAYED -- BAD"
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _ThreadPartialFail()
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        chunks: list[str] = []
+
+        async def _collect():
+            async for c in stream_codex(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                parallel_calls=1,
+            ):
+                chunks.append(c)
+
+        asyncio.run(_collect())
+        assert run_calls["n"] == 0, (
+            "buffered run() fired after partial stream emission -- "
+            "would replay side effects"
+        )
+        body = "".join(chunks)
+        assert "partial output" in body
+        assert "REPLAYED" not in body
+
     def test_thread_turn_stream_path_taken(self, monkeypatch):
         """The canonical openai_codex API uses thread.turn(prompt).stream();
         the provider must prefer that over the legacy run_streaming hook.

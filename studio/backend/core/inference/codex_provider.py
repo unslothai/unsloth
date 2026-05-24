@@ -319,10 +319,15 @@ async def _stream_thread_run(
        path. Used when neither streaming helper resolves and as the
        final fallback.
 
-    On any streaming exception we log and fall through to the buffered
-    path so a partially-broken streaming helper does not take the
-    whole turn down.
+    Cross-turn side-effect protection: once any chunk has been emitted
+    via a streaming helper, we never fall through to the buffered
+    ``thread.run(prompt)`` path -- a partial-stream failure would
+    otherwise re-execute the same Codex turn and duplicate side
+    effects (file writes, shell commands, etc.). The buffered path
+    runs only when streaming helpers produced zero output.
     """
+    emitted_any = False
+
     # 1. Canonical: thread.turn(prompt).stream()
     turn_factory = getattr(thread, "turn", None)
     if turn_factory is not None:
@@ -338,6 +343,7 @@ async def _stream_thread_run(
                 async for event in stream_obj:
                     text = _coerce_text(getattr(event, "payload", event))
                     if text:
+                        emitted_any = True
                         yield text
                 return
         except Exception as exc:
@@ -345,7 +351,13 @@ async def _stream_thread_run(
                 "codex_provider.turn_stream_failed_fallback",
                 exc_type = type(exc).__name__,
                 error = str(exc),
+                emitted_any = emitted_any,
             )
+            if emitted_any:
+                # The Codex turn already ran far enough to emit text;
+                # do not re-execute via run() or run_streaming() -- the
+                # side-effects (commands / writes) would replay.
+                return
 
     # 2. Legacy: thread.run_streaming(prompt)
     run_streaming = getattr(thread, "run_streaming", None)
@@ -357,6 +369,7 @@ async def _stream_thread_run(
             async for event in stream_obj:
                 text = _coerce_text(event)
                 if text:
+                    emitted_any = True
                     yield text
             return
         except Exception as exc:
@@ -364,9 +377,14 @@ async def _stream_thread_run(
                 "codex_provider.run_streaming_failed_fallback",
                 exc_type = type(exc).__name__,
                 error = str(exc),
+                emitted_any = emitted_any,
             )
+            if emitted_any:
+                return
 
     # 3. Buffered fallback: await the full TurnResult, emit one chunk.
+    # Only reached when no streaming helper emitted anything, so this
+    # is the first (and only) execution of the turn.
     result = await thread.run(prompt)
     text = _coerce_text(result) or getattr(result, "final_response", "") or str(result)
     if text:
@@ -763,9 +781,13 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     # SIGTERM the whole group on cancel without sending it to ourselves.
     # On Windows, ``creationflags=CREATE_NEW_PROCESS_GROUP`` (0x200) gives
     # an equivalent isolation for ``proc.send_signal(signal.CTRL_BREAK_EVENT)``.
+    # Env is scrubbed to the codex safe-list (see codex_availability) so a
+    # shimmed `codex` on PATH does not inherit other provider secrets.
+    from core.inference.codex_availability import _codex_subprocess_env
     spawn_kwargs: dict[str, Any] = {
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.STDOUT,
+        "env": _codex_subprocess_env(),
     }
     if os.name == "posix":
         spawn_kwargs["start_new_session"] = True
