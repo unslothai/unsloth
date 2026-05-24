@@ -1529,15 +1529,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // Optional sampling extensions; local llama-server already
             // accepts `stop` / `seed` / `frequency_penalty` via
             // _build_passthrough_payload (routes/inference.py:4884) and
-            // silently ignores fields it does not recognise.
+            // silently ignores fields it does not recognise. llama-server
+            // documents `parallel_tool_calls` defaulting to FALSE
+            // (https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md);
+            // forward the user's preference unconditionally so the
+            // default-on UI state actually enables parallel tool calls
+            // there. External providers default to true everywhere; the
+            // external branch above keeps its opt-in-on-false shape.
             ...(params.frequencyPenalty !== 0
               ? { frequency_penalty: params.frequencyPenalty }
               : {}),
             ...(params.seed !== null ? { seed: params.seed } : {}),
             ...(params.stop.length > 0 ? { stop: params.stop } : {}),
-            ...(params.parallelToolCalls === false
-              ? { parallel_tool_calls: false }
-              : {}),
+            parallel_tool_calls: params.parallelToolCalls,
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,

@@ -876,6 +876,26 @@ def test_local_anthropic_disable_parallel_tool_use_translation():
     assert _extract({"type": "auto", "disable_parallel_tool_use": "yes"}) is None
 
 
+def test_gguf_tool_loop_enforces_parallel_tool_calls_false():
+    """llama.cpp's `parallel_tool_calls` flag is not enforced by every
+    jinja template (see ggml-org/llama.cpp#22043), so when the caller
+    opted out we must cap tool_calls to the first entry before the
+    agentic loop executes them. The cap is a single-line slice in
+    `generate_chat_completion_with_tools`; pin the contract."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
+    text = src.read_text()
+    assert "if parallel_tool_calls is False and tool_calls" in text, (
+        "GGUF tool loop must enforce parallel_tool_calls=False by "
+        "truncating tool_calls before assistant_msg is built; that "
+        "is the client-side guarantee llama-server's flag does not "
+        "give us. See routes/inference.py and chat-adapter.ts for "
+        "the wire-side forwarding of the same flag."
+    )
+    assert "tool_calls = tool_calls[:1]" in text
+
+
 def test_local_anthropic_passthrough_helpers_accept_parallel_tool_calls():
     """The Anthropic-compat client-tool passthrough helpers
     (`_anthropic_passthrough_stream` /

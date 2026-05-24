@@ -5015,6 +5015,15 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
+                # When the caller opted out of parallel tool calls
+                # (parallel_tool_calls=False), enforce at most one call
+                # per assistant turn even if llama-server emitted more.
+                # llama.cpp's parallel_tool_calls flag isn't enforced by
+                # every jinja template (see ggml-org/llama.cpp#22043),
+                # so this client-side cap is the only guarantee.
+                if parallel_tool_calls is False and tool_calls:
+                    tool_calls = tool_calls[:1]
+
                 assistant_msg = {"role": "assistant", "content": content_text}
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
