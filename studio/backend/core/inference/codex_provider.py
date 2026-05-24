@@ -104,9 +104,7 @@ def _open_async_codex(async_codex_cls: Any) -> Any:
     applies.
     """
     try:
-        sdk_mod = sys.modules.get("openai_codex") or sys.modules.get(
-            "codex_app_server"
-        )
+        sdk_mod = sys.modules.get("openai_codex") or sys.modules.get("codex_app_server")
         if sdk_mod is not None:
             app_server_config = getattr(sdk_mod, "AppServerConfig", None)
             if app_server_config is not None:

@@ -829,10 +829,9 @@ class TestCodexHardenedRegressions:
         )
         # Either the kwargs carried the system prompt or it was
         # prepended to the synthesis prompt as a fallback.
-        system_seen = (
-            any("Spanish" in (kw.get("system") or "") for kw in seen_kwargs)
-            or any("Always answer in Spanish" in p for p in seen_prompts)
-        )
+        system_seen = any(
+            "Spanish" in (kw.get("system") or "") for kw in seen_kwargs
+        ) or any("Always answer in Spanish" in p for p in seen_prompts)
         assert system_seen, (
             f"system prompt dropped in synthesis. kwargs={seen_kwargs} "
             f"prompts={seen_prompts}"
@@ -852,11 +851,11 @@ class TestCodexHardenedRegressions:
         seen_configs: list[Any] = []
 
         class _FakeAppServerConfig:
-            def __init__(self, env=None, **kw):
+            def __init__(self, env = None, **kw):
                 self.env = env or {}
 
         class _Async:
-            def __init__(self, config=None):
+            def __init__(self, config = None):
                 seen_configs.append(config)
 
             async def __aenter__(self):
@@ -866,7 +865,7 @@ class TestCodexHardenedRegressions:
                 return False
 
             async def thread_start(self, **kw):
-                return _FakeThread(chunks=["ok"])
+                return _FakeThread(chunks = ["ok"])
 
         # Inject a fake openai_codex module exposing AppServerConfig.
         import importlib.util as _iu
@@ -891,18 +890,18 @@ class TestCodexHardenedRegressions:
         asyncio.run(
             _consume_first(
                 stream_codex(
-                    messages=[{"role": "user", "content": "hi"}],
-                    model="gpt-5.5",
-                    parallel_calls=1,
+                    messages = [{"role": "user", "content": "hi"}],
+                    model = "gpt-5.5",
+                    parallel_calls = 1,
                 )
             )
         )
         assert seen_configs, "AsyncCodex was never instantiated"
         cfg = seen_configs[0]
         assert cfg is not None, "AppServerConfig was not passed to AsyncCodex"
-        assert "HF_TOKEN" in cfg.env and cfg.env["HF_TOKEN"] == "", (
-            "HF_TOKEN not overridden to empty in SDK env"
-        )
+        assert (
+            "HF_TOKEN" in cfg.env and cfg.env["HF_TOKEN"] == ""
+        ), "HF_TOKEN not overridden to empty in SDK env"
         assert "GH_TOKEN" in cfg.env and cfg.env["GH_TOKEN"] == ""
         # Safe-listed keys must NOT appear in the override dict (so the
         # SDK keeps their os.environ values intact).
