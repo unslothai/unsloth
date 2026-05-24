@@ -313,12 +313,16 @@ COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 # extra ~400 MB would be dead weight.
 RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         set -eux; \
-        # SBSA = Server Base System Architecture; the NVIDIA repo path for
-        # Grace / GH200 / GB200 / DGX Spark aarch64 hosts.
-        curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb" \
-             -o /tmp/cuda-keyring.deb; \
-        dpkg -i /tmp/cuda-keyring.deb; \
-        rm /tmp/cuda-keyring.deb; \
+        # The nvidia/cuda base already configures the CUDA apt repo
+        # (sbsa for arm64) with its own Signed-By keyring at
+        # /usr/share/keyrings/cuda-archive-keyring.gpg. Installing
+        # cuda-keyring_1.1-1_all.deb on top adds a second sources file
+        # with a different Signed-By, which makes `apt-get update` refuse
+        # the entire repo ("Conflicting values set for option Signed-By").
+        # The base's repo URL is monolithic and serves every CUDA version
+        # including 13.x, so we install cu13 packages directly without
+        # touching the keyring at all. Empirically verified on the
+        # ubuntu-24.04-arm GitHub Actions runner.
         apt-get update; \
         apt-get install -y --no-install-recommends \
             cuda-nvrtc-13-0 \
