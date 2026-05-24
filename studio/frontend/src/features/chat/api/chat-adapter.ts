@@ -360,6 +360,30 @@ function collectAssistantToolCalls(
       argsText?: string;
       extra_content?: unknown;
     };
+    const toolNameLower = (tc.toolName ?? "").toLowerCase();
+    const argsObj =
+      tc.args && typeof tc.args === "object"
+        ? (tc.args as Record<string, unknown>)
+        : null;
+    const argsGoogle =
+      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+        ? (argsObj.google as Record<string, unknown>)
+        : null;
+    // Server-side builtins are not user-declared functions. web_search
+    // grounding is represented by assistant text + grounding metadata
+    // and never round-trips as a tool call. code_execution and
+    // image_generation only round-trip when we have the native Gemini
+    // part (executableCode / codeExecutionResult / inlineData) the
+    // backend replay path needs; otherwise drop them so we don't send
+    // a fake functionCall the provider has no declaration for.
+    if (SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
+      if (toolNameLower === "web_search") continue;
+      const hasNativePart =
+        argsGoogle &&
+        typeof argsGoogle.native_part === "object" &&
+        argsGoogle.native_part !== null;
+      if (!hasNativePart) continue;
+    }
     const argumentsStr =
       typeof tc.argsText === "string" && tc.argsText.length > 0
         ? tc.argsText
@@ -377,8 +401,13 @@ function collectAssistantToolCalls(
         arguments: argumentsStr,
       },
     };
+    // Promote args.google to extra_content.google so the backend
+    // native_part replay branch can find it. The backend only inspects
+    // extra_content, not function.arguments.
     if (tc.extra_content !== undefined) {
       entry.extra_content = tc.extra_content;
+    } else if (argsGoogle) {
+      entry.extra_content = { google: argsGoogle };
     }
     out.push(entry);
   }

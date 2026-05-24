@@ -1778,6 +1778,89 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     ]
     assert image_ends, tool_events
     assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
+    # Multi-turn image edit must replay the original inlineData part with
+    # its thoughtSignature; the outbound translator reads
+    # google.native_part.inlineData, so stow it on the tool_end too.
+    native = image_ends[0]["google"]["native_part"]
+    assert native["inlineData"]["mimeType"] == "image/png"
+    assert native["inlineData"]["data"] == base64.b64encode(b"PNG").decode()
+    assert native["thoughtSignature"] == "SIG-IMG"
+
+
+def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
+    """A code_execution turn that returns a matplotlib plot must stow
+    the plot's inlineData on the secondary tool_end so the follow-up
+    turn can replay the image alongside executableCode and
+    codeExecutionResult."""
+    plot_data = base64.b64encode(b"PLOT").decode()
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "executableCode": {
+                                    "id": "code_a",
+                                    "language": "PYTHON",
+                                    "code": "plt.plot([0,1])",
+                                },
+                            },
+                            {
+                                "codeExecutionResult": {
+                                    "id": "result_a",
+                                    "outcome": "OUTCOME_OK",
+                                    "output": "",
+                                },
+                            },
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": plot_data,
+                                },
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 4,
+            },
+        }
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        enabled_tools = ["code_execution"],
+    )
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    code_ends = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and e.get("tool_call_id") == "code_a"
+    ]
+    # Two tool_end events on the same id: one for codeExecutionResult,
+    # one merging in the inlineData plot. The plot one must carry the
+    # native inlineData under google.native_part so the frontend
+    # tool_end merge union joins it with the prior executableCode and
+    # codeExecutionResult parts on the same card.
+    assert len(code_ends) == 2, code_ends
+    image_end = next(
+        (
+            e
+            for e in code_ends
+            if "__IMAGES__:" in (e.get("result") or "")
+        ),
+        None,
+    )
+    assert image_end is not None, code_ends
+    native = image_end["google"]["native_part"]
+    assert native["inlineData"]["mimeType"] == "image/png"
+    assert native["inlineData"]["data"] == plot_data
 
 
 def test_text_chunk_carries_thought_signature(monkeypatch):
@@ -1995,6 +2078,61 @@ def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
     ), parts
     exec_part = next(p for p in parts if "executableCode" in p)
     assert exec_part.get("thoughtSignature") == "SIG-CODE", exec_part
+
+
+def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
+    """An assistant tool_call with toolName=image_generation and
+    extra_content.google.native_part.inlineData must replay the prior
+    image as a native Gemini inlineData part (not a generic
+    functionCall) so multi-turn image editing keeps the image
+    context."""
+    pixel = base64.b64encode(b"PNG").decode()
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        messages = [
+            {"role": "user", "content": "make a circle"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "img_a",
+                        "type": "function",
+                        "function": {
+                            "name": "image_generation",
+                            "arguments": "{}",
+                        },
+                        "extra_content": {
+                            "google": {
+                                "native_part": {
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": pixel,
+                                    },
+                                    "thoughtSignature": "SIG-IMG",
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+            {"role": "user", "content": "now make it blue"},
+        ],
+    )
+    assistant_turn = captured["body"]["contents"][1]
+    assert assistant_turn["role"] == "model"
+    parts = assistant_turn["parts"]
+    inline_parts = [p for p in parts if "inlineData" in p]
+    assert inline_parts, parts
+    assert inline_parts[0]["inlineData"]["mimeType"] == "image/png"
+    assert inline_parts[0]["inlineData"]["data"] == pixel
+    assert inline_parts[0].get("thoughtSignature") == "SIG-IMG", inline_parts
+    assert not any(
+        "functionCall" in p
+        and (p["functionCall"] or {}).get("name") == "image_generation"
+        for p in parts
+    ), parts
 
 
 def test_image_models_drop_function_declarations(monkeypatch):

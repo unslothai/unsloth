@@ -3639,6 +3639,15 @@ class ExternalProviderClient:
                                                     + "\n__IMAGES__:"
                                                     + _json.dumps([image_uri])
                                                 )
+                                                # Stow the inlineData native
+                                                # part too so a follow-up turn
+                                                # can replay the plot image
+                                                # alongside the executableCode
+                                                # and codeExecutionResult; the
+                                                # frontend tool_end merge
+                                                # union joins it into the
+                                                # existing code-exec card's
+                                                # native_part.
                                                 yield _emit_tool_event(
                                                     {
                                                         "type": "tool_end",
@@ -3646,6 +3655,14 @@ class ExternalProviderClient:
                                                             last_code_exec_tool_id
                                                         ),
                                                         "result": updated_result,
+                                                        "google": {
+                                                            "native_part": {
+                                                                "inlineData": {
+                                                                    "mimeType": mime,
+                                                                    "data": b64,
+                                                                },
+                                                            },
+                                                        },
                                                     }
                                                 )
                                                 last_code_exec_result_text = (
@@ -3685,15 +3702,33 @@ class ExternalProviderClient:
                                                     "image_b64": b64,
                                                     "image_mime": mime,
                                                 }
+                                                # Stow the native inlineData
+                                                # part so multi-turn image
+                                                # editing replays the original
+                                                # model image (plus thought
+                                                # signature on Gemini 3) as
+                                                # native Gemini history rather
+                                                # than a generic functionCall.
+                                                _img_native: dict[str, Any] = {
+                                                    "inlineData": {
+                                                        "mimeType": mime,
+                                                        "data": b64,
+                                                    },
+                                                }
+                                                _img_google: dict[str, Any] = {
+                                                    "native_part": _img_native,
+                                                }
                                                 if (
                                                     isinstance(_img_thought_sig, str)
                                                     and _img_thought_sig
                                                 ):
-                                                    _img_tool_end["google"] = {
-                                                        "thought_signature": (
-                                                            _img_thought_sig
-                                                        ),
-                                                    }
+                                                    _img_native["thoughtSignature"] = (
+                                                        _img_thought_sig
+                                                    )
+                                                    _img_google["thought_signature"] = (
+                                                        _img_thought_sig
+                                                    )
+                                                _img_tool_end["google"] = _img_google
                                                 yield _emit_tool_event(_img_tool_end)
                             finish_reason = cand.get("finishReason")
                             if isinstance(finish_reason, str):
