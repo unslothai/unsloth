@@ -3491,7 +3491,9 @@ async def openai_completions(
             resp = None
             bytes_iter = None
             try:
-                req = client.build_request("POST", target_url, json = body, headers = {"Connection": "close"})
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                )
                 resp = await client.send(req, stream = True)
                 bytes_iter = resp.aiter_bytes()
                 async for chunk in bytes_iter:
@@ -4045,7 +4047,9 @@ async def _responses_stream(
         resp = None
         lines_iter = None
         try:
-            req = client.build_request("POST", target_url, json = body, headers = {"Connection": "close"})
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
             try:
                 resp = await client.send(req, stream = True)
             except httpx.RequestError as e:
@@ -5048,7 +5052,9 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            req = client.build_request("POST", target_url, json = body, headers = {"Connection": "close"})
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
             resp = await client.send(req, stream = True)
 
             # See _openai_passthrough_stream for rationale: aiter_lines()
@@ -5423,7 +5429,9 @@ async def _openai_passthrough_stream(
         )
         resp = None
         try:
-            req = client.build_request("POST", target_url, json = body, headers = {"Connection": "close"})
+            req = client.build_request(
+                "POST", target_url, json = body, headers = {"Connection": "close"}
+            )
             resp = await client.send(req, stream = True)
         except httpx.RequestError as e:
             # llama-server subprocess crashed / still starting / unreachable.

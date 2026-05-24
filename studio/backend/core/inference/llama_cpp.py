@@ -2984,9 +2984,7 @@ class LlamaCppBackend:
                     _t = 2
                 else:
                     _t = n_threads if n_threads is not None else -1
-                cmd.extend(
-                    ["--threads", str(_t)]
-                )
+                cmd.extend(["--threads", str(_t)])
 
                 # Always enable Jinja chat template rendering for proper template support
                 cmd.extend(["--jinja"])
@@ -3128,10 +3126,13 @@ class LlamaCppBackend:
                 if sys.platform == "win32":
                     cmd.extend(
                         [
-                            "--cache-ram", "0",
-                            "--ctx-checkpoints", "0",
+                            "--cache-ram",
+                            "0",
+                            "--ctx-checkpoints",
+                            "0",
                             "--no-cache-prompt",
-                            "--checkpoint-every-n-tokens", "-1",
+                            "--checkpoint-every-n-tokens",
+                            "-1",
                         ]
                     )
 
