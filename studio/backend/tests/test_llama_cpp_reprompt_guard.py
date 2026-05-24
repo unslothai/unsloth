@@ -931,6 +931,49 @@ def test_reprompts_on_incomplete_html_with_inner_numbered_list():
         assert _would_reprompt(content), content
 
 
+def test_reprompts_when_complete_html_is_followed_by_open_html():
+    """A response with one closed <html> followed by a second <html>
+    that is still open must re-prompt. The unbalanced-tag count makes
+    the artifact path fail even though an earlier artifact exists."""
+    samples = [
+        "Here is the first page:\n<html><body>1</body></html>\nNow the next:\n<html><body>",
+        "First page done:\n<svg width='10'><circle/></svg>\nNow:\n<svg width='10'>",
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_reprompts_on_empty_html_or_svg_skeleton_mention():
+    """``<html></html>`` / ``<svg></svg>`` with no body content is a
+    plan-only mention, not a substantive answer."""
+    samples = [
+        "First, I'll create an <html></html> skeleton, then add CSS.",
+        "First, I'll draft a <svg></svg> icon, then add shapes.",
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_reprompts_on_intent_plus_numbered_action_items():
+    """``First, I'll:\\n1. Load CSV\\n2. Compute total`` is a plan stall:
+    the work verbs are in the list ITEMS even though no work verb
+    appears between the intent phrase and the list. Verbs are taken
+    from the narrow _LOCAL_ACTION_VERBS set (load, parse, calculate,
+    compute, analyze, run, execute, fetch, download, query, inspect,
+    extract). Bare ``read`` / ``search`` / ``check`` are NOT in the
+    set because they appear in non-plan answers too."""
+    samples = [
+        "First, I'll:\n1. Load the uploaded CSV.\n2. Compute the total revenue.",
+        "Let me:\n1. Parse the JSON.\n2. Calculate the average.",
+        "Now I:\n1. Inspect the file.\n2. Analyze the rows.",
+        "I'll:\n1. Fetch the latest data.\n2. Compute the totals.",
+    ]
+    for content in samples:
+        assert _would_reprompt(content), content
+
+
 def test_reprompts_on_numbered_compare_or_review_lookup_plan():
     """Freshness-gated ``compare`` / ``review`` lookups read as tool
     plans and STILL re-prompt as numbered plans."""

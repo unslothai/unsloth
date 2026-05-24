@@ -232,19 +232,67 @@ def _has_unclosed_code_fence(text: str) -> bool:
 def _has_unclosed_markup_block(text: str) -> bool:
     """True if ``text`` opens an <html>/<svg> block without closing it.
 
-    `_HAS_ANSWER_ARTIFACT` already requires a matching `</html>` /
-    `</svg>` for the artifact branch. This helper exists to disqualify
-    the numbered-list fallback when partial markup is present: a list
-    inside an unfinished `<html>...` body must not look like a final
-    answer.
+    Either a missing close on the only block, OR a closed block followed
+    by a still-open block, qualifies. The check is unbalanced-count
+    based so half-finished output ALWAYS disqualifies the artifact path,
+    even when an earlier complete artifact is also present in the same
+    response.
     """
-    return bool(
-        re.search(r"<html\b", text, re.IGNORECASE)
-        and not re.search(r"</html>", text, re.IGNORECASE)
-    ) or bool(
-        re.search(r"<svg\b", text, re.IGNORECASE)
-        and not re.search(r"</svg>", text, re.IGNORECASE)
-    )
+    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
+    closes_html = len(re.findall(r"</html>", text, re.IGNORECASE))
+    if opens_html > closes_html:
+        return True
+    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
+    closes_svg = len(re.findall(r"</svg>", text, re.IGNORECASE))
+    return opens_svg > closes_svg
+
+
+# Matches the full span of an empty <html></html> or <svg></svg>
+# skeleton. Plan-only mentions ("First, I'll create an <html></html>
+# skeleton") would otherwise look like a complete page.
+_EMPTY_MARKUP_SKELETON = re.compile(
+    r"<(html|svg)\b[^>]*>\s*</\1>",
+    re.IGNORECASE,
+)
+
+
+# A numbered list whose item lines start with a strong work / tool
+# verb. Combined with first-person intent framing this catches stalls
+# like "First, I'll:\n1. Load the CSV\n2. Compute the total" where the
+# verbs sit in the list items rather than before the list. The verb
+# list deliberately excludes ``search`` / ``look up`` / ``read`` /
+# ``open`` / ``create`` / ``build`` etc. so ordinary algorithm or
+# instructional answers ("1. Search the left half", "1. Read the
+# docs") stay valid answers.
+_LOCAL_ACTION_VERBS = (
+    r"load|inspect|parse|"
+    r"calculate|compute|analy[sz]e|extract|"
+    r"run|execute|fetch|download|query"
+)
+_NUMBERED_ACTION_ITEM = re.compile(
+    rf"(?:^|\r?\n)[ \t]*\d+\.[ \t]+(?:{_LOCAL_ACTION_VERBS})\b",
+    re.IGNORECASE,
+)
+# Direct first-person pronoun intent only. "First," and "Step N:" are
+# intentionally excluded here because they appear in non-plan answers
+# ("First, use binary search:") and would over-trigger the items-in-
+# numbered-list cross-check.
+_STRONG_INTENT_BEFORE_LIST = re.compile(
+    r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
+    r"i will|i shall|let me|allow me|now i|next i)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_real_artifact(text: str) -> bool:
+    """Match _HAS_ANSWER_ARTIFACT but reject empty markup skeletons."""
+    m = _HAS_ANSWER_ARTIFACT.search(text)
+    if not m:
+        return False
+    matched = m.group(0).strip()
+    if _EMPTY_MARKUP_SKELETON.fullmatch(matched):
+        return False
+    return True
 
 
 def _has_answer_artifact(text: str) -> bool:
@@ -256,21 +304,31 @@ def _has_answer_artifact(text: str) -> bool:
     An explicit ``Here's my plan`` / ``Here's my approach`` header, or a
     direct first-person ``I'll do this:\\n1. ...`` framing with a
     work/tool verb before the list, also flags the list as a plan even
-    when no narrow tool-action verb appears in the items. An unclosed
-    fence or unclosed `<html>` / `<svg>` block anywhere in the response
-    disqualifies the answer-artifact path so half-finished output does
-    not look like a final answer.
+    when no narrow tool-action verb appears in the items. Any unclosed
+    fence or unclosed `<html>` / `<svg>` block disqualifies the
+    artifact path so half-finished output does not look like a final
+    answer, even when an earlier complete artifact is also present.
+    Empty `<html></html>` / `<svg></svg>` skeletons do not count.
     """
     if _has_unclosed_code_fence(text):
         return False
-    if _HAS_ANSWER_ARTIFACT.search(text):
-        return True
     if _has_unclosed_markup_block(text):
         return False
+    if _looks_like_real_artifact(text):
+        return True
     if _NUMBERED_LIST_ARTIFACT.search(text):
         if _EXPLICIT_PLAN_HEADER.search(text):
             return False
         if _DIRECT_NUMBERED_PLAN_FRAMING.search(text):
+            return False
+        # First-person pronoun intent + numbered list where the items
+        # themselves start with a strong work verb ("First, I'll:\n
+        # 1. Load...\n2. Run...") is a plan stall, even when no work
+        # verb appears before the list.
+        if (
+            _STRONG_INTENT_BEFORE_LIST.search(text)
+            and _NUMBERED_ACTION_ITEM.search(text)
+        ):
             return False
         return _PLAN_LIST_FRAMING.search(text) is None
     return False
