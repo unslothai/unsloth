@@ -426,7 +426,12 @@ def _strict_sandbox_required() -> bool:
     without bwrap) keep working. Operators who care about the security
     boundary set UNSLOTH_STUDIO_SANDBOX_STRICT=1.
     """
-    return os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip() in ("1", "true", "True", "yes")
+    return os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip() in (
+        "1",
+        "true",
+        "True",
+        "yes",
+    )
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -1951,7 +1956,11 @@ def _python_exec(
 
         inner_argv = [sys.executable, tmp_path]
         sandboxed = sandbox_available()
-        if not sandboxed and _strict_sandbox_required() and sys.platform in ("darwin", "linux"):
+        if (
+            not sandboxed
+            and _strict_sandbox_required()
+            and sys.platform in ("darwin", "linux")
+        ):
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)
@@ -2054,7 +2063,11 @@ def _bash_exec(
 
         inner_argv = _get_shell_cmd(command)
         sandboxed = sandbox_available()
-        if not sandboxed and _strict_sandbox_required() and sys.platform in ("darwin", "linux"):
+        if (
+            not sandboxed
+            and _strict_sandbox_required()
+            and sys.platform in ("darwin", "linux")
+        ):
             return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)

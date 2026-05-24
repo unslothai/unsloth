@@ -382,11 +382,11 @@ def test_strict_mode_refuses_when_sandbox_unavailable(tmp_path, monkeypatch):
     sid = "_strict_refuse"
     monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
 
-    py_out = tools._python_exec("print('would have leaked')", session_id=sid)
+    py_out = tools._python_exec("print('would have leaked')", session_id = sid)
     assert "Execution blocked" in py_out, py_out
     assert "UNSLOTH_STUDIO_SANDBOX_STRICT" in py_out, py_out
 
-    bash_out = tools._bash_exec("echo would have leaked", session_id=sid)
+    bash_out = tools._bash_exec("echo would have leaked", session_id = sid)
     assert "Execution blocked" in bash_out, bash_out
     assert "would have leaked" not in bash_out, bash_out
 
@@ -395,11 +395,11 @@ def test_strict_mode_off_falls_back_unsandboxed(tmp_path, monkeypatch):
     from core.inference import tools
 
     monkeypatch.setattr(tools, "sandbox_available", lambda: False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_STRICT", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_STRICT", raising = False)
     sid = "_strict_off"
     monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
 
-    out = tools._python_exec("print('hello-unsandboxed')", session_id=sid)
+    out = tools._python_exec("print('hello-unsandboxed')", session_id = sid)
     assert "hello-unsandboxed" in out, out
 
 
@@ -410,7 +410,7 @@ def test_strict_mode_off_falls_back_unsandboxed(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix-only")
+@pytest.mark.skipif(sys.platform == "win32", reason = "Unix-only")
 def test_get_shell_cmd_uses_absolute_bin_bash():
     from core.inference import tools
 
@@ -425,7 +425,7 @@ def test_get_shell_cmd_uses_absolute_bin_bash():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS-only")
+@pytest.mark.skipif(sys.platform != "darwin", reason = "Seatbelt is macOS-only")
 def test_macos_profile_allows_workdir_exec(tmp_path):
     sandbox = _load_sandbox_module()
     # _macos_seatbelt_profile realpaths the workdir before embedding it,
@@ -464,7 +464,7 @@ def test_sandbox_available_concurrent_calls_consistent(monkeypatch):
         barrier.wait()
         results.append(sandbox.sandbox_available())
 
-    threads = [threading.Thread(target=worker) for _ in range(8)]
+    threads = [threading.Thread(target = worker) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
