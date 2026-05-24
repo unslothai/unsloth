@@ -296,9 +296,7 @@ class TestKeepRecentZero:
             _long("assistant", 4000),
             _long("user", 4000),
         ]
-        out = SlidingWindowCompact(keep_recent = 0).compact(
-            msgs, budget_tokens = 50
-        )
+        out = SlidingWindowCompact(keep_recent = 0).compact(msgs, budget_tokens = 50)
         roles = [m["role"] for m in out]
         # System + first-user only.
         assert roles == ["system", "user"]
@@ -349,9 +347,7 @@ class TestAnchoredMultimodalPairCleanup:
             _long("assistant", 4000),
             _long("user", 4000),
         ]
-        out = SlidingWindowCompact(keep_recent = 1).compact(
-            msgs, budget_tokens = 50
-        )
+        out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 50)
         # Anchored multimodal assistant must still be there.
         assert any(
             m.get("role") == "assistant" and isinstance(m.get("content"), list)
