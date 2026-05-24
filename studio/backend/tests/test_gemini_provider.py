@@ -1647,6 +1647,77 @@ def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
     assert "allowedFunctionNames" not in fcc
 
 
+def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
+    """A codeExecution sandbox plot (matplotlib) ships as an inline
+    image part right after the codeExecutionResult. Instead of spawning
+    a separate empty image_generation card, attach to the same
+    code_execution tool_end via the `__IMAGES__:` marker the chat
+    adapter already understands."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "executableCode": {
+                                    "id": "code_plot",
+                                    "language": "PYTHON",
+                                    "code": "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.savefig('out.png')",
+                                },
+                            },
+                            {
+                                "codeExecutionResult": {
+                                    "outcome": "OUTCOME_OK",
+                                    "output": "saved",
+                                },
+                            },
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": base64.b64encode(b"PNGDATA").decode(),
+                                },
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 4,
+            },
+        }
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        enabled_tools = ["code_execution"],
+    )
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    # No standalone image_generation card should have been emitted.
+    image_starts = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_start"
+        and e.get("tool_name") == "image_generation"
+    ]
+    assert not image_starts, tool_events
+    # The code_execution tool_end should now carry the inline image
+    # via the `__IMAGES__:` marker.
+    code_ends = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and e.get("tool_call_id") == "code_plot"
+    ]
+    assert code_ends, tool_events
+    final_result = code_ends[-1]["result"]
+    assert "__IMAGES__:" in final_result, code_ends
+    assert "data:image/png;base64," in final_result, code_ends
+
+
 def test_image_models_drop_function_declarations(monkeypatch):
     """Image-mode requests cannot mix tools with responseModalities so
     user-supplied function declarations must be dropped."""

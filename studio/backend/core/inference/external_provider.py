@@ -3132,6 +3132,13 @@ class ExternalProviderClient:
         # executableCode part so the matching codeExecutionResult can
         # close out the same envelope. None between rounds.
         gemini_code_exec_pending_id: Optional[str] = None
+        # The most recently emitted code_execution id + result text. Kept
+        # *after* the tool_end so a following inline image (matplotlib
+        # plot rendered by codeExecution) can attach to the same card
+        # via a `__IMAGES__:` marker instead of spawning a separate
+        # image_generation event.
+        last_code_exec_tool_id: Optional[str] = None
+        last_code_exec_result_text: str = ""
 
         try:
             async with _http_client.stream(
@@ -3480,57 +3487,110 @@ class ExternalProviderClient:
                                                 },
                                             }
                                         )
+                                        last_code_exec_tool_id = pair_id
+                                        last_code_exec_result_text = result_text
                                         gemini_code_exec_pending_id = None
-                                    # inlineData -> Nano Banana image
-                                    # output. Same tool_start/tool_end
-                                    # envelope as the OpenAI image
-                                    # generation path so the existing
-                                    # chat-adapter renderer just works.
+                                    # inlineData -> image bytes. Two
+                                    # paths:
+                                    #  (a) On a Nano Banana / image
+                                    #      picker turn this is the
+                                    #      generated image; emit the
+                                    #      standard image_generation
+                                    #      tool envelope.
+                                    #  (b) On a text turn that wired
+                                    #      codeExecution, this is the
+                                    #      sandbox's matplotlib output
+                                    #      shipped alongside the result.
+                                    #      Attach to the SAME
+                                    #      code_execution card via the
+                                    #      `__IMAGES__:` marker the
+                                    #      chat-adapter understands so
+                                    #      the UI shows one combined
+                                    #      tool event instead of a
+                                    #      bonus empty image_generation
+                                    #      card.
                                     inline = part.get("inlineData")
                                     if isinstance(inline, dict):
                                         b64 = inline.get("data") or ""
                                         mime = inline.get("mimeType") or "image/png"
                                         if b64:
-                                            img_id = f"img_{time.time_ns()}"
-                                            yield _emit_tool_event(
-                                                {
-                                                    "type": "tool_start",
-                                                    "tool_name": "image_generation",
-                                                    "tool_call_id": img_id,
-                                                    "arguments": {
-                                                        "kind": "image",
-                                                        "prompt": "",
-                                                    },
-                                                }
+                                            image_uri = f"data:{mime};base64,{b64}"
+                                            attached_to_code_exec = (
+                                                not is_image_model
+                                                and last_code_exec_tool_id is not None
+                                                and bool(enabled_tools)
+                                                and "code_execution" in (
+                                                    enabled_tools or []
+                                                )
                                             )
-                                            # Gemini 3 image editing
-                                            # requires the prior turn's
-                                            # `thoughtSignature` to be
-                                            # echoed back on the inline
-                                            # image part of the user
-                                            # message; persist it on the
-                                            # tool_end so the frontend
-                                            # can replay it.
-                                            _img_thought_sig = part.get(
-                                                "thoughtSignature"
-                                            ) or part.get("thought_signature")
-                                            _img_tool_end: dict[str, Any] = {
-                                                "type": "tool_end",
-                                                "tool_call_id": img_id,
-                                                "result": "",
-                                                "image_b64": b64,
-                                                "image_mime": mime,
-                                            }
-                                            if (
-                                                isinstance(_img_thought_sig, str)
-                                                and _img_thought_sig
-                                            ):
-                                                _img_tool_end["google"] = {
-                                                    "thought_signature": (
-                                                        _img_thought_sig
-                                                    ),
+                                            if attached_to_code_exec:
+                                                updated_result = (
+                                                    last_code_exec_result_text
+                                                    + "\n__IMAGES__:"
+                                                    + _json.dumps([image_uri])
+                                                )
+                                                yield _emit_tool_event(
+                                                    {
+                                                        "type": "tool_end",
+                                                        "tool_call_id": (
+                                                            last_code_exec_tool_id
+                                                        ),
+                                                        "result": updated_result,
+                                                    }
+                                                )
+                                                last_code_exec_result_text = (
+                                                    updated_result
+                                                )
+                                            else:
+                                                img_id = f"img_{time.time_ns()}"
+                                                yield _emit_tool_event(
+                                                    {
+                                                        "type": "tool_start",
+                                                        "tool_name": "image_generation",
+                                                        "tool_call_id": img_id,
+                                                        "arguments": {
+                                                            "kind": "image",
+                                                            "prompt": "",
+                                                        },
+                                                    }
+                                                )
+                                                # Gemini 3 image editing
+                                                # requires the prior
+                                                # turn's
+                                                # `thoughtSignature` to
+                                                # be echoed back on the
+                                                # inline image part of
+                                                # the user message;
+                                                # persist it on the
+                                                # tool_end so the
+                                                # frontend can replay
+                                                # it.
+                                                _img_thought_sig = part.get(
+                                                    "thoughtSignature"
+                                                ) or part.get(
+                                                    "thought_signature"
+                                                )
+                                                _img_tool_end: dict[str, Any] = {
+                                                    "type": "tool_end",
+                                                    "tool_call_id": img_id,
+                                                    "result": "",
+                                                    "image_b64": b64,
+                                                    "image_mime": mime,
                                                 }
-                                            yield _emit_tool_event(_img_tool_end)
+                                                if (
+                                                    isinstance(
+                                                        _img_thought_sig, str
+                                                    )
+                                                    and _img_thought_sig
+                                                ):
+                                                    _img_tool_end["google"] = {
+                                                        "thought_signature": (
+                                                            _img_thought_sig
+                                                        ),
+                                                    }
+                                                yield _emit_tool_event(
+                                                    _img_tool_end
+                                                )
                             finish_reason = cand.get("finishReason")
                             if isinstance(finish_reason, str):
                                 mapped = _finish_reason_map.get(finish_reason, "stop")
