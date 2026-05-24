@@ -357,11 +357,19 @@ def _has_answer_artifact(text: str) -> bool:
     # disqualify the artifact path.
     text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
     text_without_closed_markup = _CLOSED_MARKUP_ARTIFACT.sub("", text)
+    text_without_both = _CLOSED_MARKUP_ARTIFACT.sub("", text_without_closed_fences)
     if _has_unclosed_code_fence(text_without_closed_markup):
         return False
-    if _has_unclosed_markup_block(text_without_closed_fences):
+    # When NO complete artifact has been emitted yet, count-based markup
+    # detection is reliable for spotting mid-stream output. Once a real
+    # artifact already exists, prose mentions of bare ``<html>`` /
+    # ``<svg>`` tags in explanations are common (and would falsely
+    # unbalance the open/close count), so we rely on the closed-artifact
+    # path instead and skip the count check.
+    real_artifact = _looks_like_real_artifact(text)
+    if not real_artifact and _has_unclosed_markup_block(text_without_both):
         return False
-    if _looks_like_real_artifact(text):
+    if real_artifact:
         return True
     if _NUMBERED_LIST_ARTIFACT.search(text):
         if _EXPLICIT_PLAN_HEADER.search(text):

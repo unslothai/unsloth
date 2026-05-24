@@ -931,17 +931,18 @@ def test_reprompts_on_incomplete_html_with_inner_numbered_list():
         assert _would_reprompt(content), content
 
 
-def test_reprompts_when_complete_html_is_followed_by_open_html():
-    """A response with one closed <html> followed by a second <html>
-    that is still open must re-prompt. The unbalanced-tag count makes
-    the artifact path fail even though an earlier artifact exists."""
+def test_complete_html_with_trailing_prose_tag_still_counts():
+    """A complete <html> answer followed by prose that mentions <html>
+    or <svg> tags (explanatory text) stays a complete artifact. The
+    unbalanced-tag count is skipped once a real artifact exists so
+    common explanatory prose does not falsely wipe valid answers."""
     samples = [
-        "Here is the first page:\n<html><body>1</body></html>\nNow the next:\n<html><body>",
-        "First page done:\n<svg width='10'><circle/></svg>\nNow:\n<svg width='10'>",
+        "Here is the page:\n<html><body>1</body></html>\nUse the <html> tag for the root.",
+        "Here is the SVG: <svg width='10'><circle/></svg> Place it inside an <html> page.",
     ]
     for content in samples:
-        assert not _has_answer_artifact(content), content
-        assert _would_reprompt(content), content
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
 
 
 def test_reprompts_on_empty_html_or_svg_skeleton_mention():
@@ -977,6 +978,34 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
             "const fragment = '<svg width=\"10\">';\n"
             "console.log(open, fragment);\n"
             "```"
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
+    """Complete <html> answers that contain nested SVG / self-closing
+    tags are still complete pages. The unbalanced-count cross-check is
+    skipped when a real artifact already exists."""
+    samples = [
+        "<html><body><svg width='10'/></body></html>",
+        "<html><body>" + "<script>const s = '<svg width=10>';</script>" + "</body></html>",
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_no_reprompt_on_complete_artifact_with_prose_tag_mention():
+    """Complete code/markup artifacts followed by ordinary prose that
+    mentions ``<html>`` or ``<svg>`` tags are not mid-stream output."""
+    samples = [
+        "<html><body>hi</body></html>\nUse the <html> tag as the root.",
+        (
+            "First, here is the SVG: <svg width='10'><circle/></svg>\n"
+            "Put it inside an <html> page if needed."
         ),
     ]
     for content in samples:
