@@ -5,6 +5,7 @@ import { create } from "zustand";
 import {
   clearThreadDocuments as apiClearThreadDocuments,
   createKnowledgeBase,
+  type CreateKnowledgeBaseRequest,
   deleteDocument as apiDeleteDocument,
   deleteKnowledgeBase as apiDeleteKB,
   type JobEvent,
@@ -36,7 +37,7 @@ interface RagStoreState {
   threadIndexesLoading: boolean;
 
   loadKnowledgeBases: () => Promise<void>;
-  createKB: (req: { name: string; description?: string; embedding_model?: string }) => Promise<KnowledgeBase>;
+  createKB: (req: CreateKnowledgeBaseRequest) => Promise<KnowledgeBase>;
   deleteKB: (kbId: string) => Promise<void>;
 
   loadKBDocuments: (kbId: string) => Promise<void>;

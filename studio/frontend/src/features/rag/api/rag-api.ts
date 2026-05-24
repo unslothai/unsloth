@@ -5,11 +5,16 @@ import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
+export type ChunkingStrategy = "standard" | "late";
+export type KBMode = "text" | "multimodal";
+
 export interface KnowledgeBase {
   id: string;
   name: string;
   description: string | null;
   embedding_model: string;
+  chunking_strategy: ChunkingStrategy;
+  mode: KBMode;
   created_at: number;
 }
 
@@ -92,11 +97,19 @@ export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return body.knowledge_bases;
 }
 
-export async function createKnowledgeBase(req: {
+export interface CreateKnowledgeBaseRequest {
   name: string;
   description?: string;
   embedding_model?: string;
-}): Promise<KnowledgeBase> {
+  // Phase 3: both default server-side to "standard" / "text" — clients
+  // that pre-date the field send the same payloads as before.
+  chunking_strategy?: ChunkingStrategy;
+  mode?: KBMode;
+}
+
+export async function createKnowledgeBase(
+  req: CreateKnowledgeBaseRequest,
+): Promise<KnowledgeBase> {
   const response = await authFetch("/api/rag/knowledge-bases", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

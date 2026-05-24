@@ -31,6 +31,32 @@ RAG_EMBEDDING_MODEL: str = (
     or "BAAI/bge-small-en-v1.5"
 )
 
+# Phase 3: default embedders per (mode, chunking_strategy). Ingestion in
+# Phase 3B-late and Phase 3B-multimodal looks the embedder up here at job
+# start, falling back to RAG_EMBEDDING_MODEL (above) for legacy KBs that
+# pre-date the columns. The (multimodal, late) combo is intentionally
+# absent — no public open-weight embedder supports both at once, and
+# routes/rag.py rejects the combo with a 400 at KB create time.
+RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
+    ("text", "standard"): "BAAI/bge-small-en-v1.5",
+    ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",
+    ("multimodal", "standard"): "BAAI/BGE-VL-base",
+}
+
+
+def resolve_embedder(mode: str, chunking_strategy: str) -> str:
+    """Look up the default embedder for a (mode, chunking_strategy) pair.
+
+    Unknown combos fall back to the legacy single default so old KBs
+    keep working. Callers that explicitly require the new matrix
+    behaviour (Phase 3B paths) should validate the inputs before
+    calling.
+    """
+    return RAG_EMBEDDER_MATRIX.get(
+        (mode, chunking_strategy),
+        RAG_EMBEDDING_MODEL,
+    )
+
 RAG_CHUNK_SIZE: int = _env_int("UNSLOTH_RAG_CHUNK_SIZE", 512)
 RAG_CHUNK_OVERLAP: int = _env_int("UNSLOTH_RAG_CHUNK_OVERLAP", 64)
 

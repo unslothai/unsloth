@@ -59,10 +59,19 @@ logger = get_logger(__name__)
 # Pydantic schemas
 # ------------------------------------------------------------------
 
+ChunkingStrategy = Literal["standard", "late"]
+KBMode = Literal["text", "multimodal"]
+
+
 class CreateKBRequest(BaseModel):
     name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
     embedding_model: str | None = None
+    # Phase 3 introduces two per-KB knobs. Both default to today's
+    # behaviour so existing API clients are unaffected. The (multimodal,
+    # late) combination is rejected at create time — see _validate_mode_combo.
+    chunking_strategy: ChunkingStrategy = "standard"
+    mode: KBMode = "text"
 
 
 class KBResponse(BaseModel):
@@ -70,6 +79,8 @@ class KBResponse(BaseModel):
     name: str
     description: str | None
     embedding_model: str
+    chunking_strategy: ChunkingStrategy
+    mode: KBMode
     created_at: int
 
 
@@ -150,13 +161,42 @@ def _now_ms() -> int:
 
 
 def _row_to_kb(row: Any) -> KBResponse:
+    # chunking_strategy / mode may be absent on rows fetched through a
+    # pre-Phase-3 connection in tests; fall back to the schema defaults.
+    keys = row.keys() if hasattr(row, "keys") else ()
+    chunking_strategy = (
+        row["chunking_strategy"]
+        if "chunking_strategy" in keys
+        else "standard"
+    )
+    mode = row["mode"] if "mode" in keys else "text"
     return KBResponse(
         id = row["id"],
         name = row["name"],
         description = row["description"],
         embedding_model = row["embedding_model"],
+        chunking_strategy = chunking_strategy,
+        mode = mode,
         created_at = row["created_at"],
     )
+
+
+def _validate_mode_combo(mode: KBMode, chunking_strategy: ChunkingStrategy) -> None:
+    """Reject the one illegal (mode, strategy) combination.
+
+    No public open-weight embedder supports both late-chunking pooling
+    and shared text/image embedding. Surface the constraint as a 400
+    rather than failing silently during ingestion.
+    """
+    if mode == "multimodal" and chunking_strategy == "late":
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Late chunking is not supported in multimodal mode — "
+                "the multimodal embedder does not expose per-token "
+                "embeddings. Pick 'standard' chunking or 'text' mode."
+            ),
+        )
 
 
 def _row_to_document(row: Any) -> DocumentResponse:
@@ -300,18 +340,27 @@ def create_knowledge_base(
     payload: CreateKBRequest,
     current_subject: str = Depends(get_current_subject),
 ) -> KBResponse:
-    from utils.rag.config import RAG_EMBEDDING_MODEL
+    from utils.rag.config import resolve_embedder
+
+    _validate_mode_combo(payload.mode, payload.chunking_strategy)
 
     kb_id = str(uuid4())
-    embedding_model = payload.embedding_model or RAG_EMBEDDING_MODEL
+    # If the caller didn't override embedding_model, resolve from the
+    # Phase-3 matrix using their (mode, strategy) selection. Unknown
+    # combos fall back to the legacy default — see resolve_embedder.
+    embedding_model = (
+        payload.embedding_model
+        or resolve_embedder(payload.mode, payload.chunking_strategy)
+    )
     created_at = _now_ms()
     with get_connection() as conn:
         try:
             conn.execute(
                 """
                 INSERT INTO rag_knowledge_bases
-                (id, name, description, owner_user_id, embedding_model, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (id, name, description, owner_user_id, embedding_model,
+                 chunking_strategy, mode, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     kb_id,
@@ -319,6 +368,8 @@ def create_knowledge_base(
                     payload.description,
                     current_subject,
                     embedding_model,
+                    payload.chunking_strategy,
+                    payload.mode,
                     created_at,
                 ),
             )
@@ -333,6 +384,8 @@ def create_knowledge_base(
         name = payload.name,
         description = payload.description,
         embedding_model = embedding_model,
+        chunking_strategy = payload.chunking_strategy,
+        mode = payload.mode,
         created_at = created_at,
     )
 
