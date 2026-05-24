@@ -1717,6 +1717,12 @@ def _build_external_messages(
     """
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
+    # `extra_content` is a Gemini-specific carrier for the assistant's
+    # text-part `thoughtSignature` round-trip. Forwarding it to other
+    # providers leaks an unknown field into /chat/completions bodies
+    # which can be rejected (OpenAI / Mistral / DeepSeek / Kimi /
+    # OpenRouter / custom OpenAI-compatible).
+    emit_extra_content = provider_type == "gemini"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1738,7 +1744,11 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
-            if msg.role == "assistant" and msg.extra_content:
+            if (
+                emit_extra_content
+                and msg.role == "assistant"
+                and msg.extra_content
+            ):
                 out["extra_content"] = msg.extra_content
             result.append(out)
             continue
@@ -1751,7 +1761,7 @@ def _build_external_messages(
                 "content": "",
                 "tool_calls": msg.tool_calls,
             }
-            if msg.extra_content:
+            if emit_extra_content and msg.extra_content:
                 _assistant_only["extra_content"] = msg.extra_content
             result.append(_assistant_only)
             continue
@@ -1797,7 +1807,11 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if msg.role == "assistant" and msg.extra_content:
+                if (
+                    emit_extra_content
+                    and msg.role == "assistant"
+                    and msg.extra_content
+                ):
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
             else:
@@ -1825,7 +1839,11 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if msg.role == "assistant" and msg.extra_content:
+                if (
+                    emit_extra_content
+                    and msg.role == "assistant"
+                    and msg.extra_content
+                ):
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
     return result

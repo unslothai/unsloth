@@ -2262,11 +2262,43 @@ def test_chat_message_extra_content_round_trips_through_validation():
     assert assistant_msg.extra_content == {
         "google": {"thought_signature": "SIG-TEXT"},
     }
-    built = _build_external_messages(req.messages, supports_vision = True)
+    built = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+    )
     assistant_out = built[1]
     assert assistant_out["extra_content"] == {
         "google": {"thought_signature": "SIG-TEXT"},
     }
+    # Non-Gemini providers must NOT receive extra_content; Google's
+    # thought_signature field is unknown to OpenAI / Mistral / etc.
+    built_openai = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+    )
+    assert "extra_content" not in built_openai[1], built_openai[1]
+
+
+def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):
+    """Round 11: image-tier model id rejects text-only tools and
+    thinkingConfig at the model level regardless of whether the Images
+    pill is on. Selecting gemini-2.5-flash-image + enabled_tools=
+    ["web_search"] with no image_generation must NOT forward
+    googleSearch or thinkingConfig (Gemini 400s on text tools for
+    legacy image ids)."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = ["web_search"],
+        reasoning_effort = "high",
+    )
+    body = captured["body"]
+    assert "tools" not in body, body.get("tools")
+    assert "thinkingConfig" not in body.get("generationConfig", {}), body[
+        "generationConfig"
+    ]
 
 
 def test_image_models_drop_function_declarations(monkeypatch):

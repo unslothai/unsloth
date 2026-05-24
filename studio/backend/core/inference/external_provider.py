@@ -500,6 +500,8 @@ class ExternalProviderClient:
                 enable_prompt_caching,
                 openai_code_exec_container_id,
                 compaction_threshold,
+                tools,
+                tool_choice,
             ):
                 yield line
             return
@@ -961,6 +963,7 @@ class ExternalProviderClient:
         synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
 
         def _synthetic_chunk(payload: dict[str, Any]) -> str:
+            _stamp_server_tool_marker(payload)
             chunk = {
                 "id": synthetic_id,
                 "object": "chat.completion.chunk",
@@ -2986,15 +2989,21 @@ class ExternalProviderClient:
         # https://ai.google.dev/gemini-api/docs/image-generation
         model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
-        # `image_generation` is meaningful only on image-capable model
-        # IDs AND when the caller opted into image output via the
-        # Images pill (enabled_tools includes "image_generation"). A
-        # text-only model 400s on responseModalities, and an
-        # image-capable model with the Images pill off should not
-        # silently bill image output the UI says is disabled.
+        # Image-tier model IDs reject text-only tools (code_execution,
+        # user functions) and thinkingConfig regardless of whether the
+        # Images pill is on -- those are model-level constraints
+        # documented by Google. The pill only controls whether we ask
+        # Gemini to actually emit image output via
+        # `responseModalities: ["TEXT","IMAGE"]`. Decoupling the two
+        # avoids the case where Images is off + Code/Search is on
+        # forwards `tools: [{codeExecution: {}}]` plus
+        # `thinkingConfig` to an image model and 400s.
         image_tool_requested = bool(
             enabled_tools and "image_generation" in enabled_tools
         )
+        # Strict tool / thinking strip uses the model-id check.
+        is_image_model_strict = is_image_picker_model
+        # The actual modality flip only happens when the user opted in.
         is_image_model = is_image_picker_model and image_tool_requested
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
@@ -3033,7 +3042,7 @@ class ExternalProviderClient:
             for p in _PRO_THINKING_PREFIXES
         )
         effort_lc = (reasoning_effort or "").strip().lower()
-        if not is_image_model and is_gemini3_thinking:
+        if not is_image_model_strict and is_gemini3_thinking:
             # Gemini 3.x: thinkingLevel only. Per Google's docs
             # (https://ai.google.dev/gemini-api/docs/thinking and
             # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro):
@@ -3061,7 +3070,7 @@ class ExternalProviderClient:
                 level = "low" if is_gemini3_pro else "minimal"
             if level is not None:
                 gen_config["thinkingConfig"] = {"thinkingLevel": level}
-        elif not is_image_model:
+        elif not is_image_model_strict:
             # Gemini 2.5 / older: thinkingBudget int. Effort -> budget
             # mirrors the OpenAI minimal/low/medium/high ladder so the
             # existing frontend picker maps cleanly.
@@ -3114,10 +3123,11 @@ class ExternalProviderClient:
             )
 
         google_search_allowed = (
-            not is_image_model or _gemini_image_model_allows_google_search(model_lc)
+            not is_image_model_strict
+            or _gemini_image_model_allows_google_search(model_lc)
         )
-        code_execution_allowed = not is_image_model
-        text_tools_allowed = not is_image_model
+        code_execution_allowed = not is_image_model_strict
+        text_tools_allowed = not is_image_model_strict
         tools_array: list[dict[str, Any]] = []
         if enabled_tools and "web_search" in enabled_tools and google_search_allowed:
             tools_array.append({"googleSearch": {}})
@@ -4035,6 +4045,8 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4247,9 +4259,52 @@ class ExternalProviderClient:
         image_generation_enabled_openai = bool(
             enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
         )
-        if enabled_tools:
-            tools_array: list[dict[str, Any]] = []
-            if "web_search" in enabled_tools:
+        # OpenAI-style user function tools translate into the Responses
+        # function-tool shape (`{type:"function", name, description,
+        # parameters}` instead of the Chat Completions
+        # `{type:"function", function:{name, ...}}`). Forward them so
+        # callers using normal Chat Completions `tools` against
+        # gpt-5.x keep working when we route through /v1/responses.
+        responses_user_function_tools: list[dict[str, Any]] = []
+        if tools:
+            for _tool in tools:
+                if not isinstance(_tool, dict) or _tool.get("type") != "function":
+                    continue
+                _fn = _tool.get("function")
+                if not isinstance(_fn, dict) or not _fn.get("name"):
+                    continue
+                _entry: dict[str, Any] = {
+                    "type": "function",
+                    "name": _fn["name"],
+                }
+                if _fn.get("description"):
+                    _entry["description"] = _fn["description"]
+                if isinstance(_fn.get("parameters"), dict):
+                    _entry["parameters"] = _fn["parameters"]
+                responses_user_function_tools.append(_entry)
+
+        # Map OpenAI Chat Completions tool_choice to the Responses
+        # tool_choice value. Strings ("auto"/"none"/"required") pass
+        # through unchanged; the function pick uses the Responses
+        # shape `{type:"function", name:"..."}`.
+        responses_tool_choice: Optional[Any] = None
+        if tool_choice is not None and responses_user_function_tools:
+            if isinstance(tool_choice, str):
+                _tc_lc = tool_choice.strip().lower()
+                if _tc_lc in ("auto", "none", "required"):
+                    responses_tool_choice = _tc_lc
+            elif (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") == "function"
+            ):
+                _fn_pick = tool_choice.get("function") or {}
+                _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
+                if isinstance(_name, str) and _name:
+                    responses_tool_choice = {"type": "function", "name": _name}
+
+        if enabled_tools or responses_user_function_tools:
+            tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
+            if enabled_tools and "web_search" in enabled_tools:
                 tools_array.append({"type": "web_search"})
             if code_execution_enabled_openai:
                 # `container_auto` lets OpenAI auto-create a fresh
@@ -4277,6 +4332,8 @@ class ExternalProviderClient:
                 tools_array.append({"type": "image_generation"})
             if tools_array:
                 body["tools"] = tools_array
+        if responses_tool_choice is not None:
+            body["tool_choice"] = responses_tool_choice
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
@@ -4290,9 +4347,11 @@ class ExternalProviderClient:
             first attempt.
             """
             attempt_body = dict(body)
-            if enabled_tools:
-                tools_array_attempt: list[dict[str, Any]] = []
-                if "web_search" in enabled_tools:
+            if enabled_tools or responses_user_function_tools:
+                tools_array_attempt: list[dict[str, Any]] = list(
+                    responses_user_function_tools
+                )
+                if enabled_tools and "web_search" in enabled_tools:
                     tools_array_attempt.append({"type": "web_search"})
                 if code_execution_enabled_openai:
                     if container_id_for_this_attempt:
@@ -4311,6 +4370,8 @@ class ExternalProviderClient:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
+            if responses_tool_choice is not None:
+                attempt_body["tool_choice"] = responses_tool_choice
             return attempt_body
 
         def _is_openai_container_expired_error(error_text: str) -> bool:
