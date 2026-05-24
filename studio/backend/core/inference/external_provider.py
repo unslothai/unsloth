@@ -27,6 +27,52 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def _normalize_stop_for_provider(
+    stop: Optional[Union[str, list[str]]],
+    provider_info: dict[str, Any],
+) -> Optional[Union[str, list[str]]]:
+    """Apply per-provider stop_max / stop_max_bytes caps and dedup.
+
+    Returns None when nothing survives the filter so callers can omit
+    the field. Single strings are returned verbatim when they fit.
+    """
+    if not stop:
+        return None
+
+    stop_max = int(provider_info.get("stop_max", 16))
+    stop_max_bytes_raw = provider_info.get("stop_max_bytes")
+    stop_max_bytes = (
+        int(stop_max_bytes_raw) if stop_max_bytes_raw is not None else None
+    )
+
+    def allowed(s: str) -> bool:
+        if not s:
+            return False
+        if stop_max_bytes is not None and len(s.encode("utf-8")) > stop_max_bytes:
+            logger.warning(
+                "dropping stop sequence longer than %d bytes",
+                stop_max_bytes,
+            )
+            return False
+        return True
+
+    if isinstance(stop, str):
+        return stop if allowed(stop) else None
+    if isinstance(stop, list):
+        sequences = list(
+            dict.fromkeys(s for s in stop if isinstance(s, str) and allowed(s))
+        )
+        if len(sequences) > stop_max:
+            logger.warning(
+                "stop sequences truncated to %d entries (received %d)",
+                stop_max,
+                len(sequences),
+            )
+            sequences = sequences[:stop_max]
+        return sequences or None
+    return None
+
+
 # Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
 # the API returns 400 "<param> is deprecated for this model" if any of
 # them is set to a non-default value. The "Sampling parameters removed"
@@ -472,25 +518,9 @@ class ExternalProviderClient:
             # Mistral renames `seed` to `random_seed` on /v1/chat/completions.
             seed_field = provider_info.get("seed_field", "seed")
             body[seed_field] = seed
-        if stop:
-            # Stop cap is provider-specific. OpenAI Chat = 4, Anthropic
-            # = 16 (client guard), DeepSeek = 16, others = 16 by default.
-            stop_max = int(provider_info.get("stop_max", 16))
-            if isinstance(stop, str):
-                body["stop"] = stop
-            elif isinstance(stop, list):
-                sequences = list(
-                    dict.fromkeys(s for s in stop if isinstance(s, str) and s)
-                )
-                if len(sequences) > stop_max:
-                    logger.warning(
-                        "stop sequences truncated to %d entries (received %d)",
-                        stop_max,
-                        len(sequences),
-                    )
-                    body["stop"] = sequences[:stop_max]
-                elif sequences:
-                    body["stop"] = sequences
+        normalized_stop = _normalize_stop_for_provider(stop, provider_info)
+        if normalized_stop:
+            body["stop"] = normalized_stop
         if service_tier is not None:
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
@@ -908,23 +938,9 @@ class ExternalProviderClient:
         if seed is not None:
             seed_field = provider_info.get("seed_field", "seed")
             body[seed_field] = seed
-        if stop:
-            stop_max = int(provider_info.get("stop_max", 16))
-            if isinstance(stop, str):
-                body["stop"] = stop
-            elif isinstance(stop, list):
-                sequences = list(
-                    dict.fromkeys(s for s in stop if isinstance(s, str) and s)
-                )
-                if len(sequences) > stop_max:
-                    logger.warning(
-                        "stop sequences truncated to %d entries (received %d)",
-                        stop_max,
-                        len(sequences),
-                    )
-                    body["stop"] = sequences[:stop_max]
-                elif sequences:
-                    body["stop"] = sequences
+        normalized_stop = _normalize_stop_for_provider(stop, provider_info)
+        if normalized_stop:
+            body["stop"] = normalized_stop
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = parallel_tool_calls
 

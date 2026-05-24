@@ -165,6 +165,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Kimi accepts at most 5 stop strings (each <= 32 bytes) per
         # https://platform.kimi.ai/docs/api/chat
         "stop_max": 5,
+        "stop_max_bytes": 32,
     },
     "qwen": {
         "display_name": "Qwen",

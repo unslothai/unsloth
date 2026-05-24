@@ -607,6 +607,61 @@ def test_kimi_web_search_uses_kimi_stop_cap_5(monkeypatch):
     assert body["stop"] == ["S0", "S1", "S2", "S3", "S4"], body
 
 
+def test_kimi_drops_stop_strings_over_32_bytes(monkeypatch):
+    """Kimi limits each stop string to <= 32 bytes per
+    https://platform.kimi.ai/docs/api/chat. Drop overlong entries
+    client-side so a stale UI cannot 400 the request."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 1.0,
+            top_p = 1.0,
+            max_tokens = 256,
+            stop = ["END", "x" * 33, "DONE"],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("stop") == ["END", "DONE"], body
+
+
+def test_kimi_web_search_drops_stop_strings_over_32_bytes(monkeypatch):
+    """Same byte cap applies to the Kimi web-search bypass."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 1.0,
+            top_p = 1.0,
+            max_tokens = 256,
+            enabled_tools = ["web_search"],
+            stop = ["END", "x" * 40, "DONE"],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("stop") == ["END", "DONE"], body
+
+
 def test_kimi_default_path_uses_kimi_stop_cap_5(monkeypatch):
     """The normal Kimi path must also honour the documented 5-cap."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
