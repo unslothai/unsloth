@@ -819,3 +819,28 @@ def test_chat_settings_payload_accepts_new_sampling_keys():
     assert ip.stop == ["END"]
     assert ip.serviceTier == "standard_only"
     assert ip.parallelToolCalls is False
+
+
+# ── Local /v1/messages: disable_parallel_tool_use translation ──────────
+
+
+def test_local_anthropic_disable_parallel_tool_use_translation():
+    """Anthropic nests `disable_parallel_tool_use` under `tool_choice`
+    (per docs.claude.com). The local /v1/messages GGUF tool path must
+    invert it into OpenAI-shaped `parallel_tool_calls` so third-party
+    clients (Claude SDK, LiteLLM in passthrough mode) opt out of
+    parallel calls successfully even on the local model."""
+    # Mirror the extraction logic in routes/inference.py:anthropic_messages.
+    def _extract(tc):
+        if isinstance(tc, dict):
+            v = tc.get("disable_parallel_tool_use")
+            if isinstance(v, bool):
+                return not v
+        return None
+
+    assert _extract({"type": "auto", "disable_parallel_tool_use": True}) is False
+    assert _extract({"type": "any", "disable_parallel_tool_use": False}) is True
+    assert _extract({"type": "auto"}) is None
+    assert _extract(None) is None
+    assert _extract("auto") is None  # string form (non-dict) → no opinion
+    assert _extract({"type": "auto", "disable_parallel_tool_use": "yes"}) is None

@@ -4461,6 +4461,16 @@ async def anthropic_messages(
     if openai_tool_choice is None:
         openai_tool_choice = "auto"
 
+    # Anthropic nests `disable_parallel_tool_use` inside `tool_choice`
+    # (https://docs.claude.com/en/docs/agents-and-tools/tool-use/implement-tool-use).
+    # Flip it into the OpenAI-shaped `parallel_tool_calls` toggle so the
+    # local GGUF tool loop respects clients that opt out of parallel calls.
+    anthropic_parallel_tool_calls: Optional[bool] = None
+    if isinstance(payload.tool_choice, dict):
+        _disable = payload.tool_choice.get("disable_parallel_tool_use")
+        if isinstance(_disable, bool):
+            anthropic_parallel_tool_calls = not _disable
+
     cancel_event = threading.Event()
 
     # ── Tool routing ──────────────────────────────────────────
@@ -4666,6 +4676,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                parallel_tool_calls = anthropic_parallel_tool_calls,
             )
 
         if payload.stream:
