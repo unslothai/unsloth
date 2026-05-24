@@ -2243,7 +2243,7 @@ def test_chat_message_extra_content_round_trips_through_validation():
     assert assistant_msg.extra_content == {
         "google": {"thought_signature": "SIG-TEXT"},
     }
-    built = _build_external_messages(req.messages, supports_vision=True)
+    built = _build_external_messages(req.messages, supports_vision = True)
     assistant_out = built[1]
     assert assistant_out["extra_content"] == {
         "google": {"thought_signature": "SIG-TEXT"},
