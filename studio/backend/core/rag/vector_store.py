@@ -112,12 +112,25 @@ def search(
         )
     if not collection_exists(scope):
         return []
-    results = client.search(
-        collection_name = scope,
-        query_vector = query_vector,
-        limit = top_k,
-        query_filter = query_filter,
-    )
+    # qdrant-client 1.10 deprecated `search()` in favor of
+    # `query_points()`. Fall back to `search()` on older clients so
+    # the call works against any pinned version in the install matrix.
+    if hasattr(client, "query_points"):
+        response = client.query_points(
+            collection_name = scope,
+            query = query_vector,
+            limit = top_k,
+            query_filter = query_filter,
+            with_payload = True,
+        )
+        results = response.points
+    else:
+        results = client.search(
+            collection_name = scope,
+            query_vector = query_vector,
+            limit = top_k,
+            query_filter = query_filter,
+        )
     return [
         {
             "chunk_id": str(r.id),
