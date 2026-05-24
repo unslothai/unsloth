@@ -2,12 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect } from "react";
+import type { RagDocument } from "../api/rag-api";
 import { kbScopeKey, threadScopeKey, useRagStore } from "../stores/rag-store";
+
+// Module-scope sentinel so the selector returns a stable reference
+// when the scope key isn't populated yet. A `[]` literal in the
+// selector returns a new array on every call → Zustand's Object.is
+// snapshot check flags it as changed → re-render → selector reruns
+// → new `[]` → infinite loop → React error #185.
+const EMPTY_DOCS: RagDocument[] = [];
 
 export function useKBDocuments(kbId: string | null) {
   const scopeKey = kbId ? kbScopeKey(kbId) : "";
   const documents = useRagStore((s) =>
-    scopeKey ? (s.documentsByScope[scopeKey] ?? []) : [],
+    scopeKey ? (s.documentsByScope[scopeKey] ?? EMPTY_DOCS) : EMPTY_DOCS,
   );
   const loading = useRagStore((s) => (scopeKey ? !!s.docsLoading[scopeKey] : false));
   const error = useRagStore((s) =>
@@ -38,7 +46,7 @@ export function useKBDocuments(kbId: string | null) {
 export function useThreadDocuments(threadId: string | null) {
   const scopeKey = threadId ? threadScopeKey(threadId) : "";
   const documents = useRagStore((s) =>
-    scopeKey ? (s.documentsByScope[scopeKey] ?? []) : [],
+    scopeKey ? (s.documentsByScope[scopeKey] ?? EMPTY_DOCS) : EMPTY_DOCS,
   );
   const loading = useRagStore((s) => (scopeKey ? !!s.docsLoading[scopeKey] : false));
   const error = useRagStore((s) =>
