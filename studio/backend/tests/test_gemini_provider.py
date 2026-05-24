@@ -1940,6 +1940,63 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     assert "data:image/png;base64," in final_result, code_ends
 
 
+def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
+    """An assistant tool_call with toolName=code_execution and
+    extra_content.google.native_part containing the originally-emitted
+    `executableCode` + `codeExecutionResult` must round-trip as native
+    Gemini parts (not a generic functionCall) on the next turn."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "compute 2+2"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "code_a",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": "{}",
+                        },
+                        "extra_content": {
+                            "google": {
+                                "native_part": {
+                                    "executableCode": {
+                                        "id": "code_a",
+                                        "language": "PYTHON",
+                                        "code": "print(2+2)",
+                                    },
+                                    "codeExecutionResult": {
+                                        "outcome": "OUTCOME_OK",
+                                        "output": "4\n",
+                                    },
+                                    "thoughtSignature": "SIG-CODE",
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+            {"role": "user", "content": "what was that result"},
+        ],
+    )
+    assistant_turn = captured["body"]["contents"][1]
+    assert assistant_turn["role"] == "model"
+    parts = assistant_turn["parts"]
+    native_keys = [list(p.keys())[0] for p in parts if isinstance(p, dict)]
+    assert "executableCode" in native_keys, parts
+    assert "codeExecutionResult" in native_keys, parts
+    assert not any(
+        "functionCall" in p
+        and (p["functionCall"] or {}).get("name") == "code_execution"
+        for p in parts
+    ), parts
+    exec_part = next(p for p in parts if "executableCode" in p)
+    assert exec_part.get("thoughtSignature") == "SIG-CODE", exec_part
+
+
 def test_image_models_drop_function_declarations(monkeypatch):
     """Image-mode requests cannot mix tools with responseModalities so
     user-supplied function declarations must be dropped."""

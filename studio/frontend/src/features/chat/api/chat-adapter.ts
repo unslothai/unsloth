@@ -385,6 +385,19 @@ function collectAssistantToolCalls(
   return out;
 }
 
+// Tool names whose results are produced server-side by the provider
+// (web search grounding, code execution, image generation) rather than
+// by a user-supplied function tool. The provider's history already
+// contains the matching native result on the same assistant turn, so
+// we do NOT emit a separate `role="tool"` message for these on
+// follow-up requests. Forwarding one would 400 on Gemini (no matching
+// user-defined function) and is redundant on OpenAI/Anthropic.
+const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
+  "code_execution",
+  "image_generation",
+  "web_search",
+]);
+
 function collectToolResultMessages(
   message: RunMessage,
 ): Array<{
@@ -402,6 +415,12 @@ function collectToolResultMessages(
   for (const part of message.content ?? []) {
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
+    if (
+      tc.toolName &&
+      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(tc.toolName.toLowerCase())
+    ) {
+      continue;
+    }
     const result = (tc as { result?: unknown }).result;
     if (result === undefined || result === null) continue;
     let content: string;
@@ -478,11 +497,6 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   }
 
   return toolResults.length > 0 ? [base, ...toolResults] : [base];
-}
-
-function toOpenAIMessage(message: RunMessage): SerializedMessage | null {
-  const serialized = toOpenAIMessages(message);
-  return serialized.length > 0 ? serialized[0] : null;
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -1808,8 +1822,47 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     } else {
                       parsedResult = rawResult;
                     }
+                    // Merge any Gemini native_part on the tool_end
+                    // into the existing tool-call's args.google so the
+                    // outbound translator can replay both the
+                    // executableCode (tool_start) and the
+                    // codeExecutionResult / inlineData (tool_end) on
+                    // the same assistant turn. Without this, follow-up
+                    // Gemini turns lose the prior execution result.
+                    const endGoogle = (
+                      toolEvent as { google?: { native_part?: unknown } }
+                    ).google;
+                    const mergedArgs: ToolCallMessagePart["args"] = {
+                      ...(toolCallParts[idx].args ?? {}),
+                    } as ToolCallMessagePart["args"];
+                    if (
+                      endGoogle &&
+                      typeof endGoogle === "object" &&
+                      endGoogle.native_part &&
+                      typeof endGoogle.native_part === "object"
+                    ) {
+                      const argsObj = mergedArgs as Record<string, unknown>;
+                      const existingGoogle = (argsObj.google ?? {}) as Record<
+                        string,
+                        unknown
+                      >;
+                      const existingNative =
+                        (existingGoogle.native_part as Record<
+                          string,
+                          unknown
+                        >) ?? {};
+                      argsObj.google = {
+                        ...existingGoogle,
+                        native_part: {
+                          ...existingNative,
+                          ...(endGoogle.native_part as Record<string, unknown>),
+                        },
+                      };
+                    }
                     toolCallParts[idx] = {
                       ...toolCallParts[idx],
+                      args: mergedArgs,
+                      argsText: JSON.stringify(mergedArgs ?? {}),
                       result: parsedResult,
                     };
                   }

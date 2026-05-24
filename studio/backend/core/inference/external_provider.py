@@ -2757,6 +2757,14 @@ class ExternalProviderClient:
             # OpenAI may attach tool_calls on an assistant message.
             # Translate into Gemini's functionCall part so the prior
             # turn's tool request round-trips back to the model.
+            # Special-case the built-in `code_execution` and
+            # `image_generation` tool names: those map to Gemini's
+            # native `executableCode` / `codeExecutionResult` /
+            # `inlineData` parts, which Gemini requires for manual
+            # multi-turn history. The native dict is stowed on
+            # `extra_content.google.native_part` when the inbound
+            # translator emits the tool event; replay it verbatim so
+            # the next turn carries Gemini's id and thoughtSignature.
             tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -2779,6 +2787,43 @@ class ExternalProviderClient:
                     tc_id = tc.get("id")
                     if fn_name and isinstance(tc_id, str) and tc_id:
                         tool_call_names[tc_id] = fn_name
+
+                    # Replay built-in tools (code_execution,
+                    # image_generation) as the native Gemini parts the
+                    # inbound translator stowed under
+                    # `extra_content.google.native_part`. Falls through
+                    # to the generic functionCall path when the native
+                    # dict is missing (e.g. older messages persisted
+                    # before this field existed).
+                    _extra = tc.get("extra_content")
+                    _native_part = None
+                    _google_extra: dict[str, Any] = {}
+                    if isinstance(_extra, dict):
+                        _ge = _extra.get("google") or {}
+                        if isinstance(_ge, dict):
+                            _google_extra = _ge
+                            _native_part = _ge.get("native_part")
+                    if (
+                        fn_name in ("code_execution", "image_generation")
+                        and isinstance(_native_part, dict)
+                    ):
+                        for _native_key in (
+                            "executableCode",
+                            "codeExecutionResult",
+                            "inlineData",
+                        ):
+                            _sub = _native_part.get(_native_key)
+                            if not isinstance(_sub, dict):
+                                continue
+                            _replay_part: dict[str, Any] = {_native_key: _sub}
+                            _sig = _native_part.get(
+                                "thoughtSignature"
+                            ) or _native_part.get("thought_signature")
+                            if isinstance(_sig, str) and _sig:
+                                _replay_part["thoughtSignature"] = _sig
+                            parts.append(_replay_part)
+                        continue
+
                     # Forward the OpenAI tool_call id into Gemini's
                     # functionCall.id so a follow-up turn that issues
                     # multiple calls to the same function (different
@@ -2798,15 +2843,11 @@ class ExternalProviderClient:
                     # `extra_content.google.thought_signature` (see
                     # the inbound emit below).
                     fc_part: dict[str, Any] = {"functionCall": function_call_part}
-                    extra = tc.get("extra_content")
-                    if isinstance(extra, dict):
-                        google_extra = extra.get("google") or {}
-                        if isinstance(google_extra, dict):
-                            sig = google_extra.get(
-                                "thought_signature"
-                            ) or google_extra.get("thoughtSignature")
-                            if isinstance(sig, str) and sig:
-                                fc_part["thoughtSignature"] = sig
+                    sig = _google_extra.get(
+                        "thought_signature"
+                    ) or _google_extra.get("thoughtSignature")
+                    if isinstance(sig, str) and sig:
+                        fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
             if role == "tool":
                 # OpenAI's role="tool" follow-up carries the function
