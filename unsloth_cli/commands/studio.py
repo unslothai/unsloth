@@ -652,16 +652,10 @@ def _expand_attached_np_short() -> None:
         tok = sys.argv[i]
         if tok == "--":
             break
-        if (
-            len(tok) > 3
-            and tok.startswith("-np")
-            and tok[3] != "="
-        ):
+        if len(tok) > 3 and tok.startswith("-np") and tok[3] != "=":
             suffix = tok[3:]
             if suffix.isdigit() or (
-                len(suffix) > 1
-                and suffix[0] in {"-", "+"}
-                and suffix[1:].isdigit()
+                len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1:].isdigit()
             ):
                 sys.argv[i : i + 1] = ["-np", suffix]
                 i += 2
