@@ -69,6 +69,7 @@ def check_imports() -> None:
     # smoke-tests both arches.
     try:
         import xformers
+
         print(f"xformers    {xformers.__version__}")
     except ImportError:
         print("xformers    (missing -- expected on arm64 [huggingface] extras)")
