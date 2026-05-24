@@ -105,6 +105,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    parallel_tool_calls: Optional[bool] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -292,6 +293,12 @@ def run_safetensors_tool_loop(
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
             return
+
+        # Mirror the GGUF agentic-loop cap: when the caller opted out
+        # of parallel tool calls, execute at most one per assistant
+        # turn even if the model parsed more.
+        if parallel_tool_calls is False and tool_calls:
+            tool_calls = tool_calls[:1]
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         if tool_calls:

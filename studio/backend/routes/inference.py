@@ -3005,6 +3005,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                parallel_tool_calls = payload.parallel_tool_calls,
             )
 
         _sf_tool_sentinel = object()
@@ -4963,8 +4964,18 @@ def _build_passthrough_payload(
         else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+    # Strip empty / non-string stop entries before forwarding to
+    # llama-server; the external-provider helper does this via
+    # `_normalize_stop_for_provider`, and the local path needs the same
+    # defensive shape so a stale `stop=["", "END"]` cannot 400 upstream.
     if stop:
-        body["stop"] = stop
+        if isinstance(stop, str):
+            if stop:
+                body["stop"] = stop
+        elif isinstance(stop, list):
+            cleaned = [s for s in stop if isinstance(s, str) and s]
+            if cleaned:
+                body["stop"] = cleaned
     if min_p is not None:
         body["min_p"] = min_p
     if repetition_penalty is not None:
@@ -5042,7 +5053,9 @@ async def _anthropic_passthrough_stream(
     _tracker.__enter__()
 
     async def _stream():
-        emitter = AnthropicPassthroughEmitter()
+        emitter = AnthropicPassthroughEmitter(
+            parallel_tool_calls = parallel_tool_calls,
+        )
         for line in emitter.start(message_id, model_name):
             yield line
 
@@ -5209,6 +5222,13 @@ async def _anthropic_passthrough_non_streaming(
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
     tool_calls = message.get("tool_calls") or []
+    # Mirror the GGUF agentic-loop client-side cap: when the caller
+    # opted out of parallel tool calls, surface at most one tool_use
+    # block even if llama-server returned more than one. llama.cpp may
+    # not enforce the flag on every jinja template (see
+    # ggml-org/llama.cpp#22043).
+    if parallel_tool_calls is False and tool_calls:
+        tool_calls = tool_calls[:1]
     for tc in tool_calls:
         fn = tc.get("function") or {}
         try:
