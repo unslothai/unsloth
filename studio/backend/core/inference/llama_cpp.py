@@ -72,7 +72,8 @@ _TOOL_ACTION_VERBS = (
     r"(?:web|internet|online(?: sources?)?)|"
     r"fetch (?:the |a |an )?"
     rf"{_TOOL_LOOKUP_TARGET}|"
-    r"(?:research|investigate|find|check|verify) (?:for )?(?:the |a |an )?"
+    r"(?:research|investigate|find|check|verify|compare|review) "
+    r"(?:for )?(?:the |a |an )?"
     rf"{_TOOL_LOOKUP_TARGET}|"
     r"(?:use|invoke|call) (?:the )?(?:python|search) tool|"
     r"use python(?: tool)? to|"
@@ -228,6 +229,24 @@ def _has_unclosed_code_fence(text: str) -> bool:
     return active_char is not None
 
 
+def _has_unclosed_markup_block(text: str) -> bool:
+    """True if ``text`` opens an <html>/<svg> block without closing it.
+
+    `_HAS_ANSWER_ARTIFACT` already requires a matching `</html>` /
+    `</svg>` for the artifact branch. This helper exists to disqualify
+    the numbered-list fallback when partial markup is present: a list
+    inside an unfinished `<html>...` body must not look like a final
+    answer.
+    """
+    return bool(
+        re.search(r"<html\b", text, re.IGNORECASE)
+        and not re.search(r"</html>", text, re.IGNORECASE)
+    ) or bool(
+        re.search(r"<svg\b", text, re.IGNORECASE)
+        and not re.search(r"</svg>", text, re.IGNORECASE)
+    )
+
+
 def _has_answer_artifact(text: str) -> bool:
     """True if ``text`` looks like a completed answer artifact.
 
@@ -238,14 +257,16 @@ def _has_answer_artifact(text: str) -> bool:
     direct first-person ``I'll do this:\\n1. ...`` framing with a
     work/tool verb before the list, also flags the list as a plan even
     when no narrow tool-action verb appears in the items. An unclosed
-    fence anywhere in the response (including after an earlier complete
-    fence) disqualifies the answer-artifact path so half-finished code
-    does not look like a final answer.
+    fence or unclosed `<html>` / `<svg>` block anywhere in the response
+    disqualifies the answer-artifact path so half-finished output does
+    not look like a final answer.
     """
     if _has_unclosed_code_fence(text):
         return False
     if _HAS_ANSWER_ARTIFACT.search(text):
         return True
+    if _has_unclosed_markup_block(text):
+        return False
     if _NUMBERED_LIST_ARTIFACT.search(text):
         if _EXPLICIT_PLAN_HEADER.search(text):
             return False
@@ -5004,21 +5025,28 @@ class LlamaCppBackend:
                         _visible = content_accum.strip()
                         _reasoning = reasoning_accum.strip()
                         _stripped = _visible if _visible else _reasoning
-                        _artifact_text = (
-                            _visible
-                            if _visible
-                            else (_reasoning if not has_content_tokens else "")
-                        )
-                        _visible_has_artifact = bool(
-                            _artifact_text
-                        ) and _has_answer_artifact(_artifact_text)
-                        if (
+                        # Cheap gates first so long final answers never
+                        # pay the artifact-regex scan. The artifact
+                        # check only runs when the candidate already
+                        # passes length + intent + state checks.
+                        _should_consider_reprompt = bool(
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped)
-                            and not _visible_has_artifact
-                        ):
+                        )
+                        if _should_consider_reprompt:
+                            _artifact_text = (
+                                _visible
+                                if _visible
+                                else (_reasoning if not has_content_tokens else "")
+                            )
+                            _visible_has_artifact = bool(
+                                _artifact_text
+                            ) and _has_answer_artifact(_artifact_text)
+                        else:
+                            _visible_has_artifact = False
+                        if _should_consider_reprompt and not _visible_has_artifact:
                             _reprompt_count += 1
                             logger.info(
                                 f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "

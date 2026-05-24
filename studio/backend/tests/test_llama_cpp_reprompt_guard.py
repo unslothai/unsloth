@@ -913,6 +913,40 @@ def test_reprompts_on_first_step_numbered_compute_plan():
         assert _would_reprompt(content), content
 
 
+def test_reprompts_on_incomplete_html_with_inner_numbered_list():
+    """Partial markup (open <html> with no </html>) plus a numbered
+    list must NOT be treated as a final answer; the markup is still
+    being streamed."""
+    samples = [
+        (
+            "First, I'll draft a page.\n"
+            "<html><body>\n"
+            "1. Section one.\n"
+            "2. Section two.\n"
+        ),
+        (
+            "Let me design a chart.\n"
+            "<svg width='100'>\n"
+            "1. circle.\n"
+            "2. rect."
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_reprompts_on_numbered_compare_or_review_lookup_plan():
+    """Freshness-gated ``compare`` / ``review`` lookups read as tool
+    plans and STILL re-prompt as numbered plans."""
+    samples = [
+        "Here's my plan:\n1. Compare the latest release sources.\n2. Summarise.",
+        "First, I'll do this:\n1. Review the current documentation.\n2. Answer.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
 def test_no_reprompt_on_first_use_binary_search_answer():
     """``First, use binary search:`` is an ordinary algorithm answer.
     ``use`` is not in the direct-numbered-plan verb whitelist so the
