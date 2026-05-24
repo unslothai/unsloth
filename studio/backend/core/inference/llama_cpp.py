@@ -5154,7 +5154,7 @@ class LlamaCppBackend:
                         # artifact check.
                         _visible_raw = content_accum.strip()
                         _visible = (
-                            _strip_tool_markup(content_accum, final=True).strip()
+                            _strip_tool_markup(content_accum, final = True).strip()
                             if _visible_raw
                             else ""
                         )

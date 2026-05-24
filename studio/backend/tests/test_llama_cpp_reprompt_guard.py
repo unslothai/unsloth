@@ -996,11 +996,7 @@ def test_reprompts_on_direct_first_person_read_check_open_plan():
             "1. Identify the columns.\n"
             "2. Return the total."
         ),
-        (
-            "I will check the docs:\n"
-            "1. Gather relevant sections.\n"
-            "2. Answer."
-        ),
+        ("I will check the docs:\n" "1. Gather relevant sections.\n" "2. Answer."),
         (
             "First, I'll review the repository:\n"
             "1. Open the relevant file.\n"
