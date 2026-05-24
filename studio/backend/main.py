@@ -49,6 +49,8 @@ import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+from typing import Optional
+from urllib.parse import urlparse
 
 
 _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -743,16 +745,75 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
+    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
+
+    Browsers strip the default port from the Origin header (RFC 6454 §6.1)
+    but Starlette's ``request.url.netloc`` keeps whatever the Host header
+    carried, which may or may not include the default port. We also need
+    to lowercase scheme + host, since both are case-insensitive per
+    RFC 3986. A bare-string compare misses these:
+
+    * Origin ``https://example.com``     vs netloc ``example.com:443`` (default port dropped)
+    * Origin ``http://Example.com``      vs netloc ``example.com``     (host case)
+    * Origin ``HTTP://example.com``      vs netloc ``example.com``     (scheme case)
+
+    Returns ``None`` when the input is unparseable so callers can treat
+    the comparison as cross-origin (safer default).
+    """
+    scheme = (scheme or "").strip().lower()
+    if not scheme or not netloc:
+        return None
+    # netloc may carry userinfo (user:pass@host:port) per RFC 3986;
+    # strip it since Origin never contains credentials.
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    host, _, port_str = netloc.partition(":")
+    host = host.strip().lower()
+    if not host:
+        return None
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+    else:
+        port = _DEFAULT_PORTS.get(scheme, 0)
+    return (scheme, host, port)
+
+
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
 
     Top-level same-document GETs omit Origin on most engines, so a missing
     header counts as same-origin. Callers must also emit ``Vary: Origin``.
+
+    The comparison canonicalises both sides via :func:`_canonical_origin`
+    so a browser's default-port-stripping (``https://example.com`` vs
+    Starlette's ``example.com:443`` netloc) and case differences on
+    scheme/host do not cause same-origin requests to be misclassified
+    cross-origin (bootstrap pw stripped from the SPA shell, the user
+    can't auto-fill the change-password form).
     """
     origin = request.headers.get("origin")
     if not origin:
         return True
-    return origin == f"{request.url.scheme}://{request.url.netloc}"
+    # Origin is ``scheme://host[:port]`` per RFC 6454 §6.1. Reject the
+    # special token "null" (sandboxed iframes, file:// pages) and any
+    # value that doesn't parse as a URL.
+    if origin == "null":
+        return False
+    parsed = urlparse(origin)
+    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
+    if origin_canon is None:
+        return False
+    self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    if self_canon is None:
+        return False
+    return origin_canon == self_canon
 
 
 def setup_frontend(app: FastAPI, build_path: Path):
