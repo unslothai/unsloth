@@ -991,7 +991,9 @@ def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
     skipped when a real artifact already exists."""
     samples = [
         "<html><body><svg width='10'/></body></html>",
-        "<html><body>" + "<script>const s = '<svg width=10>';</script>" + "</body></html>",
+        "<html><body>"
+        + "<script>const s = '<svg width=10>';</script>"
+        + "</body></html>",
     ]
     for content in samples:
         assert _has_answer_artifact(content), content
