@@ -159,7 +159,7 @@ RUN set -eux \
         --index-strategy unsafe-best-match \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         "torch==2.10.0" "torchvision==0.25.0" "torchaudio==2.11.0" \
-        "triton>=3.3.1" \
+        "triton>=3.6.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
         "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}"
@@ -278,6 +278,51 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   shipping the toolchain is the right trade-off.)
 
 COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
+
+# DGX Spark / GB10 (sm_121) fix, arm64 ONLY.
+#
+# Two cu13 components need to override what the cu128 stack ships, because
+# nothing in CUDA 12.8 -- toolkit or wheel -- knows about sm_121:
+#
+#   (1) torch's bundled libnvrtc.so.12 (from CUDA 12.8) does not accept
+#       sm_121 as --gpu-architecture. The jiterator C++ side queries the
+#       device cap directly, so any path that JIT-compiles a kernel (e.g.
+#       torch.fft.rfft(complex).abs(), used inside mel-spectrogram code)
+#       errors out. Fix: symlink libnvrtc.so.13 over the bundled .so.12.
+#
+#   (2) Triton's nvidia backend invokes ptxas. Triton wheels older than
+#       3.6.0 bundled cu12.8 ptxas which tops out at sm_120 and refuses
+#       sm_121, silently downgrading to sm_80 per triton-lang/triton#8335.
+#       Triton 3.6.0 (which we pin above) bundles cu13 ptxas, but for
+#       defense in depth we ALSO install cuda-nvcc-13-0 and point Triton
+#       at it via TRITON_PTXAS_PATH.
+#
+# NVRTC and ptxas are CPU-side compilers; they do NOT call into libcuda,
+# so we can install cu13 alongside the cu128 runtime without any driver
+# requirement bump (toolkit driver floor stays 570+).
+#
+# amd64 image is untouched: no sm_121 hardware exists on amd64, and the
+# extra ~400 MB would be dead weight.
+RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
+        set -eux; \
+        # SBSA = Server Base System Architecture; the NVIDIA repo path for
+        # Grace / GH200 / GB200 / DGX Spark aarch64 hosts.
+        curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb" \
+             -o /tmp/cuda-keyring.deb; \
+        dpkg -i /tmp/cuda-keyring.deb; \
+        rm /tmp/cuda-keyring.deb; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+            cuda-nvrtc-13-0 \
+            cuda-nvcc-13-0; \
+        rm -rf /var/lib/apt/lists/*; \
+        # (1) NVRTC swap. torch's wheel-bundled cu128 NVRTC -> cu13 NVRTC.
+        NVRTC_DIR=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_nvrtc/lib; \
+        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
+            mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
+            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
+        fi; \
+    fi
 
 WORKDIR /workspace
 RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}

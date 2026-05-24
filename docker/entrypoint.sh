@@ -17,6 +17,14 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
+# DGX Spark fix, arm64 image only: prefer the cu13 ptxas we baked into the
+# image at /usr/local/cuda-13.0/bin/ptxas over Triton's bundled tools. The
+# file only exists on the arm64 variant; amd64 images skip this and use
+# Triton's own ptxas (cu13 in triton>=3.6.0).
+if [[ -x /usr/local/cuda-13.0/bin/ptxas ]] && [[ -z "${TRITON_PTXAS_PATH:-}" ]]; then
+    export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
+fi
+
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     exec "$@"
 fi
