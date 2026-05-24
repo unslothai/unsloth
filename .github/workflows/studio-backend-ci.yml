@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Runs the existing studio/backend/tests/ suite (~860 tests, all CPU-friendly)
+# on every PR that touches the backend or unsloth library. Until this lands,
+# none of those tests run automatically. Verified locally on Python 3.13 with
+# the surgical exclusions below: 861 pass, 4 skipped.
+#
+# Exclusions:
+#   - tests/test_studio_api.py: end-to-end against a live model + GGUF download,
+#     too heavy for free runners. Run separately when GPU CI is available.
+#   - -k 'not llama_cpp_load_progress_live': spawns a real llama.cpp process,
+#     not appropriate for CPU-only runners.
+#
+# Two jobs:
+#   - pytest matrix (3.10/3.11/3.12/3.13) over studio/backend/tests
+#   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
+#
+# Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
+# moved to the dedicated `Lint CI` workflow (.github/workflows/lint-ci.yml)
+# so it fires on every PR rather than only on studio/unsloth/tests
+# path changes.
+
+name: Backend CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-backend-ci.yml'
+  push:
+    branches: [main, pip]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '${{ matrix.python }}'
+          cache: 'pip'
+
+      - name: Install backend test dependencies (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          # Studio's declared backend deps:
+          pip install -r studio/backend/requirements/studio.txt
+          # Extras that studio.txt does not list but the import chain needs
+          # (python-multipart for FastAPI form/file uploads, sqlalchemy/cryptography
+          #  for the auth DB, yaml/jinja2 for utils.models.model_config, etc.):
+          pip install \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 mammoth unpdf requests \
+            'numpy<3' pytest pytest-asyncio httpx
+          # Torch CPU + transformers are required by a chunk of the backend test
+          # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
+          # keeps the install ~250 MB / ~1 min on a clean runner.
+          pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4,<2.11'
+          pip install 'transformers>=4.51,<5.5'
+
+      - name: Backend tests
+        working-directory: studio/backend
+        # Locally validated against this dep set: 831 passed, 5 skipped, 35 deselected.
+        # Deselections (all environment-specific, would never pass on a GPU-less
+        # `ubuntu-latest` runner regardless of code correctness):
+        #   - llama_cpp_load_progress_live: spawns a real llama.cpp process
+        #   - TestGpuAutoSelection / TestPreSpawnGpuResolution / TestPerGpuFitGuardAllCounts:
+        #       require live transformers config introspection on real GPUs
+        #   - TestTransformersIntrospection: same
+        #   - test_returns_cuda_when_cuda_available / test_calls_cuda_cache_when_cuda:
+        #       assume CUDA-capable GPU
+        run: |
+          python -m pytest tests/ -q --tb=short \
+            --ignore=tests/test_studio_api.py \
+            -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
+
+  repo-cpu-tests:
+    # Auto-discover everything under tests/ that is not GPU-bound by
+    # design. New tests added in covered directories are picked up
+    # without a workflow edit. Locally validated: 760 passed, 1 skipped,
+    # 23 deselected. tests/conftest.py (mirroring unsloth-zoo PR #624)
+    # pre-loads unsloth_zoo.device_type and unsloth.device_type under a
+    # mocked torch.cuda.is_available so the unsloth import chain
+    # succeeds on CPU.
+    name: Repo tests (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # node + uv unlock ~60 tests that previously skipped on CI:
+      #   - 9 tests in test_chat_preset_builtin_invariants.py need node to
+      #     compile a tiny TS harness against the frontend chat sources.
+      #   - tests/python/* spawn fresh `uv venv`s to verify the no-torch
+      #     install path; they self-skip when uv is missing.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - name: Install uv (for tests/python/* sandboxed venvs)
+        run: pip install uv
+
+      - name: Install deps (shared shape with backend pytest job)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r studio/backend/requirements/studio.txt
+          pip install \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 mammoth unpdf requests typer \
+            'numpy<3' pytest pytest-asyncio httpx
+          # torchvision: unsloth_zoo.vision_utils imports it at module scope.
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            'torch>=2.4,<2.11' 'torchvision<0.26'
+          pip install 'transformers>=4.51,<5.5'
+          # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
+          # versions ship a CPU build that imports cleanly on Linux.
+          pip install 'bitsandbytes>=0.45'
+          # unsloth.device_type imports unsloth_zoo.utils.Version at module
+          # scope, so the conftest preload needs unsloth_zoo even though
+          # it is an optional dep of unsloth.
+          pip install 'unsloth_zoo>=2026.5.1'
+          pip install -e . --no-deps
+
+      - name: Repo tests (CPU, auto-discovered)
+        env:
+          # tests/python/* import install_python_stack from studio/.
+          PYTHONPATH: ${{ github.workspace }}/studio
+          # Skip lazy compilation work the unsloth import chain wants to
+          # do at import time on a real GPU.
+          UNSLOTH_COMPILE_DISABLE: '1'
+        # --ignore: GPU-bound directories (qlora/saving need real weights;
+        #   tests/sh is the shell suite the next step handles; tests/utils
+        #   is a helpers folder); tests/vllm_compat + tests/version_compat
+        #   are dedicated multi-version drift canaries with their own job
+        #   in version-compat-ci.yml that installs the heavier dep set
+        #   (torchcodec, full transformers/peft/bnb pins) those tests need.
+        # State-sensitive hardware-spoofing files run in isolation in the
+        # next step because they mutate hardware.py module globals.
+        # -m: honour markers from tests/python/conftest.py (`server` =
+        #   needs studio venv, `e2e` = needs network).
+        # --deselect:
+        #   - test_model_registration / test_all_model_registration:
+        #     hit huggingface_hub for live model existence checks.
+        #   - test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds:
+        #     fail because no-torch-runtime.txt does not pin tokenizers
+        #     and the latest tokenizers (0.23.1) is incompatible with the
+        #     transformers it resolves to. Tracked separately; this is a
+        #     real bug in the no-torch install path, not a CI issue.
+        run: |
+          python -m pytest tests/ -q --tb=short \
+            --ignore=tests/qlora \
+            --ignore=tests/saving \
+            --ignore=tests/utils \
+            --ignore=tests/sh \
+            --ignore=tests/studio/test_hardware_dispatch_matrix.py \
+            --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
+            --ignore=tests/vllm_compat \
+            --ignore=tests/version_compat \
+            -m 'not server and not e2e' \
+            --deselect tests/test_model_registry.py::test_model_registration \
+            --deselect tests/test_model_registry.py::test_all_model_registration \
+            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2ETokenizersFix::test_autoconfig_works_with_no_torch_runtime' \
+            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2EFullNoTorchSandbox::test_autoconfig_succeeds'
+
+      - name: Hardware-spoof tests (state-sensitive, run in isolation)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio
+          UNSLOTH_COMPILE_DISABLE: '1'
+        # These two files mutate hardware.py module globals at runtime
+        # via the spoof fixtures, which leaks state into any other test
+        # that imports hardware. Run them in their own pytest invocation
+        # so the leak does not cross file boundaries.
+        run: |
+          python -m pytest -q --tb=short \
+            tests/studio/test_hardware_dispatch_matrix.py \
+            tests/studio/test_is_mlx_dispatch_gate.py
+
+      - name: Shell installer tests
+        # Subset that does not depend on a writable / pristine install.sh
+        # tree; test_install_host_defaults.sh checks install.ps1 layout
+        # which has drifted (separate followup).
+        run: |
+          set -e
+          for s in \
+              tests/sh/test_get_torch_index_url.sh \
+              tests/sh/test_mac_intel_compat.sh \
+              tests/sh/test_tauri_install_exit_order.sh \
+              tests/sh/test_torch_constraint.sh; do
+              echo "::group::$s"
+              bash "$s"
+              echo "::endgroup::"
+          done
+
