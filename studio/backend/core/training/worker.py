@@ -1156,15 +1156,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
-    random_seed = config.get("random_seed", 3407)
+    # Normalize random_seed so an explicit None from a raw/backend caller
+    # does not propagate through the seed chain. Mirrors the override
+    # handling for model/LoRA seeds below.
+    _raw_seed = config.get("random_seed", 3407)
+    random_seed = 3407 if _raw_seed is None else int(_raw_seed)
     # Treat absent OR explicit None the same way: fall back to random_seed.
     # `config.get(key, default)` only fills the default when the key is
     # missing; an explicit `None` would otherwise reach FastMLXModel and
     # disable deterministic init silently.
     _model_seed = config.get("model_random_state")
-    model_random_state = random_seed if _model_seed is None else _model_seed
+    model_random_state = random_seed if _model_seed is None else int(_model_seed)
     _lora_seed = config.get("lora_random_state")
-    lora_random_state = random_seed if _lora_seed is None else _lora_seed
+    lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),
@@ -1403,38 +1407,48 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
+    mlx_config_kwargs = dict(
+        per_device_train_batch_size = batch_size,
+        gradient_accumulation_steps = grad_accum,
+        max_steps = max_steps,
+        learning_rate = lr_value,
+        warmup_steps = warmup_steps,
+        lr_scheduler_type = lr_scheduler_type,
+        optim = optim_name,
+        weight_decay = weight_decay,
+        max_grad_norm = max_grad_norm,
+        max_grad_value = max_grad_value,
+        logging_steps = 1,
+        max_seq_length = max_seq_length,
+        seed = random_seed,
+        use_cce = True,
+        compile = True,
+        gradient_checkpointing = use_grad_checkpoint,
+        streaming = is_vlm,
+        packing = bool(config.get("packing", False)),
+        output_dir = output_dir,
+        save_steps = int(config.get("save_steps", 0) or 0),
+        eval_steps = eval_steps_val,
+    )
+
+    # Feature-detect optional MLXTrainingConfig fields so this PR does
+    # not require the paired unsloth-zoo change to be merged/released
+    # first. Released zoo trees that predate those fields are still
+    # constructable; once the floor is bumped this guard is a no-op.
+    _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
+    if "cast_norm_output_to_input_dtype" in _supported_fields:
+        mlx_config_kwargs["cast_norm_output_to_input_dtype"] = bool(
+            config.get("cast_norm_output_to_input_dtype", True)
+        )
+    if "dataset_order" in _supported_fields:
+        mlx_config_kwargs["dataset_order"] = "torch_randperm"
+
     trainer = MLXTrainer(
         model = model,
         tokenizer = tokenizer,
         train_dataset = dataset,
         eval_dataset = eval_dataset,
-        args = MLXTrainingConfig(
-            per_device_train_batch_size = batch_size,
-            gradient_accumulation_steps = grad_accum,
-            max_steps = max_steps,
-            learning_rate = lr_value,
-            warmup_steps = warmup_steps,
-            lr_scheduler_type = lr_scheduler_type,
-            optim = optim_name,
-            weight_decay = weight_decay,
-            max_grad_norm = max_grad_norm,
-            max_grad_value = max_grad_value,
-            cast_norm_output_to_input_dtype = bool(
-                config.get("cast_norm_output_to_input_dtype", True)
-            ),
-            logging_steps = 1,
-            max_seq_length = max_seq_length,
-            seed = config.get("random_seed", 3407),
-            use_cce = True,
-            compile = True,
-            gradient_checkpointing = use_grad_checkpoint,
-            streaming = is_vlm,
-            dataset_order = "torch_randperm",
-            packing = bool(config.get("packing", False)),
-            output_dir = output_dir,
-            save_steps = int(config.get("save_steps", 0) or 0),
-            eval_steps = eval_steps_val,
-        ),
+        args = MLXTrainingConfig(**mlx_config_kwargs),
     )
 
     # Tell the parent that eval is configured so the frontend shows the eval chart

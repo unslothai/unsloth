@@ -161,24 +161,31 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
 
-        self.assertIn('random_seed = config.get("random_seed", 3407)', source)
+        # random_seed itself is normalized first so explicit None coming
+        # from a raw / backend caller does not propagate through the chain.
+        self.assertIn('_raw_seed = config.get("random_seed", 3407)', source)
+        self.assertIn(
+            "random_seed = 3407 if _raw_seed is None else int(_raw_seed)",
+            source,
+        )
         # Both absent and explicit None must fall back to random_seed.
         # `dict.get(key, default)` only fills the default on absent keys,
         # so an explicit `None` would otherwise reach FastMLXModel /
         # get_peft_model and disable deterministic init.
         self.assertIn('_model_seed = config.get("model_random_state")', source)
         self.assertIn(
-            "model_random_state = random_seed if _model_seed is None else _model_seed",
+            "model_random_state = random_seed if _model_seed is None else int(_model_seed)",
             source,
         )
         self.assertIn('_lora_seed = config.get("lora_random_state")', source)
         self.assertIn(
-            "lora_random_state = random_seed if _lora_seed is None else _lora_seed",
+            "lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)",
             source,
         )
         self.assertIn("random_state = model_random_state", source)
         self.assertIn("random_state = lora_random_state", source)
-        self.assertIn('seed = config.get("random_seed", 3407)', source)
+        # MLXTrainingConfig now receives the normalized seed directly.
+        self.assertIn("seed = random_seed,", source)
 
     def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
@@ -191,6 +198,26 @@ class TestTrainingRawSupport(unittest.TestCase):
             "max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)",
             source,
         )
+
+    def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
+        # `cast_norm_output_to_input_dtype` and `dataset_order` ship in the
+        # paired unsloth-zoo update. Until that floor is in place, the
+        # worker must gate them so releases that predate those fields can
+        # still construct MLXTrainingConfig without TypeError.
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
+
+        self.assertIn(
+            'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
+            source,
+        )
+        self.assertIn('if "cast_norm_output_to_input_dtype" in _supported_fields:', source)
+        self.assertIn('if "dataset_order" in _supported_fields:', source)
+        # The unconditional kwargs must NOT include either gated field.
+        unconditional_block_start = source.find("mlx_config_kwargs = dict(")
+        unconditional_block_end = source.find(")", unconditional_block_start)
+        unconditional = source[unconditional_block_start:unconditional_block_end]
+        self.assertNotIn("cast_norm_output_to_input_dtype", unconditional)
+        self.assertNotIn("dataset_order", unconditional)
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(
