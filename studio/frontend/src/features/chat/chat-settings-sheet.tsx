@@ -460,13 +460,21 @@ export function ChatSettingsPanel({
   const updateThreadSettings = useRagStore((s) => s.updateThreadSettings);
   const ragDefaults = useRagStore((s) => s.defaults);
 
-  // Load this thread's RAG settings once when the sheet sees a thread
-  // for the first time. Updates re-render automatically via the store.
+  // Load this thread's RAG settings once per threadId. Ref-guarded so
+  // `threadSettings` isn't a dep — if it were, the post-load
+  // store-mutation re-triggers the effect and any failure mode where
+  // the selector flickers undefined produces an update loop.
+  const threadSettingsLoadedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (ragSource.kind === "thread" && activeThreadId && !threadSettings) {
+    if (
+      ragSource.kind === "thread"
+      && activeThreadId
+      && threadSettingsLoadedRef.current !== activeThreadId
+    ) {
+      threadSettingsLoadedRef.current = activeThreadId;
       void loadThreadSettings(activeThreadId);
     }
-  }, [ragSource.kind, activeThreadId, threadSettings, loadThreadSettings]);
+  }, [ragSource.kind, activeThreadId, loadThreadSettings]);
 
   const effectiveThreadChunking: RagChunkingStrategy =
     threadSettings?.chunking_strategy ??

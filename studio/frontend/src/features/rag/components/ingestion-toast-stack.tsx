@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRagStore } from "../stores/rag-store";
 import { IngestionProgress } from "./ingestion-progress";
 
@@ -33,16 +33,27 @@ export function IngestionToastStack() {
   );
 
   // Schedule auto-dismiss for jobs that have reached a terminal state.
+  // Ref-tracked so `dismissedJobs` isn't a useEffect dep — the setter
+  // fires *inside* the effect, and depending on its output here is a
+  // recipe for update-depth loops if the scheduler ever runs faster
+  // than the cleanup. We snapshot the latest dismissed set into a ref
+  // and read from it inside the scheduling loop instead.
+  const scheduledJobsRef = useRef<Set<string>>(new Set());
+  const dismissedJobsRef = useRef<Set<string>>(dismissedJobs);
+  dismissedJobsRef.current = dismissedJobs;
   useEffect(() => {
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (const [jobId, event] of Object.entries(jobs)) {
       if (
-        (event.type === "complete" || event.type === "error") &&
-        !dismissedJobs.has(jobId)
+        (event.type === "complete" || event.type === "error")
+        && !dismissedJobsRef.current.has(jobId)
+        && !scheduledJobsRef.current.has(jobId)
       ) {
+        scheduledJobsRef.current.add(jobId);
         timers.push(
           setTimeout(() => {
             setDismissedJobs((prev) => {
+              if (prev.has(jobId)) return prev;
               const next = new Set(prev);
               next.add(jobId);
               return next;
@@ -52,7 +63,7 @@ export function IngestionToastStack() {
       }
     }
     return () => timers.forEach(clearTimeout);
-  }, [jobs, dismissedJobs]);
+  }, [jobs]);
 
   const visible = Object.entries(jobs).filter(
     ([jobId]) => !dismissedJobs.has(jobId),
