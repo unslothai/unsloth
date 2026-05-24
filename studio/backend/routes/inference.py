@@ -213,6 +213,9 @@ from models.inference import (
     ListOpenAIContainersResponse,
     OpenAIContainerRequest,
     OpenAIContainerSummary,
+    DiffusionLoadRequest,
+    DiffusionGenerateRequest,
+    DiffusionGenerateResponse,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -1581,6 +1584,130 @@ async def generate_audio(
                 }
             ],
         }
+    )
+
+
+# =====================================================================
+# Diffusion image generation  (/images/*)
+# =====================================================================
+#
+# Lifecycle mirrors the GGUF chat backend: explicit load -> generate ->
+# unload. Diffusion pipelines compete for the same GPU as llama-server,
+# so callers on < 24 GB GPUs should unload the chat model first.
+
+
+def _get_diffusion_backend():
+    """Lazy import so non-diffusion installs do not pay the diffusers
+    cost at process start. The backend itself is a process-wide
+    singleton; reusing it across requests keeps pipeline state alive."""
+    from core.inference.diffusion import get_diffusion_backend
+
+    return get_diffusion_backend()
+
+
+@router.post("/images/load")
+async def diffusion_load(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Load a diffusion image-generation model.
+
+    Pass either a full diffusers repo or a GGUF-only repo plus the
+    desired ``gguf_filename``. Returns the new status payload (same
+    shape as ``/images/status``).
+    """
+    backend = _get_diffusion_backend()
+    try:
+        status = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: backend.load_model(
+                repo_id = payload.repo_id,
+                gguf_filename = payload.gguf_filename,
+                base_repo = payload.base_repo,
+                family_override = payload.family,
+                hf_token = payload.hf_token,
+                enable_model_cpu_offload = payload.enable_model_cpu_offload,
+            ),
+        )
+        return JSONResponse(content = status)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:
+        logger.exception("Diffusion load failed")
+        raise HTTPException(status_code = 500, detail = str(exc))
+
+
+@router.post("/images/unload")
+async def diffusion_unload(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Unload the current diffusion model and free GPU memory."""
+    backend = _get_diffusion_backend()
+    return backend.unload_model()
+
+
+@router.get("/images/status")
+async def diffusion_status(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return diffusion backend status (loaded, family, device, etc.)."""
+    backend = _get_diffusion_backend()
+    return backend.status()
+
+
+@router.post("/images/generate", response_model = DiffusionGenerateResponse)
+async def diffusion_generate(
+    payload: DiffusionGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate a single image from the loaded diffusion model.
+
+    Returns a base64 PNG plus the generation parameters that produced
+    it so the frontend can render the result and the user can reproduce
+    it via the same seed.
+    """
+    backend = _get_diffusion_backend()
+    if not backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No diffusion model is loaded. POST /api/inference/images/load first.",
+        )
+
+    start = time.time()
+    try:
+        from core.inference.diffusion import async_generate, encode_png_base64
+
+        image = await async_generate(
+            backend,
+            prompt = payload.prompt,
+            negative_prompt = payload.negative_prompt,
+            num_inference_steps = payload.num_inference_steps,
+            guidance_scale = payload.guidance_scale,
+            width = payload.width,
+            height = payload.height,
+            seed = payload.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:
+        logger.exception("Diffusion generation failed")
+        raise HTTPException(status_code = 500, detail = str(exc))
+
+    duration_ms = int((time.time() - start) * 1000)
+    status = backend.status()
+    return DiffusionGenerateResponse(
+        image_b64 = encode_png_base64(image),
+        image_mime = "image/png",
+        width = payload.width,
+        height = payload.height,
+        num_inference_steps = payload.num_inference_steps,
+        guidance_scale = payload.guidance_scale,
+        seed = payload.seed,
+        duration_ms = duration_ms,
+        model = status.get("repo_id"),
+        family = status.get("family"),
     )
 
 

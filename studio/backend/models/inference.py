@@ -1421,3 +1421,70 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ── Diffusion image generation ────────────────────────────────────
+
+
+class DiffusionLoadRequest(BaseModel):
+    """Load a diffusion image-generation model.
+
+    repo_id is the HF repo (either GGUF-only or full diffusers layout).
+    gguf_filename selects the quant when repo_id is a GGUF repo.
+    base_repo overrides the auto-picked diffusers base used for the
+    VAE / text encoders when loading a GGUF-only repo.
+    """
+
+    repo_id: str = Field(..., description = "HF repo id")
+    gguf_filename: Optional[str] = Field(
+        None, description = "GGUF filename inside repo_id (Q4_K_S, Q8_0, ...)"
+    )
+    base_repo: Optional[str] = Field(
+        None,
+        description = "Diffusers base repo to source VAE + text encoders from",
+    )
+    family: Optional[str] = Field(
+        None,
+        description = "Force pipeline family: flux.2-klein | flux.2 | flux.1 | qwen-image | stable-diffusion-3 | stable-diffusion-xl",
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
+    enable_model_cpu_offload: bool = Field(
+        True,
+        description = "Offload submodules to CPU between forwards. Trades a small speed hit for ~6 GB less VRAM on FLUX-class models.",
+    )
+
+
+class DiffusionGenerateRequest(BaseModel):
+    """Generate a single image from the currently-loaded diffusion model."""
+
+    prompt: str = Field(..., min_length = 1, max_length = 4000)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    num_inference_steps: int = Field(24, ge = 1, le = 200)
+    guidance_scale: float = Field(3.5, ge = 0.0, le = 20.0)
+    width: int = Field(1024, ge = 64, le = 2048)
+    height: int = Field(1024, ge = 64, le = 2048)
+    seed: Optional[int] = Field(
+        None, description = "Deterministic seed for reproducible outputs"
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: int) -> int:
+        if v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionGenerateResponse(BaseModel):
+    image_b64: str = Field(..., description = "Base64-encoded PNG")
+    image_mime: str = "image/png"
+    width: int
+    height: int
+    num_inference_steps: int
+    guidance_scale: float
+    seed: Optional[int] = None
+    duration_ms: int
+    model: Optional[str] = None
+    family: Optional[str] = None

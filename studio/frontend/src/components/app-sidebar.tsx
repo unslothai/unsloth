@@ -50,6 +50,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout01Icon,
+  PaintBrush02Icon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
@@ -493,6 +494,18 @@ export function AppSidebar() {
               active={isRecipesRoute}
               onClick={() => {
                 navigate({ to: "/data-recipes" });
+                closeMobileIfOpen();
+              }}
+            />
+
+            <NavItem
+              icon={PaintBrush02Icon}
+              label="Images"
+              active={pathname === "/images" || pathname.startsWith("/images/")}
+              disabled={chatOnly}
+              onClick={() => {
+                if (chatOnly) return;
+                navigate({ to: "/images" });
                 closeMobileIfOpen();
               }}
             />

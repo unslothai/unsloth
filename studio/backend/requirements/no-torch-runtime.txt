@@ -46,6 +46,9 @@ peft>=0.18.0,!=0.11.0
 huggingface_hub>=0.34.0
 hf_transfer
 diffusers
+# Required by diffusers.GGUFQuantizationConfig (used by the Images page
+# to load FLUX.2 / FLUX.1 / Qwen-Image / SDXL GGUFs from the Hub).
+gguf
 
 # Transitive deps required because this file is installed with --no-deps.
 # Without these, `from transformers import AutoConfig` fails at import time.
