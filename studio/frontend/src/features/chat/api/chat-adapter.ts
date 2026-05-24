@@ -1131,6 +1131,39 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
+      // Per-tab buffer for Codex parallel-calls fan-out. The backend
+      // emits N independent streams concurrently, so chunks for tab 2
+      // can land between chunks for tab 1 in arrival order. Keeping a
+      // dict keyed by tab_id and re-assembling cumulativeText from
+      // scratch on every codex event puts each tab's text under its
+      // own header regardless of arrival interleaving.
+      const codexTabBuffers = new Map<number, string>();
+      const codexTabClosed = new Set<number>();
+      const codexTabError = new Map<number, string>();
+      let codexTotalTabs = 0;
+      let codexGatherEmitted = false;
+
+      function renderCodexBuffer(): string {
+        if (codexTabBuffers.size === 0 && !codexGatherEmitted) return "";
+        const lines: string[] = [];
+        const ids = [...codexTabBuffers.keys()].sort((a, b) => a - b);
+        for (const id of ids) {
+          const header = codexTotalTabs
+            ? `[Codex tab ${id}/${codexTotalTabs}]`
+            : `[Codex tab ${id}]`;
+          lines.push(`\n\n${header}\n${codexTabBuffers.get(id) ?? ""}`);
+          if (codexTabError.has(id)) {
+            lines.push(`\n[Codex tab ${id} error: ${codexTabError.get(id)}]\n`);
+          }
+          if (codexTabClosed.has(id)) {
+            lines.push("\n");
+          }
+        }
+        if (codexGatherEmitted) {
+          lines.push("\n--- Synthesis ---\n");
+        }
+        return lines.join("");
+      }
       // Tracks whether we are currently inside a `<think>` block opened by
       // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
       // and DeepSeek's reasoner stream their thinking as a separate
@@ -1585,42 +1618,53 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Codex parallel-calls fan-out events: render each
-                // per-tab chunk inline with a "Tab N:" prefix so users
-                // see the N independent attempts even before the
-                // dedicated CodexParallelTabs UI is wired into the
-                // chat surface. `codex_gather` carries the synthesis
+                // Codex parallel-calls fan-out events: route chunks
+                // into per-tab buffers keyed by tab_id, then render
+                // the whole codex block from scratch each event so
+                // concurrent tabs cannot interleave under the wrong
+                // header. `codex_gather` carries the synthesis
                 // payload which the backend also emits as a normal
-                // content delta, so we drop it here to avoid showing
-                // the synthesis twice. tab_open / tab_close / tab_error
-                // are header markers we surface as one-line notes.
+                // content delta later in the same SSE stream, so we
+                // only render a divider here to avoid duplicating
+                // the synthesis text.
                 if (typeof toolEvent.type === "string" && toolEvent.type.startsWith("codex_")) {
                   if (toolEvent.type === "codex_tab_open") {
                     const tabId = Number(toolEvent.tab_id);
                     const total = Number(toolEvent.total_tabs);
-                    if (Number.isFinite(tabId) && Number.isFinite(total)) {
-                      cumulativeText += `\n\n[Codex tab ${tabId}/${total}]\n`;
+                    if (Number.isFinite(tabId)) {
+                      if (!codexTabBuffers.has(tabId)) {
+                        codexTabBuffers.set(tabId, "");
+                      }
+                      if (Number.isFinite(total) && total > codexTotalTabs) {
+                        codexTotalTabs = total;
+                      }
                     }
                   } else if (toolEvent.type === "codex_tab_chunk") {
+                    const tabId = Number(toolEvent.tab_id);
                     const text = typeof toolEvent.text === "string" ? toolEvent.text : "";
-                    if (text) cumulativeText += text;
+                    if (Number.isFinite(tabId) && text) {
+                      const prev = codexTabBuffers.get(tabId) ?? "";
+                      codexTabBuffers.set(tabId, prev + text);
+                    }
                   } else if (toolEvent.type === "codex_tab_error") {
                     const tabId = Number(toolEvent.tab_id);
                     const err = typeof toolEvent.error === "string" ? toolEvent.error : "error";
                     if (Number.isFinite(tabId)) {
-                      cumulativeText += `\n[Codex tab ${tabId} error: ${err}]\n`;
+                      codexTabError.set(tabId, err);
+                      if (!codexTabBuffers.has(tabId)) {
+                        codexTabBuffers.set(tabId, "");
+                      }
                     }
                   } else if (toolEvent.type === "codex_tab_close") {
-                    // Mark end of tab block so synthesis is visually separated.
-                    cumulativeText += "\n";
+                    const tabId = Number(toolEvent.tab_id);
+                    if (Number.isFinite(tabId)) {
+                      codexTabClosed.add(tabId);
+                    }
                   } else if (toolEvent.type === "codex_gather") {
-                    // Synthesis is also emitted as a normal content
-                    // delta later in the same SSE stream; nothing to
-                    // add here. Surface a divider so the user can tell
-                    // where the synthesis starts.
-                    cumulativeText += "\n--- Synthesis ---\n";
+                    codexGatherEmitted = true;
                   }
-                  const codexParts = parseAssistantContent(cumulativeText);
+                  const codexBlock = renderCodexBuffer();
+                  const codexParts = parseAssistantContent(cumulativeText + codexBlock);
                   yield {
                     content: [...toolCallParts, ...codexParts],
                   };
