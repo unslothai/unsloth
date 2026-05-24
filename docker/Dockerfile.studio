@@ -1,0 +1,51 @@
+# Unsloth Studio variant of the Blackwell image.
+#
+# Builds on top of unsloth-blackwell:<tag> (default `test`) and runs the
+# upstream `install.sh --local` so the Studio CLI can re-exec into its
+# own venv under $UNSLOTH_STUDIO_HOME. The base image already ships the
+# `unsloth` Python CLI, but `unsloth studio` refuses to start until that
+# venv exists; install.sh is the canonical way to lay it down.
+#
+# Build:
+#   docker buildx build \
+#     --build-arg BASE_TAG=test \
+#     -f docker/Dockerfile.studio \
+#     -t unsloth-blackwell:studio docker/
+#
+# Run:
+#   docker run --rm --gpus '"device=0"' -p 8888:8888 \
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface \
+#     unsloth-blackwell:studio
+#
+# Open http://localhost:8888 . First-boot admin password is printed in the
+# container logs and persisted under /opt/unsloth-studio/auth/.bootstrap_password.
+
+ARG BASE_TAG=test
+FROM unsloth-blackwell:${BASE_TAG}
+
+USER root
+ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    DEBIAN_FRONTEND=noninteractive
+
+# install.sh needs curl + git; the base image already has python + uv + pip.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Clone + install Studio into a dedicated venv under $UNSLOTH_STUDIO_HOME.
+# --local makes install.sh use the just-cloned source tree instead of PyPI.
+# We bake a known-good ref (`main`) so the image is reproducible; bump as
+# part of the regular Docker image refresh.
+RUN mkdir -p "${UNSLOTH_STUDIO_HOME}" \
+ && git clone --depth 1 https://github.com/unslothai/unsloth /tmp/unsloth-studio-src \
+ && cd /tmp/unsloth-studio-src \
+ && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" bash install.sh --local \
+ && rm -rf /tmp/unsloth-studio-src /root/.cache
+
+# Expose Studio's HTTP port. Default CMD binds 0.0.0.0 because containers
+# isolate the namespace; the operator publishes it explicitly with `-p`.
+EXPOSE 8888
+
+# Use the Studio launcher in the dedicated venv; -H 0.0.0.0 binds inside
+# the container only and is fine for typical local docker workflows.
+CMD ["sh", "-c", "${UNSLOTH_STUDIO_HOME}/bin/unsloth studio -H 0.0.0.0 -p 8888"]
