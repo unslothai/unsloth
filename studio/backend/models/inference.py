@@ -788,18 +788,44 @@ class ChatCompletionRequest(BaseModel):
     )
     parallel_calls: int = Field(
         default = 1,
-        ge = 1,
-        le = 20,
         description = (
             "[x-unsloth] Codex provider only. When > 1, fan the chat turn "
             "out across N parallel Codex calls and synthesise a unified "
             "final answer. Each parallel attempt is rendered as its own tab "
             "in the chat UI; a final 'Synthesis' tab carries the merged "
-            "output. Bounded to [1, 20] by pydantic so a runaway value can't "
-            "saturate the local CLI. Defaults to 1 (single-call shape). "
+            "output. Silently clamped to [1, 20] by `_clamp_parallel_calls` "
+            "so a runaway value cannot saturate the local CLI -- using a "
+            "validator (rather than `ge=1, le=20`) keeps backwards "
+            "compatibility with pre-PR clients that sent the field as a "
+            "stray OpenAI extra (e.g. `0` for 'no fan-out') and would "
+            "otherwise hit a 422. Defaults to 1 (single-call shape). "
             "Silently ignored on every provider other than `codex`."
         ),
     )
+
+    @field_validator("parallel_calls", mode = "before")
+    @classmethod
+    def _clamp_parallel_calls(cls, value: Any) -> int:
+        """Coerce ``parallel_calls`` to [1, 20] without rejecting weird inputs.
+
+        Pre-PR behaviour was to silently ignore unknown / out-of-range
+        OpenAI extras; using ``ge=1, le=20`` on the Field would have
+        regressed that by returning a 422 to any non-Codex client that
+        happened to set the field to 0 or omit it as ``None``. Coerce
+        the value here instead so the schema stays self-documenting
+        ([1, 20]) while accepting legacy inputs.
+        """
+        if value is None:
+            return 1
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return 1
+        if n < 1:
+            return 1
+        if n > 20:
+            return 20
+        return n
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":

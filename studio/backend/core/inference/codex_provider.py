@@ -589,9 +589,32 @@ async def _stream_thread_run(
     # Only reached when no streaming helper emitted anything, so this
     # is the first (and only) execution of the turn.
     result = await thread.run(prompt)
-    text = _coerce_text(result) or getattr(result, "final_response", "") or str(result)
+    text = _buffered_result_text(result)
     if text:
         yield text
+
+
+def _buffered_result_text(result: Any) -> str:
+    """Extract assistant text from a buffered ``TurnResult``.
+
+    The upstream SDK documents ``TurnResult.final_response`` as
+    nullable -- a turn that performs only tool work and completes
+    without a final assistant message will set it to ``None``. The
+    previous ``... or str(result)`` fallback then sent a Python
+    object repr (``TurnResult(...)``) into the chat, which surfaced
+    as visible garbage to the user. Returning the empty string for
+    that case lets the OpenAI-shape stream finish cleanly with no
+    extra content chunk -- the usage / stop / [DONE] frames still
+    fire, and the chat UI simply shows no assistant text rather
+    than a misleading object dump.
+    """
+    text = _coerce_text(result)
+    if text:
+        return text
+    final = getattr(result, "final_response", None)
+    if isinstance(final, str) and final:
+        return final
+    return ""
 
 
 def _safe_thread_safety_kwargs() -> dict[str, Any]:
@@ -1023,9 +1046,10 @@ async def _run_codex_synthesis(
                 codex, model, system, synthesis_prompt
             )
             result = await thread.run(synthesis_prompt)
-        return (
-            _coerce_text(result) or getattr(result, "final_response", "") or str(result)
-        )
+        # Use the same buffered extraction as `_stream_thread_run` so a
+        # synthesis turn whose `final_response` is None returns an empty
+        # string instead of a `TurnResult(...)` Python object repr.
+        return _buffered_result_text(result)
     except Exception as exc:
         logger.warning("codex_provider.synthesis_failed", error = str(exc))
         return ""
@@ -1116,6 +1140,35 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     rc: int = -1
     cancelled = False
 
+    # Allow-list of substrings the upstream `codex login --device-auth`
+    # command prints during the normal flow. Anything outside this list
+    # is treated as opaque and not forwarded to the browser, so a
+    # shimmed binary that prints auth JSON, refresh tokens, local
+    # config paths, or unexpected stderr cannot leak that content
+    # through Studio's authenticated SSE stream. The URL and code
+    # extracted above are emitted separately as `device_url` /
+    # `device_code` events and are not affected by this filter.
+    safe_log_patterns: tuple[str, ...] = (
+        "welcome to codex",
+        "initializing",
+        "open this",
+        "open:",
+        "open the",
+        "verification",
+        "enter this one-time code",
+        "enter the code",
+        "waiting",
+        "successfully logged in",
+        "logged in",
+        "signed in",
+        "browser opened",
+        "press ctrl",
+    )
+
+    def _safe_to_forward(text: str) -> bool:
+        lowered = text.lower()
+        return any(pat in lowered for pat in safe_log_patterns)
+
     try:
         assert proc.stdout is not None
         while True:
@@ -1134,7 +1187,11 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
                 if cm:
                     yield {"type": "device_code", "code": cm.group(1)}
                     code_emitted = True
-            yield {"type": "log", "line": line}
+            # Only forward lines from the known safe vocabulary; opaque
+            # output (file paths, tokens, JSON, error messages) stays in
+            # backend logs only.
+            if line and _safe_to_forward(line):
+                yield {"type": "log", "line": line}
     except (asyncio.CancelledError, GeneratorExit):
         cancelled = True
         raise

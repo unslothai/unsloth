@@ -66,14 +66,14 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
       ) as AsyncGenerator<CodexLoginEvent>) {
         if (event.type === "device_url" && event.url) {
           setDeviceUrl(event.url);
-          // Open the verification page eagerly so the user doesn't
-          // have to copy the URL out of the log surface. ``noopener``
-          // prevents the auth-tab from controlling the Studio window.
-          try {
-            window.open(event.url, "_blank", "noopener,noreferrer");
-          } catch {
-            // Ignore -- the URL is still visible in the log.
-          }
+          // Do NOT auto-open the verification URL with `window.open`.
+          // The click handler that started this flow has already
+          // awaited an SSE event, so the call is no longer in a user
+          // gesture and most browsers (Firefox, Safari, Chrome with
+          // strict popup settings) will silently block the popup.
+          // The URL is rendered as a prominent link below so the
+          // user can open it in one click without depending on the
+          // popup heuristic.
         } else if (event.type === "device_code" && event.code) {
           setDeviceCode(event.code);
         } else if (event.type === "log" && event.line) {
@@ -114,17 +114,29 @@ export function CodexLoginButton({ onLoggedIn }: Props) {
         {busy ? "Signing in to Codex…" : "Sign in to Codex"}
       </Button>
       {deviceUrl && (
-        <p className="text-xs text-muted-foreground">
-          Verification URL:{" "}
-          <a
-            href={deviceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline"
+        <div className="space-y-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            asChild
           >
-            {deviceUrl}
-          </a>
-        </p>
+            {/* Opens via a real anchor click so popup blockers cannot
+                interfere -- the popup-block path used to apply when
+                `window.open` was triggered from inside an awaited
+                event handler instead of a fresh user gesture. */}
+            <a
+              href={deviceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open verification page
+            </a>
+          </Button>
+          <p className="break-all text-[11px] text-muted-foreground">
+            Or copy: {deviceUrl}
+          </p>
+        </div>
       )}
       {deviceCode && (
         <p className="text-xs text-muted-foreground">

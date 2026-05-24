@@ -16,9 +16,10 @@ Covers:
 * Parallel-calls fan-out: ``parallel_calls > 1`` spawns N async tasks
   and emits ``codex_tab_open`` / ``codex_tab_chunk`` / ``codex_tab_close``
   events plus a final ``codex_gather`` synthesis event.
-* Request validator: ``parallel_calls`` is clamped to [1, 20] by
-  pydantic so a runaway value is rejected with 422 before any Codex
-  task is spawned.
+* Request validator: ``parallel_calls`` is silently clamped to
+  [1, 20] by a Pydantic field validator (not by ``ge=1, le=20``) so
+  non-Codex clients that send legacy values like ``0`` continue to
+  be accepted instead of getting a 422.
 """
 
 from __future__ import annotations
@@ -429,27 +430,47 @@ class TestParallelCallsValidator:
             )
             assert req.parallel_calls == n
 
-    def test_request_rejects_below_one(self):
+    def test_request_clamps_below_one(self):
+        """Pre-PR clients sometimes sent `parallel_calls=0` as a stray
+        OpenAI extra and the request was silently accepted; rejecting
+        with 422 would regress that. The validator now clamps to 1.
+        """
         from models.inference import ChatCompletionRequest
-        from pydantic import ValidationError
 
-        with pytest.raises(ValidationError):
-            ChatCompletionRequest(
+        for n in (0, -1, -100):
+            req = ChatCompletionRequest(
                 model = "gpt-5.4",
                 messages = [{"role": "user", "content": "hi"}],
-                parallel_calls = 0,
+                parallel_calls = n,
             )
+            assert req.parallel_calls == 1, f"clamp failed for {n}"
 
-    def test_request_rejects_above_twenty(self):
+    def test_request_clamps_above_twenty(self):
+        """A runaway value (1000, etc.) is clamped to the 20 cap so it
+        cannot saturate the local CLI even when the client misbehaves.
+        """
         from models.inference import ChatCompletionRequest
-        from pydantic import ValidationError
 
-        with pytest.raises(ValidationError):
-            ChatCompletionRequest(
+        for n in (21, 100, 1000):
+            req = ChatCompletionRequest(
                 model = "gpt-5.4",
                 messages = [{"role": "user", "content": "hi"}],
-                parallel_calls = 21,
+                parallel_calls = n,
             )
+            assert req.parallel_calls == 20, f"clamp failed for {n}"
+
+    def test_request_coerces_garbage_to_one(self):
+        """Strings / floats / None coerce to 1 instead of 422 so a
+        legacy or misconfigured client cannot break chat for everyone."""
+        from models.inference import ChatCompletionRequest
+
+        for value in (None, "garbage", float("nan")):
+            req = ChatCompletionRequest(
+                model = "gpt-5.4",
+                messages = [{"role": "user", "content": "hi"}],
+                parallel_calls = value,
+            )
+            assert req.parallel_calls == 1
 
     def test_request_default_is_one(self):
         """Default = 1 so the field matches the single-call code path
@@ -1329,6 +1350,129 @@ class TestCodexHardenedRegressions:
         assert "sandbox" not in kw
         # Model still passed so the request is well-formed.
         assert kw.get("model") == "gpt-5.5"
+
+    def test_device_login_log_filter_drops_unknown_lines(self, monkeypatch):
+        """The login stream's `log` events must not forward arbitrary
+        subprocess output. Only an allow-list of known progress
+        strings reaches the browser; anything else (auth JSON,
+        tokens, paths, error tails) stays in backend logs.
+        """
+        # Build a synthetic stdout stream with one safe line and one
+        # unsafe line, then drive the login generator against it.
+        from core.inference import codex_provider as cp
+
+        class _FakeStdout:
+            def __init__(self, lines: list[bytes]):
+                self._lines = list(lines)
+
+            async def readline(self) -> bytes:
+                if not self._lines:
+                    return b""
+                return self._lines.pop(0)
+
+        class _FakeProc:
+            pid = 99999
+            returncode = None
+            stdout = _FakeStdout(
+                [
+                    b"Welcome to Codex\n",
+                    b"Open: https://auth.openai.com/codex/device\n",
+                    b"Enter this one-time code: ABCD-EFGH\n",
+                    b'{"refresh_token": "rt_LEAK_LEAK_LEAK"}\n',
+                    b"/home/u/.codex/auth.json saved\n",
+                    b"Successfully logged in\n",
+                ],
+            )
+
+            async def wait(self):
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                self.returncode = -9
+
+            def terminate(self):
+                self.returncode = -15
+
+        async def _fake_create_subprocess_exec(*a, **kw):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            cp.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
+        )
+
+        events: list[dict] = []
+
+        async def _collect():
+            async for ev in cp.stream_codex_device_login():
+                events.append(ev)
+
+        asyncio.run(_collect())
+        log_lines = [ev.get("line", "") for ev in events if ev.get("type") == "log"]
+        joined = "\n".join(log_lines)
+        # Sensitive content must not have been forwarded.
+        assert "refresh_token" not in joined, f"token leaked: {joined!r}"
+        assert "rt_LEAK_LEAK_LEAK" not in joined
+        assert "auth.json" not in joined, f"local config path leaked: {joined!r}"
+        # The known-safe progress lines must be present so the UI can
+        # show the user what is happening.
+        assert any("Welcome to Codex" in line for line in log_lines)
+        assert any("Successfully logged in" in line for line in log_lines)
+        # device_url + device_code events must still fire.
+        url_events = [ev for ev in events if ev.get("type") == "device_url"]
+        code_events = [ev for ev in events if ev.get("type") == "device_code"]
+        assert url_events and url_events[0]["url"].endswith("/codex/device")
+        assert code_events and code_events[0]["code"] == "ABCD-EFGH"
+
+    def test_buffered_result_none_final_does_not_emit_repr(self, monkeypatch):
+        """A buffered TurnResult whose final_response is None must NOT
+        send a Python object repr (``TurnResult(...)``) to the user.
+        Returning an empty content chunk is the right shape: the
+        stream still finishes with the usage + stop + [DONE] frames,
+        but no garbage assistant text appears.
+        """
+
+        class _ResultNoFinal:
+            final_response = None  # explicit None
+
+            def __repr__(self):
+                return "TurnResult(internal=should_not_leak)"
+
+        class _ThreadBuffered:
+            async def run(self, prompt):
+                return _ResultNoFinal()
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _ThreadBuffered()
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        chunks: list[str] = []
+
+        async def _collect():
+            async for c in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                chunks.append(c)
+
+        asyncio.run(_collect())
+        body = "".join(chunks)
+        assert (
+            "TurnResult" not in body
+        ), f"Python object repr leaked to user content: {body!r}"
+        assert "should_not_leak" not in body
+        # Stream still terminated cleanly.
+        assert "[DONE]" in body
 
     def test_empty_stream_falls_back_to_completed_agent_message(self, monkeypatch):
         """A successful turn that emits zero ``message.delta`` events
