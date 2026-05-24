@@ -22,19 +22,11 @@ rich>=13.0
 markdown-it-py>=3.0
 mdurl>=0.1
 pygments>=2.0
-# pydantic is intentionally NOT installed via this --no-deps file.
-# install.sh / install.ps1 / install_python_stack.py run a separate
-# `pip install pydantic` (with deps) just before this file is
-# applied, so pip resolves `pydantic-core` to the exact version
-# pydantic's `_ensure_pydantic_core_version` check expects. Listing
-# pydantic + pydantic-core unpinned here and resolving them under
-# --no-deps used to pick the latest of each independently and trip
-# `SystemError: pydantic-core 2.X.Y is incompatible with the current
-# pydantic version` on the first import (Windows fresh-venv repro
-# was the canonical case). pydantic's transitive deps
-# (annotated-types, pydantic-core, typing-extensions,
-# typing-inspection) are torch-free, so installing it WITH deps
-# does not pull torch.
+# pydantic is intentionally NOT pinned here. install.sh / install.ps1
+# / install_python_stack.py run `pip install pydantic` WITH deps just
+# before this --no-deps file is applied, so pip resolves pydantic-core
+# to the exact version pydantic's _ensure_pydantic_core_version check
+# expects. Pinning both under --no-deps used to drift them apart.
 pyyaml
 nest-asyncio
 
