@@ -78,6 +78,22 @@ del already_imported, critical_modules
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
+# Containers launched with `docker --gpus '"device=N"'` only set
+# NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES is absent. Inductor's compile
+# worker subprocess pool then fails to enumerate the cgroup-pinned GPU and
+# raises `Could not find an active GPU backend` from
+# torch/_inductor/runtime/triton_helpers.py::set_driver_to_gpu. Force a single
+# in-process compile thread so the pool is never spawned. Set
+# UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0 to opt out.
+if (
+    os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "auto") != "0"
+    and "NVIDIA_VISIBLE_DEVICES" in os.environ
+    and "CUDA_VISIBLE_DEVICES" not in os.environ
+    and "TORCHINDUCTOR_COMPILE_THREADS" not in os.environ
+):
+    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+    os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
+
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
