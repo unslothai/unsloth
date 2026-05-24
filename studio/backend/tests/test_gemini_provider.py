@@ -249,6 +249,90 @@ def test_presence_penalty_forwarded_to_generation_config(monkeypatch):
     assert "presencePenalty" not in captured["body"]["generationConfig"]
 
 
+# ── thinkingConfig translation ────────────────────────────────────────
+
+
+def test_thinking_disabled_sets_budget_zero_on_flash(monkeypatch):
+    """enable_thinking=False on Flash-tier sets thinkingBudget=0."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-flash",
+        enable_thinking = False,
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc == {"thinkingBudget": 0}, tc
+
+
+def test_thinking_disabled_pro_tier_uses_small_budget(monkeypatch):
+    """Pro-tier ids 400 on thinkingBudget=0 ("only works in thinking mode");
+    a small positive budget is forwarded instead so the turn doesn't fail.
+    """
+    for model in (
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-2.5-pro",
+        "gemini-pro-latest",
+    ):
+        captured = _capture_body(
+            monkeypatch,
+            model = model,
+            enable_thinking = False,
+        )
+        tc = captured["body"]["generationConfig"].get("thinkingConfig")
+        assert tc is not None, f"missing thinkingConfig for {model}: {captured}"
+        assert tc["thinkingBudget"] > 0, (model, tc)
+
+
+def test_reasoning_effort_levels_map_to_budgets(monkeypatch):
+    """The OpenAI/Anthropic effort ladder must translate to Gemini budgets."""
+    cases = {
+        "minimal": 512,
+        "low": 2048,
+        "medium": 8192,
+        "high": 24576,
+        "max": -1,    # dynamic
+        "xhigh": -1,
+    }
+    for effort, expected in cases.items():
+        captured = _capture_body(
+            monkeypatch,
+            model = "gemini-3.5-flash",
+            reasoning_effort = effort,
+        )
+        tc = captured["body"]["generationConfig"].get("thinkingConfig")
+        assert tc == {"thinkingBudget": expected}, (effort, tc)
+
+
+def test_reasoning_effort_none_disables_on_flash(monkeypatch):
+    """`reasoning_effort='none'` is shorthand for thinking off (Flash)."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-flash",
+        reasoning_effort = "none",
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc == {"thinkingBudget": 0}, tc
+
+
+def test_thinking_default_omits_thinking_config(monkeypatch):
+    """When neither knob is supplied, thinkingConfig is omitted entirely
+    (Google's server-side default applies)."""
+    captured = _capture_body(monkeypatch, model = "gemini-3.5-flash")
+    gc = captured["body"]["generationConfig"]
+    assert "thinkingConfig" not in gc, gc
+
+
+def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
+    """`nano-banana-pro-preview` is an alias for the Pro image model and
+    must set responseModalities=[TEXT,IMAGE] same as the `*-image` ids."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "nano-banana-pro-preview",
+    )
+    gc = captured["body"]["generationConfig"]
+    assert gc.get("responseModalities") == ["TEXT", "IMAGE"], gc
+
+
 # ── web_search forwarded as googleSearch tool ────────────────────────
 
 

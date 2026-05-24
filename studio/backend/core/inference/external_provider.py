@@ -377,6 +377,8 @@ class ExternalProviderClient:
                     presence_penalty,
                     enabled_tools,
                     enable_prompt_caching,
+                    enable_thinking,
+                    reasoning_effort,
                 ):
                     yield line
                 return
@@ -2574,6 +2576,8 @@ class ExternalProviderClient:
         presence_penalty: float = 0.0,
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[Any] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -2797,11 +2801,57 @@ class ExternalProviderClient:
         # we translate to a tool_end with image_b64/image_mime so the
         # chat UI renders the picture inline. See
         # https://ai.google.dev/gemini-api/docs/image-generation.
-        is_image_model = "-image" in model.lower() or bool(
+        is_image_model = "-image" in model.lower() or "nano-banana" in model.lower() or bool(
             enabled_tools and "image_generation" in enabled_tools
         )
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
+
+        # Thinking budget plumbing. Gemini 3.x, 3.5 Flash, gemini-pro-latest
+        # and gemini-flash-latest spend hidden "thoughts" tokens before they
+        # produce the streamed answer. With a tight `max_tokens` budget the
+        # answer can be entirely consumed by thoughts, so the caller's
+        # `enable_thinking` / `reasoning_effort` knobs need to actually
+        # reach `generationConfig.thinkingConfig`. Per
+        # https://ai.google.dev/gemini-api/docs/thinking:
+        #   thinkingBudget = 0  -> disable thinking (Flash-tier only;
+        #                          Pro-tier 400s with "only works in
+        #                          thinking mode")
+        #   thinkingBudget = -1 -> dynamic / let the model decide
+        #   thinkingBudget = N>0 -> hard cap of N thought tokens
+        # Pro-tier models cannot be turned off; we silently coerce
+        # an "off" request to a small budget on those so they stay
+        # responsive instead of 400ing the whole turn.
+        _PRO_THINKING_ONLY = (
+            "gemini-pro-latest",
+            "gemini-3.1-pro",
+            "gemini-3-pro",
+            "gemini-2.5-pro",
+        )
+        _is_pro_thinking_only = any(p in model for p in _PRO_THINKING_ONLY)
+        # Effort -> budget tokens. Mirrors the OpenAI ladder so the
+        # frontend's existing "minimal/low/medium/high/max" picker maps
+        # to sensible Gemini budgets. Match the keys the rest of Studio
+        # uses (see `stream_chat_completion`'s reasoning_effort docstring
+        # and the OpenAI / Anthropic helpers).
+        _EFFORT_TO_BUDGET: dict[str, int] = {
+            "minimal": 512,
+            "low": 2048,
+            "medium": 8192,
+            "high": 24576,
+            "xhigh": -1,  # dynamic
+            "max": -1,    # dynamic
+        }
+        thinking_budget: Optional[int] = None
+        effort_lc = (reasoning_effort or "").strip().lower()
+        if effort_lc == "none" or enable_thinking is False:
+            thinking_budget = 128 if _is_pro_thinking_only else 0
+        elif effort_lc in _EFFORT_TO_BUDGET:
+            thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
+        elif enable_thinking is True:
+            thinking_budget = -1
+        if thinking_budget is not None:
+            gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
         if gen_config:
             body["generationConfig"] = gen_config

@@ -72,14 +72,23 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         # Curated lineup -- the live ListModels response returns dozens
         # of historical / experimental / embedding ids. Cap to the
-        # current 2.5/2.0 family plus the Nano Banana image model and
-        # the rolling `*-latest` aliases.
+        # current chat-capable Gemini families (3.5 / 3.1 / 3 / 2.5)
+        # plus the Nano Banana image trio and the rolling `*-latest`
+        # aliases. `gemini-2.0-flash*` were retired by Google in 2026
+        # and are intentionally excluded; the allowlist below blocks
+        # them from re-appearing through the live ListModels fetch.
+        # Verified against the live `/v1beta/models` catalog 2026-05-24.
         "default_models": [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
             "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-exp",
+            "gemini-3-pro-image-preview",
+            "gemini-3.1-flash-image-preview",
             "gemini-2.5-flash-image",
         ],
         "supports_streaming": True,
@@ -95,11 +104,25 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "API key from https://aistudio.google.com/apikey. "
             "See https://ai.google.dev/gemini-api/docs for endpoint shapes."
         ),
+        # Matches the chat-capable 3.5 / 3.1 / 3 / 2.5 families plus the
+        # rolling *-latest aliases (which Google rolls forward as new
+        # generations ship). Image-tier ids (`-image`, `-image-preview`,
+        # `nano-banana-pro-preview`) flow through the Nano Banana
+        # `responseModalities` path in `_stream_gemini`. Retired 2.0
+        # ids ARE NOT in this regex on purpose -- Google's ListModels
+        # would otherwise re-surface them and they 404 on use.
         "model_id_allowlist": re.compile(
-            r"^(gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
-            r"gemini-2\.5-flash-image|gemini-2\.0-flash|"
-            r"gemini-2\.0-flash-exp|gemini-pro-latest|"
-            r"gemini-flash-latest|gemini-flash-lite-latest)$"
+            r"^("
+            r"gemini-3\.5-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
+            r"gemini-3\.1-flash-image-preview|"
+            r"gemini-3-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3-pro-image-preview|"
+            r"nano-banana-pro-preview|"
+            r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
+            r"gemini-2\.5-flash-image|"
+            r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
+            r")$"
         ),
     },
     "deepseek": {

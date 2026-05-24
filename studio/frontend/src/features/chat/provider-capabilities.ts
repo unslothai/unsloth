@@ -577,6 +577,67 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   return withEnableThinkingStyle();
 }
 
+// Gemini's thinking ladder.
+//   - 3.5 / 3.1 / 3 Flash + Flash-Lite + 2.5 Flash + *-latest aliases:
+//     toggleable thinking with effort levels (backend maps to
+//     `thinkingConfig.thinkingBudget`).
+//   - 3.x Pro + gemini-pro-latest + 2.5 Pro: "thinking only" -- the
+//     API 400s on `thinkingBudget=0` ("This model only works in
+//     thinking mode"), so the UI hides the off switch.
+//   - 2.5 Flash-Lite: no native thinking surfaced; leave it off.
+//   - Image-tier ids (`*-image*`, `nano-banana-pro-preview`): image
+//     generation path -- no reasoning controls.
+const GEMINI_THINKING_PRO_PREFIXES = [
+  "gemini-3.5-pro",
+  "gemini-3.1-pro",
+  "gemini-3-pro",
+  "gemini-2.5-pro",
+  "gemini-pro-latest",
+];
+const GEMINI_THINKING_FLASH_PREFIXES = [
+  "gemini-3.5-flash",
+  "gemini-3.1-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+];
+const GEMINI_IMAGE_HINTS = [
+  "-image",
+  "nano-banana",
+];
+function resolveGeminiReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
+  const m = modelId.toLowerCase();
+  if (GEMINI_IMAGE_HINTS.some((h) => m.includes(h))) {
+    // Image generation; no thinking knob.
+    return withEnableThinkingStyle();
+  }
+  if (GEMINI_THINKING_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      // Pro tier: cannot turn thinking fully off.
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "max"] as const,
+    });
+  }
+  if (GEMINI_THINKING_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ] as const,
+    });
+  }
+  return withEnableThinkingStyle();
+}
+
 function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   if (modelId === "magistral-medium-latest") {
     return withReasoningEffortStyle({
@@ -674,6 +735,9 @@ export function getExternalReasoningCapabilities(
   }
   if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
   if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "gemini") {
+    return resolveGeminiReasoningCapabilities(modelForMatching);
+  }
   if (!isOpenAIProvider && !isAnthropicProvider) {
     return withEnableThinkingStyle();
   }
