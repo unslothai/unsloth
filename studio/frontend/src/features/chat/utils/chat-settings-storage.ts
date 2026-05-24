@@ -140,6 +140,14 @@ function sanitizeInferenceParams(
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
   }
+  // fastMode is in PERSISTED_INFERENCE_PARAM_KEYS but used to be
+  // stripped here because the sanitizer only kept numeric fields plus
+  // the two explicit string/bool fields above. Save the toggle the
+  // same way trustRemoteCode is saved so the value survives reload
+  // and the /api/chat/settings round-trip.
+  if (typeof value.fastMode === "boolean") {
+    params.fastMode = value.fastMode;
+  }
   return hasKeys(params) ? params : undefined;
 }
 

@@ -933,7 +933,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
-      const outboundMessages = messages
+      // Two-pass build so a refused assistant turn drops the user
+      // message that triggered it as well. Anthropic's refusal-handling
+      // guidance is explicit that leaving the offending user prompt in
+      // context causes the next request to re-trigger the classifier;
+      // returning null on just the assistant side was not enough.
+      const survivingMessages: RunMessage[] = [];
+      for (const message of messages) {
+        if (
+          message.role === "assistant" &&
+          collectTextParts(message)
+            .join("\n")
+            .includes(ANTHROPIC_REFUSAL_SENTINEL)
+        ) {
+          const last = survivingMessages.at(-1);
+          if (last && last.role === "user") {
+            survivingMessages.pop();
+          }
+          continue;
+        }
+        survivingMessages.push(message);
+      }
+
+      const outboundMessages = survivingMessages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
