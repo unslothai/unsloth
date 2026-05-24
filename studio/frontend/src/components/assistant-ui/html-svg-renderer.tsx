@@ -13,6 +13,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -68,14 +69,39 @@ const SVG_PURIFY_CONFIG = {
     "link",
     "meta",
   ],
-  // Drop URL-bearing attributes that would still trigger network requests on
-  // surviving SVG elements (filter url(...), animateMotion mpath, etc.), and
-  // strip inline ``style`` because CSS ``@import`` / ``url()`` would do the
-  // same. DOMPurify already drops on* handlers under USE_PROFILES, but we
-  // call ALLOW_DATA_ATTR off explicitly so the intent is obvious.
-  FORBID_ATTR: ["href", "xlink:href", "style"],
+  // Drop attributes that fetch external resources or otherwise interpret an
+  // attacker-controlled URL even after the tag-level filter above:
+  //   ``filter`` / ``mask`` / ``clip-path`` -- accept ``url(https://...)``
+  //     and the CSS engine fetches that URL when the SVG renders.
+  //   ``style`` -- inline CSS ``@import`` / ``url(...)`` does the same.
+  // ``href`` / ``xlink:href`` are NOT forbidden here so safe same-document
+  // fragment references survive (``<textPath href="#labelPath">``, gradient
+  // ``href="#g1"``, etc.); external-scheme values are pruned in the hook
+  // below so a beacon ``href`` cannot make it through.
+  FORBID_ATTR: ["style", "filter", "mask", "clip-path"],
   ALLOW_DATA_ATTR: false,
 };
+
+// Pin every URI-bearing attribute (href, xlink:href, the rare animate
+// attributeName, etc.) to same-document fragments. Done as a hook rather
+// than DOMPurify's ALLOWED_URI_REGEXP because the regex option also
+// filters non-URI presentation attributes (cx/cy/r/fill/width/height)
+// and ends up rendering circles with r=0. Hook is global so we install
+// it exactly once at module load.
+const FRAGMENT_HREF_HOOK_TAG = "__unsloth_svg_frag_href__";
+const URI_ATTRS = new Set(["href", "xlink:href"]);
+
+if (!(DOMPurify as unknown as { [k: string]: unknown })[FRAGMENT_HREF_HOOK_TAG]) {
+  DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+    if (!URI_ATTRS.has(data.attrName)) return;
+    const value = (data.attrValue ?? "").trim();
+    if (!value.startsWith("#")) {
+      data.keepAttr = false;
+    }
+  });
+  (DOMPurify as unknown as { [k: string]: unknown })[FRAGMENT_HREF_HOOK_TAG] =
+    true;
+}
 
 /** Strip every XML processing instruction and disallowed node from an SVG. */
 export function sanitizeSvgSource(source: string): string {
@@ -142,12 +168,16 @@ function TabButton({
   active,
   disabled,
   icon,
+  id,
+  controls,
   label,
   onSelect,
 }: {
   active: boolean;
   disabled?: boolean;
   icon: ReactNode;
+  id: string;
+  controls: string;
   label: string;
   onSelect: () => void;
 }) {
@@ -155,7 +185,10 @@ function TabButton({
     <button
       type="button"
       role="tab"
+      id={id}
+      aria-controls={controls}
       aria-selected={active}
+      tabIndex={active ? 0 : -1}
       disabled={disabled}
       onClick={onSelect}
       className={cn(
@@ -183,9 +216,12 @@ function buildSvgSrcDoc(safeSvg: string): string {
   return [
     "<!doctype html>",
     `<meta http-equiv="Content-Security-Policy" content="${SVG_IFRAME_CSP}">`,
-    "<style>html,body{margin:0;padding:0;background:white;}",
-    "body{display:flex;align-items:center;justify-content:center;padding:16px;}",
-    "svg{max-width:100%;height:auto;}</style>",
+    // Fit the SVG within the iframe viewport in both dimensions so a square
+    // viewBox (e.g. 200x200) scaled to the container width does not overflow
+    // vertically and clip. width/height auto keeps aspect ratio intact.
+    "<style>html,body{margin:0;padding:0;height:100%;background:white;}",
+    "body{display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;}",
+    "svg{max-width:100%;max-height:100%;width:auto;height:auto;}</style>",
     safeSvg,
   ].join("");
 }
@@ -214,24 +250,74 @@ function SvgPreview({ source }: { source: string }) {
   );
 }
 
+// Tiny helper script that posts the document height back to the parent so
+// we can right-size the iframe. Communication is one-way and the iframe
+// cannot read parent.document because we never grant allow-same-origin.
+const HTML_PREVIEW_HEIGHT_REPORTER =
+  '<script>(()=>{const post=()=>parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");window.addEventListener("load",post);new ResizeObserver(post).observe(document.documentElement);})();</script>';
+
+// Meta-CSP enforced INSIDE the srcdoc iframe. The iframe inherits the host
+// Studio CSP (every srcdoc / data: / blob: scheme does, per CSP3 § Initialize
+// document CSP), so the host's ``script-src 'self'`` already blocks inline
+// <script> and on* handlers inside the preview. We layer a more restrictive
+// meta-CSP here so a future host-CSP relaxation does not silently turn this
+// iframe into an exfiltration channel: ``connect-src 'none'`` keeps a
+// future ``script-src 'unsafe-inline'`` from being able to beacon out, and
+// ``frame-src 'none'`` stops nested iframe-loaded ad/tracking content.
+const HTML_IFRAME_CSP = [
+  "default-src 'none'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src data: blob:",
+  "media-src data: blob:",
+  "font-src data:",
+  "connect-src 'none'",
+  "worker-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
+function buildHtmlSrcDoc(source: string): string {
+  return [
+    "<!doctype html>",
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_IFRAME_CSP}">`,
+    // Outbound links open in a new tab rather than no-op-navigating the
+    // sandboxed frame itself.
+    '<base target="_blank">',
+    source,
+    HTML_PREVIEW_HEIGHT_REPORTER,
+  ].join("");
+}
+
 function HtmlPreview({
   source,
   popped,
+  onHeightChange,
 }: {
   source: string;
   popped: boolean;
+  onHeightChange?: (h: number | null) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Tiny helper script that posts the document height back to the parent so
-  // we can right-size the iframe. Communication is one-way and the iframe
-  // cannot read parent.document because we never grant allow-same-origin.
-  const srcDoc = useMemo(
-    () =>
-      `${source}<script>(()=>{const post=()=>parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");window.addEventListener("load",post);new ResizeObserver(post).observe(document.documentElement);})();</script>`,
-    [source],
-  );
+  // srcdoc keeps the assistant HTML rendering same-origin-blocked while
+  // still showing layout, images, styles, and Streamdown-syntax-highlighted
+  // source in the Code tab. Inline <script> / on* handlers inside the
+  // assistant's HTML do NOT execute because srcdoc iframes inherit the
+  // host Studio CSP (``script-src 'self'``); follow-up work tracked in
+  // PR #5717 to add an opt-in backend-hosted preview route for the "play
+  // JS games inline" use case.
+  const srcDoc = useMemo(() => buildHtmlSrcDoc(source), [source]);
 
   const [autoHeight, setAutoHeight] = useState<number | null>(null);
+  // Reset auto-sizing whenever the source changes so we never show the
+  // previous message's iframe size during the gap before the new doc loads
+  // and posts its first height.
+  useEffect(() => {
+    setAutoHeight(null);
+    onHeightChange?.(null);
+  }, [source, onHeightChange]);
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -239,12 +325,14 @@ function HtmlPreview({
       const raw = (e.data as { htmlPreviewHeight?: unknown })
         ?.htmlPreviewHeight;
       if (typeof raw === "number" && Number.isFinite(raw)) {
-        setAutoHeight(Math.max(100, raw));
+        const next = Math.max(100, raw);
+        setAutoHeight(next);
+        onHeightChange?.(next);
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, []);
+  }, [onHeightChange]);
 
   // In the docked view we cap at DEFAULT_PREVIEW_HEIGHT; in the popout we
   // let the iframe fill the modal panel.
@@ -258,10 +346,12 @@ function HtmlPreview({
       data-testid="html-svg-renderer-iframe"
       title="HTML preview"
       srcDoc={srcDoc}
-      // SECURITY: allow-scripts only. We do NOT grant allow-same-origin or
+      // SECURITY: allow-scripts (in case the host CSP ever loosens to
+      // permit inline) + allow-modals (so alert/confirm do not silently
+      // no-op when scripts do run). We do NOT grant allow-same-origin or
       // allow-top-navigation, so the iframe cannot read parent.document,
       // navigate the host page, or escape its origin.
-      sandbox="allow-scripts"
+      sandbox="allow-scripts allow-modals"
       style={{
         width: "100%",
         height: iframeHeight,
@@ -284,8 +374,18 @@ export function HtmlSvgRenderer({
   const lockedToCode = Boolean(isIncomplete);
   const [tab, setTab] = useState<TabKey>("preview");
   const [popped, setPopped] = useState(false);
+  // Live HTML iframe height, lifted out of HtmlPreview so the pop-out spacer
+  // (rendered here, not inside HtmlPreview) can match the current preview
+  // size and avoid a layout jump when entering pop-out mode.
+  const [htmlHeight, setHtmlHeight] = useState<number | null>(null);
 
   const activeTab: TabKey = lockedToCode ? "code" : tab;
+
+  const reactId = useId();
+  const previewTabId = `${reactId}-tab-preview`;
+  const codeTabId = `${reactId}-tab-code`;
+  const previewPanelId = `${reactId}-panel-preview`;
+  const codePanelId = `${reactId}-panel-code`;
 
   // Escape key exits the popout view.
   useEffect(() => {
@@ -307,14 +407,28 @@ export function HtmlSvgRenderer({
     [codeView, source],
   );
 
+  const onHtmlHeight = useCallback((h: number | null) => setHtmlHeight(h), []);
+
   const preview =
     language === "svg" ? (
       <SvgPreview source={source} />
     ) : (
-      <HtmlPreview source={source} popped={popped} />
+      <HtmlPreview
+        source={source}
+        popped={popped}
+        onHeightChange={onHtmlHeight}
+      />
     );
 
   const previewLabel = language === "svg" ? "SVG preview" : "HTML preview";
+  // Use the live HTML iframe height for the pop-out placeholder so swapping
+  // a short preview into pop-out mode does not leave a 500px hole in the
+  // chat bubble. Falls back to DEFAULT_PREVIEW_HEIGHT before the first
+  // height post arrives, and is always capped to DEFAULT_PREVIEW_HEIGHT.
+  const popoutSpacerHeight = Math.min(
+    htmlHeight ?? DEFAULT_PREVIEW_HEIGHT,
+    DEFAULT_PREVIEW_HEIGHT,
+  );
 
   return (
     <div
@@ -333,12 +447,16 @@ export function HtmlSvgRenderer({
             active={activeTab === "preview"}
             disabled={lockedToCode}
             icon={<EyeIcon className="size-3.5" />}
+            id={previewTabId}
+            controls={previewPanelId}
             label="Preview"
             onSelect={() => setTab("preview")}
           />
           <TabButton
             active={activeTab === "code"}
             icon={<CodeIcon className="size-3.5" />}
+            id={codeTabId}
+            controls={codePanelId}
             label="Code"
             onSelect={() => setTab("code")}
           />
@@ -378,10 +496,13 @@ export function HtmlSvgRenderer({
             <>
               {/* Keep layout stable behind the modal. */}
               <div
-                style={{ height: DEFAULT_PREVIEW_HEIGHT }}
+                style={{ height: popoutSpacerHeight }}
                 aria-hidden={true}
               />
               <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="HTML preview pop out"
                 className="fixed inset-0 z-50 flex flex-col bg-background/80 backdrop-blur-sm"
                 onClick={(e) => {
                   if (e.target === e.currentTarget) setPopped(false);
@@ -407,10 +528,23 @@ export function HtmlSvgRenderer({
               </div>
             </>
           ) : (
-            <div aria-label={previewLabel}>{preview}</div>
+            <div
+              role="tabpanel"
+              id={previewPanelId}
+              aria-labelledby={previewTabId}
+              aria-label={previewLabel}
+            >
+              {preview}
+            </div>
           )
         ) : (
-          <div data-testid="html-svg-renderer-code" className="min-w-0">
+          <div
+            role="tabpanel"
+            id={codePanelId}
+            aria-labelledby={codeTabId}
+            data-testid="html-svg-renderer-code"
+            className="min-w-0"
+          >
             {codeFallback}
           </div>
         )}
@@ -427,6 +561,11 @@ export type CodeFenceInfo = {
 };
 
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
+// Open fence: opening backticks + lang + body but no closing fence yet. Used
+// while a fenced block is still streaming in -- without this the markdown
+// pipeline falls through to the generic code block until the closing fence
+// arrives, so HtmlSvgRenderer's isIncomplete (lock-Code) path is dead code.
+const OPEN_CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*)$/;
 
 export function parseCodeFence(blockContent: string): CodeFenceInfo | null {
   const match = blockContent.trimEnd().match(CODE_FENCE_RE);
@@ -434,6 +573,21 @@ export function parseCodeFence(blockContent: string): CodeFenceInfo | null {
   return {
     language: match[1]?.trim() || null,
     source: match[2],
+  };
+}
+
+/** Parse a code fence that may still be streaming (no closing ``` yet). */
+export function parseIncompleteCodeFence(
+  blockContent: string,
+): CodeFenceInfo | null {
+  const match = blockContent.match(OPEN_CODE_FENCE_RE);
+  if (!match) return null;
+  // Strip an in-flight trailing ``` line so a fence captured mid-close does
+  // not render a stray "```" in the preview.
+  const body = match[2].replace(/\r?\n?```\s*$/, "");
+  return {
+    language: match[1]?.trim() || null,
+    source: body,
   };
 }
 

@@ -23,6 +23,7 @@ import {
   isHtmlFence,
   isSvgFence,
   parseCodeFence,
+  parseIncompleteCodeFence,
   type CodeFenceInfo,
 } from "./html-svg-renderer";
 
@@ -221,7 +222,13 @@ function renderHighlightedCode(props: BlockProps, codeFence: CodeFenceInfo) {
 function StreamdownBlock(props: BlockProps) {
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
-  const codeFence = parseCodeFence(props.content);
+  // parseCodeFence requires a closing ```; while the fence is still
+  // streaming we fall through to parseIncompleteCodeFence so HtmlSvgRenderer
+  // can mount with isIncomplete=true and lock the Code tab on partial
+  // HTML/SVG fences (the advertised stream-in behaviour).
+  const codeFence =
+    parseCodeFence(props.content) ??
+    (props.isIncomplete ? parseIncompleteCodeFence(props.content) : null);
 
   if (props.isIncomplete && hasMermaidFence) {
     return (

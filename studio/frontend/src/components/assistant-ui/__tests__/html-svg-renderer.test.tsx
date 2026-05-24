@@ -8,6 +8,7 @@ import {
   isHtmlFence,
   isSvgFence,
   parseCodeFence,
+  parseIncompleteCodeFence,
   sanitizeSvgSource,
 } from "../html-svg-renderer";
 
@@ -24,15 +25,25 @@ describe("HtmlSvgRenderer", () => {
       "html-svg-renderer-iframe",
     ) as HTMLIFrameElement;
     expect(iframe.tagName).toBe("IFRAME");
-    // SECURITY: allow-scripts only; never allow-same-origin or
-    // allow-top-navigation. If this ever changes, the preview can read
-    // parent.document and exfiltrate session data.
-    expect(iframe.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
-    expect(iframe.getAttribute("sandbox")).not.toContain(
-      "allow-top-navigation",
-    );
-    expect(iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toContain("hello");
+    // SECURITY: allow-scripts + allow-modals leave script / alert /
+    // confirm operative IF the inherited host CSP ever permits inline;
+    // NEVER allow-same-origin or allow-top-navigation -- those would let
+    // the preview read parent.document and exfiltrate session data.
+    const sandbox = iframe.getAttribute("sandbox") ?? "";
+    expect(sandbox.split(/\s+/)).toContain("allow-scripts");
+    expect(sandbox).not.toContain("allow-same-origin");
+    expect(sandbox).not.toContain("allow-top-navigation");
+    // srcdoc carries the assistant HTML plus a defense-in-depth meta CSP
+    // that adds ``connect-src 'none'`` and ``frame-src 'none'`` on top of
+    // the inherited host CSP. Inline ``<script>`` does NOT execute (the
+    // host CSP ``script-src 'self'`` strips it); the iframe is here to
+    // render layout/markup, not to run assistant JS.
+    expect(iframe.getAttribute("src")).toBeNull();
+    const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc) ?? "";
+    expect(srcdoc).toContain("hello");
+    expect(srcdoc).toContain('http-equiv="Content-Security-Policy"');
+    expect(srcdoc).toContain("connect-src 'none'");
+    expect(srcdoc).toContain("frame-src 'none'");
   });
 
   it("renders an SVG preview inside a no-script sandboxed iframe with srcdoc carrying the sanitized markup", () => {
@@ -106,6 +117,63 @@ describe("HtmlSvgRenderer", () => {
     // see the streaming tokens without flicker.
     const previewTab = screen.getByRole("tab", { name: /preview/i });
     expect(previewTab.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("wires tabs to their panels with aria-controls / aria-labelledby", () => {
+    const html = "<html><body>hi</body></html>";
+    render(<HtmlSvgRenderer language="html" source={html} />);
+
+    const previewTab = screen.getByRole("tab", { name: /preview/i });
+    const codeTab = screen.getByRole("tab", { name: /code/i });
+    const panel = screen.getByRole("tabpanel");
+
+    const controls = previewTab.getAttribute("aria-controls");
+    expect(controls).toBeTruthy();
+    expect(panel.getAttribute("id")).toBe(controls);
+    expect(panel.getAttribute("aria-labelledby")).toBe(
+      previewTab.getAttribute("id"),
+    );
+
+    // Roving tabindex: active tab is reachable, inactive is taken out of the
+    // tab order per WAI-ARIA APG tab pattern.
+    expect(previewTab.getAttribute("tabindex")).toBe("0");
+    expect(codeTab.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("constrains the SVG preview so a square viewBox does not overflow", () => {
+    const svg =
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 200 200\"><circle cx=\"100\" cy=\"100\" r=\"95\" fill=\"red\"/></svg>";
+    render(<HtmlSvgRenderer language="svg" source={svg} />);
+
+    const iframe = screen.getByTestId(
+      "html-svg-renderer-svg-preview",
+    ) as HTMLIFrameElement;
+    const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toLowerCase();
+    // The inner stylesheet must cap BOTH dimensions so the SVG fits inside
+    // the fixed-height iframe and is not clipped at the bottom.
+    expect(srcdoc).toContain("max-width:100%");
+    expect(srcdoc).toContain("max-height:100%");
+    expect(srcdoc).toContain("height:100%");
+  });
+});
+
+describe("parseIncompleteCodeFence", () => {
+  it("returns lang and body for a fence that has not closed yet", () => {
+    const partial = "```svg\n<svg><circle";
+    const fence = parseIncompleteCodeFence(partial);
+    expect(fence).not.toBeNull();
+    expect(fence?.language).toBe("svg");
+    expect(fence?.source).toBe("<svg><circle");
+  });
+
+  it("strips an in-flight trailing ``` so the partial body does not leak it", () => {
+    const partial = "```html\n<div>hi</div>\n``";
+    const fence = parseIncompleteCodeFence(partial);
+    expect(fence?.source).toBe("<div>hi</div>\n``");
+  });
+
+  it("returns null when the block is not a fence at all", () => {
+    expect(parseIncompleteCodeFence("just text")).toBeNull();
   });
 });
 
@@ -194,5 +262,40 @@ describe("sanitizeSvgSource", () => {
     expect(clean).not.toContain("<image");
     expect(clean).not.toContain("<use");
     expect(clean).not.toContain("evil.example");
+  });
+
+  it("strips filter/mask/clip-path url(...) attrs that would still fetch", () => {
+    const svg =
+      "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+      "<circle filter=\"url(https://evil.example/f)\" mask=\"url(https://evil.example/m)\" clip-path=\"url(https://evil.example/c)\" r=\"10\"/>" +
+      "</svg>";
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    expect(clean).toContain("<circle");
+    expect(clean).not.toContain("filter=");
+    expect(clean).not.toContain("mask=");
+    expect(clean).not.toContain("clip-path=");
+    expect(clean).not.toContain("evil.example");
+  });
+
+  it("keeps safe same-document fragment hrefs used by textPath/gradients", () => {
+    const svg =
+      "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+      "<defs><linearGradient id=\"g1\"/></defs>" +
+      "<text><textPath href=\"#labelPath\">hi</textPath></text>" +
+      "<circle fill=\"url(#g1)\" r=\"10\"/>" +
+      "</svg>";
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    // Fragment hrefs must survive so textPath/gradient refs still resolve.
+    expect(clean).toContain("href=\"#labelpath\"");
+  });
+
+  it("strips external-scheme hrefs even though same-doc fragments are kept", () => {
+    const svg =
+      "<svg xmlns=\"http://www.w3.org/2000/svg\">" +
+      "<a href=\"https://evil.example/exfil\"><circle r=\"10\"/></a>" +
+      "</svg>";
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    expect(clean).not.toContain("evil.example");
+    expect(clean).not.toContain("href=\"https");
   });
 });

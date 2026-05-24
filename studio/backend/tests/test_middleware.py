@@ -196,6 +196,24 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
+    def test_frame_src_is_explicitly_self_only(self, main_module):
+        # The assistant HTML/SVG preview iframe uses srcdoc (no URL fetch),
+        # so frame-src does not need to permit data: / blob:. Pinning to
+        # 'self' explicitly is the strictest setting CSP allows here, and
+        # leaves a visible directive a reviewer can grep for if a future
+        # change tries to relax it without an audit.
+        csp = main_module._build_csp()
+        frame_src = next(
+            chunk.strip()
+            for chunk in csp.split(";")
+            if chunk.strip().startswith("frame-src ")
+        )
+        tokens = frame_src.split()
+        assert tokens[0] == "frame-src"
+        assert "'self'" in tokens
+        assert "data:" not in tokens
+        assert "blob:" not in tokens
+
     def test_img_src_allows_google_favicons(self, main_module):
         # sources.tsx fetches https://www.google.com/s2/favicons?... ; without
         # this allowlist entry citation favicons fall back to gray initials.

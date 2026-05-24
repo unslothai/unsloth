@@ -327,6 +327,10 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
+        # Restrict iframe sources to same-origin only. The assistant
+        # HTML/SVG previews use srcdoc (no URL involved) and inherit this
+        # CSP, so this also bounds what the preview iframe can do.
+        "frame-src 'self'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "
         "base-uri 'self'"
