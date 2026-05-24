@@ -1376,7 +1376,9 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (line 1526) -- all non-macOS platforms
         if not IS_WINDOWS:
-            base_total += 2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
+            base_total += (
+                2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
+            )
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
