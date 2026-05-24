@@ -4287,8 +4287,17 @@ class LlamaCppBackend:
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        # Strip empty / non-string stop entries before forwarding to
+        # llama-server (matches `_normalize_stop_for_provider` for the
+        # external path). Without this a stale `stop=["", "END"]` can
+        # 400 the upstream.
         if stop:
-            payload["stop"] = stop
+            if isinstance(stop, str):
+                payload["stop"] = stop
+            elif isinstance(stop, list):
+                _cleaned = [s for s in stop if isinstance(s, str) and s]
+                if _cleaned:
+                    payload["stop"] = _cleaned
         # Optional sampling extensions, gated on `is not None` so 0,
         # 0.0, and False all reach the wire.
         if frequency_penalty is not None:
@@ -4524,8 +4533,14 @@ class LlamaCppBackend:
                 else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+            # Same empty-string filter as the standard payload builder.
             if stop:
-                payload["stop"] = stop
+                if isinstance(stop, str):
+                    payload["stop"] = stop
+                elif isinstance(stop, list):
+                    _cleaned = [s for s in stop if isinstance(s, str) and s]
+                    if _cleaned:
+                        payload["stop"] = _cleaned
             # Optional sampling extensions; gated on `is not None`.
             if frequency_penalty is not None:
                 payload["frequency_penalty"] = frequency_penalty
@@ -5209,8 +5224,14 @@ class LlamaCppBackend:
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+        # Same empty-string filter as the standard / tool payload builder.
         if stop:
-            stream_payload["stop"] = stop
+            if isinstance(stop, str):
+                stream_payload["stop"] = stop
+            elif isinstance(stop, list):
+                _cleaned = [s for s in stop if isinstance(s, str) and s]
+                if _cleaned:
+                    stream_payload["stop"] = _cleaned
         # Match the per-iteration tool loop above so sampling behavior
         # stays consistent when the cap-exhausted final-answer pass runs.
         if frequency_penalty is not None:
