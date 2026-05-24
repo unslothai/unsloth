@@ -431,6 +431,60 @@ def _coerce_text(payload: Any) -> str:
     return ""
 
 
+def _completed_agent_message_text(payload: Any) -> str:
+    """Return the assistant text from an ``ItemCompletedNotification``.
+
+    The canonical openai_codex SDK sometimes finishes a turn without
+    emitting any ``message.delta`` events: the final answer arrives
+    only as ``ItemCompletedNotification(item=AgentMessage(text=...))``
+    at the end of the stream. Without recognising that shape,
+    ``_stream_thread_run`` would loop through the stream, see no
+    ``delta`` text, and return an empty Chat Completions response.
+
+    Returns the empty string for any other event shape so the caller
+    can ignore it. Matches by class name + structural shape so the
+    function works on both real upstream events and the dict / fake
+    shapes the tests use.
+    """
+    if payload is None:
+        return ""
+
+    # Dict shape: tests + some pre-release SDK revs.
+    if isinstance(payload, dict):
+        if payload.get("type") not in (
+            "ItemCompletedNotification",
+            "item.completed",
+            "thread.item.completed",
+        ):
+            return ""
+        item = payload.get("item")
+        # The upstream model wraps the item in a discriminated-union
+        # `root` field; some pre-release shapes drop the wrapper. Look
+        # both ways.
+        if isinstance(item, dict):
+            inner = item.get("root", item)
+            if not isinstance(inner, dict):
+                return ""
+            if inner.get("type") not in ("agentMessage", "agent_message"):
+                return ""
+            text = inner.get("text")
+            return text if isinstance(text, str) else ""
+        return ""
+
+    # Object shape: upstream events with `.item.root.text`.
+    if payload.__class__.__name__ not in (
+        "ItemCompletedNotification",
+        "ThreadItemCompletedNotification",
+    ):
+        return ""
+    item = getattr(payload, "item", None)
+    item = getattr(item, "root", item)
+    if getattr(item, "type", None) not in ("agentMessage", "agent_message"):
+        return ""
+    text = getattr(item, "text", None)
+    return text if isinstance(text, str) else ""
+
+
 async def _stream_thread_run(
     thread: Any,
     prompt: str,
@@ -455,12 +509,20 @@ async def _stream_thread_run(
     otherwise re-execute the same Codex turn and duplicate side
     effects (file writes, shell commands, etc.). The buffered path
     runs only when streaming helpers produced zero output.
+
+    Empty-delta protection: the canonical SDK can complete a turn
+    successfully without emitting any ``message.delta`` events --
+    the final text arrives only as an ``ItemCompletedNotification``
+    whose ``item`` is an ``agentMessage``. We collect those during the
+    stream loop and emit the last one if no deltas came through, so
+    Studio never returns an empty answer for a successful turn.
     """
     emitted_any = False
 
     # 1. Canonical: thread.turn(prompt).stream()
     turn_factory = getattr(thread, "turn", None)
     if turn_factory is not None:
+        agent_message_texts: list[str] = []
         try:
             turn_handle = turn_factory(prompt)
             if asyncio.iscoroutine(turn_handle):
@@ -471,10 +533,21 @@ async def _stream_thread_run(
                 if asyncio.iscoroutine(stream_obj):
                     stream_obj = await stream_obj
                 async for event in stream_obj:
-                    text = _coerce_text(getattr(event, "payload", event))
+                    payload = getattr(event, "payload", event)
+                    text = _coerce_text(payload)
                     if text:
                         emitted_any = True
                         yield text
+                    else:
+                        final_text = _completed_agent_message_text(payload)
+                        if final_text:
+                            agent_message_texts.append(final_text)
+                if not emitted_any and agent_message_texts:
+                    # The stream completed cleanly but only via a final
+                    # ItemCompletedNotification -- emit the last agent
+                    # message text so the chat reply is not blank.
+                    yield agent_message_texts[-1]
+                    emitted_any = True
                 return
         except Exception as exc:
             logger.warning(

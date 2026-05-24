@@ -1330,6 +1330,68 @@ class TestCodexHardenedRegressions:
         # Model still passed so the request is well-formed.
         assert kw.get("model") == "gpt-5.5"
 
+    def test_empty_stream_falls_back_to_completed_agent_message(self, monkeypatch):
+        """A successful turn that emits zero ``message.delta`` events
+        but DOES emit a final ``ItemCompletedNotification`` with an
+        agent message must surface that text. Without the fallback the
+        Chat Completions reply would be empty even though Codex
+        produced a complete answer.
+        """
+
+        class _CompletedEvent:
+            payload = {
+                "type": "item.completed",
+                "item": {
+                    "root": {
+                        "type": "agentMessage",
+                        "text": "final answer from completion",
+                    },
+                },
+            }
+
+        class _Turn:
+            async def stream(self):
+                yield _CompletedEvent()
+
+        class _ThreadEmptyDeltas:
+            def turn(self, prompt):
+                return _Turn()
+
+            async def run(self, prompt):
+                raise AssertionError(
+                    "must not fall through to buffered run() when "
+                    "the stream completes successfully"
+                )
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                return _ThreadEmptyDeltas()
+
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        chunks: list[str] = []
+
+        async def _collect():
+            async for c in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                chunks.append(c)
+
+        asyncio.run(_collect())
+        body = "".join(chunks)
+        assert (
+            "final answer from completion" in body
+        ), f"agent message text from completion event was dropped; body={body!r}"
+
     def test_synthesis_also_pins_safety_kwargs(self, monkeypatch):
         """The synthesis turn that unifies parallel fan-out outputs
         must use the same safety pins -- a fan-out tab could otherwise
