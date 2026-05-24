@@ -40,8 +40,26 @@ from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
+_active_mock_clients: list[httpx.AsyncClient] = []
+
+
 def _drive(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    # Create a fresh loop per drive so tests don't share asyncio state.
+    # Close mocked clients + shutdown async-generators inside this loop
+    # so Python 3.13 doesn't emit the
+    # `Response.aiter_*.aclose was never awaited` warning on GC.
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(coro)
+        while _active_mock_clients:
+            mc = _active_mock_clients.pop()
+            loop.run_until_complete(mc.aclose())
+        return result
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 def _make_gemini_client(
@@ -55,11 +73,11 @@ def _make_gemini_client(
 
 
 def _mock_http(monkeypatch, handler):
-    monkeypatch.setattr(
-        ep_mod,
-        "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
-    )
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    monkeypatch.setattr(ep_mod, "_http_client", mock_client)
+    # `_drive` will aclose this at the end of the run inside the same
+    # event loop so we do not leak an unawaited aclose() coroutine.
+    _active_mock_clients.append(mock_client)
 
 
 def _gemini_sse(events: list[dict]) -> bytes:
@@ -342,6 +360,35 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
         assert tc == {"thinkingLevel": expected}, (effort, tc)
+
+
+def test_gemini3_pro_medium_effort_coerces_to_high(monkeypatch):
+    """Gemini 3 Pro only accepts thinkingLevel="low" or "high"; coerce
+    a "medium" effort request to "high" so the API does not 400."""
+    for model in (
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.5-pro",
+        "gemini-pro-latest",
+    ):
+        captured = _capture_body(
+            monkeypatch,
+            model = model,
+            reasoning_effort = "medium",
+        )
+        tc = captured["body"]["generationConfig"].get("thinkingConfig")
+        assert tc == {"thinkingLevel": "high"}, (model, tc)
+
+
+def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
+    """Gemini 3 Pro rejects thinkingLevel="minimal"; coerce to "low"."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.1-pro-preview",
+        reasoning_effort = "minimal",
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc == {"thinkingLevel": "low"}, tc
 
 
 def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
@@ -1322,6 +1369,35 @@ def test_custom_gemini_proxy_base_url_not_rewritten():
         api_key = "AIza-test-key",
     )
     assert client.base_url == "https://proxy.example.com/team/openai"
+
+
+def test_custom_gemini_oai_compat_proxy_uses_openai_dispatch():
+    """A custom proxy that exposes only the OpenAI-compat Gemini
+    surface (base_url ending /openai on a non-Google host) must route
+    through the OpenAI-compatible forwarder, not the native translator.
+    Auth header must be Authorization: Bearer ..., not x-goog-api-key.
+    """
+    client = ExternalProviderClient(
+        provider_type = "gemini",
+        base_url = "https://proxy.example.com/team/openai",
+        api_key = "AIza-test-key",
+    )
+    assert client._is_openai_compatible() is True
+    headers = client._auth_headers()
+    assert "x-goog-api-key" not in {k.lower() for k in headers}, headers
+    assert headers["Authorization"] == "Bearer AIza-test-key", headers
+
+
+def test_google_hosted_gemini_still_uses_native_dispatch():
+    """Google-hosted Gemini keeps native dispatch + x-goog-api-key auth."""
+    client = ExternalProviderClient(
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        api_key = "AIza-test-key",
+    )
+    assert client._is_openai_compatible() is False
+    headers = client._auth_headers()
+    assert headers.get("x-goog-api-key") == "AIza-test-key", headers
 
 
 def test_legacy_google_openai_base_url_is_rewritten():

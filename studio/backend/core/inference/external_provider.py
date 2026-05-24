@@ -333,6 +333,22 @@ class ExternalProviderClient:
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
+        # Gemini connections pointed at a custom OpenAI-compat gateway
+        # (non-Google host, path ending /openai) speak the OpenAI surface
+        # and authenticate with Authorization: Bearer ..., not Google's
+        # native x-goog-api-key. Override the registry default so the
+        # OAI-compat dispatch path receives the right header.
+        if self.provider_type == "gemini":
+            _p = urlparse(self.base_url)
+            _host = (_p.hostname or "").lower()
+            _path = _p.path.rstrip("/").lower()
+            if (
+                _host != "generativelanguage.googleapis.com"
+                and _path.endswith("/openai")
+            ):
+                auth_header = "Authorization"
+                auth_prefix = "Bearer "
+
         headers = {"Content-Type": "application/json"}
         # Skip auth header when api_key is empty (optional for local providers);
         # httpx rejects an empty `Bearer ` value as "Illegal header value".
@@ -347,6 +363,25 @@ class ExternalProviderClient:
         from core.inference.providers import get_provider_info
 
         info = get_provider_info(self.provider_type) or {}
+        # Gemini ships an OpenAI-compatible surface at
+        # `/v1beta/openai/chat/completions` (Authorization: Bearer ...)
+        # and a native surface at `/v1beta/models/...:streamGenerateContent`
+        # (x-goog-api-key). Google-hosted Gemini moved to native in this
+        # PR for full feature coverage, but third-party gateways /
+        # custom proxies that still expose only the OpenAI-compat
+        # surface (e.g. https://proxy.example.com/team/openai) would
+        # break if we forced them through the native translator.
+        # Detect the OAI-compat suffix and fall back to OpenAI-compat
+        # forwarding for non-Google bases.
+        if self.provider_type == "gemini":
+            _p = urlparse(self.base_url)
+            _path = _p.path.rstrip("/").lower()
+            _host = (_p.hostname or "").lower()
+            if (
+                _host != "generativelanguage.googleapis.com"
+                and _path.endswith("/openai")
+            ):
+                return True
         return info.get("openai_compatible", True)
 
     async def stream_chat_completion(
@@ -2895,9 +2930,14 @@ class ExternalProviderClient:
         )
         effort_lc = (reasoning_effort or "").strip().lower()
         if not is_image_model and is_gemini3_thinking:
-            # Gemini 3.x: thinkingLevel only. Pro tier rejects "minimal",
-            # so "none"/"off" coerces to "low" on Pro and "minimal" on
-            # Flash (the lowest each tier accepts).
+            # Gemini 3.x: thinkingLevel only. Per Google's docs
+            # (https://ai.google.dev/gemini-api/docs/thinking):
+            #   - Gemini 3 Pro accepts only "low" or "high" (default high).
+            #   - Gemini 3 Flash + Flash-Lite accept minimal/low/medium/high
+            #     (default medium).
+            # Pro tier rejects "minimal" AND "medium"; coerce both to a
+            # valid neighbouring level so the UI's medium slider does
+            # not 400 on Pro.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}
             level: Optional[str] = None
             if effort_lc in ("none", "off"):
@@ -2905,8 +2945,13 @@ class ExternalProviderClient:
             elif effort_lc == "max":
                 level = "high"
             elif effort_lc in _G3_LEVELS:
-                if is_gemini3_pro and effort_lc == "minimal":
-                    level = "low"
+                if is_gemini3_pro:
+                    if effort_lc == "minimal":
+                        level = "low"
+                    elif effort_lc == "medium":
+                        level = "high"
+                    else:
+                        level = effort_lc
                 else:
                     level = effort_lc
             elif enable_thinking is True:

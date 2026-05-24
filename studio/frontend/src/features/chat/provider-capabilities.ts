@@ -661,11 +661,12 @@ function resolveGeminiReasoningCapabilities(
     return withEnableThinkingStyle();
   }
   if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3 Pro: thinkingLevel low/medium/high. Cannot fully off.
+    // Gemini 3 Pro: thinkingLevel only accepts "low" and "high" per
+    // https://ai.google.dev/gemini-api/docs/thinking. Cannot fully off.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
-      reasoningEffortLevels: ["low", "medium", "high"] as const,
+      reasoningEffortLevels: ["low", "high"] as const,
     });
   }
   if (GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {

@@ -426,22 +426,21 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
-  // Gemini rejects googleSearch + codeExecution alongside image
-  // modalities, and the backend strips them. Disable the Search/Code
-  // pills whenever Gemini image mode is active so the UI matches the
-  // request actually sent.
+  // Gemini rejects codeExecution alongside image modalities. Search is
+  // blocked on older Gemini image ids but allowed on Gemini 3 image
+  // models -- supportsBuiltinWebSearch already encodes the per-model
+  // allowance, so we only disable Code unconditionally in Gemini
+  // image mode.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
-  const imageModeDisablesTextTools =
+  const imageModeDisablesCode =
     isExternalGemini && imageToolsEnabled && !imageDisabled;
   const searchDisabled =
-    !modelLoaded ||
-    !(supportsTools || supportsBuiltinWebSearch) ||
-    imageModeDisablesTextTools;
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
   const codeDisabled =
     !modelLoaded ||
     !(supportsTools || supportsBuiltinCodeExecution) ||
-    imageModeDisablesTextTools;
+    imageModeDisablesCode;
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;

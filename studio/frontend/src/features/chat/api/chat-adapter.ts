@@ -887,13 +887,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             externalProvider.baseUrl,
           ),
       );
-      // Gemini rejects googleSearch + codeExecution alongside
-      // responseModalities=[TEXT,IMAGE]. The backend already strips
-      // text tools when image_generation is in enabled_tools, but if
-      // the frontend still lists them as active the UI will show stale
-      // Search/Code chips on a request that omitted both -- mirror the
-      // backend gate here so the request, request-builder, and pills
-      // agree.
+      // Gemini rejects codeExecution alongside
+      // responseModalities=[TEXT,IMAGE]. Search is also blocked on the
+      // older 2.5 image family but explicitly allowed on the Gemini 3
+      // image family (gemini-3-pro-image-preview,
+      // gemini-3.1-flash-image-preview, Nano Banana Pro) per Google's
+      // docs. providerSupportsBuiltinWebSearch / Code already encode
+      // the per-model allowance, so we lean on them instead of a
+      // blanket image-mode disable.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
         imageGenerationEnabledForThisTurn;
@@ -902,7 +903,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           externalProvider &&
             externalSelection &&
             toolsEnabled &&
-            !geminiImageModeForThisTurn &&
             providerSupportsBuiltinWebSearch(
               externalProvider.providerType,
               externalSelection.modelId,
