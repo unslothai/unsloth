@@ -445,6 +445,24 @@ def test_expand_np_handles_multiple_occurrences(monkeypatch):
     assert sys.argv == ["unsloth", "run", "-np", "8", "-np", "16"]
 
 
+@pytest.mark.parametrize("attached,expected", [("-np-1", "-1"), ("-np+1", "+1")])
+def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected):
+    """Signed -np-1 / -np+1 must split too: Click would otherwise
+    cluster `-n -p -1` and set port=-1 silently."""
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np", expected]
+
+
+def test_consume_helper_rejects_empty_inline_value():
+    """`-m=` must error before re-exec instead of becoming --model ''."""
+    import typer as _typer
+
+    helper = _studio_mod()._consume_legacy_short_aliases
+    with pytest.raises(_typer.BadParameter, match = "non-empty"):
+        helper(["-m="], ("-m",), None, "--model")
+
+
 def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
     """Behavioural pin: after _expand_attached_np_short runs in the
     entry-point gate, `-np8` produces --parallel=8 (not --port=8)."""

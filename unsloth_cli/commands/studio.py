@@ -643,7 +643,10 @@ def _expand_attached_np_short() -> None:
     # for `--port`), silently dropping the parallel value. Rewrite to
     # separated `-np <N>` so the typer alias matches. Space/equals forms
     # (`-np 8`, `-np=8`) already parse correctly. Stop at `--` so explicit
-    # post-`--` payload tokens are never rewritten.
+    # post-`--` payload tokens are never rewritten. Signed suffixes
+    # (`-np-1`, `-np+1`) are normalised too so this stays in lockstep
+    # with the backend validator's _flag_name; otherwise Click would
+    # cluster them into `-n -p -1` and silently set port=-1.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
@@ -653,12 +656,17 @@ def _expand_attached_np_short() -> None:
             len(tok) > 3
             and tok.startswith("-np")
             and tok[3] != "="
-            and tok[3:].isdigit()
         ):
-            sys.argv[i : i + 1] = ["-np", tok[3:]]
-            i += 2
-        else:
-            i += 1
+            suffix = tok[3:]
+            if suffix.isdigit() or (
+                len(suffix) > 1
+                and suffix[0] in {"-", "+"}
+                and suffix[1:].isdigit()
+            ):
+                sys.argv[i : i + 1] = ["-np", suffix]
+                i += 2
+                continue
+        i += 1
 
 
 def _consume_legacy_short_aliases(
@@ -697,6 +705,11 @@ def _consume_legacy_short_aliases(
                 f"{name} conflicts with {canonical} already provided"
             )
         if sep:
+            # Reject `-m=` empty inline form so the caller doesn't end
+            # up re-execing with --model '' (which becomes "." for
+            # frontend paths).
+            if inline == "":
+                raise typer.BadParameter(f"{name} requires a non-empty value")
             value = inline
             i += 1
         elif i + 1 < n:
