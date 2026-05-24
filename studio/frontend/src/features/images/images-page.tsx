@@ -458,7 +458,10 @@ export function ImagesPage() {
                 <img
                   src={`data:${r.image_mime};base64,${r.image_b64}`}
                   alt={`Generated image ${idx + 1}`}
-                  className="aspect-square w-full rounded-md border border-border object-cover"
+                  // h-auto + object-contain so portrait / landscape
+                  // outputs render at their true aspect ratio instead
+                  // of being cropped into a square thumbnail.
+                  className="h-auto w-full rounded-md border border-border object-contain"
                   data-testid="diffusion-result-image"
                 />
                 <figcaption className="text-xs text-muted-foreground">

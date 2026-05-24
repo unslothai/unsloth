@@ -115,15 +115,25 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "stabilityai/stable-diffusion-3-medium-diffusers",
         aliases = ("sd3-medium", "stable-diffusion-3-medium", "sd3.5"),
     ),
+    # SDXL: full diffusers path only (no GGUF). SDXL uses a UNet (not a
+    # transformer) and wiring UNet2DConditionModel.from_single_file +
+    # GGUF is a separate code path the rest of this module does not
+    # exercise. The family is intentionally NOT in _FAMILIES so the
+    # frontend status panel does not advertise GGUF support we do not
+    # implement; callers wanting SDXL full repos can still do so by
+    # passing the diffusers repo with no gguf_filename and
+    # family_override = "stable-diffusion-xl" via the route, which uses
+    # the lookup in _FULL_REPO_FAMILIES.
+)
+
+
+# Families available via family_override on the routes layer when the
+# user is loading a full diffusers checkpoint (no GGUF). Kept separate
+# from _FAMILIES so the GGUF-only status panel does not over-advertise.
+_FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "stable-diffusion-xl",
         pipeline_class = "StableDiffusionXLPipeline",
-        # SDXL uses a UNet, not a transformer. Loading SDXL GGUFs would
-        # require UNet2DConditionModel.from_single_file + GGUF, which is
-        # not the same code path as the FLUX / Qwen-Image transformers
-        # this PR ships. Until that path is wired and smoke-tested,
-        # treat SDXL as full-repo-only and surface a clear error when a
-        # user tries to pass gguf_filename for it.
         transformer_class = "",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
         aliases = ("sdxl",),
@@ -137,13 +147,14 @@ def detect_family(
     """Return the diffusion family matching ``repo_id``.
 
     Matching is substring-based and case-insensitive. ``override_family``
-    bypasses substring matching and looks up by ``DiffusionFamily.name``.
-    Returns ``None`` when no family applies so callers can surface a clear
-    "unsupported model" error rather than guessing wrong.
+    bypasses substring matching and looks up by ``DiffusionFamily.name``
+    or (when explicitly asked) by ``_FULL_REPO_FAMILIES.name``.
+    Returns ``None`` when no family applies so callers can surface a
+    clear "unsupported model" error rather than guessing wrong.
     """
     if override_family:
         wanted = override_family.strip().lower()
-        for fam in _FAMILIES:
+        for fam in _FAMILIES + _FULL_REPO_FAMILIES:
             if fam.name == wanted:
                 return fam
         return None
@@ -395,17 +406,21 @@ class DiffusionBackend:
                     self._loading = False
 
     def unload_model(self) -> dict[str, Any]:
-        with self._lock:
-            old = self._pipe
-            self._pipe = None
-            self._family = None
-            self._repo_id = None
-            self._gguf_path = None
-            self._base_repo = None
-            self._device = None
-            self._dtype = None
-            self._loaded_at = None
-        _release(old)
+        # Take the load lock too so unload cannot race with an in-flight
+        # load_model and have the load thread overwrite the cleared state
+        # after we already returned {"is_loaded": false}.
+        with self._load_lock:
+            with self._lock:
+                old = self._pipe
+                self._pipe = None
+                self._family = None
+                self._repo_id = None
+                self._gguf_path = None
+                self._base_repo = None
+                self._device = None
+                self._dtype = None
+                self._loaded_at = None
+            _release(old)
         return {"is_loaded": False}
 
     # ── generation ────────────────────────────────────────────────
