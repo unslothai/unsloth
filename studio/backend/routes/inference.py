@@ -4575,6 +4575,7 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
+                parallel_tool_calls = anthropic_parallel_tool_calls,
                 session_id = payload.session_id,
                 cancel_id = payload.cancel_id,
             )
@@ -4593,6 +4594,7 @@ async def anthropic_messages(
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
             tool_choice = openai_tool_choice,
+            parallel_tool_calls = anthropic_parallel_tool_calls,
         )
 
     if server_tools:
@@ -5010,6 +5012,7 @@ async def _anthropic_passthrough_stream(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    parallel_tool_calls = None,
     session_id = None,
     cancel_id = None,
 ):
@@ -5028,6 +5031,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        parallel_tool_calls = parallel_tool_calls,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
     )
@@ -5162,6 +5166,7 @@ async def _anthropic_passthrough_non_streaming(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    parallel_tool_calls = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -5177,6 +5182,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        parallel_tool_calls = parallel_tool_calls,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
     )

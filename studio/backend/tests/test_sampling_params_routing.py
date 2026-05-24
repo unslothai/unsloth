@@ -874,3 +874,40 @@ def test_local_anthropic_disable_parallel_tool_use_translation():
     assert _extract(None) is None
     assert _extract("auto") is None  # string form (non-dict) → no opinion
     assert _extract({"type": "auto", "disable_parallel_tool_use": "yes"}) is None
+
+
+def test_local_anthropic_passthrough_helpers_accept_parallel_tool_calls():
+    """The Anthropic-compat client-tool passthrough helpers
+    (`_anthropic_passthrough_stream` /
+    `_anthropic_passthrough_non_streaming`) must accept and forward
+    `parallel_tool_calls` through `_build_passthrough_payload` so the
+    `disable_parallel_tool_use` translation works on the client-tool
+    branch the same way it does on the server-tool loop. Verified by
+    introspecting the signatures and confirming the field reaches the
+    body via the shared payload builder."""
+    import inspect
+
+    from routes import inference as route_mod
+
+    for fn in (
+        route_mod._anthropic_passthrough_stream,
+        route_mod._anthropic_passthrough_non_streaming,
+    ):
+        params = inspect.signature(fn).parameters
+        assert "parallel_tool_calls" in params, (
+            f"{fn.__name__} must accept parallel_tool_calls so the "
+            "Anthropic disable_parallel_tool_use translation reaches "
+            "the llama-server body on the client-tool branch"
+        )
+
+    body = route_mod._build_passthrough_payload(
+        openai_messages = [{"role": "user", "content": "hi"}],
+        openai_tools = [{"type": "function", "function": {"name": "x"}}],
+        temperature = 0.7,
+        top_p = 0.95,
+        top_k = 20,
+        max_tokens = 64,
+        stream = True,
+        parallel_tool_calls = False,
+    )
+    assert body.get("parallel_tool_calls") is False, body
