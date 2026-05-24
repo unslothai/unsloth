@@ -340,21 +340,113 @@ function collectImageParts(
   return parts;
 }
 
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
-} | null {
+function collectAssistantToolCalls(
+  message: RunMessage,
+): Array<{
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+  extra_content?: unknown;
+}> {
+  const out: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+    extra_content?: unknown;
+  }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type !== "tool-call") continue;
+    const tc = part as ToolCallMessagePart & {
+      argsText?: string;
+      extra_content?: unknown;
+    };
+    const argumentsStr =
+      typeof tc.argsText === "string" && tc.argsText.length > 0
+        ? tc.argsText
+        : JSON.stringify(tc.args ?? {});
+    const entry: {
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+      extra_content?: unknown;
+    } = {
+      id: tc.toolCallId,
+      type: "function" as const,
+      function: {
+        name: tc.toolName ?? "",
+        arguments: argumentsStr,
+      },
+    };
+    if (tc.extra_content !== undefined) {
+      entry.extra_content = tc.extra_content;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+function collectToolResultMessages(
+  message: RunMessage,
+): Array<{
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+}> {
+  const out: Array<{
+    role: "tool";
+    content: string;
+    tool_call_id: string;
+    name?: string;
+  }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type !== "tool-call") continue;
+    const tc = part as ToolCallMessagePart;
+    const result = (tc as { result?: unknown }).result;
+    if (result === undefined || result === null) continue;
+    let content: string;
+    if (typeof result === "string") {
+      content = result;
+    } else {
+      try {
+        content = JSON.stringify(result);
+      } catch {
+        content = String(result);
+      }
+    }
+    out.push({
+      role: "tool",
+      content,
+      tool_call_id: tc.toolCallId,
+      ...(tc.toolName ? { name: tc.toolName } : {}),
+    });
+  }
+  return out;
+}
+
+type SerializedMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+    extra_content?: unknown;
+  }>;
+  tool_call_id?: string;
+  name?: string;
+};
+
+function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
     message.role !== "assistant"
   ) {
-    return null;
+    return [];
   }
 
   let textContent = collectTextParts(message).join("\n");
-  // Strip inline audio base64 from prior assistant messages to avoid
-  // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
     textContent = textContent.replace(
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
@@ -363,14 +455,34 @@ function toOpenAIMessage(message: RunMessage): {
   }
 
   const imageParts = collectImageParts(message);
-  if (imageParts.length > 0) {
-    return {
-      role: message.role,
-      content: [{ type: "text", text: textContent }, ...imageParts],
-    };
+  const toolCalls =
+    message.role === "assistant" ? collectAssistantToolCalls(message) : [];
+  const toolResults =
+    message.role === "assistant" ? collectToolResultMessages(message) : [];
+
+  const base: SerializedMessage = {
+    role: message.role,
+    content:
+      imageParts.length > 0
+        ? [{ type: "text", text: textContent }, ...imageParts]
+        : textContent,
+  };
+  if (toolCalls.length > 0) {
+    base.tool_calls = toolCalls;
+    // OpenAI requires content === null on assistant turns whose
+    // payload is entirely tool_calls (matches the wire shape Gemini
+    // expects for the next functionCall replay).
+    if (!textContent && imageParts.length === 0) {
+      base.content = null;
+    }
   }
 
-  return { role: message.role, content: textContent };
+  return toolResults.length > 0 ? [base, ...toolResults] : [base];
+}
+
+function toOpenAIMessage(message: RunMessage): SerializedMessage | null {
+  const serialized = toOpenAIMessages(message);
+  return serialized.length > 0 ? serialized[0] : null;
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -936,8 +1048,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
 
+      // Use toOpenAIMessages so assistant turns that ran a function
+      // tool emit BOTH `tool_calls` on the assistant message AND a
+      // separate `role="tool"` follow-up message keyed by
+      // `tool_call_id`. Gemini 3 multi-turn function calling needs
+      // the prior `tool_calls[].extra_content.google.thought_signature`
+      // echoed back; the backend translator at
+      // `external_provider._stream_gemini` rebuilds the native
+      // functionCall+functionResponse parts from this shape.
       const outboundMessages = messages
-        .map(toOpenAIMessage)
+        .flatMap(toOpenAIMessages)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -994,7 +1114,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             outboundMessages[0] = {
               ...firstMessage,
               content: [
-                ...firstMessage.content,
+                ...(Array.isArray(firstMessage.content)
+                  ? firstMessage.content
+                  : []),
                 { type: "text", text: `\n\n${disabledToolGuard}` },
               ],
             };

@@ -199,9 +199,34 @@ export type OpenAIMessageContent =
       | { type: "image_url"; image_url: { url: string } }
     >;
 
+/**
+ * OpenAI Chat Completions tool_call shape. Assistant turns echo back
+ * function/tool calls as `tool_calls`; the matching tool result rides
+ * on a separate `role="tool"` message keyed by `tool_call_id`.
+ * `extra_content.google.thought_signature` is the Gemini-specific
+ * round-trip field the backend translator both emits (on `delta.
+ * tool_calls`) and consumes (when rebuilding the native functionCall
+ * part on the next turn).
+ */
+export interface OpenAIToolCallPart {
+  id?: string;
+  type?: "function";
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+  extra_content?: unknown;
+}
+
 export interface OpenAIChatMessage {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  /** Assistant tool-call deltas, when the turn invoked a function tool. */
+  tool_calls?: OpenAIToolCallPart[];
+  /** `role="tool"` only: id matching `assistant.tool_calls[].id`. */
+  tool_call_id?: string;
+  /** `role="tool"` only: name of the function that produced the result. */
+  name?: string;
 }
 
 export interface OpenAIChatCompletionsRequest {
