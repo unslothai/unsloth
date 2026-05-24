@@ -1164,6 +1164,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         return lines.join("");
       }
+
+      // All chat-content yields go through this so the Codex per-tab
+      // output is always concatenated with the normal SSE text. The
+      // synthesis is emitted by the backend BOTH as a `codex_gather`
+      // tool event AND as a normal content delta; rendering both
+      // would duplicate it. Render the tabs above (header / tab text)
+      // separately from cumulativeText (which carries the synthesis
+      // content delta) so the user sees `[tabs] ... [synthesis]`.
+      function renderFullContent(): string {
+        return cumulativeText + renderCodexBuffer();
+      }
       // Tracks whether we are currently inside a `<think>` block opened by
       // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
       // and DeepSeek's reasoner stream their thinking as a separate
@@ -1663,8 +1674,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   } else if (toolEvent.type === "codex_gather") {
                     codexGatherEmitted = true;
                   }
-                  const codexBlock = renderCodexBuffer();
-                  const codexParts = parseAssistantContent(cumulativeText + codexBlock);
+                  const codexParts = parseAssistantContent(renderFullContent());
                   yield {
                     content: [...toolCallParts, ...codexParts],
                   };
@@ -1781,8 +1791,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates (tools first, text after)
-                const textParts = parseAssistantContent(cumulativeText);
+                // Yield cumulative state so tool UI updates (tools first, text after).
+                // Use renderFullContent() so any Codex per-tab text accumulated
+                // in earlier _toolEvent frames is preserved when the synthesis
+                // delta arrives -- without this the tabs would briefly appear
+                // and then vanish when the regular content path overwrote them.
+                const textParts = parseAssistantContent(renderFullContent());
                 yield {
                   content: [...toolCallParts, ...textParts],
                   metadata: {
@@ -1912,7 +1926,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   "",
                 );
               }
-              const parts = parseAssistantContent(cumulativeText);
+              // renderFullContent() preserves any Codex per-tab text the
+              // fan-out branch accumulated into codexTabBuffers.
+              const parts = parseAssistantContent(renderFullContent());
 
               if (
                 parts.some((part) => part.type === "reasoning") &&
@@ -2016,7 +2032,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         yield {
           content: [
             ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            // renderFullContent() ensures the Codex per-tab text is in
+            // the FINAL message too -- otherwise the synthesis delta on
+            // the regular content path would have erased it.
+            ...parseAssistantContent(renderFullContent()),
             ...sourceParts,
           ],
           metadata: {

@@ -93,6 +93,10 @@ def _codex_sdk_env_override() -> dict[str, str]:
     return {key: "" for key in os.environ if key not in safe}
 
 
+_SCRUBBED_ENV_LOCK = asyncio.Lock()
+_SCRUBBED_ENV_REFCOUNT: dict[str, int] = {}
+
+
 class _ScrubbedEnvAsyncCodex:
     """Async-context wrapper that swaps `os.environ` for the lifetime
     of a Codex SDK session.
@@ -101,40 +105,85 @@ class _ScrubbedEnvAsyncCodex:
     `AppServerConfig(env=...)`. The SDK starts its app-server with
     `env = os.environ.copy()`, so removing secrets from the parent
     process env right before construction keeps them out of the child.
-    Restore happens on exit, and the restore is `setdefault`-style so
-    concurrent wrappers do not clobber each other's state.
+
+    Concurrency model: a process-wide asyncio lock serialises the
+    enter/exit critical section, and a per-key refcount tracks how
+    many concurrent wrappers are currently "holding" the scrub. A
+    key is only restored when the last wrapper using it exits. This
+    fixes two issues round 6 caught:
+
+    1. Two concurrent fan-out workers used to race: wrapper A could
+       restore `HF_TOKEN` while wrapper B was still inside SDK
+       startup, letting B's spawned app-server inherit the secret.
+       The refcount keeps the key scrubbed for the full overlap
+       window.
+    2. If the SDK constructor raised before `__aenter__` returned,
+       Python never called `__aexit__`, so the deleted keys leaked
+       permanently. Construction now happens INSIDE the try/except
+       in `__aenter__`, and the scrub is rolled back on failure.
     """
 
     def __init__(self, async_codex_cls: Any):
         self._async_codex_cls = async_codex_cls
         self._inner: Any = None
-        self._saved_env: dict[str, str] | None = None
+        # Keys this wrapper instance contributed to the refcount, so
+        # __aexit__ knows exactly which counters to decrement (avoids
+        # racing with concurrent wrappers that scrub a different set).
+        self._held_keys: list[str] = []
+        # Snapshot of the original values at the time of the FIRST
+        # wrapper that scrubbed each key, so restoration uses the
+        # real pre-scrub value.
+        self._restored_via_us: dict[str, str] = {}
 
     async def __aenter__(self) -> Any:
         import os
 
         overrides = _codex_sdk_env_override()
-        saved: dict[str, str] = {}
-        for key in overrides:
-            if key in os.environ:
-                saved[key] = os.environ[key]
-                del os.environ[key]
-        self._saved_env = saved
-        self._inner = self._async_codex_cls()
-        return await self._inner.__aenter__()
+        async with _SCRUBBED_ENV_LOCK:
+            for key in overrides:
+                if key not in os.environ and _SCRUBBED_ENV_REFCOUNT.get(key, 0) == 0:
+                    continue
+                if _SCRUBBED_ENV_REFCOUNT.get(key, 0) == 0:
+                    # First wrapper to scrub this key -- save the
+                    # original so the very last wrapper to release it
+                    # can restore the right value.
+                    self._restored_via_us[key] = os.environ[key]
+                    del os.environ[key]
+                _SCRUBBED_ENV_REFCOUNT[key] = _SCRUBBED_ENV_REFCOUNT.get(key, 0) + 1
+                self._held_keys.append(key)
+        try:
+            self._inner = self._async_codex_cls()
+            return await self._inner.__aenter__()
+        except BaseException:
+            # Roll back the scrub if SDK construction / enter fails;
+            # otherwise the deleted env vars would leak permanently.
+            await self._release_held_keys()
+            raise
 
     async def __aexit__(self, exc_type, exc, tb):
-        import os
-
         try:
             if self._inner is not None:
                 return await self._inner.__aexit__(exc_type, exc, tb)
         finally:
-            saved = self._saved_env or {}
-            for key, value in saved.items():
-                # Only restore keys we removed; setdefault avoids
-                # clobbering a concurrent caller's value.
-                os.environ.setdefault(key, value)
+            await self._release_held_keys()
+
+    async def _release_held_keys(self) -> None:
+        import os
+
+        async with _SCRUBBED_ENV_LOCK:
+            for key in self._held_keys:
+                current = _SCRUBBED_ENV_REFCOUNT.get(key, 0)
+                if current <= 0:
+                    continue
+                _SCRUBBED_ENV_REFCOUNT[key] = current - 1
+                if current - 1 == 0:
+                    # Last wrapper holding this key -- restore the
+                    # original value if WE were the first to scrub it,
+                    # or pull from any other wrapper's saved snapshot.
+                    if key in self._restored_via_us:
+                        os.environ.setdefault(key, self._restored_via_us[key])
+            self._held_keys.clear()
+            self._restored_via_us.clear()
 
 
 def _open_async_codex(async_codex_cls: Any) -> Any:
@@ -399,6 +448,18 @@ def _coerce_text(payload: Any) -> str:
     visible text. Tool / command / plan deltas are dropped so local
     stdout, file paths, or tool-call arguments never flow into the
     Chat Completions content stream.
+
+    Both dict-shaped events (tests + some pre-release SDKs) AND
+    object-shaped events (the real upstream SDK's typed notification
+    classes) are gated -- if the payload exposes a `type` attribute
+    or key whose value is not in the answer-event allow-list, we
+    return the empty string regardless of whether `.delta` or `.text`
+    is present. Round 6 reviewer caught the object-shape gap: the
+    upstream SDK can emit `item/commandExecution/outputDelta`,
+    `item/fileChange/outputDelta`, etc. as typed objects, all of
+    which carry `.delta` strings containing local stdout, patches,
+    or tool arguments. Without the object-side filter those strings
+    would have flowed straight into visible assistant text.
     """
     if payload is None:
         return ""
@@ -419,6 +480,33 @@ def _coerce_text(payload: Any) -> str:
         return ""
     if isinstance(payload, list):
         return "".join(_coerce_text(item) for item in payload)
+    # Object path: gate on `payload.type` if present, AND on the class
+    # name as a fallback (the upstream SDK uses class names like
+    # `AgentMessageDeltaNotification` / `CommandExecutionOutputDelta`
+    # so a denylist-by-substring catches typed payloads that lack a
+    # `type` attribute).
+    ev_type_obj = getattr(payload, "type", None)
+    if isinstance(ev_type_obj, str) and ev_type_obj not in _ANSWER_EVENT_TYPES:
+        return ""
+    cls_name = payload.__class__.__name__
+    # Allow only class names that contain "Message" or "Delta" without
+    # also containing a tool / command / plan / file marker.
+    cls_lower = cls_name.lower()
+    if any(
+        marker in cls_lower
+        for marker in (
+            "command",
+            "exec",
+            "file",
+            "patch",
+            "plan",
+            "tool",
+            "reason",
+            "stdout",
+            "stderr",
+        )
+    ):
+        return ""
     text_attr = getattr(payload, "text", None)
     if isinstance(text_attr, str):
         return text_attr
@@ -637,18 +725,46 @@ def _safe_thread_safety_kwargs() -> dict[str, Any]:
     * ``sandbox = SandboxMode.read_only`` -- the policy that bans
       file writes and disables network access.
 
-    Returns an empty dict when the installed SDK is too old to expose
-    either symbol; the caller then issues a structured warning and
-    proceeds without the safety pins. Failing closed (refusing to
-    run) on an older SDK would brick users on pre-release alpha
-    builds for no security gain -- the auto_review default is
-    upstream's choice, not a Studio regression.
+    Probes multiple locations: ``ApprovalMode`` is exported at the
+    top-level ``openai_codex`` package, but ``SandboxMode`` lives in
+    ``openai_codex.generated.v2_all`` (re-exported into
+    ``openai_codex.api``) and is NOT in the top-level __init__.
+    Round 6 reviewer caught this -- looking only at the top-level
+    module returned ``{}``, silently degrading to the auto_review
+    default on the canonical SDK install.
+
+    Returns an empty dict only when the installed SDK is so different
+    that neither path resolves -- the caller then issues a
+    structured warning and proceeds. Failing closed (refusing to
+    run) on a future SDK rev would brick users for no security gain
+    -- the auto_review default is upstream's choice, not a Studio
+    regression.
     """
     sdk_mod = sys.modules.get("openai_codex") or sys.modules.get("codex_app_server")
     if sdk_mod is None:
         return {}
+
+    # ApprovalMode: top-level export on canonical SDK.
     approval_mode_cls = getattr(sdk_mod, "ApprovalMode", None)
+
+    # SandboxMode: try top-level, then `.api`, then `.generated.v2_all`.
+    # We do not eagerly import these submodules because the SDK may
+    # not expose them and we do not want to crash the request on an
+    # ImportError. importlib.import_module gives us a typed failure.
     sandbox_mode_cls = getattr(sdk_mod, "SandboxMode", None)
+    if sandbox_mode_cls is None:
+        for sub in ("api", "generated.v2_all"):
+            mod_name = getattr(sdk_mod, "__name__", "")
+            if not mod_name:
+                continue
+            try:
+                submod = importlib.import_module(f"{mod_name}.{sub}")
+            except Exception:
+                continue
+            sandbox_mode_cls = getattr(submod, "SandboxMode", None)
+            if sandbox_mode_cls is not None:
+                break
+
     if approval_mode_cls is None or sandbox_mode_cls is None:
         return {}
     deny_all = getattr(approval_mode_cls, "deny_all", None)

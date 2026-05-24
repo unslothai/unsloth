@@ -158,19 +158,35 @@ async def _run_cli(args: list[str], *, timeout: float = 4.0) -> tuple[int, str, 
     """Run a short ``codex`` CLI command and return (rc, stdout, stderr).
 
     The probe uses 4s as the wall-clock cap because ``codex --version``
-    and ``codex auth status`` both return in well under a second on a
+    and ``codex login status`` both return in well under a second on a
     healthy install. A longer probe would block the
     ``/api/codex/status`` route -- and that route fires on every chat
     page load, so a tight cap matters.
+
+    Subprocess lifecycle: detached into its own process group on Unix
+    via ``start_new_session=True`` (matching ``stream_codex_device_login``)
+    so a hung child cannot survive ``proc.kill()`` on timeout. Without
+    this, a shimmed ``codex login status`` that forks a helper then
+    blocks would leave the helper running after we killed the parent.
+    Windows uses ``CREATE_NEW_PROCESS_GROUP`` for the analogous
+    isolation. Round 6 reviewer caught the asymmetry with the
+    device-login path that already had this guard.
     """
+    import os
+    import signal
+
+    spawn_kwargs: dict[str, Any] = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "env": _codex_subprocess_env(),
+    }
+    if os.name == "posix":
+        spawn_kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        spawn_kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "codex",
-            *args,
-            stdout = asyncio.subprocess.PIPE,
-            stderr = asyncio.subprocess.PIPE,
-            env = _codex_subprocess_env(),
-        )
+        proc = await asyncio.create_subprocess_exec("codex", *args, **spawn_kwargs)
     except FileNotFoundError:
         return -1, "", "codex binary not on PATH"
     except Exception as exc:
@@ -184,9 +200,21 @@ async def _run_cli(args: list[str], *, timeout: float = 4.0) -> tuple[int, str, 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout = timeout)
     except asyncio.TimeoutError:
+        # Kill the whole process group, not just the parent, so any
+        # child the codex CLI forked also dies.
+        if os.name == "posix":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        else:
+            try:
+                proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+            except Exception:
+                pass
         proc.kill()
         try:
-            await proc.wait()
+            await asyncio.wait_for(proc.wait(), timeout = 1.0)
         except Exception:
             pass
         return -1, "", f"codex {' '.join(args)} timed out after {timeout:.1f}s"
@@ -268,12 +296,16 @@ async def probe_codex_availability() -> dict[str, Any]:
 
     Returns a dict with keys:
 
-    * ``installed`` (bool) -- True iff Studio can actually drive Codex.
-      The SDK's `openai-codex-cli-bin` runtime is what backs
-      `AsyncCodex(...)`, so an importable SDK alone is sufficient even
-      with no standalone `codex` on PATH. We still report `cli_path`
-      separately so the UI can surface "CLI also present" / "SDK
-      bundled runtime only" without changing the gate.
+    * ``installed`` (bool) -- True iff Studio can actually drive Codex
+      end-to-end: BOTH the Python SDK (for chat) AND a `codex`
+      executable on PATH (for the device-auth login flow). The
+      canonical `openai-codex` package depends on `openai-codex-cli-bin`
+      which installs the `codex` shim into the venv's `bin/`, so the
+      common SDK-only install in fact gets the CLI on PATH for free
+      and this gate triggers correctly. Hosts that import the SDK
+      from a wheel without that runtime dep stay hidden because the
+      login flow would otherwise fail with "codex CLI not found on
+      PATH" after the user clicked Sign in.
     * ``cli_path`` (str | None) -- absolute path to the CLI, or None.
     * ``sdk_importable`` (bool) -- the Python SDK is importable.
     * ``logged_in`` (bool) -- best-effort auth check; meaningless when
@@ -285,9 +317,12 @@ async def probe_codex_availability() -> dict[str, Any]:
     sdk_ok = _sdk_importable()
 
     payload: dict[str, Any] = {
-        # SDK alone is enough -- it bundles the codex runtime. A
-        # standalone CLI on PATH is additional but optional.
-        "installed": sdk_ok,
+        # Gate on BOTH because the login flow shells out to `codex`.
+        # Round 5 briefly set this to `sdk_ok` alone, but round 6
+        # caught that the login route would then fail with
+        # `codex CLI not found on PATH` after the user clicked
+        # Sign in, leaving them with an unusable provider row.
+        "installed": bool(cli_path) and sdk_ok,
         "cli_path": cli_path,
         "sdk_importable": sdk_ok,
         "logged_in": False,

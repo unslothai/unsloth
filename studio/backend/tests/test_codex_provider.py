@@ -1012,24 +1012,39 @@ class TestCodexHardenedRegressions:
         assert '"content": "hello "' in body
         assert '"content": "from turn.stream"' in body
 
-    def test_installed_true_when_sdk_only(self, monkeypatch):
-        """SDK alone is sufficient: openai-codex-cli-bin ships the
-        runtime that backs `AsyncCodex(...)`, so the picker must be
-        shown even when no standalone `codex` lives on PATH.
+    def test_installed_requires_both_cli_and_sdk(self, monkeypatch):
+        """Round 6 revert: the login route shells out to `codex`, so
+        marking `installed=True` on SDK-only would surface a Codex
+        provider row whose Sign-in button immediately fails. The
+        canonical `openai-codex` package installs `openai-codex-cli-bin`
+        which puts the `codex` shim on PATH, so common installs still
+        light up correctly; the gate just refuses to advertise a
+        provider Studio cannot actually drive.
         """
         from core.inference import codex_availability as ca
 
+        # SDK present, no CLI -> hidden (cannot complete login).
         monkeypatch.setattr(ca, "_which_codex", lambda: None)
         monkeypatch.setattr(ca, "_sdk_importable", lambda: True)
-
         payload = asyncio.run(ca.probe_codex_availability())
-        assert payload["installed"] is True
+        assert payload["installed"] is False
         assert payload["cli_path"] is None
         assert payload["sdk_importable"] is True
-        # logged_in stays False because the version/login probes only
-        # run when a CLI is present (they shell out to it). That is the
-        # expected behaviour, not a bug.
-        assert payload["logged_in"] is False
+
+        # CLI present, SDK missing -> still hidden (cannot drive chat).
+        monkeypatch.setattr(ca, "_which_codex", lambda: "/usr/bin/codex")
+        monkeypatch.setattr(ca, "_sdk_importable", lambda: False)
+
+        async def fake_version():
+            return "codex-cli 0.133.0"
+
+        async def fake_logged_in():
+            return True
+
+        monkeypatch.setattr(ca, "_detect_version", fake_version)
+        monkeypatch.setattr(ca, "_detect_logged_in", fake_logged_in)
+        payload2 = asyncio.run(ca.probe_codex_availability())
+        assert payload2["installed"] is False
 
     def test_base_instructions_kwarg_preferred(self, monkeypatch):
         """The upstream openai_codex SDK uses `base_instructions` for
@@ -1181,6 +1196,11 @@ class TestCodexHardenedRegressions:
         that must NOT be rendered as assistant text -- otherwise local
         stdout, file paths, or tool-call arguments would leak into the
         Chat Completions reply.
+
+        Round 6 also requires the object-shape path to gate on type
+        and class name; the upstream SDK emits typed notification
+        objects (CommandExecutionOutputDelta, FileChangeDelta, etc.)
+        with `.delta` strings that would otherwise leak.
         """
         from core.inference.codex_provider import _coerce_text
 
@@ -1189,8 +1209,7 @@ class TestCodexHardenedRegressions:
         assert _coerce_text({"type": "completed", "text": "done"}) == "done"
         assert _coerce_text({"type": "text_delta", "delta": "x"}) == "x"
 
-        # Non-answer event types are silenced even when they expose a
-        # delta string that looks like prose.
+        # Non-answer dict event types are silenced.
         for ev_type in (
             "command.delta",
             "command_output",
@@ -1208,6 +1227,53 @@ class TestCodexHardenedRegressions:
                 f"{ev_type} leaked text into assistant reply: "
                 f"{_coerce_text(payload)!r}"
             )
+
+        # Object-shape gate: typed payloads whose class name contains
+        # a tool/command/file/patch/plan marker drop the .delta too.
+        class CommandExecutionOutputDelta:
+            delta = "SECRET_STDOUT"
+
+        class FileChangeDelta:
+            delta = "secret/file/path"
+
+        class ToolCallDelta:
+            text = "tool_arg_payload"
+
+        class PatchApplyDelta:
+            delta = "diff --git a/secret"
+
+        class PlanUpdateDelta:
+            delta = "plan content"
+
+        class AgentReasoningDelta:
+            delta = "internal CoT"
+
+        for obj in (
+            CommandExecutionOutputDelta(),
+            FileChangeDelta(),
+            ToolCallDelta(),
+            PatchApplyDelta(),
+            PlanUpdateDelta(),
+            AgentReasoningDelta(),
+        ):
+            assert _coerce_text(obj) == "", (
+                f"object-shape {obj.__class__.__name__} leaked: "
+                f"{_coerce_text(obj)!r}"
+            )
+
+        # Object with explicit type attr also drops if not in allow-list.
+        class _WithType:
+            type = "command.delta"
+            delta = "leak"
+
+        assert _coerce_text(_WithType()) == ""
+
+        # Object-shape answer events DO pass through.
+        class AgentMessageDelta:
+            delta = "real assistant text"
+
+        assert _coerce_text(AgentMessageDelta()) == "real assistant text"
+
         # Plain strings and untyped dicts still pass through (legacy path).
         assert _coerce_text("raw text") == "raw text"
         assert _coerce_text({"text": "no type tag"}) == "no type tag"
@@ -1308,6 +1374,108 @@ class TestCodexHardenedRegressions:
         assert (
             kw.get("sandbox") == "READ_ONLY_SENTINEL"
         ), f"sandbox not pinned to read_only: {kw}"
+
+    def test_safety_kwargs_finds_sandbox_mode_in_submodule(self, monkeypatch):
+        """Round 6 caught that `SandboxMode` is exported by the
+        upstream SDK from `openai_codex.generated.v2_all`, NOT from
+        the top-level `openai_codex` package. The previous lookup
+        used `getattr(sdk_mod, 'SandboxMode', None)` only and returned
+        None for the canonical SDK install, silently degrading to
+        the unsafe auto_review default.
+        """
+        seen_kwargs: list[dict] = []
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _FakeThread(chunks = ["ok"])
+
+        # Build a fake openai_codex that DOES NOT expose SandboxMode
+        # at the top level -- only inside `.generated.v2_all`.
+        import importlib.util as _iu
+
+        fake_root = types.ModuleType("openai_codex")
+        fake_root.AsyncCodex = _Async  # type: ignore[attr-defined]
+        fake_root.ApprovalMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deny_all = "DENY_ALL",
+            auto_review = "AUTO",
+        )
+        # Submodule chain `.generated.v2_all`
+        fake_generated = types.ModuleType("openai_codex.generated")
+        fake_v2 = types.ModuleType("openai_codex.generated.v2_all")
+        fake_v2.SandboxMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            read_only = "READ_ONLY",
+            workspace_write = "WW",
+        )
+        fake_generated.v2_all = fake_v2  # type: ignore[attr-defined]
+        fake_root.generated = fake_generated  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "openai_codex", fake_root)
+        monkeypatch.setitem(sys.modules, "openai_codex.generated", fake_generated)
+        monkeypatch.setitem(sys.modules, "openai_codex.generated.v2_all", fake_v2)
+        real_find_spec = _iu.find_spec
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda n, *a, **kw: (
+                types.SimpleNamespace()
+                if n in ("openai_codex", "codex_app_server")
+                else real_find_spec(n, *a, **kw)
+            ),
+        )
+
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        assert seen_kwargs, "thread_start never called"
+        kw = seen_kwargs[0]
+        assert (
+            kw.get("approval_mode") == "DENY_ALL"
+        ), f"approval_mode not pinned even with submodule SandboxMode: {kw}"
+        assert (
+            kw.get("sandbox") == "READ_ONLY"
+        ), f"sandbox not pinned via submodule lookup: {kw}"
+
+    def test_scrubbed_env_construction_failure_restores_env(self, monkeypatch):
+        """Round 6: if the SDK constructor raises before __aenter__
+        returns, the previous wrapper never called __aexit__ so the
+        scrubbed env vars leaked permanently. Now the scrub is rolled
+        back on failure.
+        """
+        from core.inference.codex_provider import _ScrubbedEnvAsyncCodex
+
+        monkeypatch.setenv("HF_TOKEN", "must_survive")
+
+        class _FailingAsync:
+            def __init__(self):
+                raise RuntimeError("SDK construction failed")
+
+        async def _run():
+            wrapper = _ScrubbedEnvAsyncCodex(_FailingAsync)
+            try:
+                async with wrapper:
+                    pass
+            except RuntimeError:
+                pass
+
+        asyncio.run(_run())
+        # HF_TOKEN must be restored even though __aexit__ never fired
+        # for the failed construction.
+        assert (
+            os.environ.get("HF_TOKEN") == "must_survive"
+        ), "scrubbed env leaked permanently when SDK construction failed"
 
     def test_thread_start_skips_safety_kwargs_on_old_sdk(self, monkeypatch):
         """If the installed SDK does not expose ApprovalMode or
