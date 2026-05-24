@@ -2474,8 +2474,12 @@ async def openai_chat_completions(
                     max_tokens = payload.max_tokens,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
-                    stop = payload.stop if isinstance(payload.stop, list) else (
-                        [payload.stop] if isinstance(payload.stop, str) and payload.stop else None
+                    stop = payload.stop
+                    if isinstance(payload.stop, list)
+                    else (
+                        [payload.stop]
+                        if isinstance(payload.stop, str) and payload.stop
+                        else None
                     ),
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
@@ -2659,8 +2663,12 @@ async def openai_chat_completions(
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
-                stop = payload.stop if isinstance(payload.stop, list) else (
-                    [payload.stop] if isinstance(payload.stop, str) and payload.stop else None
+                stop = payload.stop
+                if isinstance(payload.stop, list)
+                else (
+                    [payload.stop]
+                    if isinstance(payload.stop, str) and payload.stop
+                    else None
                 ),
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
