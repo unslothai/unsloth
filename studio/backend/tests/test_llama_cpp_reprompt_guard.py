@@ -985,21 +985,28 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
         assert not _would_reprompt(content), content
 
 
-def test_reprompts_on_i_need_to_numbered_plan():
-    """``First, I need to:`` / ``I need to ...`` numbered plans are
-    tool stalls and still re-prompt."""
+def test_reprompts_on_i_will_gather_identify_numbered_plan():
+    """First-person + gather/identify verbs in list items is a tool
+    stall when the intent appears directly before the list."""
+    content = (
+        "I'll:\n"
+        "1. Gather the relevant files.\n"
+        "2. Identify the issue."
+    )
+    assert not _has_answer_artifact(content), content
+    assert _would_reprompt(content), content
+
+
+def test_no_reprompt_on_bare_i_need_to_clarification():
+    """Bare ``I need to`` clarification or prose answers must NOT
+    trigger the re-prompt. The phrase is too common in plain answers."""
     samples = [
-        ("First, I need to:\n" "1. Read the uploaded file.\n" "2. Summarize it."),
-        (
-            "I need to fetch the latest data:\n"
-            "1. Query the price.\n"
-            "2. Format the answer."
-        ),
-        ("I'll:\n" "1. Gather the relevant files.\n" "2. Identify the issue."),
+        "I need to know your operating system before giving the install command.",
+        "I need to be clear: the answer is Paris.",
+        'The sentence is: "I need to leave early today."',
     ]
     for content in samples:
-        assert not _has_answer_artifact(content), content
-        assert _would_reprompt(content), content
+        assert not _would_reprompt(content), content
 
 
 def test_reprompts_on_visit_or_access_numbered_plan():
@@ -1037,9 +1044,9 @@ def test_no_reprompt_on_inline_backtick_python_prose_after_code():
     assert not _would_reprompt(content)
 
 
-def test_reprompts_on_take_or_follow_steps_numbered_plan():
-    """``I'll take these steps:`` / ``I will follow these steps:`` +
-    numbered list of work items is a plan stall."""
+def test_reprompts_on_take_follow_complete_steps_numbered_plan():
+    """``I'll take/follow/complete these steps:`` + numbered list of
+    work items is a plan stall."""
     samples = [
         (
             "I'll take these steps:\n"
@@ -1052,6 +1059,11 @@ def test_reprompts_on_take_or_follow_steps_numbered_plan():
             "1. Open the current docs.\n"
             "2. Read the relevant section.\n"
             "3. Answer."
+        ),
+        (
+            "Let me complete these steps:\n"
+            "1. Read the uploaded CSV.\n"
+            "2. Check the totals."
         ),
     ]
     for content in samples:
