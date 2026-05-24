@@ -1375,10 +1375,12 @@ export function ChatSettingsPanel({
                 <Select
                   value={params.serviceTier ?? "auto"}
                   onValueChange={(value) => {
-                    if (value === "auto") {
-                      set("serviceTier")(null);
-                      return;
-                    }
+                    // Store every selected tier verbatim, including the
+                    // explicit "auto". On Anthropic the docs distinguish
+                    // omitting service_tier (provider default) from
+                    // setting "auto" (opt into Priority Tier when
+                    // available); preserve the user's choice through to
+                    // the adapter so the wire reflects it.
                     const allowed: readonly ServiceTier[] = serviceTierOptions;
                     if (allowed.includes(value as ServiceTier)) {
                       set("serviceTier")(value as ServiceTier);
