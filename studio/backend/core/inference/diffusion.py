@@ -60,6 +60,7 @@ logger = get_logger(__name__)
 # the user gave us a GGUF-only repo. The base_repo is documented to the
 # user via ``status()`` so they understand why a second download fires.
 
+
 @dataclass(frozen = True)
 class DiffusionFamily:
     name: str
@@ -117,7 +118,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 )
 
 
-def detect_family(repo_id: str, *, override_family: Optional[str] = None) -> Optional[DiffusionFamily]:
+def detect_family(
+    repo_id: str, *, override_family: Optional[str] = None
+) -> Optional[DiffusionFamily]:
     """Return the diffusion family matching ``repo_id``.
 
     Matching is substring-based and case-insensitive. ``override_family``
@@ -217,7 +220,11 @@ class DiffusionBackend:
 
         if torch.cuda.is_available():
             return "cuda", torch.bfloat16
-        if hasattr(torch, "backends") and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        if (
+            hasattr(torch, "backends")
+            and getattr(torch.backends, "mps", None)
+            and torch.backends.mps.is_available()
+        ):
             return "mps", torch.float16
         return "cpu", torch.float32
 
@@ -401,7 +408,9 @@ class DiffusionBackend:
                 # Match the device of the pipeline so determinism holds
                 # across reload cycles. For CPU offload, the noise still
                 # has to live on the device the diffusion forward runs on.
-                gen_device = "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+                gen_device = (
+                    "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+                )
                 generator = torch.Generator(device = gen_device).manual_seed(int(seed))
 
             call_kwargs: dict[str, Any] = {

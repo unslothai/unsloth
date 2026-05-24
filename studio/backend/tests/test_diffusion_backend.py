@@ -184,10 +184,17 @@ def _stub_pipeline(monkeypatch, *, returns = None, raises = None):
         def __call__(self, **kwargs):
             if raises is not None:
                 raise raises
+
             class _Out:
                 pass
+
             o = _Out()
-            o.images = [returns or Image.new("RGB", (kwargs["width"], kwargs["height"]), color = (0, 255, 0))]
+            o.images = [
+                returns
+                or Image.new(
+                    "RGB", (kwargs["width"], kwargs["height"]), color = (0, 255, 0)
+                )
+            ]
             return o
 
     backend._pipe = _StubPipe()
@@ -293,8 +300,11 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
         def __call__(self, **kwargs):
             class _Out:
                 pass
+
             o = _Out()
-            o.images = [Image.new("RGB", (kwargs["width"], kwargs["height"]), color = (0, 0, 255))]
+            o.images = [
+                Image.new("RGB", (kwargs["width"], kwargs["height"]), color = (0, 0, 255))
+            ]
             return o
 
         def enable_model_cpu_offload(self):
@@ -320,7 +330,9 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
 
     # Pretend HF Hub gave us a local file without actually fetching.
     fake_hub = types.ModuleType("huggingface_hub")
-    fake_hub.hf_hub_download = lambda repo_id, filename, token = None: f"/fake/{repo_id}/{filename}"
+    fake_hub.hf_hub_download = (
+        lambda repo_id, filename, token = None: f"/fake/{repo_id}/{filename}"
+    )
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
 
     # Force CPU dtype so the test does not need CUDA.
