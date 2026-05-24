@@ -52,6 +52,36 @@ banner "Block 1: host pre-flight"
 command -v docker >/dev/null 2>&1 || fail "docker not found on PATH"
 echo "  docker:       $(docker --version)"
 
+# Verify we can actually talk to the docker daemon as the current user.
+# This catches the "user not in docker group" case up front, instead of
+# letting docker buildx blow up with a "permission denied on /var/run/docker.sock"
+# error that looks like a build failure but is really a host permissions issue.
+DOCKER_INFO_OUT=$(docker info 2>&1)
+DOCKER_INFO_RC=$?
+if [[ $DOCKER_INFO_RC -ne 0 ]]; then
+    err "Cannot talk to the docker daemon as user '$USER'."
+    cat >&2 <<MSG
+
+docker info exited $DOCKER_INFO_RC. The most common cause is that your user
+is not in the 'docker' group. Fix:
+
+  sudo usermod -aG docker \$USER
+  newgrp docker            # activate the new group in this shell
+  docker info | head -3    # verify
+
+Then re-run this script in the same shell (or any new login session).
+
+Alternative: run the script with sudo, but be aware it will use root's
+home directory for HF cache (~/root/.cache/huggingface) which is probably
+not what you want.
+
+Raw docker info output:
+$DOCKER_INFO_OUT
+MSG
+    fail "docker daemon unreachable"
+fi
+echo "  daemon:       reachable as '$USER'"
+
 if command -v nvidia-smi >/dev/null 2>&1; then
     echo "  host gpu:     $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
     echo "  host driver:  $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
@@ -59,11 +89,14 @@ else
     warn "nvidia-smi not on the host -- you may not be able to run --gpus all"
 fi
 
-if docker info 2>&1 | grep -qiE 'Runtimes:.*nvidia'; then
+# This grep only makes sense once we know `docker info` succeeded above.
+if echo "$DOCKER_INFO_OUT" | grep -qiE 'Runtimes:.*nvidia'; then
     echo "  nvidia runtime: registered with docker"
 else
     warn "docker info does not list 'nvidia' as a runtime"
-    warn "if --gpus all fails below, install nvidia-container-toolkit:"
+    warn "(on Docker 28+ with CDI this is often a false positive; the real"
+    warn " test is whether --gpus all works in Block 3a below)"
+    warn "if --gpus all fails, install nvidia-container-toolkit:"
     warn "  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
     warn "  then: sudo systemctl restart docker"
 fi
