@@ -40,6 +40,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio_mod():
     from unsloth_cli.commands import studio as _s
+
     return _s
 
 
@@ -106,12 +107,15 @@ def _install_capture(monkeypatch):
     )
     real_is_file = Path.is_file
     monkeypatch.setattr(
-        Path, "is_file",
+        Path,
+        "is_file",
         lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
     )
     from unsloth_cli import _tool_policy as _tp
+
     monkeypatch.setattr(
-        _tp, "resolve_tool_policy",
+        _tp,
+        "resolve_tool_policy",
         lambda host, flag, yes, silent: False if flag is None else bool(flag),
     )
     monkeypatch.setattr(sys, "platform", "linux")
@@ -126,6 +130,7 @@ def _install_capture(monkeypatch):
 
 def _invoke(monkeypatch, args):
     import typer as _typer
+
     studio_mod = _studio_mod()
     captured = _install_capture(monkeypatch)
     app = _typer.Typer()
@@ -142,23 +147,26 @@ def _invoke(monkeypatch, args):
 # Each entry is (short_flag, value, llama-server long name). All of
 # these were silently mis-parsed before the cleanup.
 _PREVIOUSLY_BROKEN = [
-    ("-fa",    None,                "--flash-attn"),
-    ("-fit",   None,                "--fit"),
-    ("-fitt",  "1024",              "--fit-target"),
-    ("-fitc",  "4096",              "--fit-ctx"),
-    ("-mg",    "0",                 "--main-gpu"),
-    ("-md",    "/path/draft.gguf",  "--spec-draft-model"),
-    ("-hff",   "Q4_K_M.gguf",       "--hf-file"),
-    ("-cmoe",  None,                "--cpu-moe"),
-    ("-cram",  "16384",             "--cache-ram"),
-    ("-sm",    "row",               "--split-mode"),
-    ("-ncmoe", "8",                 "--n-cpu-moe"),
+    ("-fa", None, "--flash-attn"),
+    ("-fit", None, "--fit"),
+    ("-fitt", "1024", "--fit-target"),
+    ("-fitc", "4096", "--fit-ctx"),
+    ("-mg", "0", "--main-gpu"),
+    ("-md", "/path/draft.gguf", "--spec-draft-model"),
+    ("-hff", "Q4_K_M.gguf", "--hf-file"),
+    ("-cmoe", None, "--cpu-moe"),
+    ("-cram", "16384", "--cache-ram"),
+    ("-sm", "row", "--split-mode"),
+    ("-ncmoe", "8", "--n-cpu-moe"),
 ]
 
 
 @pytest.mark.parametrize("flag,value,llama_long_name", _PREVIOUSLY_BROKEN)
 def test_previously_broken_short_flag_now_passes_through(
-    monkeypatch, flag, value, llama_long_name,
+    monkeypatch,
+    flag,
+    value,
+    llama_long_name,
 ):
     """Each of these was silently mis-parsed before the short-alias
     cleanup. They must now pass through to the re-exec'd child verbatim."""
@@ -172,9 +180,9 @@ def test_previously_broken_short_flag_now_passes_through(
     )
     if value is not None:
         idx = argv.index(flag)
-        assert idx + 1 < len(argv) and argv[idx + 1] == value, (
-            f"value for {flag!r} was lost or moved; argv = {argv}"
-        )
+        assert (
+            idx + 1 < len(argv) and argv[idx + 1] == value
+        ), f"value for {flag!r} was lost or moved; argv = {argv}"
 
 
 def test_dash_hf_documented_alias_still_works(monkeypatch):
@@ -188,7 +196,5 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     argv = captured[0]
     # _split_repo_variant in the parent strips the variant suffix
     # before re-exec, so the child sees --model + --gguf-variant.
-    assert argv[argv.index("--model") + 1] == (
-        "unsloth/gemma-4-26B-A4B-it-GGUF"
-    ), argv
+    assert argv[argv.index("--model") + 1] == ("unsloth/gemma-4-26B-A4B-it-GGUF"), argv
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv

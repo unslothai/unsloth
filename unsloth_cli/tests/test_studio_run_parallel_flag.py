@@ -136,6 +136,7 @@ def _install_reexec_capture(monkeypatch, *, platform):
 
     # resolve_tool_policy is imported lazily inside run(); patch the source.
     from unsloth_cli import _tool_policy as _tp_mod
+
     monkeypatch.setattr(
         _tp_mod,
         "resolve_tool_policy",
@@ -164,6 +165,7 @@ def _install_reexec_capture(monkeypatch, *, platform):
 
 def _invoke_run(monkeypatch, args, *, platform = "linux"):
     import typer as _typer
+
     studio_mod = _load_run_command()
     captured = _install_reexec_capture(monkeypatch, platform = platform)
     app = _typer.Typer()
@@ -194,13 +196,13 @@ _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
     """Every alias the user can type must reach the re-exec'd child."""
     result, captured = _invoke_run(monkeypatch, _BASE + [flag, value])
-    assert len(captured) == 1, (
-        f"expected one launch via re-exec, got {captured}; output={result.output!r}"
-    )
+    assert (
+        len(captured) == 1
+    ), f"expected one launch via re-exec, got {captured}; output={result.output!r}"
     argv = captured[0]["argv"]
-    assert _value_after(argv, "--parallel") == value, (
-        f"{flag} {value} was dropped on re-exec; argv = {argv}"
-    )
+    assert (
+        _value_after(argv, "--parallel") == value
+    ), f"{flag} {value} was dropped on re-exec; argv = {argv}"
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
@@ -211,9 +213,9 @@ def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     )
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
-    assert captured[0]["kind"] == expected_kind, (
-        f"{platform}: expected launcher {expected_kind}, got {captured[0]['kind']}"
-    )
+    assert (
+        captured[0]["kind"] == expected_kind
+    ), f"{platform}: expected launcher {expected_kind}, got {captured[0]['kind']}"
     assert _value_after(captured[0]["argv"], "--parallel") == "12"
 
 
