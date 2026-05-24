@@ -2884,15 +2884,11 @@ class ExternalProviderClient:
             "gemini-3-pro",
             "gemini-pro-latest",
         )
-        _PRO_THINKING_PREFIXES = (
-            "gemini-2.5-pro",
-        )
+        _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
         is_gemini3_thinking = any(
             model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES
         )
-        is_gemini3_pro = any(
-            model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES
-        )
+        is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
         _is_pro_thinking_only = any(
             model_lc == p or model_lc.startswith(p + "-")
             for p in _PRO_THINKING_PREFIXES
@@ -2972,17 +2968,12 @@ class ExternalProviderClient:
             )
 
         google_search_allowed = (
-            not is_image_model
-            or _gemini_image_model_allows_google_search(model_lc)
+            not is_image_model or _gemini_image_model_allows_google_search(model_lc)
         )
         code_execution_allowed = not is_image_model
         text_tools_allowed = not is_image_model
         tools_array: list[dict[str, Any]] = []
-        if (
-            enabled_tools
-            and "web_search" in enabled_tools
-            and google_search_allowed
-        ):
+        if enabled_tools and "web_search" in enabled_tools and google_search_allowed:
             tools_array.append({"googleSearch": {}})
         if (
             enabled_tools
