@@ -85,6 +85,14 @@ class TestVisionImageSizeCap:
         with pytest.raises(ValidationError):
             _check_field("vision_image_size", value)
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_bool_error_says_integer_not_range(self, value):
+        # Regression guard: pre-fix the bool was coerced to 1/0 and the
+        # message read "must be in [256, 2048] (got 1)", which was confusing.
+        with pytest.raises(ValidationError) as exc:
+            _check_field("vision_image_size", value)
+        assert "integer or null" in str(exc.value)
+
 
 class TestLoraRCap:
     def test_at_cap_accepts(self):
