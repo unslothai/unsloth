@@ -3519,9 +3519,8 @@ class ExternalProviderClient:
                                                 not is_image_model
                                                 and last_code_exec_tool_id is not None
                                                 and bool(enabled_tools)
-                                                and "code_execution" in (
-                                                    enabled_tools or []
-                                                )
+                                                and "code_execution"
+                                                in (enabled_tools or [])
                                             )
                                             if attached_to_code_exec:
                                                 updated_result = (
@@ -3567,9 +3566,7 @@ class ExternalProviderClient:
                                                 # it.
                                                 _img_thought_sig = part.get(
                                                     "thoughtSignature"
-                                                ) or part.get(
-                                                    "thought_signature"
-                                                )
+                                                ) or part.get("thought_signature")
                                                 _img_tool_end: dict[str, Any] = {
                                                     "type": "tool_end",
                                                     "tool_call_id": img_id,
@@ -3578,9 +3575,7 @@ class ExternalProviderClient:
                                                     "image_mime": mime,
                                                 }
                                                 if (
-                                                    isinstance(
-                                                        _img_thought_sig, str
-                                                    )
+                                                    isinstance(_img_thought_sig, str)
                                                     and _img_thought_sig
                                                 ):
                                                     _img_tool_end["google"] = {
@@ -3588,9 +3583,7 @@ class ExternalProviderClient:
                                                             _img_thought_sig
                                                         ),
                                                     }
-                                                yield _emit_tool_event(
-                                                    _img_tool_end
-                                                )
+                                                yield _emit_tool_event(_img_tool_end)
                             finish_reason = cand.get("finishReason")
                             if isinstance(finish_reason, str):
                                 mapped = _finish_reason_map.get(finish_reason, "stop")

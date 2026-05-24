@@ -1701,8 +1701,7 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     image_starts = [
         e
         for e in tool_events
-        if e.get("type") == "tool_start"
-        and e.get("tool_name") == "image_generation"
+        if e.get("type") == "tool_start" and e.get("tool_name") == "image_generation"
     ]
     assert not image_starts, tool_events
     # The code_execution tool_end should now carry the inline image
