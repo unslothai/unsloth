@@ -134,7 +134,7 @@ def test_multi_source_marker_partial_resolution():
 
 
 def test_marker_with_numeric_locator():
-    text = f"See {_marker('tu0', locator='42')}."
+    text = f"See {_marker('tu0', locator = '42')}."
     citations = [{"source_id": "tu0", "url": "https://example.com/doc"}]
     out = _replace_openai_citation_markers(text, citations)
     assert "[[1]](https://example.com/doc)" in out
@@ -143,7 +143,7 @@ def test_marker_with_numeric_locator():
 
 
 def test_marker_with_range_locator():
-    text = f"See {_marker('tu0', locator='L8-L13')}."
+    text = f"See {_marker('tu0', locator = 'L8-L13')}."
     citations = [{"source_id": "tu0", "url": "https://example.com/code"}]
     out = _replace_openai_citation_markers(text, citations)
     assert "[[1]](https://example.com/code)" in out
