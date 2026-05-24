@@ -547,6 +547,51 @@ def test_local_openai_passthrough_forwards_new_sampling_fields():
     assert body["parallel_tool_calls"] is False, body
 
 
+# ── Responses → ChatCompletions bridge preserves parallel_tool_calls ──
+
+
+def test_responses_to_chat_bridge_preserves_parallel_tool_calls():
+    """Round 3 reviewers flagged that `_build_chat_request` (the
+    /v1/responses → /v1/chat/completions translator) dropped
+    `parallel_tool_calls`, so a Responses-API caller that set
+    `parallel_tool_calls=false` never saw the flag reach llama-server.
+    Pin the translation."""
+    from models.inference import ChatMessage, ResponsesRequest
+    from routes.inference import _build_chat_request, _build_openai_passthrough_body
+
+    payload = ResponsesRequest(
+        input = "hi",
+        stream = True,
+        parallel_tool_calls = False,
+    )
+    chat_req = _build_chat_request(
+        payload,
+        [ChatMessage(role = "user", content = "hi")],
+        stream = True,
+    )
+    assert chat_req.parallel_tool_calls is False, chat_req
+    body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+    assert body["parallel_tool_calls"] is False, body
+
+
+def test_responses_to_chat_bridge_omits_unset_parallel_tool_calls():
+    """Unset `parallel_tool_calls` (None) must not appear on the
+    translated body — the upstream default is `true` everywhere, so
+    forwarding `parallel_tool_calls=None` would over-specify."""
+    from models.inference import ChatMessage, ResponsesRequest
+    from routes.inference import _build_chat_request, _build_openai_passthrough_body
+
+    payload = ResponsesRequest(input = "hi", stream = True)
+    chat_req = _build_chat_request(
+        payload,
+        [ChatMessage(role = "user", content = "hi")],
+        stream = True,
+    )
+    assert chat_req.parallel_tool_calls is None, chat_req
+    body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+    assert "parallel_tool_calls" not in body, body
+
+
 # ── Backend ChatInferenceSettings schema accepts new fields ────────────
 
 

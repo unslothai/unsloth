@@ -3780,6 +3780,14 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
+    # `parallel_tool_calls` is now a first-class field on
+    # ChatCompletionRequest (PR #5711) and the OpenAI-compat
+    # passthrough builder forwards it. Translate it here so a Responses
+    # API caller (e.g. OpenAI Codex SDK) that sets
+    # `parallel_tool_calls=false` actually sees the preference reach
+    # llama-server instead of getting silently dropped at the bridge.
+    if payload.parallel_tool_calls is not None:
+        chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
     chat_tools = _translate_responses_tools_to_chat(payload.tools)
     if chat_tools is not None:
@@ -3789,13 +3797,7 @@ def _build_chat_request(
     if chat_tool_choice is not None:
         chat_kwargs["tool_choice"] = chat_tool_choice
 
-    req = ChatCompletionRequest(**chat_kwargs)
-    # `parallel_tool_calls` is not a first-class field on ChatCompletionRequest,
-    # but the model allows extras and _build_openai_passthrough_body forwards
-    # only explicitly-known fields. Llama-server does not currently implement
-    # parallel_tool_calls semantics, so we accept-and-ignore it on the
-    # Responses side to avoid breaking SDK clients that always send it.
-    return req
+    return ChatCompletionRequest(**chat_kwargs)
 
 
 def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:

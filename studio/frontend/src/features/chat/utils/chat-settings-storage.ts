@@ -171,10 +171,13 @@ function sanitizeInferenceParams(
   // re-truncates to the wire cap (4 for OpenAI Chat, 16 for Anthropic,
   // dropped entirely for OpenAI Responses) before the request hits the
   // network. Capping to 4 here would defeat Anthropic's UI cap of 16
-  // for users who switch providers between sessions.
+  // for users who switch providers between sessions. An EMPTY array
+  // must persist as an empty array (not be sanitized away) so the user
+  // can clear the last chip and have the change saved — otherwise the
+  // previously stored stops come back on reload.
   if (Array.isArray(value.stop)) {
     const stops = value.stop.filter((s): s is string => typeof s === "string");
-    if (stops.length > 0) params.stop = stops.slice(0, 16);
+    params.stop = stops.slice(0, 16);
   }
   // serviceTier: nullable enum string.
   if (value.serviceTier === null) {
