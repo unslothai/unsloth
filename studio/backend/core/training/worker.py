@@ -1157,8 +1157,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
     random_seed = config.get("random_seed", 3407)
-    model_random_state = config.get("model_random_state", random_seed)
-    lora_random_state = config.get("lora_random_state", random_seed)
+    # Treat absent OR explicit None the same way: fall back to random_seed.
+    # `config.get(key, default)` only fills the default when the key is
+    # missing; an explicit `None` would otherwise reach FastMLXModel and
+    # disable deterministic init silently.
+    _model_seed = config.get("model_random_state")
+    model_random_state = random_seed if _model_seed is None else _model_seed
+    _lora_seed = config.get("lora_random_state")
+    lora_random_state = random_seed if _lora_seed is None else _lora_seed
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),

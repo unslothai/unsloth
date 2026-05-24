@@ -162,11 +162,19 @@ class TestTrainingRawSupport(unittest.TestCase):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
 
         self.assertIn('random_seed = config.get("random_seed", 3407)', source)
+        # Both absent and explicit None must fall back to random_seed.
+        # `dict.get(key, default)` only fills the default on absent keys,
+        # so an explicit `None` would otherwise reach FastMLXModel /
+        # get_peft_model and disable deterministic init.
+        self.assertIn('_model_seed = config.get("model_random_state")', source)
         self.assertIn(
-            'model_random_state = config.get("model_random_state", random_seed)', source
+            "model_random_state = random_seed if _model_seed is None else _model_seed",
+            source,
         )
+        self.assertIn('_lora_seed = config.get("lora_random_state")', source)
         self.assertIn(
-            'lora_random_state = config.get("lora_random_state", random_seed)', source
+            "lora_random_state = random_seed if _lora_seed is None else _lora_seed",
+            source,
         )
         self.assertIn("random_state = model_random_state", source)
         self.assertIn("random_state = lora_random_state", source)
