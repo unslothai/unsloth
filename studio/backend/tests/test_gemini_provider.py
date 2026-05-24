@@ -333,6 +333,209 @@ def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
     assert gc.get("responseModalities") == ["TEXT", "IMAGE"], gc
 
 
+def test_image_models_skip_thinking_config(monkeypatch):
+    """Image-tier ids do not benefit from a visible thinking knob and
+    must NOT forward thinkingConfig even when stale UI state still
+    sends `reasoning_effort` or `enable_thinking=False`."""
+    for model in (
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image-preview",
+        "gemini-3-pro-image-preview",
+        "nano-banana-pro-preview",
+    ):
+        captured = _capture_body(
+            monkeypatch,
+            model = model,
+            reasoning_effort = "high",
+            enable_thinking = False,
+        )
+        gc = captured["body"]["generationConfig"]
+        assert "thinkingConfig" not in gc, (model, gc)
+
+
+def test_image_models_drop_text_only_tools(monkeypatch):
+    """Image-tier ids reject googleSearch / codeExecution wiring; drop
+    them silently so a stale `enabled_tools` array does not 400 the turn."""
+    for model in (
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image-preview",
+        "gemini-3-pro-image-preview",
+        "nano-banana-pro-preview",
+    ):
+        captured = _capture_body(
+            monkeypatch,
+            model = model,
+            enabled_tools = ["web_search", "code_execution"],
+        )
+        assert "tools" not in captured["body"], (
+            model,
+            captured["body"].get("tools"),
+        )
+
+
+def test_gemini_35_pro_recognized_as_pro_thinking(monkeypatch):
+    """`gemini-3.5-pro` rejects thinkingBudget=0 with "only works in
+    thinking mode" -- coerce to a positive budget."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-pro",
+        enable_thinking = False,
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc is not None and tc["thinkingBudget"] > 0, tc
+
+
+def test_legacy_openai_base_url_normalized(monkeypatch):
+    """Saved Gemini providers carrying the legacy `/v1beta/openai` base
+    (from the pre-PR OpenAI-compat plumbing) now point at the native
+    endpoint without the user re-saving the connection."""
+    client = ExternalProviderClient(
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key = "AIza-test-key",
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
+def test_finish_reason_swaps_to_tool_calls_when_function_call_emitted(monkeypatch):
+    """Gemini emits finishReason="STOP" even for pure functionCall turns;
+    surface as `tool_calls` so OAI clients trigger tool execution."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"functionCall": {"name": "lookup", "args": {"k": "v"}}}
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    finish_chunks = [
+        c for c in chunks
+        if c.get("choices", [{}])[0].get("finish_reason") is not None
+    ]
+    assert finish_chunks, chunks
+    assert finish_chunks[-1]["choices"][0]["finish_reason"] == "tool_calls", chunks
+
+
+def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
+    """An assistant tool_call carrying `extra_content.google.thought_signature`
+    must echo the value back as a sibling of the Gemini functionCall part."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "lookup x"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                        "extra_content": {
+                            "google": {"thought_signature": "SIG-ABC"}
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "name": "lookup",
+                "content": "{}",
+            },
+        ],
+    )
+    contents = captured["body"]["contents"]
+    fc_turn = next((c for c in contents if c["role"] == "model"), None)
+    assert fc_turn is not None, contents
+    fc_part = next(
+        (p for p in fc_turn["parts"] if "functionCall" in p), None,
+    )
+    assert fc_part is not None, fc_turn
+    assert fc_part.get("thoughtSignature") == "SIG-ABC", fc_part
+
+
+def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
+    """A Gemini functionCall part with `thoughtSignature` must surface
+    that signature on the outbound OpenAI tool_calls delta via
+    `extra_content.google.thought_signature`."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "lookup",
+                                    "args": {"k": "v"},
+                                    "id": "call_xyz",
+                                },
+                                "thoughtSignature": "SIG-FROM-GEMINI",
+                            }
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+    ]
+    chunks = _parse_chunks(_collect(monkeypatch, sse))
+    deltas = [
+        tc
+        for c in chunks
+        for tc in (c.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
+    ]
+    assert deltas, chunks
+    sig = deltas[0].get("extra_content", {}).get("google", {}).get(
+        "thought_signature"
+    )
+    assert sig == "SIG-FROM-GEMINI", deltas
+
+
+def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
+    """`thoughtsTokenCount` is the hidden-reasoning slice of output;
+    roll it into `output_tokens` AND surface it on
+    `output_tokens_details.reasoning_tokens` so total_tokens reflects
+    the full billable spend."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 20,
+                "totalTokenCount": 35,
+            },
+        }
+    ]
+    chunks = _parse_chunks(_collect(monkeypatch, sse))
+    usage_chunk = next((c for c in chunks if isinstance(c.get("usage"), dict)), None)
+    assert usage_chunk is not None, chunks
+    usage = usage_chunk["usage"]
+    assert usage.get("prompt_tokens") == 10, usage
+    # candidates 5 + thoughts 20 = 25 output tokens; total = 35.
+    assert usage.get("completion_tokens") == 25, usage
+    assert usage.get("total_tokens") == 35, usage
+
+
 # ── web_search forwarded as googleSearch tool ────────────────────────
 
 

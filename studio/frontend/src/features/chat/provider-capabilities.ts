@@ -112,17 +112,24 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
+  modelId?: string | null | undefined,
 ): boolean {
+  // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
+  // every chat-capable model, but image-tier ids (`-image`,
+  // `nano-banana`) reject text-tool wiring because they share the
+  // generationConfig.responseModalities path with the inline image
+  // bytes. Hide the pill on those so stale UI state cannot 400 the
+  // turn. Backend mirrors this guard in `_stream_gemini`.
+  if (providerType === "gemini") {
+    const normalized = modelId?.trim().toLowerCase() ?? "";
+    if (normalized && isGeminiImageModel(normalized)) return false;
+    return true;
+  }
   return (
     providerType === "openai" ||
     providerType === "anthropic" ||
     providerType === "openrouter" ||
-    providerType === "kimi" ||
-    // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
-    // every 2.x model. Backend translation lives in `_stream_gemini`,
-    // citations surface on the response's `groundingMetadata`. See
-    // https://ai.google.dev/gemini-api/docs/grounding.
-    providerType === "gemini"
+    providerType === "kimi"
   );
 }
 
@@ -220,12 +227,14 @@ export function providerSupportsBuiltinCodeExecution(
     );
   }
   if (providerType === "gemini") {
-    // Gemini's `tools: [{codeExecution: {}}]` is supported on every 2.x
-    // model except the image-only Nano Banana variant. Wire-up lives in
+    // Gemini's `tools: [{codeExecution: {}}]` is supported on every
+    // chat-capable model. Image-tier ids (`-image`, `nano-banana`)
+    // reject text-tool wiring because the inline-image path is
+    // mutually exclusive with codeExecution. Wire-up lives in
     // `_stream_gemini` on the backend; output comes back inline as
     // executableCode/codeExecutionResult parts. See
     // https://ai.google.dev/gemini-api/docs/code-execution.
-    if (normalized.includes("-image")) return false;
+    if (isGeminiImageModel(normalized)) return false;
     return normalized.startsWith("gemini-");
   }
   return false;
@@ -269,16 +278,27 @@ export function providerSupportsBuiltinImageGeneration(
     );
   }
   if (providerType === "gemini") {
-    // Gemini's Nano Banana image-output models carry `-image` in the id
-    // (e.g. `gemini-2.5-flash-image`). The backend flips
-    // generationConfig.responseModalities to ["TEXT", "IMAGE"] when this
-    // model is picked, and translates inlineData parts into the same
-    // image_b64 tool_end envelope the OpenAI path emits so the chat UI
-    // renders the picture inline. See
+    // Gemini's Nano Banana image-output ids carry either `-image` (e.g.
+    // `gemini-2.5-flash-image`, `gemini-3.1-flash-image-preview`) or the
+    // `nano-banana` alias (`nano-banana-pro-preview`). The backend flips
+    // generationConfig.responseModalities to ["TEXT", "IMAGE"] when one
+    // is picked, and translates inlineData parts into the same image_b64
+    // tool_end envelope the OpenAI path emits so the chat UI renders the
+    // picture inline. See
     // https://ai.google.dev/gemini-api/docs/image-generation.
-    return normalized.includes("-image");
+    return normalized.includes("-image") || normalized.includes("nano-banana");
   }
   return false;
+}
+
+/**
+ * Whether `modelId` is a Gemini image-output id (Nano Banana family).
+ * Mirrors the backend's `is_image_picker_model` guard so the frontend
+ * hides text-only tool pills (web_search, code_execution) for these.
+ */
+function isGeminiImageModel(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  return m.includes("-image") || m.includes("nano-banana");
 }
 
 /**
@@ -587,10 +607,16 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
 //   - 2.5 Flash-Lite: no native thinking surfaced; leave it off.
 //   - Image-tier ids (`*-image*`, `nano-banana-pro-preview`): image
 //     generation path -- no reasoning controls.
+// Pro-tier Gemini ids -- the API rejects `thinkingBudget=0` on these
+// with "This model only works in thinking mode". The picker hides the
+// off-switch; backend coerces an off request to a small positive budget.
+// Image-tier ids (e.g. gemini-3-pro-image-preview, nano-banana-pro-preview)
+// are handled by the isGeminiImageModel guard above and never reach this
+// resolver, so plain prefix matching is safe here.
 const GEMINI_THINKING_PRO_PREFIXES = [
   "gemini-3.5-pro",
   "gemini-3.1-pro",
-  "gemini-3-pro",
+  "gemini-3-pro-preview",
   "gemini-2.5-pro",
   "gemini-pro-latest",
 ];

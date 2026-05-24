@@ -72,17 +72,20 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         # Curated lineup -- the live ListModels response returns dozens
         # of historical / experimental / embedding ids. Cap to the
-        # current chat-capable Gemini families (3.5 / 3.1 / 3 / 2.5)
-        # plus the Nano Banana image trio and the rolling `*-latest`
-        # aliases. `gemini-2.0-flash*` were retired by Google in 2026
-        # and are intentionally excluded; the allowlist below blocks
-        # them from re-appearing through the live ListModels fetch.
-        # Verified against the live `/v1beta/models` catalog 2026-05-24.
+        # current chat-capable Gemini families (3.5 / 3.1 / 3 Flash /
+        # 2.5) plus the Nano Banana image trio and the rolling
+        # `*-latest` aliases. Excluded on purpose:
+        #   - `gemini-2.0-flash*` (Google retired 2026-06-01; 404 on use)
+        #   - `gemini-3-pro-preview` (shut down 2026-03-09; auto-redirects
+        #     to `gemini-3.1-pro-preview` per Google's deprecation notice,
+        #     so we surface 3.1 directly and skip the redirect).
+        # The allowlist below blocks the retired ids from re-appearing
+        # via the live ListModels fetch. Verified against the live
+        # `/v1beta/models` catalog 2026-05-24.
         "default_models": [
             "gemini-3.5-flash",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-lite",
-            "gemini-3-pro-preview",
             "gemini-3-flash-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
@@ -104,6 +107,13 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "API key from https://aistudio.google.com/apikey. "
             "See https://ai.google.dev/gemini-api/docs for endpoint shapes."
         ),
+        # Even after the regex match, drop ids that Google still
+        # returns from ListModels but routes via implicit redirect.
+        # gemini-3-pro-preview was shut down 2026-03-09 and is
+        # auto-aliased to gemini-3.1-pro-preview; we surface the
+        # canonical id only so users do not see two cards for the
+        # same underlying model.
+        "model_id_deny_exact": ("gemini-3-pro-preview",),
         # Matches the chat-capable 3.5 / 3.1 / 3 / 2.5 families plus the
         # rolling *-latest aliases (which Google rolls forward as new
         # generations ship). Image-tier ids (`-image`, `-image-preview`,

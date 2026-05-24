@@ -767,6 +767,7 @@ export function ChatPage(): ReactElement {
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
+      selection.modelId,
     );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
@@ -996,6 +997,7 @@ export function ChatPage(): ReactElement {
         store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
+          selectedExternal?.modelId,
         );
         const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
           selectedProvider?.providerType,

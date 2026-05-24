@@ -11,7 +11,7 @@ Anthropic uses native Messages API with translation in this client.
 import json as _json
 import re
 import time
-from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -295,6 +295,17 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.base_url = base_url.rstrip("/")
+        # Legacy Gemini configs saved with the OpenAI-compatibility base
+        # (`/v1beta/openai`) build broken native URLs after PR #5720
+        # switched Gemini onto the native streamGenerateContent endpoint
+        # (`/v1beta/openai/models/{model}:streamGenerateContent` 404s).
+        # Strip the `/openai` suffix transparently so saved providers keep
+        # working without a manual re-config.
+        if (
+            self.provider_type == "gemini"
+            and self.base_url.endswith("/openai")
+        ):
+            self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
         # Separate timeout for SSE streams: reasoning-heavy providers
@@ -343,7 +354,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
-        enable_prompt_caching: Optional[bool] = None,
+        enable_prompt_caching: Optional[Union[bool, str]] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
@@ -2731,7 +2742,24 @@ class ExternalProviderClient:
                     }
                     if isinstance(tc_id, str) and tc_id:
                         function_call_part["id"] = tc_id
-                    parts.append({"functionCall": function_call_part})
+                    # Gemini 3 function-calling requires the prior
+                    # thoughtSignature to be echoed back as a sibling
+                    # of the functionCall part. The translator stows
+                    # it on the assistant tool_call via
+                    # `extra_content.google.thought_signature` (see
+                    # the inbound emit below).
+                    fc_part: dict[str, Any] = {"functionCall": function_call_part}
+                    extra = tc.get("extra_content")
+                    if isinstance(extra, dict):
+                        google_extra = extra.get("google") or {}
+                        if isinstance(google_extra, dict):
+                            sig = (
+                                google_extra.get("thought_signature")
+                                or google_extra.get("thoughtSignature")
+                            )
+                            if isinstance(sig, str) and sig:
+                                fc_part["thoughtSignature"] = sig
+                    parts.append(fc_part)
             if role == "tool":
                 # OpenAI's role="tool" follow-up carries the function
                 # result. Gemini's matching shape is a role="user" turn
@@ -2794,64 +2822,70 @@ class ExternalProviderClient:
         if max_tokens is not None:
             gen_config["maxOutputTokens"] = max_tokens
 
-        # Nano Banana image generation. When the user picked the image
-        # model (or asked for image_generation as a tool), tell Gemini
-        # to return image bytes by setting `responseModalities`. The
-        # response carries an `inlineData` part on each candidate which
-        # we translate to a tool_end with image_b64/image_mime so the
-        # chat UI renders the picture inline. See
+        # Nano Banana image generation. When the user picked an image
+        # model (id contains `-image` or `nano-banana`) or asked for
+        # `image_generation` as a tool, tell Gemini to return image
+        # bytes via `responseModalities`. The response carries an
+        # `inlineData` part on each candidate which we translate into a
+        # tool_end with image_b64/image_mime so the chat UI renders the
+        # picture inline. See
         # https://ai.google.dev/gemini-api/docs/image-generation.
-        is_image_model = (
-            "-image" in model.lower()
-            or "nano-banana" in model.lower()
-            or bool(enabled_tools and "image_generation" in enabled_tools)
+        model_lc = model.lower()
+        is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
+        is_image_model = is_image_picker_model or bool(
+            enabled_tools and "image_generation" in enabled_tools
         )
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
 
         # Thinking budget plumbing. Gemini 3.x, 3.5 Flash, gemini-pro-latest
-        # and gemini-flash-latest spend hidden "thoughts" tokens before they
-        # produce the streamed answer. With a tight `max_tokens` budget the
-        # answer can be entirely consumed by thoughts, so the caller's
-        # `enable_thinking` / `reasoning_effort` knobs need to actually
-        # reach `generationConfig.thinkingConfig`. Per
+        # and gemini-flash-latest spend hidden "thoughts" tokens before
+        # they emit the streamed answer; with a tight `max_tokens` budget
+        # the visible answer is entirely consumed by thoughts. The
+        # caller's `enable_thinking` / `reasoning_effort` knobs reach
+        # `generationConfig.thinkingConfig.thinkingBudget`. Per
         # https://ai.google.dev/gemini-api/docs/thinking:
-        #   thinkingBudget = 0  -> disable thinking (Flash-tier only;
-        #                          Pro-tier 400s with "only works in
-        #                          thinking mode")
-        #   thinkingBudget = -1 -> dynamic / let the model decide
+        #   thinkingBudget = 0   -> off (Flash tier only; Pro tier 400s
+        #                           with "only works in thinking mode")
+        #   thinkingBudget = -1  -> dynamic
         #   thinkingBudget = N>0 -> hard cap of N thought tokens
-        # Pro-tier models cannot be turned off; we silently coerce
-        # an "off" request to a small budget on those so they stay
-        # responsive instead of 400ing the whole turn.
-        _PRO_THINKING_ONLY = (
+        # Pro-tier models silently coerce "off" to a small positive
+        # budget so the turn does not 400.
+        # Image models do not benefit from a visible thinking knob and
+        # we skip the field entirely to avoid forwarding stale UI state.
+        _PRO_THINKING_PREFIXES = (
             "gemini-pro-latest",
+            "gemini-3.5-pro",
             "gemini-3.1-pro",
-            "gemini-3-pro",
+            "gemini-3-pro-preview",
             "gemini-2.5-pro",
         )
-        _is_pro_thinking_only = any(p in model for p in _PRO_THINKING_ONLY)
+        _is_pro_thinking_only = any(
+            model_lc == p or model_lc.startswith(p + "-")
+            for p in _PRO_THINKING_PREFIXES
+        )
         # Effort -> budget tokens. Mirrors the OpenAI ladder so the
-        # frontend's existing "minimal/low/medium/high/max" picker maps
-        # to sensible Gemini budgets. Match the keys the rest of Studio
-        # uses (see `stream_chat_completion`'s reasoning_effort docstring
-        # and the OpenAI / Anthropic helpers).
+        # frontend's existing minimal/low/medium/high/max picker maps to
+        # sensible Gemini budgets.
+        # NOTE: gemini-2.5-flash-lite rejects positive budgets below 512
+        # with HTTP 400. `minimal=512` is at that floor.
         _EFFORT_TO_BUDGET: dict[str, int] = {
             "minimal": 512,
             "low": 2048,
             "medium": 8192,
             "high": 24576,
-            "xhigh": -1,  # dynamic
-            "max": -1,  # dynamic
+            "xhigh": -1,
+            "max": -1,
         }
         thinking_budget: Optional[int] = None
         effort_lc = (reasoning_effort or "").strip().lower()
-        if effort_lc == "none" or enable_thinking is False:
-            thinking_budget = 128 if _is_pro_thinking_only else 0
-        elif effort_lc in _EFFORT_TO_BUDGET:
-            thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
-        elif enable_thinking is True:
-            thinking_budget = -1
+        if not is_image_model:
+            if effort_lc == "none" or enable_thinking is False:
+                thinking_budget = 128 if _is_pro_thinking_only else 0
+            elif effort_lc in _EFFORT_TO_BUDGET:
+                thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
+            elif enable_thinking is True:
+                thinking_budget = -1
         if thinking_budget is not None:
             gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
@@ -2864,10 +2898,22 @@ class ExternalProviderClient:
         #   https://ai.google.dev/gemini-api/docs/grounding
         # - `{codeExecution: {}}` -- sandboxed Python tool.
         #   https://ai.google.dev/gemini-api/docs/code-execution
+        # Image models reject both (the response modalities path is
+        # mutually exclusive with text-tool wiring). Drop them silently
+        # so stale UI state or direct API callers do not 400 the turn.
+        text_tools_allowed = not is_image_picker_model
         tools_array: list[dict[str, Any]] = []
-        if enabled_tools and "web_search" in enabled_tools:
+        if (
+            enabled_tools
+            and "web_search" in enabled_tools
+            and text_tools_allowed
+        ):
             tools_array.append({"googleSearch": {}})
-        if enabled_tools and "code_execution" in enabled_tools:
+        if (
+            enabled_tools
+            and "code_execution" in enabled_tools
+            and text_tools_allowed
+        ):
             tools_array.append({"codeExecution": {}})
         if tools_array:
             body["tools"] = tools_array
@@ -2939,6 +2985,12 @@ class ExternalProviderClient:
 
         last_usage: Optional[dict[str, Any]] = None
         emitted_function_call_ids: set[str] = set()
+        # True once any Gemini functionCall part has been emitted so the
+        # final finish_reason swaps STOP -> tool_calls (matches the
+        # OpenAI Chat Completions contract; an OAI client that sees a
+        # tool_calls delta followed by finish_reason="stop" never
+        # executes the tool).
+        emitted_any_function_call = False
         web_search_active = bool(enabled_tools and "web_search" in enabled_tools)
         web_search_tool_id = "gemini_web_search"
         web_search_tool_started = False
@@ -3087,6 +3139,39 @@ class ExternalProviderClient:
                                         # hardcoded to 0, breaking
                                         # parallel/multi-tool turns.
                                         tc_index = len(emitted_function_call_ids) - 1
+                                        tool_call_delta: dict[str, Any] = {
+                                            "index": tc_index,
+                                            "id": fc_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": fc_name,
+                                                "arguments": _json.dumps(
+                                                    fc_args
+                                                ),
+                                            },
+                                        }
+                                        # Gemini 3 function-calling: the
+                                        # part-level `thoughtSignature`
+                                        # must be echoed back on the
+                                        # next turn or the model rejects
+                                        # the tool-result envelope. Stow
+                                        # it on `extra_content.google`
+                                        # so the frontend can persist it
+                                        # and our outbound translator
+                                        # (below) can replay it.
+                                        thought_sig = part.get(
+                                            "thoughtSignature"
+                                        ) or part.get("thought_signature")
+                                        if (
+                                            isinstance(thought_sig, str)
+                                            and thought_sig
+                                        ):
+                                            tool_call_delta["extra_content"] = {
+                                                "google": {
+                                                    "thought_signature": thought_sig,
+                                                }
+                                            }
+                                        emitted_any_function_call = True
                                         tool_chunk = {
                                             "id": completion_id,
                                             "object": "chat.completion.chunk",
@@ -3094,19 +3179,7 @@ class ExternalProviderClient:
                                                 {
                                                     "index": 0,
                                                     "delta": {
-                                                        "tool_calls": [
-                                                            {
-                                                                "index": tc_index,
-                                                                "id": fc_id,
-                                                                "type": "function",
-                                                                "function": {
-                                                                    "name": fc_name,
-                                                                    "arguments": _json.dumps(
-                                                                        fc_args
-                                                                    ),
-                                                                },
-                                                            }
-                                                        ]
+                                                        "tool_calls": [tool_call_delta]
                                                     },
                                                     "finish_reason": None,
                                                 }
@@ -3259,6 +3332,16 @@ class ExternalProviderClient:
                         web_search_tool_ended = True
 
                     if final_finish_reason:
+                        # OpenAI clients trigger tool execution when
+                        # finish_reason="tool_calls". Gemini emits
+                        # "STOP" even when the turn was a pure
+                        # functionCall request, so override after the
+                        # fact to match the OAI contract.
+                        if (
+                            emitted_any_function_call
+                            and final_finish_reason == "stop"
+                        ):
+                            final_finish_reason = "tool_calls"
                         finish_chunk = {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
@@ -3277,16 +3360,28 @@ class ExternalProviderClient:
                     # `_build_usage_chunk` emitter handles wire
                     # formatting (and downstream cost calculators
                     # already understand the shape).
+                    # `thoughtsTokenCount` is the hidden-reasoning slice
+                    # of output, billed alongside `candidatesTokenCount`;
+                    # roll both into `output_tokens` so total_tokens
+                    # equals promptToken + candidatesToken + thoughtsToken
+                    # and the cost calculator does not undercount.
                     if isinstance(last_usage, dict):
+                        thought_tokens = (
+                            last_usage.get("thoughtsTokenCount") or 0
+                        )
+                        candidate_tokens = (
+                            last_usage.get("candidatesTokenCount") or 0
+                        )
                         translated_usage = {
                             "input_tokens": (last_usage.get("promptTokenCount") or 0),
-                            "output_tokens": (
-                                last_usage.get("candidatesTokenCount") or 0
-                            ),
+                            "output_tokens": candidate_tokens + thought_tokens,
                             "input_tokens_details": {
                                 "cached_tokens": (
                                     last_usage.get("cachedContentTokenCount") or 0
                                 )
+                            },
+                            "output_tokens_details": {
+                                "reasoning_tokens": thought_tokens,
                             },
                         }
                         usage_line = _build_usage_chunk(

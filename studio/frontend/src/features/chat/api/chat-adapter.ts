@@ -875,8 +875,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const webSearchEnabledForThisTurn =
         Boolean(
           externalProvider &&
+            externalSelection &&
             toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
+            providerSupportsBuiltinWebSearch(
+              externalProvider.providerType,
+              externalSelection.modelId,
+            ),
         );
       const codeExecEnabledForThisTurn =
         Boolean(
