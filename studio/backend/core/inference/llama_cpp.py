@@ -134,6 +134,7 @@ def _has_answer_artifact(text: str) -> bool:
         return _PLAN_LIST_FRAMING.search(text) is None
     return False
 
+
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
 # fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,

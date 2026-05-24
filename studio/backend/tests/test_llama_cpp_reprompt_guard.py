@@ -103,8 +103,8 @@ def test_artifact_regex_detects_non_alpha_info_strings():
     samples = [
         "First, let me write it.\n```python3\nprint('hi')\n```",
         "First, let me write it.\n```c++\nint main() { return 0; }\n```",
-        "First, let me write it.\n```c#\nConsole.WriteLine(\"hi\");\n```",
-        "First, let me write it.\n```objective-c\nNSLog(@\"hi\");\n```",
+        'First, let me write it.\n```c#\nConsole.WriteLine("hi");\n```',
+        'First, let me write it.\n```objective-c\nNSLog(@"hi");\n```',
         "First, let me write it.\n```ts-node\nconsole.log('hi')\n```",
         "First, let me script it.\n```bash-session\n$ echo hi\n```",
         "First, let me show it.\n```python linenums=\"1\"\nprint('hi')\n```",
