@@ -60,6 +60,32 @@ export interface ProviderCapabilities {
   parallelToolCalls: boolean;
 }
 
+/**
+ * Per-provider stop-sequence max count. Resolved by
+ * `getProviderStopMax(providerType)`. Mirrors the backend's
+ * `provider_info.stop_max` for the same provider type.
+ *   - openai:    4   (Chat Completions hard cap; Responses drops stop)
+ *   - anthropic: 16  (client-side guard; docs publish no max)
+ *   - kimi:      5   (https://platform.kimi.ai/docs/api/chat)
+ *   - deepseek:  16  (https://api-docs.deepseek.com/api/create-chat-completion)
+ *   - mistral:   16  (no documented max; widen to permissive default)
+ *   - default:   16  (covers ollama, vllm, llama.cpp, openrouter, custom)
+ */
+const PROVIDER_STOP_MAX: Record<string, number> = {
+  openai: 4,
+  anthropic: 16,
+  kimi: 5,
+  deepseek: 16,
+  mistral: 16,
+};
+
+export function getProviderStopMax(
+  providerType: string | null | undefined,
+): number {
+  if (!providerType) return 16; // local backends
+  return PROVIDER_STOP_MAX[providerType] ?? 16;
+}
+
 export type ServiceTierOption =
   | "auto"
   | "default"

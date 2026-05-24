@@ -162,6 +162,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # (and the same shape for top_p). Strip both fields from the
         # outbound body so the server falls back to its required defaults.
         "body_omit": ("temperature", "top_p"),
+        # Kimi accepts at most 5 stop strings (each <= 32 bytes) per
+        # https://platform.kimi.ai/docs/api/chat
+        "stop_max": 5,
     },
     "qwen": {
         "display_name": "Qwen",

@@ -86,6 +86,7 @@ import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
   getExternalMinOutputTokens,
+  getProviderStopMax,
   getServiceTierOptions,
   providerSupportsBuiltinCodeExecution,
 } from "./provider-capabilities";
@@ -427,12 +428,10 @@ export function ChatSettingsPanel({
     isExternalModel && Boolean(providerCapabilities?.serviceTier);
   const showParallelToolCalls =
     !isExternalModel || Boolean(providerCapabilities?.parallelToolCalls);
-  // OpenAI Chat caps `stop` at 4; Anthropic, DeepSeek, Mistral, and
-  // local llama.cpp / vLLM / ollama backends accept more. Use 16 as
-  // the UI ceiling for everything that is not OpenAI cloud Chat; the
-  // backend re-trims per provider on the wire.
-  const stopMaxEntries =
-    !isExternalModel || externalProviderType === "anthropic" ? 16 : 4;
+  // Per-provider stop cap from provider-capabilities.ts; backend
+  // re-trims on the wire if a stale UI sends more than the upstream
+  // accepts.
+  const stopMaxEntries = getProviderStopMax(externalProviderType);
   const serviceTierOptions = getServiceTierOptions(externalProviderType);
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;

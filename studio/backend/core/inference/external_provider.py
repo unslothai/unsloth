@@ -895,41 +895,40 @@ class ExternalProviderClient:
             body["max_tokens"] = max_tokens
 
         # The default OAI-compat body construction is skipped because
-        # this helper returns early. Forward the optional sampling
-        # extensions here so kimi-with-search behaves the same as
+        # this helper returns early. Apply the same provider-aware
+        # sampling / stop logic here so kimi-with-search matches
         # kimi-without-search.
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
         if presence_penalty is not None:
             body["presence_penalty"] = presence_penalty
         if frequency_penalty is not None:
             body["frequency_penalty"] = frequency_penalty
         if seed is not None:
-            body["seed"] = seed
+            seed_field = provider_info.get("seed_field", "seed")
+            body[seed_field] = seed
         if stop:
-            # Match the default OAI-compat path: forward a single string
-            # verbatim, dedupe + cap lists to 4 (OpenAI hard limit).
+            stop_max = int(provider_info.get("stop_max", 16))
             if isinstance(stop, str):
                 body["stop"] = stop
             elif isinstance(stop, list):
                 sequences = list(
                     dict.fromkeys(s for s in stop if isinstance(s, str) and s)
                 )
-                if len(sequences) > 4:
+                if len(sequences) > stop_max:
                     logger.warning(
-                        "stop sequences truncated to 4 entries "
-                        "(received %d, OpenAI's hard cap is 4)",
+                        "stop sequences truncated to %d entries (received %d)",
+                        stop_max,
                         len(sequences),
                     )
-                    body["stop"] = sequences[:4]
+                    body["stop"] = sequences[:stop_max]
                 elif sequences:
                     body["stop"] = sequences
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = parallel_tool_calls
 
-        # Strip body fields the Kimi registry declares unusable
-        # (temperature/top_p — see body_omit in providers.py).
-        from core.inference.providers import get_provider_info
-
-        provider_info = get_provider_info(self.provider_type) or {}
+        # Drop body fields the provider's registry entry locks down.
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 

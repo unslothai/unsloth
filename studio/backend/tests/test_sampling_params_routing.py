@@ -537,12 +537,10 @@ def test_chat_completion_request_clamps_frequency_penalty_range():
 
 
 def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
-    """The Kimi `enabled_tools=["web_search"]` path takes an early
-    return into `_stream_kimi_web_search` BEFORE the default OAI-compat
-    body builder runs. PR #5711 added new sampling fields to the
-    default builder; this test pins that the web-search bypass also
-    forwards them so Kimi-with-search and Kimi-without-search behave
-    consistently."""
+    """The Kimi $web_search path takes an early return into
+    `_stream_kimi_web_search` before the default OAI-compat body
+    builder runs; forwarding here keeps Kimi-with-search and
+    Kimi-without-search in lockstep."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
 
     async def run():
@@ -577,6 +575,62 @@ def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
     # body_omit still strips temperature / top_p for Kimi.
     assert "temperature" not in body, body
     assert "top_p" not in body, body
+
+
+def test_kimi_web_search_uses_kimi_stop_cap_5(monkeypatch):
+    """Kimi documents a 5-stop max; the web-search bypass must honour
+    `provider_info["stop_max"]` rather than the OpenAI 4-cap or the
+    permissive default."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 1.0,
+            top_p = 1.0,
+            max_tokens = 256,
+            enabled_tools = ["web_search"],
+            stop = [f"S{i}" for i in range(10)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert len(body.get("stop", [])) == 5, body
+    assert body["stop"] == ["S0", "S1", "S2", "S3", "S4"], body
+
+
+def test_kimi_default_path_uses_kimi_stop_cap_5(monkeypatch):
+    """The normal Kimi path must also honour the documented 5-cap."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 1.0,
+            top_p = 1.0,
+            max_tokens = 256,
+            stop = [f"S{i}" for i in range(10)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert len(body.get("stop", [])) == 5, body
 
 
 # ── Local OpenAI passthrough forwards new sampling fields ──────────────
