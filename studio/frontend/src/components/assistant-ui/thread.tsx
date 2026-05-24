@@ -64,6 +64,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BookOpenIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
@@ -908,6 +909,44 @@ const ImagesToggle: FC = () => {
   );
 };
 
+// Mirror of shared-composer's RAG pill (the master switch for
+// retrieval). Visible on every model; the sidebar Retrieval section
+// configures source / top-K / reranker once this is on.
+const RagToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
+  const setRagToolEnabled = useChatRuntimeStore((s) => s.setRagToolEnabled);
+  const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const disabled = !modelLoaded;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        const next = !ragToolEnabled;
+        setRagToolEnabled(next);
+        if (next && ragSource.kind === "off") {
+          setRagSource({ kind: "thread" });
+        }
+      }}
+      className="composer-pill-btn"
+      data-active={ragToolEnabled && !disabled ? "true" : "false"}
+      aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
+      title={
+        ragToolEnabled
+          ? "RAG on — the model can search your attached documents"
+          : "Enable RAG — let the model search your documents"
+      }
+    >
+      <BookOpenIcon className="size-3.5" />
+      <span>RAG</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -980,6 +1019,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <RagToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
