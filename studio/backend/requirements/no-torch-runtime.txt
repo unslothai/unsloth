@@ -76,24 +76,3 @@ trl>=0.18.2,!=0.19.0,<=0.24.0
 sentence-transformers
 cut_cross_entropy
 pillow
-
-# RAG: vector store, lexical index, document parsers.
-# qdrant-client supports a pure-Python local mode (QdrantClient(path=...))
-# that we use to keep the studio install self-contained — no separate
-# server. bm25s persists per-scope indices to disk.
-qdrant-client>=1.12
-bm25s>=0.2
-# RAG parsers (Phase 3A): layout-aware Markdown extraction so the chunker
-# can split on real headings instead of running paragraphs together.
-# pymupdf4llm preserves headings + pipe-tables; mammoth handles DOCX
-# Heading styles; markdownify converts HTML <h*>/<table>/<ul> faithfully.
-pymupdf>=1.24
-pymupdf4llm>=0.0.17
-mammoth>=1.7
-markdownify>=0.13
-# pypdf is kept as a fallback for malformed PDFs that defeat pymupdf.
-pypdf>=4.0
-python-docx>=1.1
-beautifulsoup4>=4.12
-lxml>=5.0
-chardet>=5.2

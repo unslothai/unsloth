@@ -1,0 +1,27 @@
+# Studio RAG dependencies.
+# Installed by studio/install_python_stack.py in the normal (with-torch)
+# path. Skipped in NO_TORCH (Intel Mac GGUF-only) mode because RAG
+# embedding relies on sentence-transformers, which requires torch.
+
+# Vector store + lexical index. qdrant-client supports a pure-Python
+# local mode (QdrantClient(path=...)) that we use to keep the studio
+# install self-contained — no separate server. bm25s persists per-scope
+# indices to disk.
+qdrant-client>=1.12
+bm25s>=0.2
+
+# Layout-aware Markdown extraction (Phase 3A) so the chunker can split
+# on real headings instead of running paragraphs together. pymupdf4llm
+# preserves headings + pipe-tables; mammoth handles DOCX Heading styles;
+# markdownify converts HTML <h*>/<table>/<ul> faithfully.
+pymupdf>=1.24
+pymupdf4llm>=0.0.17
+mammoth>=1.7
+markdownify>=0.13
+
+# pypdf is kept as a fallback for malformed PDFs that defeat pymupdf.
+pypdf>=4.0
+python-docx>=1.1
+beautifulsoup4>=4.12
+lxml>=5.0
+chardet>=5.2

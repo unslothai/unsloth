@@ -915,6 +915,8 @@ def install_python_stack() -> int:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         base_total += 3
+    if not NO_TORCH:
+        base_total += 1  # studio RAG deps (rag.txt)
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -1202,6 +1204,17 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "studio.txt",
     )
+
+    # 8b. RAG dependencies (vector store + lexical index + layout-aware
+    #     parsers). Skipped in no-torch mode because RAG embeddings go
+    #     through sentence-transformers, which requires torch.
+    if not NO_TORCH:
+        _progress("rag deps")
+        pip_install(
+            "Installing RAG dependencies",
+            "--no-cache-dir",
+            req = REQ_ROOT / "rag.txt",
+        )
 
     # 9. Data-designer dependencies
     _progress("data designer deps")
