@@ -252,25 +252,48 @@ def test_presence_penalty_forwarded_to_generation_config(monkeypatch):
 # ── thinkingConfig translation ────────────────────────────────────────
 
 
-def test_thinking_disabled_sets_budget_zero_on_flash(monkeypatch):
-    """enable_thinking=False on Flash-tier sets thinkingBudget=0."""
+def test_gemini25_flash_thinking_disabled_sets_budget_zero(monkeypatch):
+    """Gemini 2.5 Flash still uses thinkingBudget; 0 = off."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.5-flash",
+        model = "gemini-2.5-flash",
         enable_thinking = False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingBudget": 0}, tc
 
 
-def test_thinking_disabled_pro_tier_uses_small_budget(monkeypatch):
-    """Pro-tier ids 400 on thinkingBudget=0 ("only works in thinking mode");
-    a small positive budget is forwarded instead so the turn doesn't fail.
-    """
+def test_gemini3_flash_thinking_disabled_uses_minimal_level(monkeypatch):
+    """Gemini 3 Flash migrated to thinkingLevel; "off" maps to minimal
+    (Gemini 3 cannot turn thinking fully off)."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-flash",
+        enable_thinking = False,
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc == {"thinkingLevel": "minimal"}, tc
+
+
+def test_gemini25_pro_thinking_disabled_uses_small_budget(monkeypatch):
+    """Gemini 2.5 Pro 400s on thinkingBudget=0 ("only works in thinking
+    mode"); coerce to a small positive budget."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-pro",
+        enable_thinking = False,
+    )
+    tc = captured["body"]["generationConfig"].get("thinkingConfig")
+    assert tc is not None and tc.get("thinkingBudget", 0) > 0, tc
+
+
+def test_gemini3_pro_thinking_disabled_uses_low_level(monkeypatch):
+    """Gemini 3 Pro uses thinkingLevel and rejects 'minimal' (Pro tier),
+    so 'off' coerces to 'low' (lowest the API accepts)."""
     for model in (
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-2.5-pro",
+        "gemini-3.5-pro",
         "gemini-pro-latest",
     ):
         captured = _capture_body(
@@ -279,19 +302,37 @@ def test_thinking_disabled_pro_tier_uses_small_budget(monkeypatch):
             enable_thinking = False,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc is not None, f"missing thinkingConfig for {model}: {captured}"
-        assert tc["thinkingBudget"] > 0, (model, tc)
+        assert tc == {"thinkingLevel": "low"}, (model, tc)
 
 
-def test_reasoning_effort_levels_map_to_budgets(monkeypatch):
-    """The OpenAI/Anthropic effort ladder must translate to Gemini budgets."""
+def test_gemini25_flash_effort_levels_map_to_budgets(monkeypatch):
+    """Gemini 2.5 Flash retains the integer thinkingBudget ladder."""
     cases = {
         "minimal": 512,
         "low": 2048,
         "medium": 8192,
         "high": 24576,
-        "max": -1,  # dynamic
+        "max": -1,
         "xhigh": -1,
+    }
+    for effort, expected in cases.items():
+        captured = _capture_body(
+            monkeypatch,
+            model = "gemini-2.5-flash",
+            reasoning_effort = effort,
+        )
+        tc = captured["body"]["generationConfig"].get("thinkingConfig")
+        assert tc == {"thinkingBudget": expected}, (effort, tc)
+
+
+def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
+    """Gemini 3 Flash thinkingLevel ladder: minimal/low/medium/high."""
+    cases = {
+        "minimal": "minimal",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "max": "high",
     }
     for effort, expected in cases.items():
         captured = _capture_body(
@@ -300,18 +341,18 @@ def test_reasoning_effort_levels_map_to_budgets(monkeypatch):
             reasoning_effort = effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingBudget": expected}, (effort, tc)
+        assert tc == {"thinkingLevel": expected}, (effort, tc)
 
 
-def test_reasoning_effort_none_disables_on_flash(monkeypatch):
-    """`reasoning_effort='none'` is shorthand for thinking off (Flash)."""
+def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
+    """reasoning_effort='none' on Gemini 3 Flash -> thinkingLevel=minimal."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.5-flash",
         reasoning_effort = "none",
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
-    assert tc == {"thinkingBudget": 0}, tc
+    assert tc == {"thinkingLevel": "minimal"}, tc
 
 
 def test_thinking_default_omits_thinking_config(monkeypatch):
@@ -353,9 +394,11 @@ def test_image_models_skip_thinking_config(monkeypatch):
         assert "thinkingConfig" not in gc, (model, gc)
 
 
-def test_image_models_drop_text_only_tools(monkeypatch):
-    """Image-tier ids reject googleSearch / codeExecution wiring; drop
-    them silently so a stale `enabled_tools` array does not 400 the turn."""
+def test_image_models_drop_code_execution(monkeypatch):
+    """All image-tier ids reject `tools: [{codeExecution: {}}]`; drop
+    silently. (Gemini 3 image models DO accept googleSearch -- see
+    test_gemini3_image_models_allow_google_search; older image models
+    drop everything.)"""
     for model in (
         "gemini-2.5-flash-image",
         "gemini-3.1-flash-image-preview",
@@ -365,24 +408,55 @@ def test_image_models_drop_text_only_tools(monkeypatch):
         captured = _capture_body(
             monkeypatch,
             model = model,
-            enabled_tools = ["web_search", "code_execution"],
+            enabled_tools = ["code_execution"],
         )
-        assert "tools" not in captured["body"], (
-            model,
-            captured["body"].get("tools"),
-        )
+        tools_arr = captured["body"].get("tools") or []
+        names = [list(t.keys())[0] for t in tools_arr]
+        assert "codeExecution" not in names, (model, tools_arr)
 
 
-def test_gemini_35_pro_recognized_as_pro_thinking(monkeypatch):
-    """`gemini-3.5-pro` rejects thinkingBudget=0 with "only works in
-    thinking mode" -- coerce to a positive budget."""
+def test_gemini_35_pro_uses_thinking_level(monkeypatch):
+    """`gemini-3.5-pro` is part of the Gemini 3 family and uses
+    thinkingLevel (not thinkingBudget). "Off" maps to "low" because Pro
+    tier rejects "minimal"."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.5-pro",
         enable_thinking = False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
-    assert tc is not None and tc["thinkingBudget"] > 0, tc
+    assert tc == {"thinkingLevel": "low"}, tc
+
+
+def test_gemini3_image_models_allow_google_search(monkeypatch):
+    """Google documents Search grounding on the Gemini 3 image family
+    (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
+    nano-banana-pro). codeExecution stays blocked on image mode."""
+    for model in (
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview",
+        "nano-banana-pro-preview",
+    ):
+        captured = _capture_body(
+            monkeypatch,
+            model = model,
+            enabled_tools = ["web_search", "code_execution"],
+        )
+        tools_arr = captured["body"].get("tools") or []
+        names = [list(t.keys())[0] for t in tools_arr]
+        assert "googleSearch" in names, (model, tools_arr)
+        assert "codeExecution" not in names, (model, tools_arr)
+
+
+def test_legacy_image_models_block_google_search(monkeypatch):
+    """Older Gemini image ids (gemini-2.5-flash-image) still 400 on
+    `tools: [{googleSearch: {}}]`; backend keeps stripping it."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = ["web_search", "code_execution"],
+    )
+    assert "tools" not in captured["body"], captured["body"].get("tools")
 
 
 def test_legacy_openai_base_url_normalized(monkeypatch):

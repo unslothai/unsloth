@@ -2860,56 +2860,92 @@ class ExternalProviderClient:
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
 
-        # Thinking budget plumbing. Gemini 3.x, 3.5 Flash, gemini-pro-latest
-        # and gemini-flash-latest spend hidden "thoughts" tokens before
-        # they emit the streamed answer; with a tight `max_tokens` budget
-        # the visible answer is entirely consumed by thoughts. The
-        # caller's `enable_thinking` / `reasoning_effort` knobs reach
-        # `generationConfig.thinkingConfig.thinkingBudget`. Per
-        # https://ai.google.dev/gemini-api/docs/thinking:
-        #   thinkingBudget = 0   -> off (Flash tier only; Pro tier 400s
-        #                           with "only works in thinking mode")
-        #   thinkingBudget = -1  -> dynamic
-        #   thinkingBudget = N>0 -> hard cap of N thought tokens
-        # Pro-tier models silently coerce "off" to a small positive
-        # budget so the turn does not 400.
-        # Image models do not benefit from a visible thinking knob and
-        # we skip the field entirely to avoid forwarding stale UI state.
-        _PRO_THINKING_PREFIXES = (
+        # Thinking control. The Gemini 3 family migrated to a string
+        # `thinkingLevel` (LOW/MEDIUM/HIGH/MINIMAL) and rejects sending
+        # both `thinkingLevel` + `thinkingBudget`. Gemini 3 also cannot
+        # turn thinking fully off -- the "off" position is "minimal" on
+        # Flash and "low" on Pro (Pro does not even accept "minimal").
+        # https://ai.google.dev/gemini-api/docs/thinking
+        # Gemini 2.5 stays on `thinkingBudget` (int; 0 = off on Flash,
+        # -1 = dynamic, N > 0 = hard cap). Image models do not benefit
+        # from a visible thinking knob and we skip the field entirely
+        # so stale UI state does not leak through.
+        _GEMINI3_THINKING_PREFIXES = (
+            "gemini-3.5-",
+            "gemini-3.1-",
+            "gemini-3-",
             "gemini-pro-latest",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+        )
+        _GEMINI3_PRO_PREFIXES = (
             "gemini-3.5-pro",
             "gemini-3.1-pro",
-            "gemini-3-pro-preview",
+            "gemini-3-pro",
+            "gemini-pro-latest",
+        )
+        _PRO_THINKING_PREFIXES = (
             "gemini-2.5-pro",
+        )
+        is_gemini3_thinking = any(
+            model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES
+        )
+        is_gemini3_pro = any(
+            model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES
         )
         _is_pro_thinking_only = any(
             model_lc == p or model_lc.startswith(p + "-")
             for p in _PRO_THINKING_PREFIXES
         )
-        # Effort -> budget tokens. Mirrors the OpenAI ladder so the
-        # frontend's existing minimal/low/medium/high/max picker maps to
-        # sensible Gemini budgets.
-        # NOTE: gemini-2.5-flash-lite rejects positive budgets below 512
-        # with HTTP 400. `minimal=512` is at that floor.
-        _EFFORT_TO_BUDGET: dict[str, int] = {
-            "minimal": 512,
-            "low": 2048,
-            "medium": 8192,
-            "high": 24576,
-            "xhigh": -1,
-            "max": -1,
-        }
-        thinking_budget: Optional[int] = None
         effort_lc = (reasoning_effort or "").strip().lower()
-        if not is_image_model:
+        if not is_image_model and is_gemini3_thinking:
+            # Gemini 3.x: thinkingLevel only. Pro tier rejects "minimal",
+            # so "none"/"off" coerces to "low" on Pro and "minimal" on
+            # Flash (the lowest each tier accepts).
+            _G3_LEVELS = {"minimal", "low", "medium", "high"}
+            level: Optional[str] = None
+            if effort_lc in ("none", "off"):
+                level = "low" if is_gemini3_pro else "minimal"
+            elif effort_lc == "max":
+                level = "high"
+            elif effort_lc in _G3_LEVELS:
+                if is_gemini3_pro and effort_lc == "minimal":
+                    level = "low"
+                else:
+                    level = effort_lc
+            elif enable_thinking is True:
+                level = "high"
+            elif enable_thinking is False:
+                level = "low" if is_gemini3_pro else "minimal"
+            if level is not None:
+                gen_config["thinkingConfig"] = {"thinkingLevel": level}
+        elif not is_image_model:
+            # Gemini 2.5 / older: thinkingBudget int. Effort -> budget
+            # mirrors the OpenAI minimal/low/medium/high ladder so the
+            # existing frontend picker maps cleanly.
+            # NOTE: gemini-2.5-flash-lite rejects positive budgets below
+            # 512 with HTTP 400, so minimal=512 sits at that floor.
+            _EFFORT_TO_BUDGET: dict[str, int] = {
+                "minimal": 512,
+                "low": 2048,
+                "medium": 8192,
+                "high": 24576,
+                "xhigh": -1,
+                "max": -1,
+            }
+            thinking_budget: Optional[int] = None
             if effort_lc == "none" or enable_thinking is False:
+                # Pro-tier 2.5 rejects budget=0 (400 "only works in
+                # thinking mode"), so coerce to a small positive value.
                 thinking_budget = 128 if _is_pro_thinking_only else 0
             elif effort_lc in _EFFORT_TO_BUDGET:
                 thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
             elif enable_thinking is True:
                 thinking_budget = -1
-        if thinking_budget is not None:
-            gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+            if thinking_budget is not None:
+                gen_config["thinkingConfig"] = {
+                    "thinkingBudget": thinking_budget,
+                }
 
         if gen_config:
             body["generationConfig"] = gen_config
@@ -2920,17 +2956,39 @@ class ExternalProviderClient:
         #   https://ai.google.dev/gemini-api/docs/grounding
         # - `{codeExecution: {}}` -- sandboxed Python tool.
         #   https://ai.google.dev/gemini-api/docs/code-execution
-        # Any image-mode request rejects both (response modalities is
-        # mutually exclusive with text-tool wiring -- confirmed via the
-        # live API: "Search as tool is not enabled for this model" /
-        # "Code execution is not enabled for this model"). Cover BOTH
-        # the picker case (`-image` / `nano-banana` id) and the
-        # text-model + `image_generation` tool case.
+        # Image-mode (responseModalities=[TEXT,IMAGE]) rejects code
+        # execution. Google Search grounding is documented as supported
+        # on the Gemini 3 image picker family (Nano Banana Pro =
+        # gemini-3-pro-image-preview, gemini-3.1-flash-image-preview)
+        # but NOT on the older 2.5-flash-image family. Allow Search
+        # only on the documented image models; older image models keep
+        # the strict "no text tools" gate.
+        def _gemini_image_model_allows_google_search(_m: str) -> bool:
+            return (
+                _m.startswith("gemini-3-pro-image")
+                or _m.startswith("gemini-3.1-flash-image")
+                or _m.startswith("nano-banana-pro")
+                or _m.startswith("nano-banana-2")
+            )
+
+        google_search_allowed = (
+            not is_image_model
+            or _gemini_image_model_allows_google_search(model_lc)
+        )
+        code_execution_allowed = not is_image_model
         text_tools_allowed = not is_image_model
         tools_array: list[dict[str, Any]] = []
-        if enabled_tools and "web_search" in enabled_tools and text_tools_allowed:
+        if (
+            enabled_tools
+            and "web_search" in enabled_tools
+            and google_search_allowed
+        ):
             tools_array.append({"googleSearch": {}})
-        if enabled_tools and "code_execution" in enabled_tools and text_tools_allowed:
+        if (
+            enabled_tools
+            and "code_execution" in enabled_tools
+            and code_execution_allowed
+        ):
             tools_array.append({"codeExecution": {}})
         # OpenAI-style function declarations -> Gemini functionDeclarations.
         # https://ai.google.dev/gemini-api/docs/function-calling#step_1

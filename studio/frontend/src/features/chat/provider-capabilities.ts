@@ -115,14 +115,18 @@ export function providerSupportsBuiltinWebSearch(
   modelId?: string | null | undefined,
 ): boolean {
   // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
-  // every chat-capable model, but image-tier ids (`-image`,
-  // `nano-banana`) reject text-tool wiring because they share the
-  // generationConfig.responseModalities path with the inline image
-  // bytes. Hide the pill on those so stale UI state cannot 400 the
-  // turn. Backend mirrors this guard in `_stream_gemini`.
+  // every chat-capable model. Most image-tier ids (`-image`,
+  // `nano-banana`) reject text-tool wiring because the
+  // responseModalities path is mutually exclusive with text tools, but
+  // Google explicitly documents Search grounding on the Gemini 3 image
+  // family (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
+  // nano-banana-pro). Allow Search on those; hide on older image ids.
+  // Backend mirrors this guard in `_stream_gemini`.
   if (providerType === "gemini") {
     const normalized = modelId?.trim().toLowerCase() ?? "";
-    if (normalized && isGeminiImageModel(normalized)) return false;
+    if (normalized && isGeminiImageModel(normalized)) {
+      return geminiImageModelAllowsGoogleSearch(normalized);
+    }
     return true;
   }
   return (
@@ -299,6 +303,23 @@ export function providerSupportsBuiltinImageGeneration(
 function isGeminiImageModel(modelId: string): boolean {
   const m = modelId.toLowerCase();
   return m.includes("-image") || m.includes("nano-banana");
+}
+
+/**
+ * Whether the given Gemini image model supports `tools: [{googleSearch: {}}]`.
+ * Google documents Search grounding on the Gemini 3 image family
+ * (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
+ * "Nano Banana Pro"); older image ids (gemini-2.5-flash-image) reject
+ * it with "Search as tool is not enabled for this model".
+ */
+function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  return (
+    m.startsWith("gemini-3-pro-image") ||
+    m.startsWith("gemini-3.1-flash-image") ||
+    m.startsWith("nano-banana-pro") ||
+    m.startsWith("nano-banana-2")
+  );
 }
 
 /**
@@ -598,35 +619,34 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
 }
 
 // Gemini's thinking ladder.
-//   - 3.5 / 3.1 / 3 Flash + Flash-Lite + 2.5 Flash + *-latest aliases:
-//     toggleable thinking with effort levels (backend maps to
-//     `thinkingConfig.thinkingBudget`).
-//   - 3.x Pro + gemini-pro-latest + 2.5 Pro: "thinking only" -- the
-//     API 400s on `thinkingBudget=0` ("This model only works in
-//     thinking mode"), so the UI hides the off switch.
+//   - Gemini 3.x (3 / 3.1 / 3.5, Pro + Flash + Flash-Lite) and the
+//     gemini-pro-latest / gemini-flash-latest aliases use the new
+//     `thinkingConfig.thinkingLevel` string field (LOW/MEDIUM/HIGH/
+//     MINIMAL). Pro tier rejects MINIMAL.
+//   - Gemini 2.5 Flash + 2.5 Pro stay on the integer
+//     `thinkingConfig.thinkingBudget` (0=off on Flash, -1=dynamic,
+//     N>0=cap; Pro rejects 0).
 //   - 2.5 Flash-Lite: no native thinking surfaced; leave it off.
 //   - Image-tier ids (`*-image*`, `nano-banana-pro-preview`): image
 //     generation path -- no reasoning controls.
-// Pro-tier Gemini ids -- the API rejects `thinkingBudget=0` on these
-// with "This model only works in thinking mode". The picker hides the
-// off-switch; backend coerces an off request to a small positive budget.
-// Image-tier ids (e.g. gemini-3-pro-image-preview, nano-banana-pro-preview)
-// are handled by the isGeminiImageModel guard above and never reach this
-// resolver, so plain prefix matching is safe here.
-const GEMINI_THINKING_PRO_PREFIXES = [
+const GEMINI3_PRO_PREFIXES = [
   "gemini-3.5-pro",
   "gemini-3.1-pro",
   "gemini-3-pro-preview",
-  "gemini-2.5-pro",
   "gemini-pro-latest",
 ];
-const GEMINI_THINKING_FLASH_PREFIXES = [
+const GEMINI3_FLASH_PREFIXES = [
   "gemini-3.5-flash",
   "gemini-3.1-flash",
   "gemini-3-flash",
-  "gemini-2.5-flash",
   "gemini-flash-latest",
   "gemini-flash-lite-latest",
+];
+const GEMINI25_PRO_PREFIXES = [
+  "gemini-2.5-pro",
+];
+const GEMINI25_FLASH_PREFIXES = [
+  "gemini-2.5-flash",
 ];
 const GEMINI_IMAGE_HINTS = [
   "-image",
@@ -640,15 +660,40 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  if (GEMINI_THINKING_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+  if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 3 Pro: thinkingLevel low/medium/high. Cannot fully off.
     return withReasoningEffortStyle({
       supportsReasoning: true,
-      // Pro tier: cannot turn thinking fully off.
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high"] as const,
+    });
+  }
+  if (GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal
+    // is the closest to "off" Google offers on Gemini 3.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+      ] as const,
+    });
+  }
+  if (GEMINI25_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 2.5 Pro: thinkingBudget cannot be 0 (API rejects with
+    // "only works in thinking mode"); backend coerces to a small
+    // positive budget. The picker still hides the off switch.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
       supportsReasoningOff: false,
       reasoningEffortLevels: ["low", "medium", "high", "max"] as const,
     });
   }
-  if (GEMINI_THINKING_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+  if (GEMINI25_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 2.5 Flash: thinkingBudget supports 0 = off cleanly.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
