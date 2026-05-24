@@ -708,13 +708,17 @@ def run(
 
     Any flag this command does not recognize is forwarded verbatim to
     the underlying llama-server (GGUF only). Studio-managed flags
-    (--port, -c / --ctx-size, --api-key, -ngl, --jinja, --flash-attn,
-    --no-context-shift, model-identity flags, ...) are rejected with
-    HTTP 400.
+    rejected with HTTP 400 are model identity, networking (--host /
+    --port / --path / --api-prefix / --reuse-port), auth/TLS (--api-key
+    / --ssl-*) and single-model UI (--ui / --models-* / --webui). See
+    studio/backend/core/inference/llama_server_args.py for the full
+    denylist. Other tunables like -c / --ctx-size, -ngl, --jinja,
+    --flash-attn, --no-context-shift, -t / --threads pass through and
+    last-wins-override Studio's auto-set value.
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
-        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
