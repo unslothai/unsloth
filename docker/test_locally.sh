@@ -98,20 +98,42 @@ else
     echo "  log:           $BUILD_LOG"
 
     # The Dockerfile uses BuildKit-only features ('# syntax=docker/dockerfile:1.7'
-    # and 'RUN ... <<\'PY\'' heredocs). The legacy builder rejects --progress and
-    # would fail at parse time on the heredocs anyway. Prefer buildx; fall back to
-    # DOCKER_BUILDKIT=1 + plain docker build for hosts without buildx installed.
-    if docker buildx version >/dev/null 2>&1; then
-        echo "  builder:       docker buildx"
-        docker buildx build --progress=plain --load -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
-        rc=${PIPESTATUS[0]}
-    else
-        echo "  builder:       DOCKER_BUILDKIT=1 docker build (legacy fallback)"
-        warn "docker buildx not available -- install for cleaner build output:"
-        warn "  https://docs.docker.com/go/buildx/"
-        DOCKER_BUILDKIT=1 docker build -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
-        rc=${PIPESTATUS[0]}
+    # and 'RUN ... <<\'PY\'' heredocs). Docker 28 removed the legacy builder
+    # entirely -- DOCKER_BUILDKIT=1 now delegates to buildx, so without the
+    # buildx component installed there is no fallback that works. Fail fast
+    # with install instructions before attempting the build.
+    if ! docker buildx version >/dev/null 2>&1; then
+        cat >&2 <<'MSG'
+
+ERROR: docker buildx is not installed.
+
+The Dockerfile requires BuildKit (syntax=docker/dockerfile:1.7 + RUN heredocs).
+Docker 28 removed the legacy builder, so buildx is required for any build.
+
+Install buildx, then re-run this script:
+
+  Ubuntu / Debian (apt):
+    sudo apt-get update && sudo apt-get install -y docker-buildx
+
+  Ubuntu / Debian (Docker's official repo, recommended):
+    # Follow https://docs.docker.com/engine/install/ubuntu/ -- the docker-ce
+    # package bundles docker-buildx-plugin and is what most production guides
+    # assume. The Ubuntu-shipped docker.io package omits buildx.
+
+  RHEL / Fedora (dnf):
+    sudo dnf install -y docker-buildx-plugin
+
+  Manual install (any distro):
+    https://github.com/docker/buildx/releases  (download into ~/.docker/cli-plugins/)
+
+Verify with:  docker buildx version
+MSG
+        fail "docker buildx required -- install per the message above"
     fi
+    echo "  builder:       docker buildx ($(docker buildx version | head -1))"
+
+    docker buildx build --progress=plain --load -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
+    rc=${PIPESTATUS[0]}
     if [[ $rc -ne 0 ]]; then
         fail "docker build exited $rc -- see $BUILD_LOG"
     fi
