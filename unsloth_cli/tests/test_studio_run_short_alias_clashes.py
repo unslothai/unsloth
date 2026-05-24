@@ -508,8 +508,6 @@ def test_consume_helper_allows_short_dash_value():
     name that legitimately starts with `-`); only `--long` flags are
     rejected as values."""
     helper = _studio_mod()._consume_legacy_short_aliases
-    value, remaining = helper(
-        ["-m", "-foo", "--top-k", "20"], ("-m",), None, "--model"
-    )
+    value, remaining = helper(["-m", "-foo", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-foo"
     assert remaining == ["--top-k", "20"]
