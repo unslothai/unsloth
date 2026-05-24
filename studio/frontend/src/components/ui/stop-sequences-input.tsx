@@ -38,14 +38,20 @@ export function StopSequencesInput({
   const atCap = value.length >= maxEntries;
 
   function commitDraft() {
-    const trimmed = draft.trim();
-    if (!trimmed) return;
+    // Reject chips that are empty or contain ONLY whitespace
+    // (Anthropic 400s on those and OpenAI silently drops them), but
+    // preserve significant leading/trailing whitespace inside otherwise
+    // -meaningful stops like " END", "### ", or "\n\n" — stop matching
+    // is exact, so stripping would silently change the semantics. The
+    // backend re-validates per-provider before the request hits the
+    // wire.
+    if (!draft || !draft.trim()) return;
     if (atCap) return;
-    if (value.includes(trimmed)) {
+    if (value.includes(draft)) {
       setDraft("");
       return;
     }
-    onChange([...value, trimmed]);
+    onChange([...value, draft]);
     setDraft("");
   }
 

@@ -912,9 +912,15 @@ class ExternalProviderClient:
         if seed is not None:
             body["seed"] = seed
         if stop:
+            # Mirror the default OAI-compat path's stop handling exactly
+            # so Kimi-with-search and Kimi-without-search apply the
+            # same rules — a single string is forwarded verbatim and
+            # lists are deduped + truncated to OpenAI's 4-entry cap.
+            # Earlier the bypass dropped whitespace-only strings here
+            # while the normal path forwarded them, which was an
+            # asymmetric provider-path fix.
             if isinstance(stop, str):
-                if stop.strip():
-                    body["stop"] = stop
+                body["stop"] = stop
             elif isinstance(stop, list):
                 sequences = list(
                     dict.fromkeys(s for s in stop if isinstance(s, str) and s)

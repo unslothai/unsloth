@@ -280,14 +280,22 @@ export interface OpenAIChatCompletionsRequest {
   stop?: string[];
   /**
    * Provider service tier. Anthropic accepts `auto|standard_only`;
-   * OpenAI Chat accepts `auto|default|flex|priority|scale`; OpenAI
-   * Responses accepts `auto|default|flex|priority`.
+   * OpenAI Chat + Responses both accept
+   * `auto|default|flex|scale|priority` per the live `openai-python`
+   * SDK (`src/openai/types/responses/response_create_params.py`
+   * declares `Optional[Literal["auto", "default", "flex", "scale",
+   * "priority"]]`). The wire-side helper in
+   * `studio/backend/core/inference/external_provider.py` drops values
+   * that a given provider does not accept; this union stays permissive
+   * so the request-builder typechecks against
+   * `InferenceParams.serviceTier` without per-provider narrowing.
    */
   service_tier?:
     | "auto"
     | "default"
     | "flex"
     | "priority"
+    | "scale"
     | "standard_only";
   /**
    * Whether the provider may dispatch tool calls in parallel.
