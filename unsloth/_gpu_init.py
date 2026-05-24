@@ -79,20 +79,31 @@ del already_imported, critical_modules
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 # Containers launched with `docker --gpus '"device=N"'` only set
-# NVIDIA_VISIBLE_DEVICES; CUDA_VISIBLE_DEVICES is absent. Inductor's compile
-# worker subprocess pool then fails to enumerate the cgroup-pinned GPU and
-# raises `Could not find an active GPU backend` from
-# torch/_inductor/runtime/triton_helpers.py::set_driver_to_gpu. Force a single
-# in-process compile thread so the pool is never spawned. Set
-# UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0 to opt out.
+# NVIDIA_VISIBLE_DEVICES to specific device ids/UUIDs and leave
+# CUDA_VISIBLE_DEVICES absent. Inductor's compile worker subprocess pool
+# then fails to enumerate the cgroup-pinned GPU and raises
+# `Could not find an active GPU backend` from
+# torch/_inductor/runtime/triton_helpers.py::set_driver_to_gpu. Force a
+# single in-process compile thread so the pool is never spawned.
+#
+# Gate only on the cgroup-pinned fingerprint -- specific device ids in
+# NVIDIA_VISIBLE_DEVICES. NVIDIA_VISIBLE_DEVICES in {"all","none","void",""}
+# (the default in `--gpus all` runs) must NOT trigger this.
+# Set UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0 to opt out.
+_nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
+_cgroup_pinned = _nvd not in ("", "all", "none", "void")
 if (
     os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "auto") != "0"
-    and "NVIDIA_VISIBLE_DEVICES" in os.environ
+    and _cgroup_pinned
     and "CUDA_VISIBLE_DEVICES" not in os.environ
-    and "TORCHINDUCTOR_COMPILE_THREADS" not in os.environ
 ):
-    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
-    os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
+    # Either set the env var if absent, or honour the user's existing
+    # value -- but always plant the sentinel so the zoo-side patch knows
+    # to preserve the forcing.
+    if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") in (None, "", "1"):
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+        os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
+del _nvd, _cgroup_pinned
 
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
@@ -143,15 +154,21 @@ except:
 # TORCHINDUCTOR_COMPILE_THREADS in non-debug mode). Force the Inductor
 # config value directly so the Docker --gpus '"device=N"' subprocess-pool
 # bug is fixed even when the installed unsloth_zoo predates the
-# corresponding zoo-side patch. No-op when the user opted out.
+# corresponding zoo-side patch. Also monkey-patch the zoo's
+# `determine_compile_threads` so the Inductor options dict (rebuilt per
+# `torch.compile` call) always sees 1 even if a later import path pops the
+# env var again. No-op when the user opted out.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
         torch._inductor.config.compile_threads = 1
     except Exception:
         pass
-    # Re-populate the env var so determine_compile_threads in the zoo
-    # options dict also sees it; cheap and forward-compatible.
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+    try:
+        from unsloth_zoo.temporary_patches import common as _zoo_common
+        _zoo_common.determine_compile_threads = lambda: 1
+    except Exception:
+        pass
 
 from unsloth_zoo.device_type import (
     is_hip,

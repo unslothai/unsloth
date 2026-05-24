@@ -42,8 +42,15 @@ def check_torch() -> tuple[int, int]:
     cap = torch.cuda.get_device_capability(0)
     name = torch.cuda.get_device_name(0)
     print(f"device 0    {name}  sm_{cap[0]}{cap[1]}")
+    # The cu128 wheels ship SASS down to sm_75 (Turing), and the runtime
+    # entrypoint allows the same floor. Match here so the post-publish
+    # smoke job does not false-fail on a Turing-only self-hosted runner.
+    # Turing falls back to fp16 since bf16 isn't supported -- that's a
+    # capability hint, not a hard failure.
+    if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
+        sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
-        sys.exit(f"FAIL: pre-Ampere GPU {name} is not supported by this image")
+        print(f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback.")
     return cap
 
 

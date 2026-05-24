@@ -177,7 +177,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Only tag :latest when the workflow ran on the default branch
+            # AND the operator did NOT override unsloth_ref on dispatch.
+            # Without the second condition a maintainer testing a feature
+            # SHA from main could overwrite :latest with non-main source.
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short

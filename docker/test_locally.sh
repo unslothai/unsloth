@@ -360,6 +360,10 @@ python -u nb.py
 INNER
     chmod +x "$HOST_RUN_DIR/run_notebook.sh"
 
+    # Only forward HF_TOKEN if the host has one set, so an empty
+    # `-e HF_TOKEN=` does not shadow whatever is already inside the image.
+    HF_ARGS=()
+    [[ -n "${HF_TOKEN:-}" ]] && HF_ARGS+=(-e "HF_TOKEN=${HF_TOKEN}")
     docker run --rm \
         --gpus all \
         --ipc=host \
@@ -367,7 +371,7 @@ INNER
         --ulimit stack=67108864 \
         -v "$HOST_RUN_DIR:/workspace/host" \
         -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
-        -e HF_TOKEN="${HF_TOKEN:-}" \
+        "${HF_ARGS[@]}" \
         -e HF_HUB_ENABLE_HF_TRANSFER=1 \
         "$TAG" \
         bash /workspace/host/run_notebook.sh 2>&1 | tee "$GPT_LOG"

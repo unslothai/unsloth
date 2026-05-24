@@ -15,7 +15,7 @@
 #     https://developer.nvidia.com/cuda/gpus is covered.
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
-#     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX",
+#     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX",
 #     covering every current NVIDIA compute capability per
 #     https://developer.nvidia.com/cuda/gpus.
 #     The host GPU is irrelevant for compilation; nvcc emits whatever the arch
@@ -73,7 +73,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # don't exist on the build host, and any extras that aren't relevant for
     # the target just bloat compile time slightly (not size, since we don't
     # source-build any extension at install time on the pin set).
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX" \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX" \
     MAX_JOBS=4 \
     CUDA_HOME=/usr/local/cuda \
     # Build-host-independence guards. The build must NEVER introspect a GPU,
@@ -158,7 +158,7 @@ RUN set -eux \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
-        "torch==2.10.0" "torchvision==0.25.0" "torchaudio==2.11.0" \
+        "torch==2.10.0" "torchvision==0.25.0" "torchaudio==2.10.0" \
         "triton>=3.6.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
@@ -323,7 +323,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # extra inside the container (e.g. a custom CUDA op). Same list as the builder
     # stage so a `pip install some-cuda-ext` inside the container gets a SASS
     # blob that covers every supported arch.
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX"
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git libgomp1 \

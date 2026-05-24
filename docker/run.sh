@@ -56,8 +56,17 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"   ]] && ENV_FORWARD+=(-e "WANDB_API_KEY=${WANDB_API_KEY}")
 [[ -n "${UNSLOTH_LICENSE:-}" ]] && ENV_FORWARD+=(-e "UNSLOTH_LICENSE=${UNSLOTH_LICENSE}")
 
-set -x
-exec docker run --rm -it \
+# Only attach -t when our own stdin/stdout are a TTY; CI / piped invocations
+# otherwise hit `the input device is not a TTY` and never reach the entrypoint.
+TTY_FLAG=()
+if [ -t 0 ] && [ -t 1 ]; then
+    TTY_FLAG=(-it)
+fi
+
+# Avoid `set -x` here so the literal HF_TOKEN / WANDB_API_KEY / UNSLOTH_LICENSE
+# values do not get echoed to stdout/CI logs. The forwarded env vars are
+# already in ENV_FORWARD; printing them again was a secret leak.
+exec docker run --rm "${TTY_FLAG[@]}" \
     --gpus "$GPUS" \
     --ipc=host \
     --ulimit memlock=-1 \

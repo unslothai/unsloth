@@ -23,6 +23,11 @@
 ARG BASE_TAG=test
 FROM unsloth-blackwell:${BASE_TAG}
 
+# Studio source ref to clone. Defaults to `main`, but a CI publish pipeline
+# that pins BASE_TAG to a tag/SHA should pin this too so the published
+# `:studio` companion image is reproducible against a known unsloth ref.
+ARG UNSLOTH_STUDIO_REF=main
+
 USER root
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     DEBIAN_FRONTEND=noninteractive
@@ -39,7 +44,7 @@ RUN apt-get update \
 # (already inside the persistent layer) instead of deleting it. Strip
 # .git to save ~120MB.
 RUN mkdir -p "${UNSLOTH_STUDIO_HOME}" \
- && git clone --depth 1 https://github.com/unslothai/unsloth "${UNSLOTH_STUDIO_HOME}/src" \
+ && git clone --depth 1 --branch "${UNSLOTH_STUDIO_REF}" https://github.com/unslothai/unsloth "${UNSLOTH_STUDIO_HOME}/src" \
  && cd "${UNSLOTH_STUDIO_HOME}/src" \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" bash install.sh --local \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache
