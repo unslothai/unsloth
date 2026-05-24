@@ -407,6 +407,162 @@ def list_knowledge_bases(
     return KBListResponse(knowledge_bases = [_row_to_kb(r) for r in rows])
 
 
+class ReingestKBRequest(BaseModel):
+    """All fields optional — omitting one keeps the KB's current value."""
+    chunking_strategy: ChunkingStrategy | None = None
+    mode: KBMode | None = None
+    embedding_model: str | None = None
+
+
+class ReingestResponse(BaseModel):
+    job_ids: list[str]
+    document_ids: list[str]
+
+
+def _reingest_scope(
+    *,
+    kb_id: str | None,
+    thread_id: str | None,
+    chunking_strategy: str,
+    mode: str,
+    embedding_model: str,
+) -> ReingestResponse:
+    """Wipe scope artifacts and re-enqueue every stored document.
+
+    The chat_settings / per-thread defaults aren't touched — caller is
+    responsible for updating any associated metadata before calling.
+    """
+    scope = kb_scope(kb_id) if kb_id else thread_scope(thread_id)  # type: ignore[arg-type]
+    with get_connection() as conn:
+        if kb_id:
+            rows = conn.execute(
+                "SELECT id, stored_path FROM rag_documents WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, stored_path FROM rag_documents WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+        # Delete the rag_documents rows (cascade drops chunks); the
+        # uploaded file on disk is preserved so we can re-ingest from
+        # it. We re-INSERT a fresh row per stored_path below.
+        doc_ids = [r["id"] for r in rows]
+        if doc_ids:
+            placeholders = ",".join("?" for _ in doc_ids)
+            conn.execute(
+                f"DELETE FROM rag_documents WHERE id IN ({placeholders})",
+                doc_ids,
+            )
+            conn.commit()
+    ingestion.delete_scope_artifacts(scope)
+
+    job_ids: list[str] = []
+    new_doc_ids: list[str] = []
+    for row in rows:
+        stored_path = Path(row["stored_path"])
+        if not stored_path.is_file():
+            continue
+        filename = stored_path.name
+        # Strip the UUID prefix we attached at upload time so the
+        # re-inserted document carries the original name.
+        if "_" in filename:
+            _uuid_prefix, _, original = filename.partition("_")
+            if original:
+                filename = original
+        upload = _start_ingestion(
+            filename = filename,
+            stored_path = stored_path,
+            byte_size = stored_path.stat().st_size,
+            content_type = None,
+            kb_id = kb_id,
+            thread_id = thread_id,
+            embedding_model = embedding_model,
+            chunking_strategy = chunking_strategy,
+            mode = mode,
+        )
+        job_ids.append(upload.job_id)
+        new_doc_ids.append(upload.document_id)
+    return ReingestResponse(job_ids = job_ids, document_ids = new_doc_ids)
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/reingest",
+    response_model = ReingestResponse,
+)
+def reingest_knowledge_base(
+    kb_id: str,
+    payload: ReingestKBRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> ReingestResponse:
+    from utils.rag.config import resolve_embedder
+
+    kb_row = _kb_or_404(kb_id)
+    keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
+    current_strategy = (
+        kb_row["chunking_strategy"]
+        if "chunking_strategy" in keys
+        else "standard"
+    )
+    current_mode = kb_row["mode"] if "mode" in keys else "text"
+    current_embedder = kb_row["embedding_model"]
+
+    new_strategy = payload.chunking_strategy or current_strategy
+    new_mode = payload.mode or current_mode
+    _validate_mode_combo(new_mode, new_strategy)
+
+    new_embedder = (
+        payload.embedding_model
+        or (
+            current_embedder
+            if (new_strategy == current_strategy and new_mode == current_mode)
+            else resolve_embedder(new_mode, new_strategy)
+        )
+    )
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE rag_knowledge_bases
+            SET chunking_strategy = ?, mode = ?, embedding_model = ?
+            WHERE id = ?
+            """,
+            (new_strategy, new_mode, new_embedder, kb_id),
+        )
+        conn.commit()
+
+    return _reingest_scope(
+        kb_id = kb_id,
+        thread_id = None,
+        chunking_strategy = new_strategy,
+        mode = new_mode,
+        embedding_model = new_embedder,
+    )
+
+
+@router.post(
+    "/threads/{thread_id}/reingest",
+    response_model = ReingestResponse,
+)
+def reingest_thread_documents(
+    thread_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> ReingestResponse:
+    """Rebuild a thread's RAG index using the current defaults.
+
+    No body — per-thread strategy/mode overrides aren't exposed in v1.
+    """
+    from utils.rag.config import RAG_EMBEDDING_MODEL
+
+    return _reingest_scope(
+        kb_id = None,
+        thread_id = thread_id,
+        chunking_strategy = "standard",
+        mode = "text",
+        embedding_model = RAG_EMBEDDING_MODEL,
+    )
+
+
 @router.delete("/knowledge-bases/{kb_id}")
 def delete_knowledge_base(
     kb_id: str,

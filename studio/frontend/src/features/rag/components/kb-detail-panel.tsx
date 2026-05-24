@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useState } from "react";
@@ -9,12 +10,14 @@ import { useKBDocuments } from "../hooks/use-kb-documents";
 import { DocumentRow } from "./document-row";
 import { DocumentUploadDropzone } from "./document-upload-dropzone";
 import { IngestionProgress } from "./ingestion-progress";
+import { KBReconfigureDialog } from "./kb-reconfigure-dialog";
 
 export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
   const { documents, loading, error, upload, remove } = useKBDocuments(kb.id);
   const [activeJobsByDoc, setActiveJobsByDoc] = useState<Record<string, string>>(
     {},
   );
+  const [reconfigureOpen, setReconfigureOpen] = useState(false);
 
   const handleFiles = async (files: File[]) => {
     for (const file of files) {
@@ -29,14 +32,31 @@ export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold">{kb.name}</h2>
-        {kb.description ? (
-          <p className="text-sm text-muted-foreground">{kb.description}</p>
-        ) : null}
-        <p className="text-xs text-muted-foreground">
-          Embedding model: <code>{kb.embedding_model}</code>
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h2 className="text-lg font-semibold">{kb.name}</h2>
+          {kb.description ? (
+            <p className="text-sm text-muted-foreground">{kb.description}</p>
+          ) : null}
+          <p className="text-xs text-muted-foreground">
+            {kb.mode === "multimodal" ? "🖼️ Multimodal · " : ""}
+            {kb.chunking_strategy === "late" ? "⚡ Late · " : ""}
+            Embedder: <code>{kb.embedding_model}</code>
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setReconfigureOpen(true)}
+          disabled={documents.length === 0}
+          title={
+            documents.length === 0
+              ? "Upload at least one document before re-indexing"
+              : undefined
+          }
+        >
+          Reconfigure…
+        </Button>
       </div>
 
       <DocumentUploadDropzone onFiles={handleFiles} />
@@ -82,6 +102,13 @@ export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
           })}
         </div>
       </ScrollArea>
+
+      <KBReconfigureDialog
+        open={reconfigureOpen}
+        onOpenChange={setReconfigureOpen}
+        kb={kb}
+        documentCount={documents.length}
+      />
     </div>
   );
 }

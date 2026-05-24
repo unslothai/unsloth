@@ -206,6 +206,46 @@ export async function clearThreadDocuments(threadId: string): Promise<void> {
   await throwOnError(response);
 }
 
+export interface ReingestResponse {
+  job_ids: string[];
+  document_ids: string[];
+}
+
+export interface ReingestKBOptions {
+  chunking_strategy?: ChunkingStrategy;
+  mode?: KBMode;
+  embedding_model?: string;
+}
+
+export async function reingestKnowledgeBase(
+  kbId: string,
+  opts: ReingestKBOptions = {},
+): Promise<ReingestResponse> {
+  const response = await authFetch(
+    `/api/rag/knowledge-bases/${encodeURIComponent(kbId)}/reingest`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts),
+    },
+  );
+  return parseJsonOrThrow<ReingestResponse>(response);
+}
+
+export async function reingestThreadDocuments(
+  threadId: string,
+): Promise<ReingestResponse> {
+  const response = await authFetch(
+    `/api/rag/threads/${encodeURIComponent(threadId)}/reingest`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  return parseJsonOrThrow<ReingestResponse>(response);
+}
+
 // ------------------------------------------------------------------
 // Search
 // ------------------------------------------------------------------

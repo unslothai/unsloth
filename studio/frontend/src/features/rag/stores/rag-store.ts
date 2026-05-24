@@ -15,6 +15,9 @@ import {
   listThreadDocuments,
   listThreadIndexes,
   type RagDocument,
+  type ReingestKBOptions,
+  reingestKnowledgeBase as apiReingestKB,
+  reingestThreadDocuments as apiReingestThread,
   subscribeToJobEvents,
   type ThreadIndexSummary,
   uploadKBDocument,
@@ -50,6 +53,9 @@ interface RagStoreState {
 
   loadThreadIndexes: () => Promise<void>;
   clearThreadIndex: (threadId: string) => Promise<void>;
+
+  reingestKB: (kbId: string, opts?: ReingestKBOptions) => Promise<string[]>;
+  reingestThread: (threadId: string) => Promise<string[]>;
 
   subscribeJob: (jobId: string, onComplete?: () => void) => void;
 }
@@ -218,6 +224,35 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
         ),
       };
     });
+  },
+
+  async reingestKB(kbId, opts) {
+    const response = await apiReingestKB(kbId, opts ?? {});
+    // Refresh the KB list so updated chunking_strategy / mode / embedder
+    // values flow back into the UI, and the doc list so old chunk
+    // counts reset to 0 until each job completes.
+    void get().loadKnowledgeBases();
+    void get().loadKBDocuments(kbId);
+    // Subscribe to every new job so progress chips render and the doc
+    // list refreshes on completion (mirrors uploadDocument's pattern).
+    for (const jobId of response.job_ids) {
+      get().subscribeJob(jobId, () => {
+        void get().loadKBDocuments(kbId);
+      });
+    }
+    return response.job_ids;
+  },
+
+  async reingestThread(threadId) {
+    const response = await apiReingestThread(threadId);
+    void get().loadThreadDocuments(threadId);
+    void get().loadThreadIndexes();
+    for (const jobId of response.job_ids) {
+      get().subscribeJob(jobId, () => {
+        void get().loadThreadDocuments(threadId);
+      });
+    }
+    return response.job_ids;
   },
 
   subscribeJob(jobId, onComplete) {

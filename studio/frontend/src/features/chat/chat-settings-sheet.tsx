@@ -447,6 +447,7 @@ export function ChatSettingsPanel({
     ragSource.kind === "thread" ? activeThreadId : null,
   );
   const clearThreadIndex = useRagStore((s) => s.clearThreadIndex);
+  const reingestThread = useRagStore((s) => s.reingestThread);
   const [kbCreateOpen, setKbCreateOpen] = useState(false);
   const ragEnabled = ragSource.kind !== "off";
   const activeKbId = ragSource.kind === "kb" ? ragSource.kbId : null;
@@ -1332,22 +1333,39 @@ export function ChatSettingsPanel({
                         />
                       ))}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="self-start text-destructive hover:text-destructive hover:bg-destructive/10"
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Delete all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} from this thread? This cannot be undone.`,
-                          )
-                        ) {
-                          void clearThreadIndex(activeThreadId);
-                        }
-                      }}
-                    >
-                      Clear thread index
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Re-index all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"}? Existing chunks will be deleted and rebuilt; search will be unavailable until ingestion finishes.`,
+                            )
+                          ) {
+                            void reingestThread(activeThreadId);
+                          }
+                        }}
+                      >
+                        Re-index
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} from this thread? This cannot be undone.`,
+                            )
+                          ) {
+                            void clearThreadIndex(activeThreadId);
+                          }
+                        }}
+                      >
+                        Clear thread index
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>
