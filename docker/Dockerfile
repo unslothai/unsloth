@@ -164,6 +164,52 @@ RUN set -eux \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
         "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}"
 
+# vLLM nightly (amd64 only). Required by Unsloth's GRPO path when the
+# notebook sets fast_inference=True. We install it as a SECOND uv pass
+# rather than appending to the unified one because:
+#   * vLLM's nightly wheel typically pins a specific cu128 torch build;
+#     adding it to the unified resolve forces uv to consider whether to
+#     swap our pinned torch 2.10.0 for vLLM's choice. Splitting the
+#     install lets the unified pass settle on torch 2.10.0 first, then
+#     vLLM bolts on top.
+#   * --no-deps keeps vLLM from yanking torch / xformers / transformers
+#     out from under unsloth. Empirically vLLM's runtime deps overlap
+#     ~100% with what unsloth already installed, so we can drop them.
+#   * On arm64 vLLM does not publish wheels (vllm-project/vllm#31128 is
+#     open; source-build takes ~2-3h under QEMU and ~1h native). Skipped.
+#
+# https://docs.vllm.ai/en/latest/getting_started/installation/gpu/
+# https://wheels.vllm.ai/nightly
+ARG INSTALL_VLLM=auto
+RUN set -eux \
+ && WANT_VLLM=0 \
+ && case "${INSTALL_VLLM}" in \
+        auto) [ "${TARGETARCH:-amd64}" = "amd64" ] && WANT_VLLM=1 ;; \
+        1|true|yes) WANT_VLLM=1 ;; \
+        0|false|no) WANT_VLLM=0 ;; \
+        *) echo "ERROR: invalid INSTALL_VLLM=${INSTALL_VLLM}" >&2; exit 1 ;; \
+    esac \
+ && if [ "${WANT_VLLM}" = "1" ]; then \
+        echo ">> installing vLLM nightly (TARGETARCH=${TARGETARCH:-amd64})"; \
+        # Let uv resolve vLLM's transitive deps. We pin torch==2.10.0 so
+        # uv MUST hold our torch fixed; if vLLM nightly wants a different
+        # torch the build will fail loudly and we revisit. `unsafe-best-
+        # match` lets uv pull from whichever of the three indexes has a
+        # better wheel for each package.
+        ${VENV}/bin/uv pip install \
+            --python ${VENV}/bin/python \
+            --pre \
+            --index-strategy unsafe-best-match \
+            --extra-index-url https://wheels.vllm.ai/nightly \
+            --extra-index-url https://download.pytorch.org/whl/cu128 \
+            "torch==2.10.0" \
+            vllm; \
+        echo ">> vLLM installed:"; \
+        ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)"; \
+    else \
+        echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
+    fi
+
 # 5) Emit a lockfile so the next rebuild can be byte-identical even if PyPI
 #    has moved on. Bake it into the image at /opt/unsloth-venv/requirements.lock.txt
 #    so `docker run ... cat /opt/unsloth-venv/requirements.lock.txt > pins.txt`
