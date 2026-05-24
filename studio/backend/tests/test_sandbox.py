@@ -438,7 +438,7 @@ def _slice_top_form(text: str, opener: str) -> str:
         elif c == ")":
             depth -= 1
             if depth == 0:
-                return text[start:i + 1]
+                return text[start : i + 1]
     raise AssertionError(f"unterminated form starting with {opener!r}")
 
 
