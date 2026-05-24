@@ -396,6 +396,46 @@ def test_reprompts_on_all_intent_form_numbered_action_plans():
         assert _would_reprompt(s), s
 
 
+def test_no_reprompt_on_plan_titled_final_answer_without_actions():
+    """A final answer naturally titled ``Plan:`` / ``My plan:`` /
+    ``Approach:`` whose numbered items are content (not action verbs)
+    must NOT wipe. The action-verb lookahead on the Plan: intent
+    branch is what filters lesson plans, meal plans, dinner plans,
+    and similar from being misclassified as tool-action stalls."""
+    samples = [
+        "Plan:\n1. Warm-up: Students review fractions.\n2. Group practice.\n3. Assessment.",
+        "My plan:\n1. Breakfast: oatmeal and fruit.\n2. Lunch: rice bowl.\n3. Dinner: lentil soup.",
+        "The plan:\n1. Bring umbrellas.\n2. Pack snacks.\n3. Drive carefully.",
+    ]
+    for s in samples:
+        assert not _would_reprompt(s), s
+
+
+def test_reprompts_on_plan_titled_action_stall():
+    """A ``Plan:`` / ``Approach:`` header whose items DO contain action
+    verbs (search / fetch / verify / ...) still re-prompts."""
+    samples = [
+        "Plan:\n1. search the docs\n2. summarise the result",
+        "My plan:\n1. fetch the data\n2. verify the rows",
+        "The approach:\n1. look up the value\n2. compare versions",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_no_reprompt_on_here_is_the_plan_prose_answer():
+    """``Here is the plan you asked for. ...`` and similar prose
+    answers without action verbs must NOT wipe. The action-verb
+    lookahead on the ``Here is the plan`` intent branch filters them."""
+    samples = [
+        "Here is the plan you asked for. It is two pages long and covers Q4 goals.",
+        "Here are my steps in plain English. Step one is patience.",
+        "Here is a plan for the dinner party. Welcome, eat, dance.",
+    ]
+    for s in samples:
+        assert not _would_reprompt(s), s
+
+
 def test_plan_colon_intent_is_line_anchored():
     """``Plan:`` / ``Approach:`` only counts as an intent marker when it
     is at the start of a line. Without this anchor, normal direct
@@ -420,14 +460,16 @@ def test_plan_colon_intent_is_line_anchored():
         assert not _INTENT_SIGNAL.search(s), s
         assert not _would_reprompt(s), s
     # "Plan:" / "Approach:" with optional generic determiner at the start
-    # of a line, FOLLOWED BY A NEWLINE, IS an intent signal. The newline
-    # requirement is what filters inline product/answer text such as
-    # "The plan: Pro is $10/month" out of the intent path.
+    # of a line, followed by a newline AND followed by an action verb
+    # within 120 chars, IS an intent signal. The newline requirement
+    # filters inline product/answer text such as "The plan: Pro is
+    # $10/month"; the action-verb requirement filters real prose answers
+    # such as "Plan:\n1. Warm-up\n2. Group practice".
     plan_starts = [
         "Plan:\n1. search\n2. summarise",
         "Approach:\n1. fetch\n2. compare",
         "  Plan:\n1. think\n2. respond",  # leading indent OK
-        "Lorem ipsum\nPlan:\n1. step\n2. step",  # plan: on a later line
+        "Lorem ipsum\nPlan:\n1. search\n2. fetch",  # plan: on a later line
         "My plan:\n1. search\n2. summarise",
         "The plan:\n1. look up\n2. compare",
         "Our approach:\n1. fetch\n2. verify",

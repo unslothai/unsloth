@@ -52,6 +52,20 @@ logger = get_logger(__name__)
 
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
+# Re-prompt-action verbs. Used both as a nearby-verb lookahead for the
+# new ``Plan:`` / ``Here is the plan`` intents (so prose final answers
+# such as ``Plan:\n1. Warm-up\n2. Group practice`` or "Here is the plan
+# you asked for" do not wipe) and as the plan-list disqualifier verb
+# set in _PLAN_LIST_FRAMING below.  Conservative on purpose: ambiguous
+# verbs like ``write``, ``create``, ``make``, ``build``, ``do``,
+# ``handle`` are deliberately excluded because real answer lists use
+# them ("1. Write a poem", "1. Create directory").
+_REPROMPT_ACTION_VERBS = (
+    r"search|look up|call|use|fetch|browse|run|execute|"
+    r"check|find|open|verify|compare|summari[sz]e|think|respond|"
+    r"answer|analy[sz]e|explore|outline|gather|query|reason"
+)
+
 # Forward-looking intent signals that indicate the model is
 # describing what it *will* do rather than giving a final answer.
 _INTENT_SIGNAL = re.compile(
@@ -62,18 +76,22 @@ _INTENT_SIGNAL = re.compile(
     # appear frequently in direct answers / explanations.
     r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
     r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan",
-    # "Here is the plan", "Here are my steps".
-    r"\b(?:first\b|step \d+:?|"
-    r"here['\u2019]?s (?:my |the |a )?(?:plan|approach)|"
-    r"here (?:is|are) (?:my |the |a )?(?:plan|approach|steps))"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan".
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"|"
+    # "Here is the plan" / "Here are my steps" framings. Require an
+    # action verb within 120 chars so prose answers like "Here is the
+    # plan you asked for" do not match.
+    r"\bhere (?:is|are) (?:my |the |a )?(?:plan|approach|steps)\b"
+    rf"(?=[\s\S]{{0,120}}\b(?:{_REPROMPT_ACTION_VERBS})\b)"
     r"|"
     # Bare "Plan:" / "Approach:" (optionally preceded by a determiner
     # like "My" / "The" / "Our") anchored to start of line AND followed
-    # by a newline. Inline forms like "Your current Plan: Pro includes
-    # local chats" or "The plan: $10/month" must NOT trip the re-prompt
-    # path; only header-style framings ("Plan:\n1. ...") count.
+    # by a newline AND followed within 120 chars by an action verb so
+    # final answers shaped like "Plan:\n1. Warm-up\n2. Group practice"
+    # or "My plan:\n1. Breakfast\n2. Lunch" do NOT wipe.
     r"(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):[ \t]*(?=\r?\n)"
+    rf"(?=[\s\S]{{0,120}}\b(?:{_REPROMPT_ACTION_VERBS})\b)"
     r"|"
     # "Now I" / "Next I" patterns
     r"\b(?:now i|next i)\b"
@@ -124,22 +142,19 @@ _NUMBERED_LIST_ARTIFACT = re.compile(
 # final answer. The intent alternatives mirror _INTENT_SIGNAL above so
 # every recognised intent phrase can disqualify a numbered list. The
 # apostrophe in ``i['’]ll`` is required (no ``?``) so the regex does not
-# accidentally match the word "ill". The verb set is intentionally
-# conservative: ambiguous verbs like "write", "create", "make", "build"
-# are omitted because real answer lists use them ("1. Write a poem",
-# "1. Create directory"). ``plan:`` / ``approach:`` is anchored to the
-# start of a line so "lesson plan:" / "meal plan:" do not trip the guard.
+# accidentally match the word "ill". Both branches require an action
+# verb nearby so plan-style answer headers ("Plan:\n1. Warm-up\n2.
+# Group practice") are NOT treated as plans and stay artifacts.
 _PLAN_LIST_FRAMING = re.compile(
     r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|"
     r"here (?:is|are) (?:my |the |a )?(?:plan|approach|steps)|"
-    r"step \d+|"
+    r"step \d+|first|"
     r"i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
     r"i will|i shall|let me|allow me|now i|next i)\b"
     r"[\s\S]{0,80}"
-    r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
-    r"check|find|open|verify|compare|summari[sz]e|think|respond|"
-    r"answer|analy[sz]e|explore|outline|gather|query|reason)\b"
-    r"|(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):[ \t]*(?=\r?\n)",
+    rf"\b(?:{_REPROMPT_ACTION_VERBS})\b"
+    r"|(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):"
+    rf"[\s\S]{{0,120}}\b(?:{_REPROMPT_ACTION_VERBS})\b",
     re.IGNORECASE,
 )
 
