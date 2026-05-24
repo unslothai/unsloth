@@ -107,6 +107,18 @@ class ChatInferenceSettings(BaseModel):
     minP: Optional[float] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
+    # New per-provider sampling knobs. `extra="forbid"` would 422 any
+    # settings save from a frontend on the new code if these were not
+    # listed here, breaking the entire chat-settings persistence path.
+    # Keep these aligned with `InferenceParams` in
+    # studio/frontend/src/features/chat/types/runtime.ts.
+    frequencyPenalty: Optional[float] = Field(default = None, ge = -2.0, le = 2.0)
+    seed: Optional[int] = None
+    stop: Optional[list[str]] = None
+    serviceTier: Optional[
+        Literal["auto", "default", "flex", "priority", "scale", "standard_only"]
+    ] = None
+    parallelToolCalls: Optional[bool] = None
     maxSeqLength: Optional[float] = None
     maxTokens: Optional[float] = None
     systemPrompt: Optional[str] = None

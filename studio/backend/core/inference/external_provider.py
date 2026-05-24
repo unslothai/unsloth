@@ -435,6 +435,11 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                frequency_penalty = frequency_penalty,
+                seed = seed,
+                stop = stop,
+                parallel_tool_calls = parallel_tool_calls,
+                presence_penalty = presence_penalty,
             ):
                 yield line
             return
@@ -850,6 +855,12 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         max_tokens: Optional[int],
+        *,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        stop: Optional[Union[str, list[str]]] = None,
+        parallel_tool_calls: Optional[bool] = None,
+        presence_penalty: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Kimi $web_search round-trip.
@@ -888,6 +899,37 @@ class ExternalProviderClient:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+
+        # Forward the new optional sampling extensions (#5711) on the
+        # web-search bypass too. The default OAI-compat body construction
+        # (which adds these) is skipped because this helper returns
+        # early; forwarding here ensures kimi-with-search honours the
+        # same sampling controls as kimi-without-search.
+        if presence_penalty is not None:
+            body["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            body["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            body["seed"] = seed
+        if stop:
+            if isinstance(stop, str):
+                if stop.strip():
+                    body["stop"] = stop
+            elif isinstance(stop, list):
+                sequences = list(
+                    dict.fromkeys(s for s in stop if isinstance(s, str) and s)
+                )
+                if len(sequences) > 4:
+                    logger.warning(
+                        "stop sequences truncated to 4 entries "
+                        "(received %d, OpenAI's hard cap is 4)",
+                        len(sequences),
+                    )
+                    body["stop"] = sequences[:4]
+                elif sequences:
+                    body["stop"] = sequences
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         # Strip body fields the Kimi registry declares unusable
         # (temperature/top_p — see body_omit in providers.py).
@@ -2783,12 +2825,18 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
-        # Responses accepts service_tier on the same enum set as Chat
-        # Completions minus `scale`. parallel_tool_calls follows the
-        # same shape (default true). The frontend capability gate
-        # (provider-capabilities.ts) already filters the option lists
-        # per provider, so we just forward what we got.
-        if service_tier in ("auto", "default", "flex", "priority"):
+        # Responses accepts the same service_tier enum set as Chat
+        # Completions (auto|default|flex|scale|priority) per the live
+        # `openai-python` SDK
+        # (`src/openai/types/responses/response_create_params.py`
+        # declares `Optional[Literal["auto", "default", "flex",
+        # "scale", "priority"]]`). parallel_tool_calls follows the same
+        # shape (default true). The frontend capability gate
+        # (provider-capabilities.ts) already filters per-provider, so
+        # we just forward whatever value the dispatcher hands us, with
+        # `standard_only` (Anthropic-only) being the one value Responses
+        # has never accepted.
+        if service_tier in ("auto", "default", "flex", "scale", "priority"):
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = bool(parallel_tool_calls)

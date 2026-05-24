@@ -385,11 +385,24 @@ def test_openai_responses_forwards_service_tier(monkeypatch):
     assert body.get("service_tier") == "priority", body
 
 
-def test_openai_responses_rejects_chat_only_service_tier(monkeypatch):
+@pytest.mark.parametrize(
+    "value", ["auto", "default", "flex", "scale", "priority"]
+)
+def test_openai_responses_accepts_full_service_tier_enum(monkeypatch, value):
+    """`openai-python`'s ResponseCreateParams declares
+    `Optional[Literal["auto", "default", "flex", "scale", "priority"]]`
+    so every value in that set forwards untouched."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
-    body = _drive_openai_responses(captured, service_tier = "scale")
-    # Responses only accepts auto|default|flex|priority -- `scale` is
-    # silently dropped so a stale frontend cannot 400 the request.
+    body = _drive_openai_responses(captured, service_tier = value)
+    assert body.get("service_tier") == value, body
+
+
+def test_openai_responses_drops_anthropic_only_service_tier(monkeypatch):
+    """`standard_only` is Anthropic-only and Responses has never accepted
+    it. Drop it client-side so a stale frontend cannot 400 the request.
+    """
+    captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
+    body = _drive_openai_responses(captured, service_tier = "standard_only")
     assert "service_tier" not in body, body
 
 
@@ -460,3 +473,106 @@ def test_chat_completion_request_clamps_frequency_penalty_range():
                 "frequency_penalty": -3.0,
             }
         )
+
+
+# ── Kimi web-search bypass forwards new sampling fields ────────────────
+
+
+def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
+    """The Kimi `enabled_tools=["web_search"]` path takes an early
+    return into `_stream_kimi_web_search` BEFORE the default OAI-compat
+    body builder runs. PR #5711 added new sampling fields to the
+    default builder; this test pins that the web-search bypass also
+    forwards them so Kimi-with-search and Kimi-without-search behave
+    consistently."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 1.0,
+            top_p = 1.0,
+            max_tokens = 256,
+            enabled_tools = ["web_search"],
+            presence_penalty = 0.5,
+            frequency_penalty = 1.25,
+            seed = 7,
+            stop = ["END"],
+            parallel_tool_calls = False,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("frequency_penalty") == 1.25, body
+    assert body.get("seed") == 7, body
+    assert body.get("stop") == ["END"], body
+    assert body.get("parallel_tool_calls") is False, body
+    assert body.get("presence_penalty") == 0.5, body
+    # body_omit still strips temperature / top_p for Kimi.
+    assert "temperature" not in body, body
+    assert "top_p" not in body, body
+
+
+# ── Local OpenAI passthrough forwards new sampling fields ──────────────
+
+
+def test_local_openai_passthrough_forwards_new_sampling_fields():
+    """Round 1 reviewers (10/20) flagged that
+    `_build_openai_passthrough_body` dropped frequency_penalty / seed /
+    parallel_tool_calls when forwarding to llama-server. Pin the
+    extended contract."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_openai_passthrough_body
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "frequency_penalty": 1.25,
+            "seed": 123,
+            "stop": ["END"],
+            "parallel_tool_calls": False,
+        }
+    )
+    body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+    assert body["frequency_penalty"] == 1.25, body
+    assert body["seed"] == 123, body
+    assert body["stop"] == ["END"], body
+    assert body["parallel_tool_calls"] is False, body
+
+
+# ── Backend ChatInferenceSettings schema accepts new fields ────────────
+
+
+def test_chat_settings_payload_accepts_new_sampling_keys():
+    """Round 1 reviewers flagged that `ChatSettingsPayload.extra="forbid"`
+    with the old field list 422'd every settings save that contained
+    any of the new keys. Pin that the new keys round-trip."""
+    from routes.chat_history import ChatSettingsPayload
+
+    parsed = ChatSettingsPayload.model_validate(
+        {
+            "inferenceParams": {
+                "frequencyPenalty": 0.7,
+                "seed": 42,
+                "stop": ["END"],
+                "serviceTier": "standard_only",
+                "parallelToolCalls": False,
+            }
+        }
+    )
+    ip = parsed.inferenceParams
+    assert ip is not None
+    assert ip.frequencyPenalty == 0.7
+    assert ip.seed == 42
+    assert ip.stop == ["END"]
+    assert ip.serviceTier == "standard_only"
+    assert ip.parallelToolCalls is False

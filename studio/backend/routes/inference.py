@@ -4898,6 +4898,9 @@ def _build_passthrough_payload(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    frequency_penalty = None,
+    seed = None,
+    parallel_tool_calls = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -4929,6 +4932,18 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
+    # New per-provider sampling extensions (PR #5711). llama-server's
+    # /v1/chat/completions endpoint accepts the standard OpenAI fields,
+    # so forward them straight through. parallel_tool_calls is a no-op
+    # on llama-server today (the upstream always dispatches sequentially)
+    # but forward it anyway so a future llama-server release that
+    # implements it picks up the user's preference automatically.
+    if frequency_penalty is not None:
+        body["frequency_penalty"] = frequency_penalty
+    if seed is not None:
+        body["seed"] = seed
+    if parallel_tool_calls is not None:
+        body["parallel_tool_calls"] = parallel_tool_calls
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema
         # when response_format is present. Field is documented flat at the
@@ -5347,6 +5362,9 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         min_p = payload.min_p,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
+        frequency_penalty = payload.frequency_penalty,
+        seed = payload.seed,
+        parallel_tool_calls = payload.parallel_tool_calls,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,
