@@ -1,0 +1,1 @@
+- Asked if Blackwell image supports GPUs

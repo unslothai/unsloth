@@ -1,0 +1,1 @@
+- Asked why RTX 6000/5090 needed

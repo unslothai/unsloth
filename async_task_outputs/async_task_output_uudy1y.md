@@ -1,0 +1,1 @@
+- `--skip-notebook`; Docker smoke OK

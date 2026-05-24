@@ -1,0 +1,1 @@
+- Chose apt `docker-buildx`; run `bash docker/test_locally.sh --skip-notebook`

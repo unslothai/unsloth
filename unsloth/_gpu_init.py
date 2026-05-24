@@ -138,6 +138,21 @@ except ModuleNotFoundError:
 except:
     raise
 
+# Re-assert the single-compile-worker policy after unsloth_zoo has had a
+# chance to run its patch_torch_compile (which historically popped
+# TORCHINDUCTOR_COMPILE_THREADS in non-debug mode). Force the Inductor
+# config value directly so the Docker --gpus '"device=N"' subprocess-pool
+# bug is fixed even when the installed unsloth_zoo predates the
+# corresponding zoo-side patch. No-op when the user opted out.
+if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
+    try:
+        torch._inductor.config.compile_threads = 1
+    except Exception:
+        pass
+    # Re-populate the env var so determine_compile_threads in the zoo
+    # options dict also sees it; cheap and forward-compatible.
+    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+
 from unsloth_zoo.device_type import (
     is_hip,
     get_device_type,

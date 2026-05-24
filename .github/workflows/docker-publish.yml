@@ -119,7 +119,12 @@ jobs:
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
             PYTHON_VERSION=3.12
-            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || 'main' }}
+            # Workflow-dispatch: honour the explicit input. Tag pushes:
+            # bake the tag's source ref (e.g. v1.2.3) so the published
+            # tag image actually contains that release. Branch pushes and
+            # scheduled runs: bake the triggering commit SHA. Falls back
+            # to `main` for any other event class.
+            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
             UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || 'main' }}
 
       # Stash the per-arch digest as an artifact for the merge job to pick up.
@@ -203,9 +208,30 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      # Re-compute the tag list deterministically from the same metadata-action
+      # config the merge job used, so tag/schedule/SHA runs pull the image
+      # they just published instead of an unrelated `:latest` from a prior run.
+      - name: Resolve published tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
       - name: Pull and smoke-test
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          docker run --rm --gpus all \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            python /workspace/smoke_test.py
+          # Use the first tag from the metadata output -- that is the image we
+          # just published. Falls back to :latest only when the metadata is
+          # empty (defensive; should not happen on default-branch runs).
+          TAG="$(jq -r '.tags[0] // ""' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          if [ -z "$TAG" ]; then
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+          echo "smoke-testing $TAG"
+          docker pull "$TAG"
+          docker run --rm --gpus all "$TAG" python /workspace/smoke_test.py

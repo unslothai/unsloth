@@ -1,0 +1,1 @@
+- Recommended `pigz`; gzip-compatible.

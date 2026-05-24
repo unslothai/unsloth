@@ -63,9 +63,15 @@ def check_imports() -> None:
     import unsloth_zoo
 
     print(f"unsloth_zoo {unsloth_zoo.__version__}")
-    import xformers
-
-    print(f"xformers    {xformers.__version__}")
+    # xformers is not built for aarch64 cu128 as of this writing; the arm64
+    # variant of this image installs unsloth with `[huggingface]` extras
+    # which omits it. Treat the import as best-effort so the same script
+    # smoke-tests both arches.
+    try:
+        import xformers
+        print(f"xformers    {xformers.__version__}")
+    except ImportError:
+        print("xformers    (missing -- expected on arm64 [huggingface] extras)")
     import bitsandbytes as bnb
 
     print(f"bnb         {bnb.__version__}")
