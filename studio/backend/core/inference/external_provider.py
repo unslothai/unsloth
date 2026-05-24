@@ -2987,9 +2987,7 @@ class ExternalProviderClient:
         # not the raw caller intent -- image-mode requests filter the
         # tool out, and emitting a phantom "search complete" card on a
         # turn where Gemini was never told to search confuses the UI.
-        web_search_active = any(
-            "googleSearch" in t for t in tools_array
-        )
+        web_search_active = any("googleSearch" in t for t in tools_array)
         web_search_tool_id = "gemini_web_search"
         web_search_tool_started = False
         web_search_tool_ended = False
@@ -3073,13 +3071,10 @@ class ExternalProviderClient:
                         # response. Surface as a content_filter error
                         # event so the UI can render the block reason.
                         prompt_feedback = event.get("promptFeedback")
-                        if (
-                            isinstance(prompt_feedback, dict)
-                            and prompt_feedback.get("blockReason")
+                        if isinstance(prompt_feedback, dict) and prompt_feedback.get(
+                            "blockReason"
                         ):
-                            block_reason = str(
-                                prompt_feedback.get("blockReason")
-                            )
+                            block_reason = str(prompt_feedback.get("blockReason"))
                             yield _error_sse_line(
                                 400,
                                 f"Gemini blocked prompt: {block_reason}",

@@ -524,7 +524,8 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
     )
     chunks = _parse_chunks(lines)
     tool_evs = [
-        ev for c in chunks
+        ev
+        for c in chunks
         for ev in [c.get("_toolEvent")]
         if isinstance(ev, dict) and ev.get("tool_name") == "web_search"
     ]
@@ -563,9 +564,9 @@ def test_prompt_feedback_block_reason_surfaces_as_error(monkeypatch):
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     error_chunks = [c for c in chunks if "error" in c]
     assert error_chunks, chunks
-    assert "SAFETY" in (error_chunks[0].get("error", {}).get("message") or ""), (
-        error_chunks
-    )
+    assert "SAFETY" in (
+        error_chunks[0].get("error", {}).get("message") or ""
+    ), error_chunks
 
 
 def test_usage_chunk_includes_thoughts_tokens(monkeypatch):

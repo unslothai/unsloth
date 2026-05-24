@@ -1735,11 +1735,7 @@ def _build_external_messages(
         # Assistant messages with content=None but populated tool_calls
         # are valid (post-tool-call assistant turn). Forward them so the
         # provider helper can rebuild the functionCall part.
-        if (
-            msg.content is None
-            and msg.role == "assistant"
-            and msg.tool_calls
-        ):
+        if msg.content is None and msg.role == "assistant" and msg.tool_calls:
             result.append(
                 {"role": "assistant", "content": "", "tool_calls": msg.tool_calls}
             )
