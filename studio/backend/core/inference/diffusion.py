@@ -501,9 +501,7 @@ def _pipe_accepts_kwarg(pipe: Any, name: str) -> bool:
         return False
     if name in sig.parameters:
         return True
-    return any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-    )
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def encode_png_base64(pil_image: "Any") -> str:

@@ -493,9 +493,9 @@ def test_load_model_concurrent_serialises(monkeypatch):
         t.join()
 
     assert not errors, errors
-    assert active["max"] == 1, (
-        f"Expected concurrent loads to serialise; max_active={active['max']}"
-    )
+    assert (
+        active["max"] == 1
+    ), f"Expected concurrent loads to serialise; max_active={active['max']}"
 
 
 def test_pipe_accepts_kwarg_filter():
@@ -504,7 +504,9 @@ def test_pipe_accepts_kwarg_filter():
     from core.inference.diffusion import _pipe_accepts_kwarg
 
     class _NoNeg:
-        def __call__(self, *, prompt, num_inference_steps, guidance_scale, width, height):
+        def __call__(
+            self, *, prompt, num_inference_steps, guidance_scale, width, height
+        ):
             pass
 
     class _Neg:
@@ -557,8 +559,10 @@ def test_generate_image_strips_negative_prompt_on_flux2(monkeypatch):
             generator = None,
         ):
             received["prompt"] = prompt
+
             class _Out:
                 pass
+
             o = _Out()
             o.images = [Image.new("RGB", (width, height), (1, 2, 3))]
             return o
@@ -602,8 +606,10 @@ def test_generate_image_keeps_negative_prompt_on_supporting_pipe(monkeypatch):
             **kw,
         ):
             captured["negative_prompt"] = negative_prompt
+
             class _Out:
                 pass
+
             o = _Out()
             o.images = [Image.new("RGB", (width, height), (4, 5, 6))]
             return o
