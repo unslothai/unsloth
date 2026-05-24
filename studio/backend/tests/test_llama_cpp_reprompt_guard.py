@@ -924,12 +924,7 @@ def test_reprompts_on_incomplete_html_with_inner_numbered_list():
             "1. Section one.\n"
             "2. Section two.\n"
         ),
-        (
-            "Let me design a chart.\n"
-            "<svg width='100'>\n"
-            "1. circle.\n"
-            "2. rect."
-        ),
+        ("Let me design a chart.\n" "<svg width='100'>\n" "1. circle.\n" "2. rect."),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
