@@ -3062,8 +3062,7 @@ class UnslothTrainer:
                     # large documents still works.
                     vision_image_size = training_args.get("vision_image_size")
                     deepseek_image_size = (
-                        640 if vision_image_size is None
-                        else int(vision_image_size)
+                        640 if vision_image_size is None else int(vision_image_size)
                     )
                     if vision_image_size is not None:
                         logger.info(
