@@ -62,8 +62,9 @@ _INTENT_SIGNAL = re.compile(
     # appear frequently in direct answers / explanations.
     r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
     r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan", bare
+    # "Plan:" / "Approach:" as the first line of a structured reply.
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach)|(?:plan|approach):)"
     r"|"
     # "Now I" / "Next I" patterns
     r"\b(?:now i|next i)\b"
@@ -92,8 +93,11 @@ _MAX_REPROMPTS = 3
 #   * All `[\s\S]{...}?` runs are length-bounded so the search stays
 #     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
 _HAS_ANSWER_ARTIFACT = re.compile(
-    # Closed code fence (any markdown info string, optional indent on close).
+    # Closed backtick code fence (any markdown info string, optional indent on close).
     r"```[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*```"
+    # Closed tilde code fence (CommonMark also allows ~~~ fences; several
+    # models emit them when the body itself contains backticks).
+    r"|~~~[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*~~~"
     # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
     # Complete SVG document.
@@ -108,14 +112,18 @@ _NUMBERED_LIST_ARTIFACT = re.compile(
 )
 
 # Markers that a numbered list is a plan (still re-promptable), not a
-# final answer. Explicit "Here's my plan" / "plan:" / "approach:", OR
-# intent phrasing followed shortly by a tool-action verb.
+# final answer. Explicit "plan:" / "approach:" / "Here's my plan", OR
+# intent phrasing followed shortly by a plan / tool-action verb. The
+# verb set is intentionally conservative: ambiguous verbs like "write",
+# "create", "make", "build" are omitted because real answer lists use
+# them ("1. Write a poem", "1. Create directory").
 _PLAN_LIST_FRAMING = re.compile(
     r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|step \d+|"
     r"i['’]?ll|i will|i am going to|let me|now i|next i)\b"
     r"[\s\S]{0,80}"
     r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
-    r"check|find|open|verify|compare|summari[sz]e)\b"
+    r"check|find|open|verify|compare|summari[sz]e|think|respond|"
+    r"answer|analy[sz]e|explore|outline|gather|query|reason)\b"
     r"|\b(?:plan|approach):",
     re.IGNORECASE,
 )

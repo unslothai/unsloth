@@ -121,6 +121,19 @@ def test_artifact_regex_detects_indented_close_fence():
     assert _has_answer_artifact(text)
 
 
+def test_artifact_regex_detects_tilde_code_fence():
+    """CommonMark also allows ``~~~`` fences. Models emit them when the
+    body itself contains backticks, e.g. shell or markdown."""
+    samples = [
+        "First, let me write it.\n~~~python\nprint('hi')\n~~~",
+        "First, let me show:\n~~~\nplain block\n~~~",
+        "Sure, here is the script.\n~~~bash\necho hi\n~~~",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+
+
 def test_artifact_regex_ignores_open_code_fence():
     """An UNCLOSED code fence is not yet a complete artifact."""
     text = "Let me set up pygame.\n```python\nimport pygame"
@@ -321,6 +334,33 @@ def test_reprompts_on_incomplete_html_intent():
     assert _would_reprompt(content)
 
 
+def test_reprompts_on_plan_colon_intent():
+    """Bare ``Plan:`` / ``Approach:`` at the start of a structured reply
+    is now an intent signal so the plan stall re-prompts. Pre-fix the
+    response slipped past ``_INTENT_SIGNAL`` entirely."""
+    samples = [
+        "Plan:\n1. search the docs\n2. summarise",
+        "Approach:\n1. fetch the data\n2. compare",
+        "Plan: search the docs then summarise",
+    ]
+    for s in samples:
+        assert _INTENT_SIGNAL.search(s), s
+        assert _would_reprompt(s), s
+
+
+def test_reprompts_on_plan_with_extended_action_verbs():
+    """The plan-framing verb whitelist also covers think / respond /
+    answer / analy[sz]e / explore / outline / gather / query / reason
+    so plan stalls phrased with those verbs still re-prompt."""
+    samples = [
+        "Here is what I will do:\n1. think it through\n2. respond clearly",
+        "First, let me reason about this:\n1. weigh options\n2. answer concisely",
+        "Now I will analyse this:\n1. break it down\n2. summarise findings",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
 # ── Cross-platform line endings ────────────────────────────────────
 
 
@@ -381,3 +421,30 @@ def test_no_backtrack_on_open_html_spam():
     _has_answer_artifact(payload)
     elapsed_ms = (time.time() - t0) * 1000
     assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on <html spam"
+
+
+def test_no_backtrack_on_doctype_html_alternation_worst_case():
+    """The HTML branch is the slowest path because the inner
+    ``[\\s\\S]{0,4000}?</html>`` is retried at every ``<html\\b`` anchor.
+    With ``<!doctype html><html foo `` repeated under the 2000-char
+    gate the worst observed measurement was about 7 ms; assert a
+    generous budget so future quantifier changes that drop the inner
+    ``{0,4000}`` bound fail loudly."""
+    import time
+
+    payload = ("<!doctype html><html foo " * 60)[:1999]
+    t0 = time.time()
+    _has_answer_artifact(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
+
+
+def test_no_backtrack_on_tilde_fence_spam():
+    """Open ``~~~`` fences without close must terminate quickly."""
+    import time
+
+    payload = "~~~a\n" * 400  # ~2000 chars, near _REPROMPT_MAX_CHARS
+    t0 = time.time()
+    _has_answer_artifact(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
