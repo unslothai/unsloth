@@ -217,7 +217,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
         if not m:
             continue
         fence = m.group("backticks") or m.group("tildes")
-        trailing = line[m.end():].strip()
+        trailing = line[m.end() :].strip()
         ch = fence[0]
         if active_char is None:
             active_char = ch

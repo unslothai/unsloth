@@ -875,9 +875,7 @@ def test_same_line_open_fence_with_numbered_body_still_reprompts():
     fallback. The unclosed-fence helper now uses ``search`` so inline
     openers are tracked, not just openers at column 0."""
     content = (
-        "First, let me write it. ```text\n"
-        "1. Install dependencies\n"
-        "2. Run the app"
+        "First, let me write it. ```text\n" "1. Install dependencies\n" "2. Run the app"
     )
     assert not _has_answer_artifact(content)
     assert _would_reprompt(content)
@@ -909,11 +907,7 @@ def test_reprompts_on_first_step_numbered_compute_plan():
             "1. Load rows.\n"
             "2. Compute the total."
         ),
-        (
-            "I'll look that up:\n"
-            "1. Search the docs.\n"
-            "2. Summarize the result."
-        ),
+        ("I'll look that up:\n" "1. Search the docs.\n" "2. Summarize the result."),
     ]
     for content in samples:
         assert _would_reprompt(content), content
