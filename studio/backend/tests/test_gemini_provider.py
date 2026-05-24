@@ -2131,6 +2131,82 @@ def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
     ), parts
 
 
+def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypatch):
+    """Assistant text with extra_content.google.thought_signature must
+    attach `thoughtSignature` to the LAST text part of the replayed
+    Gemini history. Gemini 3 strict function-calling rejects history
+    that drops returned signatures, so the frontend stows the latest
+    signed-text signature and the backend pins it on the next turn."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                ],
+                "extra_content": {
+                    "google": {"thought_signature": "SIG-TEXT"},
+                },
+            },
+            {"role": "user", "content": "again"},
+        ],
+    )
+    assistant_turn = captured["body"]["contents"][1]
+    assert assistant_turn["role"] == "model"
+    parts = assistant_turn["parts"]
+    text_parts = [p for p in parts if "text" in p]
+    assert text_parts, parts
+    assert text_parts[-1].get("thoughtSignature") == "SIG-TEXT", text_parts
+
+
+def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
+    """OpenAI strict tools commonly include `additionalProperties`,
+    `$schema`, `$defs`, `strict`, etc. Gemini's Schema rejects those
+    with INVALID_ARGUMENT, so the translator must strip them while
+    keeping properties.<field>.type intact."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {
+                        "type": "object",
+                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "additionalProperties": False,
+                        "strict": True,
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["key"],
+                    },
+                },
+            }
+        ],
+    )
+    tools_arr = captured["body"].get("tools") or []
+    decls = next(
+        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        None,
+    )
+    assert decls is not None, captured["body"]
+    params = decls[0]["parameters"]
+    assert "additionalProperties" not in params
+    assert "$schema" not in params
+    assert "strict" not in params
+    assert params["type"] == "object"
+    assert params["properties"]["key"]["type"] == "string"
+    assert "additionalProperties" not in params["properties"]["key"]
+    assert params["required"] == ["key"]
+
+
 def test_image_models_drop_function_declarations(monkeypatch):
     """Image-mode requests cannot mix tools with responseModalities so
     user-supplied function declarations must be dropped."""

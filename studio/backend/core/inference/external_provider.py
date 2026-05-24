@@ -594,6 +594,15 @@ class ExternalProviderClient:
                     body.get("model"),
                 )
 
+        # Forward OpenAI-style function tools / tool_choice on every
+        # OAI-compat route (incl. custom Gemini OpenAI proxies like
+        # LiteLLM). Without this, callers that wire user-defined tools
+        # silently lose function-calling on non-native providers.
+        if tools:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
+
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
@@ -2754,6 +2763,29 @@ class ExternalProviderClient:
                                     }
                                 }
                             )
+            # Gemini 3 strict function-calling requires text-part
+            # thoughtSignatures to be replayed on history; the frontend
+            # stows the latest one as
+            # extra_content.google.thought_signature on the assistant
+            # message and we pin it onto the last text part here.
+            if role == "assistant" and parts:
+                _msg_extra = (
+                    msg.get("extra_content") if isinstance(msg, dict) else None
+                )
+                if isinstance(_msg_extra, dict):
+                    _msg_g = _msg_extra.get("google") or {}
+                    if isinstance(_msg_g, dict):
+                        _msg_sig = _msg_g.get(
+                            "thought_signature"
+                        ) or _msg_g.get("thoughtSignature")
+                        if isinstance(_msg_sig, str) and _msg_sig:
+                            for _idx in range(len(parts) - 1, -1, -1):
+                                if "text" in parts[_idx]:
+                                    parts[_idx] = {
+                                        **parts[_idx],
+                                        "thoughtSignature": _msg_sig,
+                                    }
+                                    break
             # OpenAI may attach tool_calls on an assistant message.
             # Translate into Gemini's functionCall part so the prior
             # turn's tool request round-trips back to the model.
@@ -3057,6 +3089,66 @@ class ExternalProviderClient:
             tools_array.append({"codeExecution": {}})
         # OpenAI-style function declarations -> Gemini functionDeclarations.
         # https://ai.google.dev/gemini-api/docs/function-calling#step_1
+        # Gemini's Schema accepts only the OpenAPI 3.0 subset documented
+        # at https://ai.google.dev/api/caching#Schema; OpenAI's strict
+        # tool definitions routinely include `additionalProperties`,
+        # `$schema`, `$defs`, `strict`, `examples`, and similar keys
+        # which 400 the request as INVALID_ARGUMENT. Strip them
+        # recursively before forwarding.
+        _GEMINI_ALLOWED_SCHEMA_KEYS = frozenset({
+            "type",
+            "format",
+            "title",
+            "description",
+            "nullable",
+            "enum",
+            "maxItems",
+            "minItems",
+            "properties",
+            "required",
+            "minProperties",
+            "maxProperties",
+            "items",
+            "minimum",
+            "maximum",
+            "minLength",
+            "maxLength",
+            "pattern",
+            "default",
+            "anyOf",
+            "propertyOrdering",
+        })
+
+        def _sanitize_gemini_schema(node: Any) -> Any:
+            # Recursively filter to Gemini's OpenAPI 3.0 subset. At a
+            # Schema-keyword dict layer we drop keys not in the
+            # allowlist; under `properties` the keys are user-defined
+            # field names and the values are themselves Schemas; under
+            # `items` / `anyOf` the values are also Schemas.
+            if isinstance(node, dict):
+                cleaned: dict[str, Any] = {}
+                for _k, _v in node.items():
+                    if _k not in _GEMINI_ALLOWED_SCHEMA_KEYS:
+                        continue
+                    if _k == "properties" and isinstance(_v, dict):
+                        cleaned[_k] = {
+                            _name: _sanitize_gemini_schema(_subschema)
+                            for _name, _subschema in _v.items()
+                        }
+                    elif _k == "items":
+                        cleaned[_k] = _sanitize_gemini_schema(_v)
+                    elif _k == "anyOf" and isinstance(_v, list):
+                        cleaned[_k] = [
+                            _sanitize_gemini_schema(_entry) for _entry in _v
+                        ]
+                    elif _k in ("required", "enum", "propertyOrdering"):
+                        # Lists of plain strings; copy verbatim.
+                        cleaned[_k] = _v
+                    else:
+                        cleaned[_k] = _v
+                return cleaned
+            return node
+
         function_declarations: list[dict[str, Any]] = []
         if tools and text_tools_allowed:
             for _tool in tools:
@@ -3071,7 +3163,7 @@ class ExternalProviderClient:
                 }
                 _params = _fn.get("parameters")
                 if isinstance(_params, dict):
-                    _decl["parameters"] = _params
+                    _decl["parameters"] = _sanitize_gemini_schema(_params)
                 function_declarations.append(_decl)
         if function_declarations:
             tools_array.append({"functionDeclarations": function_declarations})

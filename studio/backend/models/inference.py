@@ -738,9 +738,13 @@ class ChatCompletionRequest(BaseModel):
         stay opt-out."""
         if isinstance(value, str):
             lowered = value.strip().lower()
-            if lowered in ("true", "1", "yes"):
+            # Match Pydantic v1's BooleanField coercion table (yes/y/on/t/1
+            # and no/n/off/f/0) so opt-outs that used to parse still parse.
+            # Anything else is preserved as a string for Gemini's
+            # cachedContent resource path.
+            if lowered in ("true", "t", "1", "yes", "y", "on"):
                 return True
-            if lowered in ("false", "0", "no"):
+            if lowered in ("false", "f", "0", "no", "n", "off"):
                 return False
         return value
 

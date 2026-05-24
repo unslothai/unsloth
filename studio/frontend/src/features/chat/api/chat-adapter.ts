@@ -369,20 +369,27 @@ function collectAssistantToolCalls(
       argsObj && typeof argsObj.google === "object" && argsObj.google !== null
         ? (argsObj.google as Record<string, unknown>)
         : null;
-    // Server-side builtins are not user-declared functions. web_search
-    // grounding is represented by assistant text + grounding metadata
-    // and never round-trips as a tool call. code_execution and
-    // image_generation only round-trip when we have the native Gemini
-    // part (executableCode / codeExecutionResult / inlineData) the
-    // backend replay path needs; otherwise drop them so we don't send
-    // a fake functionCall the provider has no declaration for.
-    if (SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
-      if (toolNameLower === "web_search") continue;
-      const hasNativePart =
-        argsGoogle &&
+    const hasNativePart = Boolean(
+      argsGoogle &&
         typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null;
-      if (!hasNativePart) continue;
+        argsGoogle.native_part !== null,
+    );
+    const tcResult = (tc as { result?: unknown }).result;
+    const hasResult = tcResult !== undefined && tcResult !== null;
+    // Disambiguate server-side builtins from same-named user-declared
+    // functions. Provider-emitted builtins (Gemini grounding /
+    // code_execution / image_generation) carry google.native_part and
+    // no caller-supplied result; user-declared functions with the same
+    // name have a result attached after the client executed them and
+    // no native_part. When neither is present we skip the entry rather
+    // than emit a fake functionCall the provider has no declaration
+    // for (typical web_search grounding card).
+    if (
+      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower) &&
+      !hasNativePart &&
+      !hasResult
+    ) {
+      continue;
     }
     const argumentsStr =
       typeof tc.argsText === "string" && tc.argsText.length > 0
@@ -444,13 +451,34 @@ function collectToolResultMessages(
   for (const part of message.content ?? []) {
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
+    const result = (tc as { result?: unknown }).result;
+    // Server-side builtins emitted by the provider (Gemini grounding,
+    // code execution, image generation) carry google.native_part on
+    // args. Those replay via the assistant tool_call native_part path
+    // and must NOT emit a role="tool" message (the provider would 400
+    // on a functionResponse with no matching declaration). A
+    // user-declared function with the same name has no native_part —
+    // round-trip its result normally.
+    const argsObj =
+      tc.args && typeof tc.args === "object"
+        ? (tc.args as Record<string, unknown>)
+        : null;
+    const argsGoogle =
+      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+        ? (argsObj.google as Record<string, unknown>)
+        : null;
+    const hasNativePart = Boolean(
+      argsGoogle &&
+        typeof argsGoogle.native_part === "object" &&
+        argsGoogle.native_part !== null,
+    );
     if (
       tc.toolName &&
-      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(tc.toolName.toLowerCase())
+      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(tc.toolName.toLowerCase()) &&
+      hasNativePart
     ) {
       continue;
     }
-    const result = (tc as { result?: unknown }).result;
     if (result === undefined || result === null) continue;
     let content: string;
     if (typeof result === "string") {
@@ -483,7 +511,30 @@ type SerializedMessage = {
   }>;
   tool_call_id?: string;
   name?: string;
+  /**
+   * Gemini text-part thoughtSignature stashed during streaming on the
+   * last text MessagePart. Backend reads
+   * `extra_content.google.thought_signature` and attaches it to the
+   * matching Gemini text part on the outbound turn.
+   */
+  extra_content?: unknown;
 };
+
+function collectAssistantTextThoughtSignature(
+  message: RunMessage,
+): string | undefined {
+  if (!Array.isArray(message.content)) return undefined;
+  for (let i = message.content.length - 1; i >= 0; i -= 1) {
+    const part = message.content[i] as { type?: string } & Record<
+      string,
+      unknown
+    >;
+    if (part?.type !== "text") continue;
+    const sig = part._google_thought_signature;
+    if (typeof sig === "string" && sig) return sig;
+  }
+  return undefined;
+}
 
 function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
@@ -522,6 +573,12 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
     // expects for the next functionCall replay).
     if (!textContent && imageParts.length === 0) {
       base.content = null;
+    }
+  }
+  if (message.role === "assistant") {
+    const sig = collectAssistantTextThoughtSignature(message);
+    if (sig) {
+      base.extra_content = { google: { thought_signature: sig } };
     }
   }
 
@@ -1319,6 +1376,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      // Latest Gemini text-part thoughtSignature observed during this
+      // stream. The backend emits delta.extra_content.google.thought_signature
+      // when Gemini returns a signed text part; we stow it on the final
+      // text MessagePart so toOpenAIMessages can replay it on the next
+      // turn (Gemini 3 strict function-calling rejects history that
+      // drops returned signatures).
+      let latestTextThoughtSignature: string | undefined;
+      const pinTextThoughtSignature = <T extends { type: string }>(
+        parts: T[],
+      ): T[] => {
+        if (!latestTextThoughtSignature || parts.length === 0) return parts;
+        for (let i = parts.length - 1; i >= 0; i -= 1) {
+          if (parts[i].type === "text") {
+            parts[i] = {
+              ...parts[i],
+              _google_thought_signature: latestTextThoughtSignature,
+            } as T;
+            break;
+          }
+        }
+        return parts;
+      };
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -1897,7 +1976,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                 }
                 // Yield cumulative state so tool UI updates (tools first, text after)
-                const textParts = parseAssistantContent(cumulativeText);
+                const textParts = pinTextThoughtSignature(
+                  parseAssistantContent(cumulativeText),
+                );
                 yield {
                   content: [...toolCallParts, ...textParts],
                   metadata: {
@@ -1952,6 +2033,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // parts re-wrapped as inline <think> tags) so the rest of the
               // accumulator stays string-based.
               const delta = extractDeltaText(rawDelta);
+              // Gemini text parts carry `thoughtSignature` on the
+              // delta's extra_content. Stash the latest one so the
+              // assistant message persists it and the next outbound
+              // turn replays it on the matching text part.
+              const deltaExtraContent = (
+                chunk.choices?.[0]?.delta as
+                  | { extra_content?: unknown }
+                  | undefined
+              )?.extra_content;
+              if (
+                deltaExtraContent &&
+                typeof deltaExtraContent === "object"
+              ) {
+                const eGoogle = (deltaExtraContent as Record<string, unknown>)
+                  .google;
+                if (eGoogle && typeof eGoogle === "object") {
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
+                  if (typeof sig === "string" && sig) {
+                    latestTextThoughtSignature = sig;
+                  }
+                }
+              }
               // Kimi (kimi-k2.6, kimi-k2-thinking) and DeepSeek reasoner
               // stream thinking via `delta.reasoning_content` as a plain
               // string field — separate from `delta.content` which carries
@@ -2112,7 +2216,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 yield {
                   content: [
                     ...toolCallParts,
-                    ...parseAssistantContent(cumulativeText),
+                    ...pinTextThoughtSignature(
+                      parseAssistantContent(cumulativeText),
+                    ),
                   ],
                   metadata: {
                     timing: buildTiming(
@@ -2164,7 +2270,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   "",
                 );
               }
-              const parts = parseAssistantContent(cumulativeText);
+              const parts = pinTextThoughtSignature(
+                parseAssistantContent(cumulativeText),
+              );
 
               if (
                 parts.some((part) => part.type === "reasoning") &&
@@ -2268,7 +2376,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         yield {
           content: [
             ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            ...pinTextThoughtSignature(parseAssistantContent(cumulativeText)),
             ...sourceParts,
           ],
           metadata: {
