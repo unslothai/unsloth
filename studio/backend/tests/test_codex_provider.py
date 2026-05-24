@@ -1223,6 +1223,171 @@ class TestCodexHardenedRegressions:
         ), "OpenAI provider key leaked into codex subprocess env"
         assert env.get("CODEX_OPENAI_API_KEY") == "explicit_codex_key"
 
+    def test_thread_start_uses_safe_approval_and_sandbox(self, monkeypatch):
+        """When the SDK exposes ApprovalMode + SandboxMode, the
+        provider MUST pin approval to `deny_all` and sandbox to
+        `read_only`. The upstream SDK default
+        (`auto_review` approvals, unspecified sandbox) would let the
+        model auto-execute commands and write files on the server.
+        """
+        seen_kwargs: list[dict] = []
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _FakeThread(chunks = ["ok"])
+
+        # Drop a fake openai_codex with ApprovalMode + SandboxMode enums.
+        import importlib.util as _iu
+
+        fake_mod = types.ModuleType("openai_codex")
+        fake_mod.AsyncCodex = _Async  # type: ignore[attr-defined]
+        fake_mod.ApprovalMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deny_all = "DENY_ALL_SENTINEL",
+            auto_review = "AUTO_REVIEW_SENTINEL",
+        )
+        fake_mod.SandboxMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            read_only = "READ_ONLY_SENTINEL",
+            workspace_write = "WS_WRITE_SENTINEL",
+            danger_full_access = "DANGER_SENTINEL",
+        )
+        monkeypatch.setitem(sys.modules, "openai_codex", fake_mod)
+        real_find_spec = _iu.find_spec
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda n, *a, **kw: (
+                types.SimpleNamespace()
+                if n in ("openai_codex", "codex_app_server")
+                else real_find_spec(n, *a, **kw)
+            ),
+        )
+
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        assert seen_kwargs, "thread_start never called"
+        kw = seen_kwargs[0]
+        assert (
+            kw.get("approval_mode") == "DENY_ALL_SENTINEL"
+        ), f"approval_mode not pinned to deny_all: {kw}"
+        assert (
+            kw.get("sandbox") == "READ_ONLY_SENTINEL"
+        ), f"sandbox not pinned to read_only: {kw}"
+
+    def test_thread_start_skips_safety_kwargs_on_old_sdk(self, monkeypatch):
+        """If the installed SDK does not expose ApprovalMode or
+        SandboxMode (older rev / alias), thread_start must still run
+        -- failing closed would brick anyone on a pre-release build.
+        The provider logs a warning and proceeds without the kwargs.
+        """
+        seen_kwargs: list[dict] = []
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _FakeThread(chunks = ["ok"])
+
+        # Fake SDK without ApprovalMode / SandboxMode.
+        _install_fake_codex_sdk(monkeypatch, _Async)
+        from core.inference.codex_provider import stream_codex
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        asyncio.run(_collect())
+        assert seen_kwargs, "thread_start never called"
+        kw = seen_kwargs[0]
+        assert "approval_mode" not in kw, (
+            "should not pass an unknown approval_mode value on an "
+            "SDK that does not expose the enum"
+        )
+        assert "sandbox" not in kw
+        # Model still passed so the request is well-formed.
+        assert kw.get("model") == "gpt-5.5"
+
+    def test_synthesis_also_pins_safety_kwargs(self, monkeypatch):
+        """The synthesis turn that unifies parallel fan-out outputs
+        must use the same safety pins -- a fan-out tab could otherwise
+        sneak an unsafe approval into the final synthesis prompt.
+        """
+        seen_kwargs: list[dict] = []
+
+        class _SynThread:
+            async def run(self, prompt):
+                return "synth ok"
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _SynThread()
+
+        import importlib.util as _iu
+
+        fake_mod = types.ModuleType("openai_codex")
+        fake_mod.AsyncCodex = _Async  # type: ignore[attr-defined]
+        fake_mod.ApprovalMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deny_all = "DENY_ALL_SENTINEL",
+        )
+        fake_mod.SandboxMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            read_only = "READ_ONLY_SENTINEL",
+        )
+        monkeypatch.setitem(sys.modules, "openai_codex", fake_mod)
+        real_find_spec = _iu.find_spec
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda n, *a, **kw: (
+                types.SimpleNamespace()
+                if n in ("openai_codex", "codex_app_server")
+                else real_find_spec(n, *a, **kw)
+            ),
+        )
+
+        from core.inference.codex_provider import _run_codex_synthesis
+
+        asyncio.run(
+            _run_codex_synthesis(
+                model = "gpt-5.5",
+                system = "Always answer in Spanish.",
+                prompt = "What is the capital of France?",
+                tab_outputs = ["Paris", "Paris."],
+            )
+        )
+        assert seen_kwargs, "synthesis thread_start never called"
+        kw = seen_kwargs[0]
+        assert kw.get("approval_mode") == "DENY_ALL_SENTINEL"
+        assert kw.get("sandbox") == "READ_ONLY_SENTINEL"
+
 
 async def _consume_first(gen):
     """Drive an async generator until it raises or yields its first

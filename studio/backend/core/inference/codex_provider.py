@@ -521,13 +521,54 @@ async def _stream_thread_run(
         yield text
 
 
+def _safe_thread_safety_kwargs() -> dict[str, Any]:
+    """Return the safe ``approval_mode`` + ``sandbox`` kwargs for thread_start.
+
+    The upstream ``openai_codex.AsyncCodex.thread_start`` defaults
+    ``approval_mode`` to ``ApprovalMode.auto_review`` -- which the SDK
+    docs describe as "automatically execute tools when permission
+    escalations occur, without user intervention" -- and leaves
+    ``sandbox`` as ``None``. Studio drives Codex from a server-side
+    chat request with no per-action UI, so leaving those at the
+    defaults would let a model decide on its own to run shell
+    commands, write files, or hit the network on the operator's
+    machine.
+
+    We pin both to the strictest values the SDK exposes:
+
+    * ``approval_mode = ApprovalMode.deny_all`` -- reject any tool /
+      command request rather than auto-approving it.
+    * ``sandbox = SandboxMode.read_only`` -- the policy that bans
+      file writes and disables network access.
+
+    Returns an empty dict when the installed SDK is too old to expose
+    either symbol; the caller then issues a structured warning and
+    proceeds without the safety pins. Failing closed (refusing to
+    run) on an older SDK would brick users on pre-release alpha
+    builds for no security gain -- the auto_review default is
+    upstream's choice, not a Studio regression.
+    """
+    sdk_mod = sys.modules.get("openai_codex") or sys.modules.get("codex_app_server")
+    if sdk_mod is None:
+        return {}
+    approval_mode_cls = getattr(sdk_mod, "ApprovalMode", None)
+    sandbox_mode_cls = getattr(sdk_mod, "SandboxMode", None)
+    if approval_mode_cls is None or sandbox_mode_cls is None:
+        return {}
+    deny_all = getattr(approval_mode_cls, "deny_all", None)
+    read_only = getattr(sandbox_mode_cls, "read_only", None)
+    if deny_all is None or read_only is None:
+        return {}
+    return {"approval_mode": deny_all, "sandbox": read_only}
+
+
 async def _start_thread_with_system(
     codex: Any,
     model: str,
     system: str,
     prompt: str,
 ) -> tuple[Any, str]:
-    """Start a Codex thread carrying the system prompt.
+    """Start a Codex thread carrying the system prompt and safe defaults.
 
     Upstream ``openai_codex.AsyncCodex.thread_start`` accepts the system
     prompt under the kwarg ``base_instructions``. Some pre-release / alias
@@ -536,14 +577,37 @@ async def _start_thread_with_system(
     prepend the system text to the user prompt so the model still sees
     it. The returned (thread, prompt) tuple lets the caller use the
     possibly-rewritten prompt.
+
+    We always pin ``approval_mode`` to ``deny_all`` and ``sandbox`` to
+    ``read_only`` when the SDK exposes them (see
+    ``_safe_thread_safety_kwargs``) -- the upstream defaults would let
+    a model decide on its own to execute shell commands or write to
+    the operator's filesystem, which is not appropriate for a
+    server-side chat surface with no per-action approval UI.
     """
+    safety_kwargs = _safe_thread_safety_kwargs()
+    if not safety_kwargs:
+        # The SDK rev does not expose ApprovalMode / SandboxMode. The
+        # provider still runs (so we do not brick users on older builds),
+        # but operators need to see this in their logs.
+        logger.warning(
+            "codex_provider.safety_kwargs_unavailable",
+            note = (
+                "Installed openai_codex SDK does not expose ApprovalMode "
+                "/ SandboxMode; Codex threads will use SDK defaults "
+                "(auto_review approvals, unspecified sandbox). Upgrade "
+                "the SDK to pin safe Studio defaults."
+            ),
+        )
+    base_kwargs: dict[str, Any] = {"model": model, **safety_kwargs}
+
     if not system:
-        thread = await codex.thread_start(model = model)
+        thread = await codex.thread_start(**base_kwargs)
         return thread, prompt
 
     for kw_name in ("base_instructions", "system"):
         try:
-            thread = await codex.thread_start(model = model, **{kw_name: system})
+            thread = await codex.thread_start(**base_kwargs, **{kw_name: system})
             return thread, prompt
         except TypeError:
             continue
@@ -551,7 +615,7 @@ async def _start_thread_with_system(
             raise
     # Last-resort fallback: inline the system text in the user prompt so
     # the role intent reaches Codex even on an SDK with no kwarg for it.
-    thread = await codex.thread_start(model = model)
+    thread = await codex.thread_start(**base_kwargs)
     return thread, f"{system}\n\n{prompt}"
 
 
