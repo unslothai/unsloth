@@ -59,6 +59,7 @@ def _capture(
     Anthropic shape (e.g. that ``citations: {enabled: true}`` made it
     onto the document block).
     """
+
     def handler(request: httpx.Request) -> httpx.Response:
         if captured_body is not None:
             try:
@@ -83,9 +84,8 @@ def _capture(
         client = _make_client()
         try:
             async for line in client.stream_chat_completion(
-                messages = messages or [
-                    {"role": "user", "content": "what color is grass?"}
-                ],
+                messages = messages
+                or [{"role": "user", "content": "what color is grass?"}],
                 model = "claude-opus-4-7",
                 max_tokens = 64,
             ):
@@ -163,11 +163,14 @@ def _citation_payload(body: str) -> dict:
         if not line.startswith("data: "):
             continue
         try:
-            payload = json.loads(line[len("data: "):])
+            payload = json.loads(line[len("data: ") :])
         except json.JSONDecodeError:
             continue
         tool_event = payload.get("_toolEvent") if isinstance(payload, dict) else None
-        if isinstance(tool_event, dict) and tool_event.get("type") == "document_citations":
+        if (
+            isinstance(tool_event, dict)
+            and tool_event.get("type") == "document_citations"
+        ):
             return tool_event
     raise AssertionError("document_citations event not parsed out of SSE body")
 
@@ -625,9 +628,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
         captured_body = captured_b64,
     )
     user_msg = captured_b64["messages"][0]
-    doc_block = next(
-        p for p in user_msg["content"] if p.get("type") == "document"
-    )
+    doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")
     assert doc_block["source"]["type"] == "base64", doc_block
     assert doc_block.get("citations") == {"enabled": True}, doc_block
 
@@ -658,8 +659,6 @@ def test_input_document_translation_enables_citations(monkeypatch):
         captured_body = captured_url,
     )
     user_msg = captured_url["messages"][0]
-    doc_block = next(
-        p for p in user_msg["content"] if p.get("type") == "document"
-    )
+    doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")
     assert doc_block["source"]["type"] == "url", doc_block
     assert doc_block.get("citations") == {"enabled": True}, doc_block
