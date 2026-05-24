@@ -40,7 +40,15 @@ RAG_EMBEDDING_MODEL: str = (
 RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
     ("text", "standard"): "BAAI/bge-small-en-v1.5",
     ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",
-    ("multimodal", "standard"): "BAAI/BGE-VL-base",
+    # clip-ViT-B-32 ships through sentence-transformers natively with
+    # no `trust_remote_code` shim, so it survives any ST version bump
+    # without breaking. BGE-VL-base would be the stronger model, but
+    # its repo bundles a custom Transformer subclass tightly coupled
+    # to a specific ST internal API — incompatible with the bumped
+    # ST pin we need for the modern Module package. 512-d shared
+    # text/image space matches the architectural shape the multimodal
+    # ingester was built around.
+    ("multimodal", "standard"): "sentence-transformers/clip-ViT-B-32",
 }
 
 
