@@ -2433,12 +2433,12 @@ def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
                     {
                         "id": "call_a",
                         "type": "function",
-                        "function": {"name": "add", "arguments": "{\"x\":1}"},
+                        "function": {"name": "add", "arguments": '{"x":1}'},
                     },
                     {
                         "id": "call_b",
                         "type": "function",
-                        "function": {"name": "mul", "arguments": "{\"x\":2}"},
+                        "function": {"name": "mul", "arguments": '{"x":2}'},
                     },
                 ],
             },

@@ -2798,8 +2798,7 @@ class ExternalProviderClient:
                                 and "/files/" in _url_lc
                             )
                             _is_youtube = (
-                                "youtube.com/" in _url_lc
-                                or "youtu.be/" in _url_lc
+                                "youtube.com/" in _url_lc or "youtu.be/" in _url_lc
                             )
                             _path = urlparse(url).path
                             _guessed, _ = mimetypes.guess_type(_path)
@@ -2820,14 +2819,13 @@ class ExternalProviderClient:
                                 )
                             else:
                                 try:
-                                    _resp = await _http_client.get(
-                                        url, timeout = 20.0
-                                    )
+                                    _resp = await _http_client.get(url, timeout = 20.0)
                                     _resp.raise_for_status()
                                     _hdr_mime = (
-                                        _resp.headers.get("content-type")
-                                        or ""
-                                    ).split(";")[0].strip()
+                                        (_resp.headers.get("content-type") or "")
+                                        .split(";")[0]
+                                        .strip()
+                                    )
                                     _final_mime = (
                                         _hdr_mime
                                         if _hdr_mime.startswith("image/")
