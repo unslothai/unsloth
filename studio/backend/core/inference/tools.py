@@ -547,11 +547,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
     if not servers:
         return []
 
+    # OAuth probes need minutes for first-connect/expired-token browser
+    # sign-in; non-OAuth probes fail fast. Matches routes/mcp_servers.py.
     results = await asyncio.gather(
         *(
             list_tools_async(
                 url = s["url"],
                 headers = parse_server_headers(s),
+                timeout = 305.0 if s.get("use_oauth") else 8.0,
                 use_oauth = bool(s.get("use_oauth")),
             )
             for s in servers
