@@ -96,8 +96,22 @@ else
 
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
-    docker build --progress=plain -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
-    rc=${PIPESTATUS[0]}
+
+    # The Dockerfile uses BuildKit-only features ('# syntax=docker/dockerfile:1.7'
+    # and 'RUN ... <<\'PY\'' heredocs). The legacy builder rejects --progress and
+    # would fail at parse time on the heredocs anyway. Prefer buildx; fall back to
+    # DOCKER_BUILDKIT=1 + plain docker build for hosts without buildx installed.
+    if docker buildx version >/dev/null 2>&1; then
+        echo "  builder:       docker buildx"
+        docker buildx build --progress=plain --load -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
+        rc=${PIPESTATUS[0]}
+    else
+        echo "  builder:       DOCKER_BUILDKIT=1 docker build (legacy fallback)"
+        warn "docker buildx not available -- install for cleaner build output:"
+        warn "  https://docs.docker.com/go/buildx/"
+        DOCKER_BUILDKIT=1 docker build -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
+        rc=${PIPESTATUS[0]}
+    fi
     if [[ $rc -ne 0 ]]; then
         fail "docker build exited $rc -- see $BUILD_LOG"
     fi
