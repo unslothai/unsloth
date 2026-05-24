@@ -1590,9 +1590,7 @@ def _check_signal_escape_patterns(code: str):
                 ):
                     idx = key_node.value
                     if -len(container.elts) <= idx < len(container.elts):
-                        v = _extract_string_from_node(
-                            container.elts[idx], _depth + 1
-                        )
+                        v = _extract_string_from_node(container.elts[idx], _depth + 1)
                         if v is not None:
                             return v
                 for elt in container.elts:
