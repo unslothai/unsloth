@@ -219,10 +219,22 @@ pip install -q 'git+https://github.com/triton-lang/triton.git@0add68262ab0a2e33b
 
 echo
 echo "=== fetch + convert notebook ==="
-pip install -q nbconvert
+# Use nbformat directly instead of `jupyter nbconvert` -- nbconvert ships
+# with extra deps (mistune, pygments, traitlets, jinja2-related) and was
+# silently failing in earlier runs when --output landed in an unexpected
+# location. nbformat is a thin reader/writer with no shell-out involved.
+pip install -q nbformat
 curl -fsSL 'https://raw.githubusercontent.com/unslothai/notebooks/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb' -o nb.ipynb
-jupyter nbconvert --to script nb.ipynb --output nb 2>/dev/null
-echo "  nb.py: $(wc -l < nb.py) lines"
+test -s nb.ipynb || { echo "FAIL: nb.ipynb was not downloaded"; exit 1; }
+python - <<'PY'
+import nbformat
+nb = nbformat.read('nb.ipynb', as_version=4)
+code = '\n\n'.join(c.source for c in nb.cells if c.cell_type == 'code')
+with open('nb.py', 'w') as f:
+    f.write(code + '\n')
+print(f"  converted nb.py: {code.count(chr(10)) + 1} lines, {len(code)} chars")
+PY
+test -s nb.py || { echo "FAIL: nb.py was not produced by nbformat conversion"; exit 1; }
 
 echo
 echo "=== patch nb.py: max_steps 30 -> 10, drop pre-train demo generations ==="
