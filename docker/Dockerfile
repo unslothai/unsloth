@@ -184,12 +184,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git libgomp1 \
+        gcc g++ \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
-        python${PYTHON_VERSION} python${PYTHON_VERSION}-venv \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
+# Why gcc + g++ + python3.12-dev in the RUNTIME stage:
+#   Triton's nvidia backend lazily compiles a small C extension (CudaUtils) on
+#   first GPU access. Without a C compiler + Python headers the very first
+#   forward pass of any Unsloth model dies with:
+#       RuntimeError: Failed to find C compiler. Please specify via CC env var.
+#   Adds ~250MB to the runtime image, which is the cost of letting every kernel
+#   JIT correctly. (Pre-compiling CudaUtils at build time would need a GPU, so
+#   shipping the toolchain is the right trade-off.)
 
 COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 
