@@ -176,6 +176,11 @@ def test_denylist_rejects_all_aliases(denied):
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
         (["-np999"], "-np"),
+        # Signed attached forms must also classify as managed; otherwise
+        # `-np-1` would slip past validation while sharing intent with
+        # the rejected `--parallel -1`.
+        (["-np-1"], "-np"),
+        (["-np+1"], "-np"),
     ],
 )
 def test_parallel_flags_are_managed(args, offending):
