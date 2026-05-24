@@ -210,7 +210,9 @@ class TestTrainingRawSupport(unittest.TestCase):
             'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
             source,
         )
-        self.assertIn('if "cast_norm_output_to_input_dtype" in _supported_fields:', source)
+        self.assertIn(
+            'if "cast_norm_output_to_input_dtype" in _supported_fields:', source
+        )
         self.assertIn('if "dataset_order" in _supported_fields:', source)
         # The unconditional kwargs must NOT include either gated field.
         unconditional_block_start = source.find("mlx_config_kwargs = dict(")
