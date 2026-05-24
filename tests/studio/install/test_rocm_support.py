@@ -378,7 +378,10 @@ class TestRuntimePatterns:
             install_kind = "windows-hip",
         )
         patterns = runtime_patterns_for_choice(choice)
-        assert "*.exe" in patterns
+        # Narrowed from "*.exe" to the two binaries Studio actually
+        # invokes, mirroring the Linux/macOS pattern style.
+        assert "llama-server.exe" in patterns
+        assert "llama-quantize.exe" in patterns
         assert "*.dll" in patterns
 
     def test_macos_patterns(self):
