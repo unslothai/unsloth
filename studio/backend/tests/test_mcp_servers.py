@@ -374,3 +374,42 @@ def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
         )
     )
     assert calls == ["https://u/mcp"]
+
+
+def test_changes_from_payload_rejects_null_is_enabled():
+    """Explicit null for is_enabled used to hit int(None) -> TypeError 500."""
+    from routes.mcp_servers import _changes_from_payload
+    from models.mcp_servers import McpServerUpdate
+
+    with pytest.raises(HTTPException) as exc:
+        _changes_from_payload(McpServerUpdate(is_enabled = None))
+    assert exc.value.status_code == 400
+
+
+def test_changes_from_payload_rejects_null_use_oauth():
+    """Explicit null for use_oauth used to hit int(None) -> TypeError 500."""
+    from routes.mcp_servers import _changes_from_payload
+    from models.mcp_servers import McpServerUpdate
+
+    with pytest.raises(HTTPException) as exc:
+        _changes_from_payload(McpServerUpdate(use_oauth = None))
+    assert exc.value.status_code == 400
+
+
+def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
+    """POST /api/mcp/servers/test must 400 on invalid URL like create/update;
+    previously the same input returned 200 with {"ok": false}."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from routes.mcp_servers import test_mcp_server
+    from models.mcp_servers import McpServerTestRequest
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            test_mcp_server(
+                McpServerTestRequest(url = "ftp://nope"),
+                current_subject = "u",
+            )
+        )
+    assert exc.value.status_code == 400

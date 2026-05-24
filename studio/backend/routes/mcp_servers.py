@@ -121,8 +121,16 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         headers = _normalize_headers(payload.headers)
         changes["headers_json"] = json.dumps(headers) if headers else None
     if "is_enabled" in sent:
+        if payload.is_enabled is None:
+            raise HTTPException(
+                status_code = 400, detail = "is_enabled must be true or false"
+            )
         changes["is_enabled"] = payload.is_enabled
     if "use_oauth" in sent:
+        if payload.use_oauth is None:
+            raise HTTPException(
+                status_code = 400, detail = "use_oauth must be true or false"
+            )
         changes["use_oauth"] = payload.use_oauth
     return changes
 
@@ -195,10 +203,15 @@ async def test_mcp_server(
     payload: McpServerTestRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    # URL/header validation must surface as 400 like create/update so the
+    # frontend's create-form pre-flight gets the same error semantics as
+    # the actual save call. Only catch transport/timeout errors below.
+    url = _validate_url(payload.url)
+    headers = _normalize_headers(payload.headers)
     try:
         tools = await list_tools_async(
-            url = _validate_url(payload.url),
-            headers = _normalize_headers(payload.headers),
+            url = url,
+            headers = headers,
             timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
             if payload.use_oauth
             else _PROBE_TIMEOUT_SECONDS,
