@@ -242,7 +242,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
         if not m:
             continue
         fence = m.group("backticks") or m.group("tildes")
-        raw_trailing = line[m.end():]
+        raw_trailing = line[m.end() :]
         trailing = raw_trailing.strip()
         ch = fence[0]
         # Prose mention guard: a real fence line never has a space
