@@ -137,8 +137,14 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is a Studio-managed llama-server flag."""
-    return flag in _DENYLIST
+    """True if ``flag`` is a Studio-managed llama-server flag.
+
+    Normalises via ``_flag_name`` first so attached short forms
+    (``-np8``) and equals forms (``--parallel=8``) classify the same
+    way as the canonical ``-np`` / ``--parallel`` tokens.
+    """
+    normalised = _flag_name(flag)
+    return normalised is not None and normalised in _DENYLIST
 
 
 # Pass-through flags that shadow first-class ``LoadRequest`` fields

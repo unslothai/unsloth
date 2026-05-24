@@ -231,6 +231,12 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--parallel") is True
     assert is_managed_flag("--n-parallel") is True
     assert is_managed_flag("-np") is True
+    # Normalised forms must classify the same as the canonical token,
+    # so callers using is_managed_flag for filtering stay in sync with
+    # validate_extra_args.
+    assert is_managed_flag("-np8") is True
+    assert is_managed_flag("--parallel=8") is True
+    assert is_managed_flag("--port=9000") is True
 
 
 def test_is_managed_flag_false_for_pass_through():

@@ -701,10 +701,10 @@ def _consume_legacy_short_aliases(
             i += 1
         elif i + 1 < n:
             nxt = args[i + 1]
-            # Reject `-m -fa` style usage: the next token is clearly a
-            # flag, not a value. Surface the error here instead of
-            # silently consuming a llama-server flag as the model name.
-            if nxt.startswith("-") and nxt not in {"-", "--"}:
+            # Reject `-m --foo` style usage: a `--long` next-token is
+            # unambiguously a flag, not a value. Single-dash `-x` tokens
+            # may be paths or arbitrary values, so they pass through.
+            if nxt.startswith("--") and nxt != "--":
                 raise typer.BadParameter(
                     f"{name} expects a value but got the flag {nxt}"
                 )

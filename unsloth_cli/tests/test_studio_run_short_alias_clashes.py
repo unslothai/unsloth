@@ -486,13 +486,13 @@ def test_consume_helper_stops_at_double_dash():
     assert remaining == ["--top-k", "20", "--", "-m", "FOO"]
 
 
-def test_consume_helper_rejects_flag_as_value():
-    """`-m -fa` should error: -fa is a flag, not a model name."""
+def test_consume_helper_rejects_long_flag_as_value():
+    """`-m --flash-attn` should error: --xxx is unambiguously a flag."""
     import typer as _typer
 
     helper = _studio_mod()._consume_legacy_short_aliases
-    with pytest.raises(_typer.BadParameter, match = "-fa"):
-        helper(["-m", "-fa"], ("-m",), None, "--model")
+    with pytest.raises(_typer.BadParameter, match = "--flash-attn"):
+        helper(["-m", "--flash-attn"], ("-m",), None, "--model")
 
 
 def test_consume_helper_allows_bare_dash_as_value():
@@ -500,4 +500,16 @@ def test_consume_helper_allows_bare_dash_as_value():
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(["-m", "-", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-"
+    assert remaining == ["--top-k", "20"]
+
+
+def test_consume_helper_allows_short_dash_value():
+    """Short `-x` tokens may be paths or arbitrary values (e.g. a model
+    name that legitimately starts with `-`); only `--long` flags are
+    rejected as values."""
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-m", "-foo", "--top-k", "20"], ("-m",), None, "--model"
+    )
+    assert value == "-foo"
     assert remaining == ["--top-k", "20"]
