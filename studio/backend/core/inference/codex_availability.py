@@ -4,9 +4,9 @@
 """
 Codex CLI / SDK availability probe.
 
-This module never imports `codex_app_server` at module top level. The
-SDK is optional and not pinned in pyproject.toml -- if it's installed
-locally, we use it; if it isn't, the probe simply returns
+This module never imports the Codex Python SDK at module top level.
+The SDK is optional and not pinned in pyproject.toml -- if it's
+installed locally, we use it; if it isn't, the probe simply returns
 ``installed=False`` and the provider stays hidden in the frontend.
 
 The frontend calls ``GET /api/codex/status`` at startup to decide
@@ -14,12 +14,12 @@ whether to surface the "codex" entry in the provider picker. Three
 states matter:
 
 * ``installed=False`` -- either the CLI is missing OR the SDK
-  (``codex_app_server``) is not importable. The picker hides the
-  entry entirely.
+  (``openai_codex`` canonical, or ``codex_app_server`` legacy alias)
+  is not importable. The picker hides the entry entirely.
 * ``installed=True, logged_in=False`` -- everything resolves on the
-  Python side but ``codex auth status`` (or equivalent) reports no
-  active credentials. The provider config dialog shows a
-  ``Sign in to Codex`` button instead of the regular API-key field.
+  Python side but ``codex login status`` reports no active credentials.
+  The provider config dialog shows a ``Sign in to Codex`` button
+  instead of the regular API-key field.
 * ``installed=True, logged_in=True`` -- ready to use; the picker
   shows the regular model dropdown.
 
@@ -44,13 +44,21 @@ logger = structlog.get_logger(__name__)
 
 # Default catalog of models surfaced in the picker when the CLI is
 # present but doesn't advertise a list. The SDK accepts arbitrary model
-# ids; this is purely a sensible default.
+# ids; this is purely a sensible default. Mirrored from upstream
+# ``codex-rs/models-manager/models.json``.
 _DEFAULT_SUPPORTED_MODELS: tuple[str, ...] = (
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
-    "gpt-5.5",
-    "o3",
+    "gpt-5.3-codex",
+    "gpt-5.2",
 )
+
+# Names the upstream Python SDK has shipped under. ``openai_codex`` is the
+# canonical package at ``openai/codex/sdk/python``; ``codex_app_server`` is
+# kept as a forward-compat alias because the Rust crate uses that name and
+# an internal alpha may publish under it.
+_SDK_MODULE_NAMES: tuple[str, ...] = ("openai_codex", "codex_app_server")
 
 
 def _which_codex() -> Optional[str]:
@@ -71,19 +79,29 @@ def _which_codex() -> Optional[str]:
 
 
 def _sdk_importable() -> bool:
-    """True iff ``codex_app_server`` is importable in this interpreter.
+    """True iff the Codex Python SDK is importable in this interpreter.
 
     We deliberately use :func:`importlib.util.find_spec` instead of an
-    ``import codex_app_server`` so the import never actually runs --
-    that keeps the cost negligible and avoids the SDK's own side
-    effects (which include reaching out to the CLI subprocess for an
-    RPC ping) during a simple availability check.
+    actual ``import`` so the import never runs -- that keeps the cost
+    negligible and avoids the SDK's own side effects (which include
+    reaching out to the CLI subprocess for an RPC ping) during a
+    simple availability check.
+
+    Probes both ``openai_codex`` (the canonical upstream package name
+    at ``openai/codex/sdk/python``) and ``codex_app_server`` (the Rust
+    crate name, kept as a forward-compat alias).
     """
-    try:
-        return importlib.util.find_spec("codex_app_server") is not None
-    except Exception as exc:
-        logger.warning("codex_availability.find_spec_failed", error = str(exc))
-        return False
+    for name in _SDK_MODULE_NAMES:
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except Exception as exc:
+            logger.warning(
+                "codex_availability.find_spec_failed",
+                module = name,
+                error = str(exc),
+            )
+    return False
 
 
 async def _run_cli(args: list[str], *, timeout: float = 4.0) -> tuple[int, str, str]:
@@ -142,33 +160,43 @@ async def _detect_version() -> Optional[str]:
 
 
 async def _detect_logged_in() -> bool:
-    """Best-effort: assume a non-zero ``codex auth status`` rc means
-    "not logged in". The CLI surface has shifted over releases (some
-    versions print to stderr, some to stdout, some use "Logged in as
-    ..." vs "Not authenticated"). The return code is the most stable
-    signal we have, so we lean on it and fall back to substring
-    inspection only when the rc itself is ambiguous (rc=0 but no
-    output, or rc=-1 from a timeout / crash).
+    """Best-effort: parse ``codex login status`` output.
+
+    The upstream subcommand is ``codex login status`` (no ``auth``
+    parent). Output shapes seen in the wild:
+      * "Logged in using ChatGPT" / "Logged in as user@x.com"  -> True
+      * "Not logged in. Run `codex login` ..."                  -> False
+      * "Not authenticated"                                      -> False
+    Return code is the most stable signal but ``not logged in`` also
+    exits 0 on current releases, so we substring-check explicitly.
+
+    Note: a naive ``"logged in" in combined`` check is wrong because
+    the substring appears inside "not logged in" too -- we use an
+    explicit negative-prefix check first.
     """
-    rc, stdout, stderr = await _run_cli(["auth", "status"])
+    import re
+
+    rc, stdout, stderr = await _run_cli(["login", "status"])
     combined = f"{stdout}\n{stderr}".lower()
+
+    # Negative prefixes win, regardless of rc. We anchor on word
+    # boundaries so "not logged in" / "not authenticated" both match
+    # without being fooled by the substring "logged in" inside them.
+    negative = re.compile(r"\b(not logged in|not authenticated|please log in|run\s+`?codex login`?)\b")
+    if negative.search(combined):
+        return False
+
+    positive = re.compile(r"\b(logged in|authenticated as|signed in)\b")
+    if positive.search(combined):
+        return True
+
     if rc == 0:
-        # Some 0.x releases exit 0 even when the user is logged out.
-        # If we got any output, look for the obvious "not logged in"
-        # signals; if there's nothing on either pipe at all, treat
-        # rc=0 as authenticated (the optimistic default).
+        # rc=0 with nothing useful on either pipe: optimistic default,
+        # the user is probably authenticated and the CLI just stayed
+        # quiet (e.g. a future release).
         if not combined.strip():
             return True
-        if "not authenticated" in combined or "not logged in" in combined:
-            return False
-        if "logged in" in combined or "authenticated" in combined:
-            return True
-        return True
-    # rc != 0: lean on substring matching one more time before
-    # defaulting to False, in case a future CLI uses rc=2 for the
-    # logged-out state instead of "no auth command exists".
-    if "logged in" in combined or "authenticated as" in combined:
-        return True
+        return False
     return False
 
 

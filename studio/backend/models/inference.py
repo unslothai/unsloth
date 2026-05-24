@@ -786,8 +786,8 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
-    parallel_calls: Optional[int] = Field(
-        None,
+    parallel_calls: int = Field(
+        default = 1,
         ge = 1,
         le = 20,
         description = (
@@ -796,8 +796,8 @@ class ChatCompletionRequest(BaseModel):
             "final answer. Each parallel attempt is rendered as its own tab "
             "in the chat UI; a final 'Synthesis' tab carries the merged "
             "output. Bounded to [1, 20] by pydantic so a runaway value can't "
-            "saturate the local CLI. Silently ignored on every provider "
-            "other than `codex`."
+            "saturate the local CLI. Defaults to 1 (single-call shape). "
+            "Silently ignored on every provider other than `codex`."
         ),
     )
 

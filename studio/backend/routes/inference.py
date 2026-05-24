@@ -1891,14 +1891,25 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             except Exception as exc:
-                logger.error("codex_provider.stream_error", error = str(exc))
+                # CodeQL: never echo str(exc) -- the Codex SDK can raise
+                # with local paths, env-var content, or traceback fragments.
+                # Log the full reason server-side; surface a generic message
+                # plus an exception_type discriminator to the client so the
+                # UI can show "Codex provider error" without leaking host
+                # internals.
+                logger.error(
+                    "codex_provider.stream_error",
+                    exc_type = type(exc).__name__,
+                    error = str(exc),
+                )
                 yield (
                     "data: "
                     + json.dumps(
                         {
                             "error": {
-                                "message": f"Codex error: {exc}",
+                                "message": "Codex provider error",
                                 "type": "provider_error",
+                                "exception_type": type(exc).__name__,
                                 "code": "502",
                                 "provider": "codex",
                             }

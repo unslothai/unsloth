@@ -4,10 +4,11 @@
 """
 Codex SDK chat provider.
 
-This module wraps the ``codex_app_server`` async SDK so a chat request
-routed at ``provider_type="codex"`` can dispatch through the user's
-local Codex CLI. The contract back to the frontend is the standard
-OpenAI Chat Completions SSE shape, exactly like every other entry in
+This module wraps the OpenAI Codex async Python SDK (``openai_codex``
+canonical, ``codex_app_server`` legacy alias) so a chat request routed
+at ``provider_type="codex"`` can dispatch through the user's local
+Codex CLI. The contract back to the frontend is the standard OpenAI
+Chat Completions SSE shape, exactly like every other entry in
 ``external_provider.py``.
 
 The two interesting features here:
@@ -23,14 +24,14 @@ The two interesting features here:
   emit per-tab ``_toolEvent`` markers so the frontend can render each
   result in its own tab. A final ``codex_gather`` synthesis tab runs a
   single Codex call that takes the N outputs and produces a unified
-  answer.
+  answer. Workers cancel cleanly when the SSE consumer disconnects so
+  cancelled fan-outs never leave zombie Codex calls running.
 
 The SDK is imported lazily (inside the helpers that actually need it)
-because the spec calls out that ``codex_app_server`` may not even be
-importable on the build host. The availability probe in
-``codex_availability.py`` is what the frontend uses to gate the
-provider entirely; this module just refuses to run if the import
-fails at request time.
+because the SDK may not be importable on the build host. The
+availability probe in ``codex_availability.py`` is what the frontend
+uses to gate the provider entirely; this module just refuses to run
+if the import fails at request time.
 """
 
 from __future__ import annotations
@@ -53,8 +54,15 @@ logger = structlog.get_logger(__name__)
 MAX_PARALLEL_CALLS = 20
 
 
+# Names the upstream Python SDK has shipped under. ``openai_codex`` is
+# the canonical package at ``openai/codex/sdk/python``; ``codex_app_server``
+# is kept as a forward-compat alias because the Rust crate uses that name.
+# Order matters: first hit wins, so the canonical name is tried first.
+_SDK_MODULE_NAMES: tuple[str, ...] = ("openai_codex", "codex_app_server")
+
+
 class CodexUnavailableError(RuntimeError):
-    """Raised when ``codex_app_server`` is not importable at runtime.
+    """Raised when the Codex Python SDK is not importable at runtime.
 
     The availability probe is supposed to hide the provider before any
     request lands here, but we still raise a typed error so the route
@@ -64,62 +72,103 @@ class CodexUnavailableError(RuntimeError):
 
 
 def _import_codex() -> Any:
-    """Return the imported ``codex_app_server`` module or raise.
+    """Return the imported Codex SDK module or raise CodexUnavailableError.
 
     Imported lazily so the rest of the backend keeps starting cleanly
-    on hosts that don't have the SDK installed. The frontend calls
-    ``GET /api/codex/status`` first and hides the provider when the
-    spec isn't importable, so this branch is reached only when the
-    user (a) explicitly forces the provider via a stale stored config
-    or (b) the install state changes between status probe and chat
-    submit.
+    on hosts that don't have the SDK installed. Probes ``openai_codex``
+    first (canonical upstream name), then ``codex_app_server`` (Rust-
+    crate-style alias) for forward compatibility. The frontend calls
+    ``GET /api/codex/status`` first and hides the provider when no
+    name resolves, so this branch is reached only when (a) the user
+    explicitly forces the provider via a stale stored config or (b)
+    the install state changes between status probe and chat submit.
     """
-    if importlib.util.find_spec("codex_app_server") is None:
-        raise CodexUnavailableError(
-            "codex_app_server is not installed on this host. "
-            "Install the Codex Python SDK or use a different provider."
-        )
-    return importlib.import_module("codex_app_server")
+    for name in _SDK_MODULE_NAMES:
+        if importlib.util.find_spec(name) is not None:
+            return importlib.import_module(name)
+    raise CodexUnavailableError(
+        "Codex Python SDK is not installed on this host. "
+        "Install `openai-codex` (or the legacy `codex_app_server`) "
+        "or use a different provider."
+    )
+
+
+def _stringify_content(content: Any) -> str:
+    """Flatten an OpenAI-style content field into one plain-text block.
+
+    Multimodal entries (images, documents) are described inline rather
+    than embedded since the Codex SDK input shape is text-first.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for entry in content:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") == "text":
+                parts.append(str(entry.get("text") or ""))
+            elif entry.get("type") == "image_url":
+                url = (entry.get("image_url") or {}).get("url") or ""
+                parts.append(f"[image: {url[:80]}]" if url else "[image]")
+            elif entry.get("type") == "input_document":
+                name = entry.get("filename") or "document"
+                parts.append(f"[document: {name}]")
+        return "\n".join(p for p in parts if p)
+    return ""
 
 
 def _last_user_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the most recent user-role message as a plain string.
+    """Render the conversation as a single prompt for Codex.
 
-    Codex's ``thread.run`` accepts a string (per the docs note
-    "plain strings are accepted anywhere a turn input is accepted").
-    Studio's chat history is a full OpenAI-style messages array, so
-    we flatten it: walk from the end, find the last ``role=user``
-    message, and stringify any structured content parts into a
-    newline-joined block. Multimodal content (images) is described
-    rather than embedded; Codex SDK input shape is text-first.
-
-    This is intentionally conservative -- we don't try to replay the
-    whole conversation through Codex per turn because the SDK is
-    designed around a stateful ``thread`` object. The thread itself
-    holds context across runs; we only need to feed the latest user
+    Studio's chat history is a full OpenAI-style messages array. Codex
+    opens a fresh ``thread`` per chat-completion request (we have no
+    way to cache the SDK ``thread`` keyed on Studio's session id from
+    here -- the inference route is stateless), so we MUST serialise the
+    full transcript into the prompt or the model loses every prior
     turn.
+
+    Layout:
+        User: <user_1>
+        Assistant: <assistant_1>
+        User: <user_2>
+        ...
+        Assistant:
+
+    The trailing ``Assistant:`` cue tells Codex this is its turn. When
+    there is exactly one user message and no assistant history we drop
+    the cue and emit the plain text -- matches the historical single-
+    shot behaviour.
     """
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
+    # Filter to user / assistant only; system is handled separately by
+    # `_system_prompt` and passed to thread_start when supported.
+    convo: list[tuple[str, str]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
             continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for entry in content:
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("type") == "text":
-                    parts.append(str(entry.get("text") or ""))
-                elif entry.get("type") == "image_url":
-                    url = (entry.get("image_url") or {}).get("url") or ""
-                    parts.append(f"[image: {url[:80]}]" if url else "[image]")
-                elif entry.get("type") == "input_document":
-                    name = entry.get("filename") or "document"
-                    parts.append(f"[document: {name}]")
-            return "\n".join(p for p in parts if p)
-    return ""
+        text = _stringify_content(msg.get("content"))
+        if text:
+            convo.append((role, text))
+
+    if not convo:
+        return ""
+
+    # Trivial case: a single user turn — pass it through unchanged so we
+    # don't perturb single-shot behaviour or test expectations.
+    if len(convo) == 1 and convo[0][0] == "user":
+        return convo[0][1]
+
+    # Multi-turn: render User:/Assistant: blocks then prompt the model.
+    lines: list[str] = []
+    for role, text in convo:
+        label = "User" if role == "user" else "Assistant"
+        lines.append(f"{label}: {text}")
+    # If the last turn is from the user (the common case), append an
+    # empty Assistant cue so Codex picks up from the right side.
+    if convo[-1][0] == "user":
+        lines.append("Assistant:")
+    return "\n\n".join(lines)
 
 
 def _system_prompt(messages: list[dict[str, Any]]) -> str:
@@ -304,7 +353,7 @@ async def _stream_codex_single(
     async_codex_cls = getattr(sdk, "AsyncCodex", None)
     if async_codex_cls is None:
         raise CodexUnavailableError(
-            "codex_app_server is installed but AsyncCodex is missing -- "
+            "Codex SDK is installed but AsyncCodex is missing -- "
             "upgrade the SDK."
         )
 
@@ -520,17 +569,42 @@ async def _stream_codex_parallel(
 
     drain_task = asyncio.create_task(_drain_when_done())
 
-    while True:
-        line = await queue.get()
-        if line is None:
-            break
-        yield line
-
-    # Drain finished; per_tab_texts is now populated by the helper
-    # coroutine above. We already shielded individual errors as
-    # ``codex_tab_error`` events, so nothing should leak here -- but
-    # log defensively in case a worker future itself raised.
-    await drain_task
+    cancelled = False
+    try:
+        while True:
+            line = await queue.get()
+            if line is None:
+                break
+            yield line
+    except (asyncio.CancelledError, GeneratorExit):
+        cancelled = True
+        # Cancel every in-flight worker so the Codex SDK calls release
+        # their quota / sockets instead of running to completion against
+        # a disconnected client. Workers shield themselves in `_worker`'s
+        # own try/finally so we just signal cancellation and bail.
+        for w in workers:
+            if not w.done():
+                w.cancel()
+        drain_task.cancel()
+        # Best-effort gather so cancellation propagates and we don't
+        # leave coroutines hanging on the event loop.
+        try:
+            await asyncio.gather(*workers, drain_task, return_exceptions = True)
+        except Exception:
+            pass
+        raise
+    finally:
+        # If we exited normally, drain_task is already done (it put None
+        # on the queue right after gather). On the cancellation path we
+        # already gathered above, so this await is a fast no-op.
+        if not cancelled:
+            try:
+                await drain_task
+            except Exception as exc:
+                logger.warning(
+                    "codex_provider.parallel_drain_failed",
+                    error = str(exc),
+                )
 
     synthesis_text = await _run_codex_synthesis(
         model = model,
@@ -610,45 +684,77 @@ async def _run_codex_synthesis(
 
 
 async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
-    """Run ``codex auth login --device-auth`` and yield progress events.
+    """Run ``codex login --device-auth`` and yield progress events.
 
     Yields dicts (NOT SSE lines) that the route layer wraps in SSE.
     First event is always ``{type: "device_url", url: "..."}`` once we
-    detect a verification URL in the CLI output. Subsequent events
-    forward CLI stdout/stderr line-by-line as ``{type: "log", line: ...}``
-    so the UI can show progress. A final ``{type: "done", ok: bool}``
+    detect a verification URL in the CLI output. The one-time code is
+    emitted as ``{type: "device_code", code: "ABCD-EFGH"}`` so the UI
+    can show it next to the URL (upstream CLI prints both on separate
+    lines). Subsequent CLI stdout/stderr lines forward as
+    ``{type: "log", line: ...}``. A final ``{type: "done", ok: bool}``
     signals completion.
 
-    The URL extraction matches the CLI's actual output shape (the CLI
-    prints something like ``Open https://auth.openai.com/device/...``
-    on the device-auth path). We scan every line for the first
-    https:// URL containing ``device``; that has historically been
-    stable across CLI versions.
+    Subprocess lifecycle: started in its own process group via
+    ``start_new_session=True`` (Unix) so cancellation can SIGTERM the
+    whole group and reach any child processes the codex CLI spawns.
+    On Windows a fallback uses ``CREATE_NEW_PROCESS_GROUP``. When the
+    SSE consumer disconnects, the generator's cleanup terminates the
+    process group within a 5s budget then SIGKILL's as a last resort,
+    so the CLI never lingers consuming a device-auth session.
+
+    URL handling: upstream ``codex login --device-auth`` prints the URL
+    wrapped in ANSI escape sequences (``\x1b[34m...\x1b[0m``). We strip
+    ANSI before regex matching so the URL emitted to the frontend is
+    clean and clickable.
     """
+    import os
     import re
+    import signal
 
     cli_path = "codex"
-    args = ["auth", "login", "--device-auth"]
+    args = ["login", "--device-auth"]
+
+    # Detach the subprocess into a new process group on Unix so we can
+    # SIGTERM the whole group on cancel without sending it to ourselves.
+    # On Windows, ``creationflags=CREATE_NEW_PROCESS_GROUP`` (0x200) gives
+    # an equivalent isolation for ``proc.send_signal(signal.CTRL_BREAK_EVENT)``.
+    spawn_kwargs: dict[str, Any] = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.STDOUT,
+    }
+    if os.name == "posix":
+        spawn_kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        spawn_kwargs["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            cli_path,
-            *args,
-            stdout = asyncio.subprocess.PIPE,
-            stderr = asyncio.subprocess.STDOUT,
-        )
+        proc = await asyncio.create_subprocess_exec(cli_path, *args, **spawn_kwargs)
     except FileNotFoundError:
         yield {"type": "error", "message": "codex CLI not found on PATH"}
         yield {"type": "done", "ok": False}
         return
     except Exception as exc:
-        yield {"type": "error", "message": str(exc)}
+        logger.warning("codex_provider.login_spawn_failed", error = str(exc))
+        yield {"type": "error", "message": "Failed to start codex CLI"}
         yield {"type": "done", "ok": False}
         return
 
-    url_re = re.compile(r"https?://\S*device\S*", re.IGNORECASE)
+    # Strip ANSI control sequences (the upstream login command wraps the
+    # URL and code in `\x1b[34m...\x1b[0m`) before pattern matching.
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+    # Anchor on the upstream URL shape: ``.../codex/device`` (optionally
+    # with a query string). The pattern accepts any host because some
+    # builds redirect via a staging host.
+    url_re = re.compile(r"https?://[^\s\x1b]+?/codex/device(?:\?[^\s\x1b]*)?", re.IGNORECASE)
+    # One-time-code format from upstream device_code_auth.rs: 4 chars,
+    # dash, 4 chars. Pattern is tolerant of any uppercase alphanum.
+    code_re = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
+
     url_emitted = False
+    code_emitted = False
     rc: int = -1
+    cancelled = False
 
     try:
         assert proc.stdout is not None
@@ -656,16 +762,57 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
             line_b = await proc.stdout.readline()
             if not line_b:
                 break
-            line = line_b.decode("utf-8", errors = "replace").rstrip()
+            raw = line_b.decode("utf-8", errors = "replace").rstrip()
+            line = ansi_re.sub("", raw)
             if not url_emitted:
                 match = url_re.search(line)
                 if match:
                     yield {"type": "device_url", "url": match.group(0)}
                     url_emitted = True
+            if not code_emitted:
+                cm = code_re.search(line)
+                if cm:
+                    yield {"type": "device_code", "code": cm.group(1)}
+                    code_emitted = True
             yield {"type": "log", "line": line}
+    except (asyncio.CancelledError, GeneratorExit):
+        cancelled = True
+        raise
     finally:
+        # Tear the subprocess down even on cancellation. Unix: kill the
+        # whole process group; Windows: ``CTRL_BREAK_EVENT`` followed by
+        # ``terminate()``. Bounded wait so cleanup never deadlocks the
+        # SSE close path.
+        if proc.returncode is None:
+            try:
+                if os.name == "posix":
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    try:
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+                    except Exception:
+                        proc.terminate()
+            except Exception as exc:
+                logger.warning(
+                    "codex_provider.login_terminate_failed",
+                    error = str(exc),
+                )
+            try:
+                await asyncio.wait_for(proc.wait(), timeout = 5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                try:
+                    proc.kill()
+                    await asyncio.wait_for(proc.wait(), timeout = 2.0)
+                except Exception:
+                    pass
         try:
-            rc = await proc.wait()
+            rc = proc.returncode if proc.returncode is not None else -1
         except Exception:
             rc = -1
+    if cancelled:
+        return
     yield {"type": "done", "ok": rc == 0, "return_code": rc}

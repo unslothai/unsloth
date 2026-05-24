@@ -273,15 +273,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "codex": {
         "display_name": "OpenAI Codex (local CLI)",
         # No remote base_url: Codex dispatches through the local CLI
-        # via the codex_app_server SDK. Routing skips the standard
-        # HTTP client entirely in _proxy_to_external_provider and
-        # hands the request to core.inference.codex_provider instead.
+        # via the openai_codex Python SDK (legacy alias: codex_app_server).
+        # Routing skips the standard HTTP client entirely in
+        # _proxy_to_external_provider and hands the request to
+        # core.inference.codex_provider instead.
         "base_url": "",
+        # Mirrored from upstream ``codex-rs/models-manager/models.json``.
+        # We deliberately drop ``o3`` (not in the upstream catalog) and
+        # add ``gpt-5.3-codex`` + ``gpt-5.2``. Once the SDK exposes a
+        # runtime ``Codex.models()`` call the dynamic catalog will
+        # replace this hardcoded default.
         "default_models": [
+            "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
-            "gpt-5.5",
-            "o3",
+            "gpt-5.3-codex",
+            "gpt-5.2",
         ],
         "supports_streaming": True,
         "supports_vision": False,
@@ -300,9 +307,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hidden": True,
         "notes": (
             "Dispatches chat turns through the local Codex CLI via "
-            "the codex_app_server Python SDK. Surfaced only when the "
-            "CLI and SDK are both installed; sign in with `codex auth "
-            "login`."
+            "the openai-codex Python SDK (legacy alias: codex_app_server). "
+            "Surfaced only when the CLI and SDK are both installed; "
+            "sign in with `codex login`."
         ),
     },
     "openrouter": {

@@ -14,11 +14,11 @@ Two endpoints live here:
   regular API-key field.
 
 * ``POST /api/codex/login`` -- the device-auth helper. Spawns the
-  ``codex auth login --device-auth`` CLI command, captures the
-  verification URL from its output, and streams the rest of the auth
-  exchange back as SSE so the UI can show progress. The URL appears
-  in the first SSE event so the frontend can ``window.open`` it before
-  the user wanders off.
+  ``codex login --device-auth`` CLI command, captures the verification
+  URL (and one-time code) from its output, and streams the rest of the
+  auth exchange back as SSE so the UI can show progress. The URL
+  appears in the first SSE event so the frontend can ``window.open``
+  it before the user wanders off.
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ async def get_codex_status(
     the "Sign in to Codex" button on ``logged_in``. Both are
     best-effort and cheap to recompute; the route does not cache the
     probe because the user can install the CLI / SDK or run
-    ``codex auth login`` between page loads and the picker should pick
-    that up on the next refresh.
+    ``codex login`` between page loads and the picker should pick that
+    up on the next refresh.
     """
     return await probe_codex_availability()
 
@@ -59,11 +59,12 @@ async def get_codex_status(
 async def codex_device_login(
     current_subject: str = Depends(get_current_subject),
 ) -> StreamingResponse:
-    """Stream the ``codex auth login --device-auth`` exchange.
+    """Stream the ``codex login --device-auth`` exchange.
 
     Returns an SSE stream of events:
 
       ``data: {"type": "device_url", "url": "https://..."}``
+      ``data: {"type": "device_code", "code": "ABCD-EFGH"}``
       ``data: {"type": "log",  "line": "..."}`` (zero or more)
       ``data: {"type": "done", "ok": true}``
 
@@ -75,8 +76,24 @@ async def codex_device_login(
     """
 
     async def _to_sse() -> AsyncGenerator[str, None]:
-        async for event in stream_codex_device_login():
-            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            async for event in stream_codex_device_login():
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            # CodeQL: never echo str(exc) verbatim. Log full reason
+            # server-side and surface a generic error to the client so
+            # local paths / env vars from the CLI traceback don't leak.
+            logger.error(
+                "codex_device_login.stream_error",
+                exc_type = type(exc).__name__,
+                error = str(exc),
+            )
+            yield "data: " + json.dumps({
+                "type": "error",
+                "message": "Codex login failed",
+                "exception_type": type(exc).__name__,
+            }) + "\n\n"
+            yield "data: " + json.dumps({"type": "done", "ok": False}) + "\n\n"
         # Frontend treats the trailing [DONE] the same way it does for
         # chat streams, so we emit it for parity.
         yield "data: [DONE]\n\n"

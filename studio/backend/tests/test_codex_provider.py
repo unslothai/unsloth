@@ -441,9 +441,11 @@ class TestParallelCallsValidator:
                 parallel_calls = 21,
             )
 
-    def test_request_default_is_none(self):
-        """Default = None so the field has no effect on every existing
-        provider that doesn't read it -- preserves backwards compat.
+    def test_request_default_is_one(self):
+        """Default = 1 so the field matches the single-call code path
+        and the schema documentation. Non-codex providers ignore the
+        field regardless of its value, so backwards compat is
+        preserved.
         """
         from models.inference import ChatCompletionRequest
 
@@ -451,7 +453,7 @@ class TestParallelCallsValidator:
             model = "gpt-5.4",
             messages = [{"role": "user", "content": "hi"}],
         )
-        assert req.parallel_calls is None
+        assert req.parallel_calls == 1
 
 
 # ── Codex unavailable surfacing ────────────────────────────────────
@@ -460,18 +462,23 @@ class TestParallelCallsValidator:
 class TestCodexUnavailable:
     def test_missing_sdk_raises_typed_error(self, monkeypatch):
         # Force find_spec to return None so the lazy import fails.
+        # The provider probes both the canonical upstream name
+        # ``openai_codex`` and the legacy alias ``codex_app_server``,
+        # so we have to suppress both for the import to fail.
         import importlib.util as _iu
 
         real = _iu.find_spec
+        _SDK_NAMES = {"openai_codex", "codex_app_server"}
 
         def _shim(name, *args, **kwargs):
-            if name == "codex_app_server":
+            if name in _SDK_NAMES:
                 return None
             return real(name, *args, **kwargs)
 
         monkeypatch.setattr("importlib.util.find_spec", _shim)
-        # Also drop any cached fake from prior tests.
-        monkeypatch.delitem(sys.modules, "codex_app_server", raising = False)
+        # Also drop any cached fakes from prior tests.
+        for _name in _SDK_NAMES:
+            monkeypatch.delitem(sys.modules, _name, raising = False)
 
         from core.inference.codex_provider import (
             CodexUnavailableError,
@@ -487,6 +494,153 @@ class TestCodexUnavailable:
                     )
                 )
             )
+
+
+class TestCodexHardenedRegressions:
+    """Tests covering the post-review hardening pass.
+
+    Each test pins a specific regression: the wrong subcommand
+    (``codex auth login`` → ``codex login``), the wrong SDK package
+    name (``codex_app_server`` → ``openai_codex`` with legacy alias),
+    the ``not logged in`` substring footgun, the ANSI-wrapped device
+    URL, and the fan-out cancellation contract.
+    """
+
+    def test_sdk_probes_openai_codex_first(self, monkeypatch):
+        """The canonical upstream name must be tried before the alias."""
+        import importlib.util as _iu
+
+        real = _iu.find_spec
+        calls: list[str] = []
+
+        def _shim(name, *args, **kwargs):
+            if name in ("openai_codex", "codex_app_server"):
+                calls.append(name)
+                return None
+            return real(name, *args, **kwargs)
+
+        monkeypatch.setattr("importlib.util.find_spec", _shim)
+        from core.inference.codex_availability import _sdk_importable
+        assert _sdk_importable() is False
+        assert calls and calls[0] == "openai_codex", (
+            f"availability probe must check openai_codex first; saw {calls}"
+        )
+
+    def test_login_status_uses_login_subcommand(self):
+        """Upstream is `codex login status`, NOT `codex auth status`."""
+        src = (
+            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
+            "studio/backend/core/inference/codex_availability.py"
+        )
+        text = open(src).read()
+        assert '"auth", "status"' not in text, (
+            "_detect_logged_in must use `codex login status`, not `codex auth status`"
+        )
+        assert '"login", "status"' in text
+
+    def test_device_login_uses_login_subcommand(self):
+        src = (
+            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
+            "studio/backend/core/inference/codex_provider.py"
+        )
+        text = open(src).read()
+        assert '"auth", "login", "--device-auth"' not in text, (
+            "stream_codex_device_login must use `codex login --device-auth`"
+        )
+        assert '"login", "--device-auth"' in text
+
+    def test_not_logged_in_not_misparsed_as_logged_in(self):
+        """The substring "logged in" inside "not logged in" must not
+        flip the detection to True."""
+        import asyncio
+
+        from core.inference import codex_availability as av
+
+        async def _fake_run_cli(args, **kw):
+            return (0, "Not logged in. Run `codex login` to authenticate.", "")
+
+        orig = av._run_cli
+        av._run_cli = _fake_run_cli  # type: ignore[assignment]
+        try:
+            result = asyncio.run(av._detect_logged_in())
+            assert result is False, "'Not logged in' was misparsed as logged_in=True"
+        finally:
+            av._run_cli = orig  # type: ignore[assignment]
+
+    def test_logged_in_is_detected(self):
+        import asyncio
+
+        from core.inference import codex_availability as av
+
+        async def _fake_run_cli(args, **kw):
+            return (0, "Logged in using ChatGPT", "")
+
+        orig = av._run_cli
+        av._run_cli = _fake_run_cli  # type: ignore[assignment]
+        try:
+            result = asyncio.run(av._detect_logged_in())
+            assert result is True
+        finally:
+            av._run_cli = orig  # type: ignore[assignment]
+
+    def test_multi_turn_prompt_includes_prior_turns(self):
+        """The Codex prompt MUST contain prior assistant turns."""
+        from core.inference.codex_provider import _last_user_prompt
+
+        msgs = [
+            {"role": "user", "content": "what is the capital of france?"},
+            {"role": "assistant", "content": "Paris."},
+            {"role": "user", "content": "and germany?"},
+        ]
+        prompt = _last_user_prompt(msgs)
+        assert "and germany?" in prompt
+        assert "Paris" in prompt, (
+            f"PRIOR ASSISTANT TURN DROPPED — multi-turn broken. Prompt:\n{prompt}"
+        )
+        assert "capital of france" in prompt.lower()
+
+    def test_single_turn_prompt_unchanged(self):
+        """Single-turn case must not get the User:/Assistant: framing."""
+        from core.inference.codex_provider import _last_user_prompt
+
+        prompt = _last_user_prompt([{"role": "user", "content": "hi"}])
+        assert prompt == "hi"
+
+    def test_default_models_no_o3(self):
+        """The Codex registry must not advertise `o3` (not in upstream)."""
+        from core.inference.providers import PROVIDER_REGISTRY
+
+        codex = PROVIDER_REGISTRY["codex"]
+        assert "o3" not in codex["default_models"], (
+            "o3 is not a Codex model; remove from default_models"
+        )
+        assert "gpt-5.5" in codex["default_models"]
+
+    def test_inference_route_no_raw_exc_leak(self):
+        """SSE error frame must NOT echo str(exc) verbatim (CodeQL)."""
+        import re
+
+        src = (
+            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
+            "studio/backend/routes/inference.py"
+        )
+        text = open(src).read()
+        bad = re.findall(r'f["\']Codex error:\s*\{exc\}["\']', text)
+        assert not bad, f"raw exception in SSE: {bad}"
+
+    def test_codex_route_no_raw_exc_leak(self):
+        """codex.py SSE stream wrapping must also not leak str(exc)."""
+        import re
+
+        src = (
+            "/mnt/disks/unslothai/ubuntu/workspace_11/unsloth_pr5724/"
+            "studio/backend/routes/codex.py"
+        )
+        text = open(src).read()
+        for line in text.splitlines():
+            ls = line.strip()
+            if ls.startswith("yield ") and re.search(r"\{exc\}|\{e\}", ls):
+                assert False, f"raw exception leaked: {ls}"
 
 
 async def _consume_first(gen):
