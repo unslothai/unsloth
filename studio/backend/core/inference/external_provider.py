@@ -1367,6 +1367,14 @@ class ExternalProviderClient:
                                     "media_type": media_type,
                                     "data": b64data,
                                 },
+                                # Opt the document block into Anthropic's
+                                # natural-citation pipeline. Without this,
+                                # the model never emits citations_delta
+                                # events and the inline [N] + Sources
+                                # panel plumbing in the stream handler
+                                # is a no-op for real user uploads. See
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title
@@ -1378,6 +1386,7 @@ class ExternalProviderClient:
                                     "type": "url",
                                     "url": url,
                                 },
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title

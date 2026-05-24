@@ -117,6 +117,10 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
     types = [p.get("type") for p in parts]
     assert "document" in types, parts
     doc = _strip_cache(next(p for p in parts if p.get("type") == "document"))
+    # citations: {enabled: true} opts the document into Anthropic's
+    # natural-citation pipeline so the streaming proxy can render
+    # inline [N] markers + a Sources panel entry. Without it the
+    # citations_delta handler in external_provider.py is a no-op.
     assert doc == {
         "type": "document",
         "source": {
@@ -124,6 +128,7 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
             "media_type": "application/pdf",
             "data": _TINY_PDF_B64,
         },
+        "citations": {"enabled": True},
         "title": "paper.pdf",
     }
 
@@ -151,6 +156,7 @@ def test_anthropic_url_pdf_becomes_document_block(monkeypatch):
     assert doc == {
         "type": "document",
         "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+        "citations": {"enabled": True},
     }
 
 
@@ -255,6 +261,7 @@ def test_anthropic_empty_data_uri_falls_back_to_file_url(monkeypatch):
     assert doc == {
         "type": "document",
         "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+        "citations": {"enabled": True},
         "title": "doc.pdf",
     }
 
@@ -283,6 +290,7 @@ def test_anthropic_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
     assert doc == {
         "type": "document",
         "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+        "citations": {"enabled": True},
     }
 
 
