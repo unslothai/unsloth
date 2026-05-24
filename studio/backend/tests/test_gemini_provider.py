@@ -418,8 +418,7 @@ def test_finish_reason_swaps_to_tool_calls_when_function_call_emitted(monkeypatc
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
     finish_chunks = [
-        c for c in chunks
-        if c.get("choices", [{}])[0].get("finish_reason") is not None
+        c for c in chunks if c.get("choices", [{}])[0].get("finish_reason") is not None
     ]
     assert finish_chunks, chunks
     assert finish_chunks[-1]["choices"][0]["finish_reason"] == "tool_calls", chunks
@@ -440,9 +439,7 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
                         "id": "call_0",
                         "type": "function",
                         "function": {"name": "lookup", "arguments": "{}"},
-                        "extra_content": {
-                            "google": {"thought_signature": "SIG-ABC"}
-                        },
+                        "extra_content": {"google": {"thought_signature": "SIG-ABC"}},
                     }
                 ],
             },
@@ -458,7 +455,8 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
     fc_turn = next((c for c in contents if c["role"] == "model"), None)
     assert fc_turn is not None, contents
     fc_part = next(
-        (p for p in fc_turn["parts"] if "functionCall" in p), None,
+        (p for p in fc_turn["parts"] if "functionCall" in p),
+        None,
     )
     assert fc_part is not None, fc_turn
     assert fc_part.get("thoughtSignature") == "SIG-ABC", fc_part
@@ -499,9 +497,7 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
         )
     ]
     assert deltas, chunks
-    sig = deltas[0].get("extra_content", {}).get("google", {}).get(
-        "thought_signature"
-    )
+    sig = deltas[0].get("extra_content", {}).get("google", {}).get("thought_signature")
     assert sig == "SIG-FROM-GEMINI", deltas
 
 

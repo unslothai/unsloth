@@ -301,10 +301,7 @@ class ExternalProviderClient:
         # (`/v1beta/openai/models/{model}:streamGenerateContent` 404s).
         # Strip the `/openai` suffix transparently so saved providers keep
         # working without a manual re-config.
-        if (
-            self.provider_type == "gemini"
-            and self.base_url.endswith("/openai")
-        ):
+        if self.provider_type == "gemini" and self.base_url.endswith("/openai"):
             self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
@@ -2753,10 +2750,9 @@ class ExternalProviderClient:
                     if isinstance(extra, dict):
                         google_extra = extra.get("google") or {}
                         if isinstance(google_extra, dict):
-                            sig = (
-                                google_extra.get("thought_signature")
-                                or google_extra.get("thoughtSignature")
-                            )
+                            sig = google_extra.get(
+                                "thought_signature"
+                            ) or google_extra.get("thoughtSignature")
                             if isinstance(sig, str) and sig:
                                 fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
@@ -2903,17 +2899,9 @@ class ExternalProviderClient:
         # so stale UI state or direct API callers do not 400 the turn.
         text_tools_allowed = not is_image_picker_model
         tools_array: list[dict[str, Any]] = []
-        if (
-            enabled_tools
-            and "web_search" in enabled_tools
-            and text_tools_allowed
-        ):
+        if enabled_tools and "web_search" in enabled_tools and text_tools_allowed:
             tools_array.append({"googleSearch": {}})
-        if (
-            enabled_tools
-            and "code_execution" in enabled_tools
-            and text_tools_allowed
-        ):
+        if enabled_tools and "code_execution" in enabled_tools and text_tools_allowed:
             tools_array.append({"codeExecution": {}})
         if tools_array:
             body["tools"] = tools_array
@@ -3145,9 +3133,7 @@ class ExternalProviderClient:
                                             "type": "function",
                                             "function": {
                                                 "name": fc_name,
-                                                "arguments": _json.dumps(
-                                                    fc_args
-                                                ),
+                                                "arguments": _json.dumps(fc_args),
                                             },
                                         }
                                         # Gemini 3 function-calling: the
@@ -3162,10 +3148,7 @@ class ExternalProviderClient:
                                         thought_sig = part.get(
                                             "thoughtSignature"
                                         ) or part.get("thought_signature")
-                                        if (
-                                            isinstance(thought_sig, str)
-                                            and thought_sig
-                                        ):
+                                        if isinstance(thought_sig, str) and thought_sig:
                                             tool_call_delta["extra_content"] = {
                                                 "google": {
                                                     "thought_signature": thought_sig,
@@ -3337,10 +3320,7 @@ class ExternalProviderClient:
                         # "STOP" even when the turn was a pure
                         # functionCall request, so override after the
                         # fact to match the OAI contract.
-                        if (
-                            emitted_any_function_call
-                            and final_finish_reason == "stop"
-                        ):
+                        if emitted_any_function_call and final_finish_reason == "stop":
                             final_finish_reason = "tool_calls"
                         finish_chunk = {
                             "id": completion_id,
@@ -3366,12 +3346,8 @@ class ExternalProviderClient:
                     # equals promptToken + candidatesToken + thoughtsToken
                     # and the cost calculator does not undercount.
                     if isinstance(last_usage, dict):
-                        thought_tokens = (
-                            last_usage.get("thoughtsTokenCount") or 0
-                        )
-                        candidate_tokens = (
-                            last_usage.get("candidatesTokenCount") or 0
-                        )
+                        thought_tokens = last_usage.get("thoughtsTokenCount") or 0
+                        candidate_tokens = last_usage.get("candidatesTokenCount") or 0
                         translated_usage = {
                             "input_tokens": (last_usage.get("promptTokenCount") or 0),
                             "output_tokens": candidate_tokens + thought_tokens,
