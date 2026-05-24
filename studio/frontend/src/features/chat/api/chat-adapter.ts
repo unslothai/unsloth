@@ -1784,11 +1784,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
-              // OpenAI-shape `delta.tool_calls`. Gemini's translator
-              // emits these for user-supplied functionDeclarations (no
-              // `_toolEvent` envelope, no text delta). Surface as
-              // tool-call parts so the UI renders the function-call
-              // card and downstream auto-execution can pick them up.
+              // OpenAI-shape `delta.tool_calls`. The standard contract
+              // emits each tool call across multiple chunks keyed by
+              // `index`: the first carries `id`/`name`, later chunks
+              // carry partial `function.arguments`. Accumulate by
+              // index/id so the assembled call is one tool-call part
+              // (Gemini's translator currently batches whole parts,
+              // but local llama.cpp and any other OAI-compatible
+              // provider stream fragments). The frontend also stows
+              // `extra_content` so Gemini 3 `thoughtSignature` can
+              // round-trip on the next turn.
               const rawDeltaToolCalls = (
                 chunk.choices?.[0]?.delta as
                   | { tool_calls?: unknown }
@@ -1804,25 +1809,101 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     id?: string;
                     index?: number;
                     function?: { name?: string; arguments?: string };
+                    extra_content?: unknown;
                   };
-                  const fnName = call.function?.name ?? "";
-                  const argsText = call.function?.arguments ?? "{}";
-                  const callId =
-                    call.id ||
-                    `tool_call_${call.index ?? toolCallParts.length}`;
-                  let args: ToolCallMessagePart["args"] = {};
-                  try {
-                    args = JSON.parse(argsText) as ToolCallMessagePart["args"];
-                  } catch {
-                    args = { _raw: argsText } as ToolCallMessagePart["args"];
+                  const idx =
+                    typeof call.index === "number" ? call.index : undefined;
+                  const stableId = call.id;
+                  // Match an existing fragment by id first (canonical),
+                  // then by index slot. Fall back to a freshly-minted
+                  // tool_call_<n> id for streams that send neither.
+                  let existing = stableId
+                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                    : undefined;
+                  if (!existing && idx !== undefined) {
+                    existing = toolCallParts.find(
+                      (p) =>
+                        (
+                          p as ToolCallMessagePart & { _delta_index?: number }
+                        )._delta_index === idx,
+                    );
                   }
-                  toolCallParts.push({
-                    type: "tool-call" as const,
-                    toolCallId: callId,
-                    toolName: fnName,
-                    argsText,
-                    args,
-                  });
+                  const argsFragment = call.function?.arguments ?? "";
+                  if (existing) {
+                    const prevName = existing.toolName ?? "";
+                    const nextName = call.function?.name ?? prevName;
+                    const merged =
+                      (existing.argsText ?? "") + argsFragment;
+                    let parsedArgs:
+                      ToolCallMessagePart["args"] = existing.args ?? {};
+                    if (merged) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          merged,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: merged,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const prevExtra = (
+                      existing as ToolCallMessagePart & {
+                        extra_content?: unknown;
+                      }
+                    ).extra_content;
+                    const updated: ToolCallMessagePart & {
+                      _delta_index?: number;
+                      extra_content?: unknown;
+                    } = {
+                      ...(existing as ToolCallMessagePart),
+                      toolName: nextName,
+                      argsText: merged,
+                      args: parsedArgs,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : prevExtra !== undefined
+                        ? { extra_content: prevExtra }
+                        : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    const replaceIdx = toolCallParts.indexOf(existing);
+                    if (replaceIdx >= 0) {
+                      toolCallParts[replaceIdx] = updated;
+                    }
+                  } else {
+                    const callId =
+                      stableId ||
+                      `tool_call_${idx ?? toolCallParts.length}`;
+                    const argsText = argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] = {};
+                    if (argsText) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          argsText,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: argsText,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const fresh: ToolCallMessagePart & {
+                      _delta_index?: number;
+                      extra_content?: unknown;
+                    } = {
+                      type: "tool-call" as const,
+                      toolCallId: callId,
+                      toolName: call.function?.name ?? "",
+                      argsText,
+                      args: parsedArgs,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    toolCallParts.push(fresh);
+                  }
                 }
                 yield {
                   content: [

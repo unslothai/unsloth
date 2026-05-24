@@ -690,13 +690,21 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
+  // Gemini 2.5 Flash-Lite has no native thinking knob; check it BEFORE
+  // the broader `gemini-2.5-flash` prefix so it does not fall into the
+  // Flash branch.
+  if (m.startsWith("gemini-2.5-flash-lite")) {
+    return withEnableThinkingStyle();
+  }
   if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3 Pro: thinkingLevel only accepts "low" and "high" per
-    // https://ai.google.dev/gemini-api/docs/thinking. Cannot fully off.
+    // Gemini 3.x Pro: thinkingLevel supports low/medium/high per
+    // https://ai.google.dev/gemini-api/docs/thinking and
+    // https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro.
+    // Cannot fully disable thinking; "minimal" is rejected on Pro.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
-      reasoningEffortLevels: ["low", "high"] as const,
+      reasoningEffortLevels: ["low", "medium", "high"] as const,
     });
   }
   if (GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
