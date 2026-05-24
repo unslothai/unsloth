@@ -41,9 +41,7 @@ def _normalize_stop_for_provider(
 
     stop_max = int(provider_info.get("stop_max", 16))
     stop_max_bytes_raw = provider_info.get("stop_max_bytes")
-    stop_max_bytes = (
-        int(stop_max_bytes_raw) if stop_max_bytes_raw is not None else None
-    )
+    stop_max_bytes = int(stop_max_bytes_raw) if stop_max_bytes_raw is not None else None
 
     def allowed(s: str) -> bool:
         if not s:
