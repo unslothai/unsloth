@@ -85,9 +85,7 @@ def test_is_same_origin_request_ipv6_port_mismatch_cross_origin():
 def test_is_same_origin_request_ipv6_userinfo_stripped():
     from main import _is_same_origin_request
 
-    req = _build_request(
-        "user:pass@[::1]:8902", origin = "http://[::1]:8902"
-    )
+    req = _build_request("user:pass@[::1]:8902", origin = "http://[::1]:8902")
     assert _is_same_origin_request(req) is True
 
 
@@ -112,9 +110,7 @@ def test_is_same_origin_request_blob_url_origin_is_cross_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request(
-        "127.0.0.1:8902", origin = "blob:http://127.0.0.1:8902/uuid"
-    )
+    req = _build_request("127.0.0.1:8902", origin = "blob:http://127.0.0.1:8902/uuid")
     assert _is_same_origin_request(req) is False
 
 
