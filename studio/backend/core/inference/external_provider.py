@@ -2827,12 +2827,14 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
-        # Responses accepts auto|default|flex|priority per the live
-        # docs. The openai-python SDK type happens to include "scale"
-        # too but the public Responses reference does not, so drop it
-        # here to avoid a 400. Scale Tier is still selectable on Chat
-        # Completions backends. parallel_tool_calls default is true.
-        if service_tier in ("auto", "default", "flex", "priority"):
+        # Responses accepts auto|default|flex|scale|priority per the
+        # openai-python SDK type
+        # (src/openai/types/responses/response_create_params.py).
+        # Scale Tier is enterprise-gated and the live docs sometimes
+        # omit it from the request enum, but the SDK ships it and
+        # Studio's enterprise users need to opt in. parallel_tool_calls
+        # default is true.
+        if service_tier in ("auto", "default", "flex", "scale", "priority"):
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = bool(parallel_tool_calls)

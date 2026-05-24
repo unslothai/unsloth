@@ -461,21 +461,24 @@ def test_openai_responses_forwards_service_tier(monkeypatch):
     assert body.get("service_tier") == "priority", body
 
 
-@pytest.mark.parametrize("value", ["auto", "default", "flex", "priority"])
+@pytest.mark.parametrize(
+    "value", ["auto", "default", "flex", "scale", "priority"]
+)
 def test_openai_responses_forwards_documented_service_tiers(monkeypatch, value):
-    """The live OpenAI Responses API reference lists `service_tier` as
-    `auto|default|flex|priority` for /v1/responses. Pin that every value
-    in the documented enum forwards untouched."""
+    """openai-python ships service_tier as
+    `Literal["auto","default","flex","scale","priority"]` for
+    /v1/responses (response_create_params.py). Pin that every value
+    in the SDK enum forwards untouched."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
     body = _drive_openai_responses(captured, service_tier = value)
     assert body.get("service_tier") == value, body
 
 
-@pytest.mark.parametrize("bogus", ["scale", "standard_only", "bogus", ""])
+@pytest.mark.parametrize("bogus", ["standard_only", "bogus", ""])
 def test_openai_responses_drops_undocumented_service_tier(monkeypatch, bogus):
-    """`scale` and `standard_only` are not in the documented Responses
-    request enum; drop them client-side so a stale frontend never
-    sends an upstream-rejected value."""
+    """Anything outside the SDK enum (Anthropic-only `standard_only`,
+    typos, empty string) is dropped client-side so a stale frontend
+    never sends an upstream-rejected value."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
     body = _drive_openai_responses(captured, service_tier = bogus)
     assert "service_tier" not in body, body
