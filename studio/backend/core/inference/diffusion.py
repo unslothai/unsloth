@@ -535,30 +535,40 @@ def _release_chat_backend_for_diffusion() -> None:
     """Unload any running chat backend before a diffusion load.
 
     Diffusion pipelines on FLUX-class models can eat 12-24 GB of VRAM,
-    and llama-server typically holds onto its loaded GGUF until told to
-    drop it. Asking the chat backend to release its weights first means
-    a typical 24 GB consumer GPU can host one chat model OR one
-    diffusion model without manual unload steps.
+    and the chat backends (llama-server for GGUF, the safetensors
+    Inference orchestrator for HF / Unsloth) typically hold onto their
+    loaded weights until told to drop them. Asking both to release
+    their weights first means a typical 24 GB consumer GPU can host
+    one chat model OR one diffusion model without manual unload steps.
 
-    Best effort: if the chat backend module is not importable (CI,
-    isolated tests, custom builds) we silently continue. Failures
-    inside the unload itself are logged but not propagated; the
-    diffusion load can still try and surface its own OOM.
+    Best effort: if a chat backend module is not importable (CI,
+    isolated tests, custom builds) or fails on the unload, we log and
+    continue; the diffusion load can still try and surface its own OOM.
     """
+    # 1. GGUF chat backend (llama-server subprocess).
     try:
         from routes.inference import get_llama_cpp_backend  # type: ignore
-    except Exception:
-        return
-    try:
+
         backend = get_llama_cpp_backend()
-    except Exception:
-        return
-    try:
         if getattr(backend, "is_loaded", False):
             logger.info("Unloading llama-server before diffusion load")
             backend.unload_model()
     except Exception as exc:
-        logger.warning("Could not unload chat backend before diffusion: %s", exc)
+        logger.debug("llama-server unload skipped: %s", exc)
+
+    # 2. Safetensors / HF chat backend (the Inference orchestrator that
+    #    serves FastVisionModel / FastLanguageModel weights). When this
+    #    backend has a model resident on the same GPU, a diffusion load
+    #    will OOM the same way.
+    try:
+        from core.inference.inference import get_inference_backend  # type: ignore
+
+        backend = get_inference_backend()
+        if getattr(backend, "active_model_name", None):
+            logger.info("Unloading safetensors chat backend before diffusion load")
+            backend.unload_model()
+    except Exception as exc:
+        logger.debug("safetensors unload skipped: %s", exc)
 
 
 def _release(obj: Any) -> None:

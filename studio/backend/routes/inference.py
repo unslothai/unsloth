@@ -747,6 +747,19 @@ async def load_model(
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
+            # Symmetric with /images/load: drop any active diffusion
+            # pipeline so the GGUF chat load does not race the FLUX VAE
+            # for VRAM. Best effort; silently continue on failure.
+            try:
+                from core.inference.diffusion import get_diffusion_backend
+
+                diff_backend = get_diffusion_backend()
+                if diff_backend.is_loaded:
+                    logger.info("Unloading diffusion pipeline before GGUF load")
+                    diff_backend.unload_model()
+            except Exception as e:
+                logger.debug("diffusion unload skipped (GGUF path): %s", e)
+
             # Inherit llama_extra_args from the previous load when the
             # request omits the field (the chat-settings Apply path
             # does not round-trip them; explicit [] still clears).
@@ -922,6 +935,20 @@ async def load_model(
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
+
+        # Unload any active diffusion pipeline so the new chat model is
+        # not racing the FLUX VAE for VRAM on a 16-24 GB card.
+        try:
+            from core.inference.diffusion import get_diffusion_backend
+
+            diff_backend = get_diffusion_backend()
+            if diff_backend.is_loaded:
+                logger.info(
+                    "Unloading diffusion pipeline before loading Unsloth chat model"
+                )
+                diff_backend.unload_model()
+        except Exception as e:
+            logger.debug("diffusion unload skipped: %s", e)
 
         # Shut down any export subprocess to free VRAM
         try:
