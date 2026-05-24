@@ -988,11 +988,7 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
 def test_reprompts_on_i_will_gather_identify_numbered_plan():
     """First-person + gather/identify verbs in list items is a tool
     stall when the intent appears directly before the list."""
-    content = (
-        "I'll:\n"
-        "1. Gather the relevant files.\n"
-        "2. Identify the issue."
-    )
+    content = "I'll:\n" "1. Gather the relevant files.\n" "2. Identify the issue."
     assert not _has_answer_artifact(content), content
     assert _would_reprompt(content), content
 
