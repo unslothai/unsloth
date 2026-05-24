@@ -342,9 +342,8 @@ class ExternalProviderClient:
             _p = urlparse(self.base_url)
             _host = (_p.hostname or "").lower()
             _path = _p.path.rstrip("/").lower()
-            if (
-                _host != "generativelanguage.googleapis.com"
-                and _path.endswith("/openai")
+            if _host != "generativelanguage.googleapis.com" and _path.endswith(
+                "/openai"
             ):
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
@@ -377,9 +376,8 @@ class ExternalProviderClient:
             _p = urlparse(self.base_url)
             _path = _p.path.rstrip("/").lower()
             _host = (_p.hostname or "").lower()
-            if (
-                _host != "generativelanguage.googleapis.com"
-                and _path.endswith("/openai")
+            if _host != "generativelanguage.googleapis.com" and _path.endswith(
+                "/openai"
             ):
                 return True
         return info.get("openai_compatible", True)
