@@ -3007,6 +3007,13 @@ class ExternalProviderClient:
         is_image_model = is_image_picker_model and image_tool_requested
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
+        elif is_image_picker_model:
+            # Google's image-tier models default to text+image output
+            # when responseModalities is omitted, so an image-capable
+            # model with the Images pill OFF would still incur image
+            # generation cost on a regular text question. Force
+            # text-only so the UI state and outbound request agree.
+            gen_config["responseModalities"] = ["TEXT"]
 
         # Thinking control. The Gemini 3 family migrated to a string
         # `thinkingLevel` (LOW/MEDIUM/HIGH/MINIMAL) and rejects sending
@@ -4432,6 +4439,11 @@ class ExternalProviderClient:
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
+                    # Track caller-supplied function tool calls so the
+                    # final chunk reports finish_reason="tool_calls"
+                    # instead of "stop" when the model invoked a user
+                    # function on the Responses path.
+                    saw_function_call = False
                     # Latched from response.completed / response.incomplete so
                     # the final log can surface input_tokens_details.cached_tokens —
                     # the field that proves prompt_cache_retention="24h" is
@@ -4861,6 +4873,60 @@ class ExternalProviderClient:
                                             "background": item.get("background"),
                                         }
                                     )
+                                elif item.get("type") == "function_call":
+                                    # Caller-supplied function tool result.
+                                    # Responses API returns
+                                    #   {type:"function_call", id, call_id,
+                                    #    name, arguments(JSON string)}
+                                    # See
+                                    # https://platform.openai.com/docs/guides/function-calling?api-mode=responses
+                                    # Translate to the Chat Completions
+                                    # delta.tool_calls shape so the
+                                    # frontend's existing tool-call
+                                    # accumulator can execute the function.
+                                    fn_call_id = (
+                                        item.get("call_id")
+                                        or item.get("id")
+                                        or f"call_{time.time_ns()}"
+                                    )
+                                    fn_name = item.get("name") or ""
+                                    fn_args = item.get("arguments") or ""
+                                    if not isinstance(fn_args, str):
+                                        try:
+                                            fn_args = _json.dumps(fn_args)
+                                        except Exception:
+                                            fn_args = ""
+                                    yield (
+                                        "data: "
+                                        + _json.dumps(
+                                            {
+                                                "id": completion_id,
+                                                "object": "chat.completion.chunk",
+                                                "choices": [
+                                                    {
+                                                        "index": 0,
+                                                        "delta": {
+                                                            "tool_calls": [
+                                                                {
+                                                                    "index": 0,
+                                                                    "id": fn_call_id,
+                                                                    "type": "function",
+                                                                    "function": {
+                                                                        "name": fn_name,
+                                                                        "arguments": (
+                                                                            fn_args
+                                                                        ),
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        "finish_reason": None,
+                                                    }
+                                                ],
+                                            }
+                                        )
+                                    )
+                                    saw_function_call = True
 
                             elif (
                                 isinstance(event_type, str)
@@ -4950,7 +5016,11 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {},
-                                            "finish_reason": "stop",
+                                            "finish_reason": (
+                                                "tool_calls"
+                                                if saw_function_call
+                                                else "stop"
+                                            ),
                                         }
                                     ],
                                 }

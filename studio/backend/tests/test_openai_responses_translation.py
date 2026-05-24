@@ -215,6 +215,93 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
     assert payloads[-1] == "[DONE]"
 
 
+def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypatch):
+    """Round 12: caller-supplied function tools forwarded into /v1/responses
+    must have their `function_call` output items translated back into Chat
+    Completions delta.tool_calls, and the terminal chunk must emit
+    finish_reason="tool_calls" so the frontend's accumulator runs the
+    function instead of seeing finish_reason="stop"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events = [
+            {"type": "response.created"},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_abc",
+                    "call_id": "call_xyz",
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"SF\"}",
+                },
+            },
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "weather?"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
+    ]
+    tool_call_deltas = [
+        p
+        for p in payloads
+        if isinstance(p, dict)
+        and p.get("choices")
+        and p["choices"][0].get("delta", {}).get("tool_calls")
+    ]
+    assert tool_call_deltas, payloads
+    tc = tool_call_deltas[0]["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["id"] == "call_xyz"
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["function"]["arguments"] == "{\"city\":\"SF\"}"
+    # Final chunk reports tool_calls instead of stop.
+    terminal = next(
+        p
+        for p in payloads
+        if isinstance(p, dict)
+        and p.get("choices")
+        and p["choices"][0].get("finish_reason") in ("stop", "tool_calls")
+    )
+    assert terminal["choices"][0]["finish_reason"] == "tool_calls", payloads
+
+
 def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         events = [

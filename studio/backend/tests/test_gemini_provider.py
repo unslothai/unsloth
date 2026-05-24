@@ -425,16 +425,17 @@ def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
 def test_image_capable_model_without_image_pill_stays_text_only(monkeypatch):
     """When the Images pill is off (enabled_tools has no
     image_generation), an image-capable model id (gemini-2.5-flash-image)
-    must NOT force responseModalities=[TEXT,IMAGE]. The UI state and
-    backend request must agree so users do not get image output and
-    billing they did not opt into."""
+    must force responseModalities=["TEXT"]. Google's image models
+    default to text+image when responseModalities is omitted, so
+    omitting it would silently bill image output the UI says is
+    disabled."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
         enabled_tools = [],
     )
     gc = captured["body"]["generationConfig"]
-    assert gc.get("responseModalities") is None, gc
+    assert gc.get("responseModalities") == ["TEXT"], gc
 
 
 def test_image_models_skip_thinking_config(monkeypatch):
@@ -2266,6 +2267,7 @@ def test_chat_message_extra_content_round_trips_through_validation():
         req.messages,
         supports_vision = True,
         provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
     )
     assistant_out = built[1]
     assert assistant_out["extra_content"] == {
@@ -2279,6 +2281,16 @@ def test_chat_message_extra_content_round_trips_through_validation():
         provider_type = "openai",
     )
     assert "extra_content" not in built_openai[1], built_openai[1]
+    # Custom non-Google Gemini bases (LiteLLM / OAI-compat gateways)
+    # also must not receive Gemini-only extra_content because the
+    # backend dispatches them through /chat/completions.
+    built_custom = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://litellm.example/v1",
+    )
+    assert "extra_content" not in built_custom[1], built_custom[1]
 
 
 def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):

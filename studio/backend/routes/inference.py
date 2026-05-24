@@ -1697,6 +1697,7 @@ def _build_external_messages(
     messages: list,
     supports_vision: bool,
     provider_type: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -1718,11 +1719,21 @@ def _build_external_messages(
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
     # `extra_content` is a Gemini-specific carrier for the assistant's
-    # text-part `thoughtSignature` round-trip. Forwarding it to other
-    # providers leaks an unknown field into /chat/completions bodies
-    # which can be rejected (OpenAI / Mistral / DeepSeek / Kimi /
-    # OpenRouter / custom OpenAI-compatible).
-    emit_extra_content = provider_type == "gemini"
+    # text-part `thoughtSignature` round-trip on the native
+    # streamGenerateContent endpoint. Custom Gemini OpenAI-compatible
+    # gateways (LiteLLM etc.) route through /chat/completions where
+    # the field is unknown and can be rejected -- gate strictly on the
+    # Google-hosted Gemini base.
+    _native_gemini = False
+    if provider_type == "gemini" and base_url:
+        try:
+            from urllib.parse import urlparse as _urlparse
+
+            _host = (_urlparse(base_url).hostname or "").lower()
+            _native_gemini = _host == "generativelanguage.googleapis.com"
+        except Exception:
+            _native_gemini = False
+    emit_extra_content = _native_gemini
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1908,6 +1919,7 @@ async def _proxy_to_external_provider(
         payload.messages,
         _supports_vision,
         provider_type = provider_type,
+        base_url = base_url,
     )
 
     client = ExternalProviderClient(
