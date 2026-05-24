@@ -1850,11 +1850,7 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     # codeExecutionResult parts on the same card.
     assert len(code_ends) == 2, code_ends
     image_end = next(
-        (
-            e
-            for e in code_ends
-            if "__IMAGES__:" in (e.get("result") or "")
-        ),
+        (e for e in code_ends if "__IMAGES__:" in (e.get("result") or "")),
         None,
     )
     assert image_end is not None, code_ends
