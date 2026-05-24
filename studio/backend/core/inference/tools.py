@@ -310,6 +310,7 @@ def _matches_sensitive_dir(path: str) -> bool:
                 return True
     return False
 
+
 # Sensitive root prefix immediately followed by a shell substitution
 # (``$(...)`` or backticks). Catches dynamic-path constructions like
 # ``cat /etc/$(printf shadow)`` or ``cat /proc/1/$(echo environ)`` that
@@ -1791,9 +1792,8 @@ def _check_signal_escape_patterns(code: str):
             # later ``p('sudo whoami')`` must flow through the
             # shell-escape gate. Track it under ``shell_exec_aliases``
             # alongside the existing from-import path.
-            elif (
-                isinstance(node.value, ast.Attribute)
-                and isinstance(node.value.value, ast.Name)
+            elif isinstance(node.value, ast.Attribute) and isinstance(
+                node.value.value, ast.Name
             ):
                 recv = node.value.value.id
                 attr = node.value.attr
@@ -2596,9 +2596,9 @@ def _check_signal_escape_patterns(code: str):
                 # The reader's gate uses this set to recognise the
                 # alias as a file-read.
                 for alias in node.names:
-                    if (
-                        node.module == "io" and alias.name in ("FileIO", "open")
-                    ) or (node.module == "codecs" and alias.name == "open"):
+                    if (node.module == "io" and alias.name in ("FileIO", "open")) or (
+                        node.module == "codecs" and alias.name == "open"
+                    ):
                         self.file_reader_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
@@ -2855,9 +2855,9 @@ def _check_signal_escape_patterns(code: str):
                 ".loadtxt",
                 ".genfromtxt",
             )
-            looks_like_dataframe_reader = isinstance(
-                node.func, ast.Attribute
-            ) and any(fq.endswith(s) for s in _DATAFRAME_READERS)
+            looks_like_dataframe_reader = isinstance(node.func, ast.Attribute) and any(
+                fq.endswith(s) for s in _DATAFRAME_READERS
+            )
             is_open_call = (
                 (
                     isinstance(node.func, ast.Name)
