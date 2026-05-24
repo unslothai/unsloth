@@ -91,18 +91,31 @@ major, minor = torch.cuda.get_device_capability(0)
 name = torch.cuda.get_device_name(0)
 n = torch.cuda.device_count()
 print(f"Unsloth container: {n} GPU(s). Primary: {name}  sm_{major}{minor}  bf16={torch.cuda.is_bf16_supported()}")
-if major < 8:
+
+# Image targets every current x86_64 NVIDIA arch from Turing onward, per
+# https://developer.nvidia.com/cuda/gpus.
+SUPPORTED = (
+    ("sm_75",  "Turing",       "T4, RTX 20-series, Quadro RTX"),
+    ("sm_80",  "Ampere DC",    "A100, A30"),
+    ("sm_86",  "Ampere",       "A40, RTX A6000, RTX 30-series"),
+    ("sm_89",  "Ada",          "L4, L40, L40S, RTX 40-series"),
+    ("sm_90",  "Hopper",       "H100, H200, GH200"),
+    ("sm_100", "Blackwell DC", "B100, B200, GB200"),
+    ("sm_103", "Blackwell DC", "B300, GB300"),
+    ("sm_120", "Blackwell",    "RTX 50-series, RTX PRO 6000 Blackwell"),
+    ("sm_121", "Blackwell",    "GB10 (DGX Spark)"),
+)
+if major < 7 or (major == 7 and minor < 5):
     print()
-    print(f"ERROR: Unsloth requires Ampere or newer (sm_80+). Got {name} sm_{major}{minor}.")
+    print(f"ERROR: Unsloth image requires Turing or newer (sm_75+). Got {name} sm_{major}{minor}.")
     print()
-    print("Supported architectures baked into this image:")
-    print("  sm_80   Ampere       (A100, A40, A30)")
-    print("  sm_86   Ampere       (RTX 30-series, A10)")
-    print("  sm_89   Ada          (RTX 40-series, L40)")
-    print("  sm_90   Hopper       (H100, H200)")
-    print("  sm_100  Blackwell DC (B100, B200)")
-    print("  sm_120  Blackwell    (RTX 50-series, RTX 6000 Pro Blackwell)")
+    print("Supported architectures in this image:")
+    for arch, fam, ex in SUPPORTED:
+        print(f"  {arch:7s} {fam:13s} ({ex})")
     sys.exit(1)
+if major < 8:
+    print(f"NOTE: {name} is Turing (sm_{major}{minor}) -- bfloat16 is not supported.")
+    print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
 PY
 
 exec "$@"

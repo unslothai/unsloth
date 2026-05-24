@@ -6,8 +6,11 @@
 #   * cu128 wheels are fat binaries: SASS for sm_80;86;89;90;100;120.
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
-#     against TORCH_CUDA_ARCH_LIST="10.0;12.0+PTX" -- the host GPU is irrelevant
-#     for compilation; nvcc emits whatever the arch list says.
+#     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX",
+#     covering every current x86_64 NVIDIA compute capability per
+#     https://developer.nvidia.com/cuda/gpus.
+#     The host GPU is irrelevant for compilation; nvcc emits whatever the arch
+#     list says.
 #
 # Build host requirements:
 #   * Docker with buildkit (default since 23.x)
@@ -30,9 +33,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # Cross-compile for: Ampere, Ada, Hopper, B100/B200 (sm_100), RTX 50x / 6000 Pro (sm_120).
-    # +PTX on the highest arch lets future Blackwell SKUs run via JIT-PTX.
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX" \
+    # Cross-compile for every current x86_64 NVIDIA arch per
+    # https://developer.nvidia.com/cuda/gpus:
+    #   sm_75   Turing       T4, RTX 20-series, Quadro RTX
+    #   sm_80   Ampere DC    A100, A30
+    #   sm_86   Ampere       A40, RTX A6000, RTX 30-series
+    #   sm_89   Ada          L4, L40, L40S, RTX 40-series
+    #   sm_90   Hopper       H100, H200, GH200
+    #   sm_100  Blackwell DC B100, B200, GB200
+    #   sm_103  Blackwell DC B300, GB300
+    #   sm_120  Blackwell    RTX 50-series, RTX PRO 6000 Blackwell
+    #   sm_121  Blackwell    GB10 (DGX Spark)
+    # +PTX on the highest lets future arch revisions run via JIT-PTX.
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX" \
     MAX_JOBS=4 \
     CUDA_HOME=/usr/local/cuda \
     # Build-host-independence guards. The build must NEVER introspect a GPU,
