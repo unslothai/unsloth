@@ -31,9 +31,15 @@ def _load(model_name: str) -> Any:
     from unsloth import FastSentenceTransformer
 
     logger.info("Loading RAG embedder: %s", model_name)
+    # trust_remote_code is required for the multimodal / late-chunking
+    # embedders in RAG_EMBEDDER_MATRIX: BGE-VL ships a custom
+    # `bge_vl_clip_transformer` module and nomic-embed-text-v1.5 ships
+    # a custom modeling file. Both repos are pinned in our config — we
+    # control which names land here — so opting in is safe.
     return FastSentenceTransformer.from_pretrained(
         model_name,
         for_inference = True,
+        trust_remote_code = True,
     )
 
 
