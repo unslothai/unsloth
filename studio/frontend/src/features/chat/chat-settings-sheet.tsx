@@ -1232,6 +1232,7 @@ export function ChatSettingsPanel({
                   ) : null}
                   {knowledgeBases.map((kb) => {
                     const isActive = kb.id === activeKbId;
+                    const isLate = kb.chunking_strategy === "late";
                     return (
                       <DropdownMenuItem
                         key={kb.id}
@@ -1243,7 +1244,17 @@ export function ChatSettingsPanel({
                           setRagSource({ kind: "kb", kbId: kb.id })
                         }
                       >
-                        <span className="truncate">{kb.name}</span>
+                        <span className="flex min-w-0 items-center gap-1.5 truncate">
+                          <span className="truncate">{kb.name}</span>
+                          {isLate ? (
+                            <span
+                              className="rounded-sm bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                              title="Late chunking enabled"
+                            >
+                              ⚡ Late
+                            </span>
+                          ) : null}
+                        </span>
                         <button
                           type="button"
                           aria-label={`Delete ${kb.name}`}

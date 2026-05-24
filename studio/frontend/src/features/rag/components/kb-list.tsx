@@ -58,7 +58,17 @@ export function KBList({
                 onClick={() => onSelect(kb)}
               >
                 <div className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm font-medium">{kb.name}</span>
+                  <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
+                    <span className="truncate">{kb.name}</span>
+                    {kb.chunking_strategy === "late" ? (
+                      <span
+                        className="shrink-0 rounded-sm bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title="Late chunking enabled"
+                      >
+                        ⚡ Late
+                      </span>
+                    ) : null}
+                  </span>
                   {kb.description ? (
                     <span className="truncate text-xs text-muted-foreground">
                       {kb.description}

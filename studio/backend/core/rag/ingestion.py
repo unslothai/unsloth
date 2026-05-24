@@ -54,72 +54,170 @@ def _subprocess_worker(
     overlap: int,
     batch_size: int,
     out_queue: Any,
+    chunking_strategy: str = "standard",
+    mode: str = "text",
 ) -> None:
     try:
-        from core.rag.chunking import chunk_pages
+        from core.rag.chunking import chunk_pages, chunk_pages_with_spans
         from core.rag.parsers import parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        # want_images stays False for the text-only ingestion path; the
-        # multimodal path (Phase 3B-multimodal) will flip this based on
-        # the KB's mode.
-        parsed = parse(Path(stored_path), want_images = False)
+        # want_images is True only for multimodal KBs. The image side of
+        # the pipeline lands in Phase 3B-multimodal; for now the parser
+        # collects the bytes anyway in case we want them later, but only
+        # the text pages are consumed.
+        parsed = parse(Path(stored_path), want_images = (mode == "multimodal"))
         pages = parsed.pages
         if not pages:
             out_queue.put({"type": "error", "error": "no extractable text in document"})
             return
 
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
-        from core.rag.embeddings import get_embedder, token_counter
+        from core.rag.embeddings import (
+            get_embedder,
+            late_chunk_encode,
+            token_counter,
+        )
 
         model = get_embedder(model_name)
         counter = token_counter(model_name)
         dim = int(model.get_sentence_embedding_dimension())
         out_queue.put({"type": "dim", "dim": dim})
 
-        out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
-        chunks = chunk_pages(
-            pages,
-            max_tokens = chunk_size,
-            overlap_tokens = overlap,
-            token_counter = counter,
-        )
-        if not chunks:
-            out_queue.put({"type": "error", "error": "chunker produced no chunks"})
-            return
-
-        total = len(chunks)
-        for i in range(0, total, batch_size):
-            batch = chunks[i : i + batch_size]
-            vectors = model.encode(
-                [c.text for c in batch],
+        if chunking_strategy == "late":
+            _run_late_chunking(
+                pages = pages,
+                chunk_size = chunk_size,
+                overlap = overlap,
+                counter = counter,
+                model_name = model_name,
+                late_chunk_encode = late_chunk_encode,
+                out_queue = out_queue,
+            )
+        else:
+            _run_standard_chunking(
+                pages = pages,
+                chunk_size = chunk_size,
+                overlap = overlap,
+                counter = counter,
                 batch_size = batch_size,
-                normalize_embeddings = True,
-                convert_to_numpy = True,
-                show_progress_bar = False,
+                model = model,
+                chunk_pages = chunk_pages,
+                out_queue = out_queue,
             )
-            out_queue.put(
-                {
-                    "type": "chunks_batch",
-                    "first_index": i,
-                    "chunks": [
-                        {
-                            "text": c.text,
-                            "token_count": c.token_count,
-                            "page_number": c.page_number,
-                        }
-                        for c in batch
-                    ],
-                    "vectors": vectors.tolist(),
-                }
-            )
-            progress = 0.3 + 0.65 * min(1.0, (i + len(batch)) / total)
-            out_queue.put({"type": "progress", "stage": "embed", "progress": progress})
-
-        out_queue.put({"type": "complete", "num_chunks": total})
     except Exception as exc:  # noqa: BLE001
         logger.exception("ingestion subprocess failed")
         out_queue.put({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _run_standard_chunking(
+    *,
+    pages,
+    chunk_size,
+    overlap,
+    counter,
+    batch_size,
+    model,
+    chunk_pages,
+    out_queue,
+) -> None:
+    out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
+    chunks = chunk_pages(
+        pages,
+        max_tokens = chunk_size,
+        overlap_tokens = overlap,
+        token_counter = counter,
+    )
+    if not chunks:
+        out_queue.put({"type": "error", "error": "chunker produced no chunks"})
+        return
+
+    total = len(chunks)
+    for i in range(0, total, batch_size):
+        batch = chunks[i : i + batch_size]
+        vectors = model.encode(
+            [c.text for c in batch],
+            batch_size = batch_size,
+            normalize_embeddings = True,
+            convert_to_numpy = True,
+            show_progress_bar = False,
+        )
+        out_queue.put(
+            {
+                "type": "chunks_batch",
+                "first_index": i,
+                "chunks": [
+                    {
+                        "text": c.text,
+                        "token_count": c.token_count,
+                        "page_number": c.page_number,
+                    }
+                    for c in batch
+                ],
+                "vectors": vectors.tolist(),
+            }
+        )
+        progress = 0.3 + 0.65 * min(1.0, (i + len(batch)) / total)
+        out_queue.put({"type": "progress", "stage": "embed", "progress": progress})
+
+    out_queue.put({"type": "complete", "num_chunks": total})
+
+
+def _run_late_chunking(
+    *,
+    pages,
+    chunk_size,
+    overlap,
+    counter,
+    model_name,
+    late_chunk_encode,
+    out_queue,
+) -> None:
+    """Late chunking: chunk once over the whole doc, embed in a single pass.
+
+    There's no per-batch streaming here — the whole doc is encoded in
+    one forward pass (or one per window for long docs). We ship all
+    chunks back to the parent in one message; the parent's pump still
+    handles them via the same chunks_batch handler.
+    """
+    from core.rag.chunking import chunk_pages_with_spans
+
+    out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
+    full_doc, chunks, char_spans = chunk_pages_with_spans(
+        pages,
+        max_tokens = chunk_size,
+        overlap_tokens = overlap,
+        token_counter = counter,
+    )
+    if not chunks:
+        out_queue.put({"type": "error", "error": "chunker produced no chunks"})
+        return
+
+    out_queue.put({"type": "progress", "stage": "embed", "progress": 0.4})
+    vectors = late_chunk_encode(
+        full_doc,
+        char_spans,
+        model_name = model_name,
+        normalize = True,
+    )
+
+    out_queue.put({"type": "progress", "stage": "embed", "progress": 0.9})
+    out_queue.put(
+        {
+            "type": "chunks_batch",
+            "first_index": 0,
+            "chunks": [
+                {
+                    "text": c.text,
+                    "token_count": c.token_count,
+                    "page_number": c.page_number,
+                }
+                for c in chunks
+            ],
+            "vectors": [v.tolist() for v in vectors],
+        }
+    )
+    out_queue.put({"type": "complete", "num_chunks": len(chunks)})
 
 
 # ------------------------------------------------------------------
@@ -390,14 +488,26 @@ def enqueue_ingestion(
     kb_id: str | None = None,
     thread_id: str | None = None,
     embedding_model: str | None = None,
+    chunking_strategy: str = "standard",
+    mode: str = "text",
 ) -> str:
     """Create the job row, spawn the subprocess, and start the pump thread.
 
     Returns the job_id. The caller can poll via ``GET /api/rag/jobs/{job_id}/events``
     or read the ``rag_ingestion_jobs`` table directly.
+
+    chunking_strategy / mode default to today's behaviour. KB-scoped
+    uploads should pass the KB's stored values; per-thread uploads
+    default unless an override is set in chat_settings.
     """
+    from utils.rag.config import resolve_embedder
+
     scope = _scope_for(kb_id, thread_id)
-    model_name = embedding_model or RAG_EMBEDDING_MODEL
+    model_name = (
+        embedding_model
+        or resolve_embedder(mode, chunking_strategy)
+        or RAG_EMBEDDING_MODEL
+    )
     job_id = str(uuid4())
     with get_connection() as conn:
         conn.execute(
@@ -424,6 +534,8 @@ def enqueue_ingestion(
             RAG_CHUNK_OVERLAP,
             RAG_EMBED_BATCH_SIZE,
             out_queue,
+            chunking_strategy,
+            mode,
         ),
         daemon = True,
     )

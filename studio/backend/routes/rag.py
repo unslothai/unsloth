@@ -289,6 +289,8 @@ def _start_ingestion(
     kb_id: str | None,
     thread_id: str | None,
     embedding_model: str,
+    chunking_strategy: str = "standard",
+    mode: str = "text",
 ) -> UploadResponse:
     document_id = str(uuid4())
     with get_connection() as conn:
@@ -317,6 +319,8 @@ def _start_ingestion(
         kb_id = kb_id,
         thread_id = thread_id,
         embedding_model = embedding_model,
+        chunking_strategy = chunking_strategy,
+        mode = mode,
     )
     return UploadResponse(document_id = document_id, job_id = job_id, filename = filename)
 
@@ -432,6 +436,16 @@ async def upload_kb_document(
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
     stored_path, filename, byte_size = await _save_upload(file)
+    # Defensive .get() — rows fetched through a connection that pre-dates
+    # the Phase 3 schema (e.g. in tests) lack chunking_strategy/mode;
+    # fall back to the same defaults as the column.
+    kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
+    chunking_strategy = (
+        kb_row["chunking_strategy"]
+        if "chunking_strategy" in kb_keys
+        else "standard"
+    )
+    mode = kb_row["mode"] if "mode" in kb_keys else "text"
     return _start_ingestion(
         filename = filename,
         stored_path = stored_path,
@@ -440,6 +454,8 @@ async def upload_kb_document(
         kb_id = kb_id,
         thread_id = None,
         embedding_model = kb_row["embedding_model"],
+        chunking_strategy = chunking_strategy,
+        mode = mode,
     )
 
 

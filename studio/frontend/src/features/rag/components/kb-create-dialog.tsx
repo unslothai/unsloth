@@ -12,8 +12,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useState } from "react";
-import type { KnowledgeBase } from "../api/rag-api";
+import type { ChunkingStrategy, KnowledgeBase } from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
 
 export function KBCreateDialog({
@@ -29,6 +36,8 @@ export function KBCreateDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("");
+  const [chunkingStrategy, setChunkingStrategy] =
+    useState<ChunkingStrategy>("standard");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,6 +45,7 @@ export function KBCreateDialog({
     setName("");
     setDescription("");
     setEmbeddingModel("");
+    setChunkingStrategy("standard");
     setError(null);
     setSubmitting(false);
   };
@@ -50,6 +60,7 @@ export function KBCreateDialog({
         name: name.trim(),
         description: description.trim() || undefined,
         embedding_model: embeddingModel.trim() || undefined,
+        chunking_strategy: chunkingStrategy,
       });
       onCreated?.(kb);
       reset();
@@ -99,12 +110,42 @@ export function KBCreateDialog({
               />
             </div>
             <div className="flex flex-col gap-2">
+              <Label htmlFor="kb-strategy">Chunking strategy</Label>
+              <Select
+                value={chunkingStrategy}
+                onValueChange={(v) => setChunkingStrategy(v as ChunkingStrategy)}
+              >
+                <SelectTrigger id="kb-strategy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard">
+                    Standard — heading-aware recursive splitter
+                  </SelectItem>
+                  <SelectItem value="late">
+                    Late chunking — single-pass embedder, slower ingest
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Late chunking embeds the whole document in one pass, so each
+                chunk vector carries full-document context. Slower to ingest
+                (one forward pass per doc) but improves retrieval on long,
+                cross-referenced text. Cannot be combined with multimodal
+                mode.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
               <Label htmlFor="kb-model">Embedding model (optional)</Label>
               <Input
                 id="kb-model"
                 value={embeddingModel}
                 onChange={(e) => setEmbeddingModel(e.target.value)}
-                placeholder="Defaults to BAAI/bge-small-en-v1.5"
+                placeholder={
+                  chunkingStrategy === "late"
+                    ? "Defaults to nomic-ai/nomic-embed-text-v1.5"
+                    : "Defaults to BAAI/bge-small-en-v1.5"
+                }
               />
             </div>
             {error ? (
