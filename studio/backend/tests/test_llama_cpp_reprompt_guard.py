@@ -234,15 +234,16 @@ def test_numbered_list_without_plan_framing_is_artifact():
 
 def test_numbered_list_with_plan_framing_is_NOT_artifact():
     """A numbered list paired with explicit plan framing (intent phrase
-    followed by a narrow tool-action verb such as ``search`` / ``fetch``
-    / ``browse``) must NOT count as a completed artifact. The list IS
-    the plan, not the answer. Broad verbs like ``compare`` / ``use`` /
-    ``verify`` are intentionally NOT plan framing because real answer
-    lists use them."""
+    followed by a freshness-gated tool-action verb such as
+    ``search the web`` / ``fetch the latest`` / ``query the internet``)
+    must NOT count as a completed artifact. The list IS the plan, not
+    the answer. Bare ``search the docs`` / ``compare versions`` /
+    ``verify input`` are intentionally NOT plan framing because real
+    answer lists use them."""
     samples = [
-        "Here's my plan:\n1. Search the web\n2. then summarise.",
-        "First, I'll do these:\n1. search for the song list\n2. cross-check the chart",
-        "Let me look up the values: fetch the data first.",
+        "Here's my plan:\n1. Search the web for the answer.\n2. then summarise.",
+        "First, I'll do these:\n1. fetch the latest chart\n2. cross-check",
+        "Let me look up the values: fetch the current data first.",
     ]
     for s in samples:
         assert _PLAN_LIST_FRAMING.search(s), s
@@ -350,12 +351,12 @@ def test_reprompts_on_incomplete_html_intent():
 def test_plan_framing_requires_apostrophe_in_ill():
     """The ``i['’]ll`` plan-framing alternative requires an apostrophe so
     the regex does not match the word "ill" (sick). Without this, a
-    numbered list near "ill" plus an unrelated action verb would be
-    misclassified as a plan and trigger a spurious re-prompt."""
+    numbered list near "ill" plus a freshness-gated lookup verb would
+    be misclassified as a plan and trigger a spurious re-prompt."""
     samples = [
         ("She is ill. Here is the list:\n1. Apple\n2. Orange\n3. Banana", False),
-        ("I'll search the docs:\n1. step\n2. step", True),
-        ("I will search:\n1. step\n2. step", True),
+        ("I'll search the web for X:\n1. step\n2. step", True),
+        ("I will search the latest docs:\n1. step\n2. step", True),
     ]
     for content, expected in samples:
         got = _would_reprompt(content)
@@ -367,15 +368,17 @@ def test_reprompts_on_all_intent_form_numbered_action_plans():
     ``_INTENT_SIGNAL`` accepts so numbered action plans phrased with
     ``Allow me``, ``I'm going to``, ``I'm gonna``, ``I am gonna``,
     ``I shall``, ``Now I``, ``Next I`` also re-prompt instead of being
-    silently classified as completed answers."""
+    silently classified as completed answers. Each sample pairs the
+    intent form with a freshness-gated lookup verb so the cross-check
+    against _TOOL_ACTION_VERBS succeeds."""
     samples = [
-        "Allow me to do this:\n1. search the docs\n2. fetch the result",
-        "I'm going to do this:\n1. search the docs\n2. fetch the result",
-        "I'm gonna do this:\n1. search the docs\n2. fetch the result",
-        "I am gonna do this:\n1. search the docs\n2. fetch the result",
-        "I shall do this:\n1. search the docs\n2. fetch the result",
-        "Now I will do these:\n1. search\n2. summarise",
-        "Next I will do these:\n1. fetch\n2. compare",
+        "Allow me to do this:\n1. search the web for X\n2. fetch the latest result",
+        "I'm going to do this:\n1. search the latest docs\n2. fetch the current result",
+        "I'm gonna do this:\n1. search the web for X\n2. fetch the latest result",
+        "I am gonna do this:\n1. search the latest docs\n2. fetch the current result",
+        "I shall do this:\n1. search the web for X\n2. fetch the latest result",
+        "Now I will do these:\n1. search the web\n2. summarise",
+        "Next I will do these:\n1. fetch the latest chart\n2. compare",
     ]
     for s in samples:
         assert _would_reprompt(s), s
@@ -681,6 +684,76 @@ def test_reasoning_only_visible_artifact_suppresses_reprompt():
         and not (artifact_text and _has_answer_artifact(artifact_text))
     )
     assert not would_reprompt
+
+
+def test_no_reprompt_on_binary_search_algorithm_answer():
+    """A final answer that uses ``search`` as an ordinary algorithm verb
+    (binary search, linear search, depth-first search, etc.) must NOT
+    re-prompt. The lookup gating on ``search`` requires a freshness or
+    web/internet target, so ``Search the left half`` stays an answer."""
+    samples = [
+        (
+            "First, use binary search:\n"
+            "1. Search the left half.\n"
+            "2. Search the right half."
+        ),
+        (
+            "First, here are the debugging steps:\n"
+            "1. Search the project for the failing function.\n"
+            "2. Check the stack trace.\n"
+            "3. Verify your fix with tests."
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_reprompts_on_numbered_plan_with_google_synonym():
+    """``google the current X`` reads as an external lookup and STILL
+    re-prompts as a numbered tool plan."""
+    samples = [
+        "Here's my plan:\n1. Google the current Billboard chart.\n2. Summarise.",
+        "First, I'll do this:\n1. Investigate the current exchange rate.\n2. Cite source.",
+        "Here's my approach:\n1. Research the latest release notes.\n2. Summarise.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_artifact_regex_rejects_shorter_commonmark_closing_fence():
+    """Four-or-more delimiter opening fence cannot be closed by fewer
+    delimiters. The opener cannot backtrack to three delimiters and
+    consume the rest as info-string text."""
+    samples = [
+        "First, let me show.\n````python\nprint('hi')\n```",
+        "First, let me show.\n~~~~python\nprint('hi')\n~~~",
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_open_fence_with_inner_numbered_list_still_reprompts():
+    """A response that opens a code fence and emits numbered lines INSIDE
+    must NOT count those lines as a completed numbered-list answer."""
+    samples = [
+        (
+            "First, let me write it.\n"
+            "```text\n"
+            "1. Install dependencies\n"
+            "2. Run the app"
+        ),
+        (
+            "Let me draft a checklist.\n"
+            "````markdown\n"
+            "1. step one\n"
+            "2. step two"
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
 
 
 def test_hidden_reasoning_artifact_still_reprompts():

@@ -53,23 +53,27 @@ logger = get_logger(__name__)
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
 # Tool-action verbs used by _PLAN_LIST_FRAMING to distinguish plan-only
-# numbered lists ("1. search the docs", "1. fetch the data") from
-# answer numbered lists ("1. Apple", "1. Use BFS", "1. Write a poem").
-# Kept intentionally narrow: only verbs that strongly imply an actual
-# tool invocation.  Broad verbs like ``use``, ``compare``, ``write``,
-# ``create``, ``make``, ``build``, ``think``, ``respond``, ``answer``,
-# ``analyse``, ``explore`` are deliberately excluded because real
-# answer lists use them ("1. Use BFS", "1. Compare versions",
-# "1. Write a poem"). ``find`` / ``check`` / ``verify`` are admitted
-# ONLY when paired with a freshness signal (current / latest /
-# today's / up-to-date / live / online / web), so "find the bug" or
-# "check the answer" still read as valid answer text.
+# numbered lists ("1. search the web for X", "1. query the internet")
+# from answer numbered lists ("1. Search the left half", "1. Apple",
+# "1. Write a poem"). Each lookup verb is gated on a freshness or
+# web/internet/online target so ordinary answer prose like
+# "binary search: 1. Search the left half" or "1. Find the bug" is
+# preserved. The strong, unambiguous patterns (``web search``,
+# ``query the web``, ``call a tool``, ``run python``) stay bare.
+_TOOL_LOOKUP_TARGET = (
+    r"(?:web|internet|online(?: sources?)?|"
+    r"current|latest|today['’]?s?|up[- ]to[- ]date|live)"
+)
 _TOOL_ACTION_VERBS = (
-    r"search|look up|fetch|browse|web[ _-]?search|"
+    r"web[ _-]?search|"
+    r"(?:search|look up|browse|google) (?:for )?(?:the |a |an )?"
+    rf"{_TOOL_LOOKUP_TARGET}|"
     r"(?:query|consult) (?:the |a |an )?"
     r"(?:web|internet|online(?: sources?)?)|"
-    r"(?:find|check|verify) (?:for )?(?:the |a |an )?"
-    r"(?:current|latest|today['’]?s?|up[- ]to[- ]date|live|online|web)|"
+    r"fetch (?:the |a |an )?"
+    rf"{_TOOL_LOOKUP_TARGET}|"
+    r"(?:research|investigate|find|check|verify) (?:for )?(?:the |a |an )?"
+    rf"{_TOOL_LOOKUP_TARGET}|"
     r"call (?:a |the )?tool|run (?:python|the code)|execute (?:python|the code)"
 )
 
@@ -118,10 +122,11 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # closing fence must have at least as many delimiters, and the line
     # must end cleanly (only trailing whitespace before newline / EOS),
     # so spam like ``` ```not actually closed ``` does not count.
-    r"(?P<bf>`{3,})[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)(?!`)[ \t]*(?:\r?\n|\Z)"
     # Closed tilde code fence; same 3+ rule (several models emit ~~~ when
-    # the body itself contains backticks).
-    r"|(?P<tf>~{3,})[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
+    # the body itself contains backticks). Anchored to the full run of
+    # tildes on both sides so a 4-tilde open cannot match a 3-tilde close.
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)(?!~)[ \t]*(?:\r?\n|\Z)"
     # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
     # Complete SVG document.
@@ -154,15 +159,48 @@ _PLAN_LIST_FRAMING = re.compile(
 )
 
 
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<trailing>[^\r\n]*)$")
+
+
+def _has_unclosed_code_fence(text: str) -> bool:
+    """True if ``text`` contains a code fence whose closer is missing.
+
+    A complete fence answer is already caught by _HAS_ANSWER_ARTIFACT.
+    This helper exists so that an OPEN fence (model still streaming
+    code, or stream cut short) does not let an embedded numbered list
+    inside the fence body masquerade as a final answer.
+    """
+    active_char: Optional[str] = None
+    active_len = 0
+    for line in text.splitlines():
+        m = _FENCE_LINE_RE.match(line)
+        if not m:
+            continue
+        fence = m.group("fence")
+        trailing = m.group("trailing").strip()
+        ch = fence[0]
+        if active_char is None:
+            active_char = ch
+            active_len = len(fence)
+        elif ch == active_char and len(fence) >= active_len and not trailing:
+            active_char = None
+            active_len = 0
+    return active_char is not None
+
+
 def _has_answer_artifact(text: str) -> bool:
     """True if ``text`` looks like a completed answer artifact.
 
     Code fences, complete HTML, and complete SVG count directly. A
     numbered list counts only when there is no plan framing, so stalls
     like ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
+    An unclosed fence disqualifies the numbered-list fallback so a list
+    INSIDE incomplete code does not look like a final answer.
     """
     if _HAS_ANSWER_ARTIFACT.search(text):
         return True
+    if _has_unclosed_code_fence(text):
+        return False
     if _NUMBERED_LIST_ARTIFACT.search(text):
         return _PLAN_LIST_FRAMING.search(text) is None
     return False
