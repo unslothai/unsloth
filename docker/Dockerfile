@@ -204,8 +204,19 @@ RUN set -eux \
             --extra-index-url https://download.pytorch.org/whl/cu128 \
             "torch==2.10.0" \
             vllm; \
-        echo ">> vLLM installed:"; \
+        # vLLM nightly pulls numpy down to 2.2.6 whose wheel ships a broken
+        # numpy.testing (`from numpy._core.tests._natype import pd_NA` -- the
+        # tests/ directory is stripped from the wheel). Any path that hits
+        # `from numpy import *` (e.g. scipy.optimize -> scipy._lib.array_api)
+        # then crashes, taking `import unsloth` with it via unsloth_zoo's
+        # `from transformers.processing_utils import Unpack`. Upgrade numpy
+        # back to a release that has a self-consistent testing module.
+        ${VENV}/bin/uv pip install \
+            --python ${VENV}/bin/python \
+            --upgrade "numpy>=2.4"; \
+        echo ">> vLLM installed (numpy re-upgraded post-vllm):"; \
         ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)"; \
+        ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')"; \
     else \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi
