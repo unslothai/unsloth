@@ -652,7 +652,7 @@ def _expand_attached_np_short() -> None:
             and tok[3] != "="
             and tok[3:].isdigit()
         ):
-            sys.argv[i:i + 1] = ["-np", tok[3:]]
+            sys.argv[i : i + 1] = ["-np", tok[3:]]
             i += 2
         else:
             i += 1
