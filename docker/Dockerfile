@@ -195,6 +195,19 @@ WORKDIR /workspace
 RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
 
 COPY smoke_test.py /workspace/smoke_test.py
+COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint
+RUN chmod +x /usr/local/bin/unsloth-entrypoint
 
-# Default entry: drop into python; override with `docker run ... bash` for a shell.
+# Entrypoint runs three fast pre-flight checks before user code:
+#   1. nvidia-smi sees at least one GPU       (catches missing --gpus all)
+#   2. torch.cuda.is_available() is True      (catches host driver too old)
+#   3. compute capability >= sm_80            (catches pre-Ampere GPUs)
+# Each check fails with an actionable error pointing to the fix.
+# Bypass for offline tooling:  docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
+ENTRYPOINT ["/usr/local/bin/unsloth-entrypoint"]
+
+# Default command: interactive python REPL.
+# Override examples:
+#   docker run --gpus all unsloth/unsloth:latest python /workspace/smoke_test.py
+#   docker run --gpus all -it unsloth/unsloth:latest bash
 CMD ["python"]
