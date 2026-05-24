@@ -162,7 +162,8 @@ RUN set -eux \
         "triton>=3.6.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
-        "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}"
+        "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
+        "timm>=1.0.11" "addict"
 
 # vLLM nightly (amd64 only). Required by Unsloth's GRPO path when the
 # notebook sets fast_inference=True. We install it as a SECOND uv pass
