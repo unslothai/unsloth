@@ -113,6 +113,7 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
+  baseUrl?: string | null | undefined,
 ): boolean {
   // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
   // every chat-capable model. Most image-tier ids (`-image`,
@@ -121,8 +122,11 @@ export function providerSupportsBuiltinWebSearch(
   // Google explicitly documents Search grounding on the Gemini 3 image
   // family (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
   // nano-banana-pro). Allow Search on those; hide on older image ids.
-  // Backend mirrors this guard in `_stream_gemini`.
+  // Custom Gemini OpenAI-compat proxies (non-Google bases) skip the
+  // native translator on the backend, so native tool envelopes never
+  // reach them -- hide the pill there.
   if (providerType === "gemini") {
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     const normalized = modelId?.trim().toLowerCase() ?? "";
     if (normalized && isGeminiImageModel(normalized)) {
       return geminiImageModelAllowsGoogleSearch(normalized);
@@ -234,10 +238,13 @@ export function providerSupportsBuiltinCodeExecution(
     // Gemini's `tools: [{codeExecution: {}}]` is supported on every
     // chat-capable model. Image-tier ids (`-image`, `nano-banana`)
     // reject text-tool wiring because the inline-image path is
-    // mutually exclusive with codeExecution. Wire-up lives in
-    // `_stream_gemini` on the backend; output comes back inline as
-    // executableCode/codeExecutionResult parts. See
+    // mutually exclusive with codeExecution. Custom Gemini
+    // OpenAI-compat proxies skip the native translator on the
+    // backend, so native codeExecution envelopes do not reach them.
+    // Wire-up lives in `_stream_gemini` on the backend; output comes
+    // back inline as executableCode/codeExecutionResult parts. See
     // https://ai.google.dev/gemini-api/docs/code-execution.
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     if (isGeminiImageModel(normalized)) return false;
     return normalized.startsWith("gemini-");
   }
@@ -288,8 +295,10 @@ export function providerSupportsBuiltinImageGeneration(
     // generationConfig.responseModalities to ["TEXT", "IMAGE"] when one
     // is picked, and translates inlineData parts into the same image_b64
     // tool_end envelope the OpenAI path emits so the chat UI renders the
-    // picture inline. See
-    // https://ai.google.dev/gemini-api/docs/image-generation.
+    // picture inline. Custom Gemini OpenAI-compat proxies skip the
+    // native translator on the backend, so hide the image pill there.
+    // See https://ai.google.dev/gemini-api/docs/image-generation.
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     return normalized.includes("-image") || normalized.includes("nano-banana");
   }
   return false;
@@ -303,6 +312,27 @@ export function providerSupportsBuiltinImageGeneration(
 function isGeminiImageModel(modelId: string): boolean {
   const m = modelId.toLowerCase();
   return m.includes("-image") || m.includes("nano-banana");
+}
+
+/**
+ * Whether the saved Gemini connection points at a custom
+ * OpenAI-compatible gateway (any non-Google host). The backend
+ * `_is_openai_compatible` mirrors this to route those connections
+ * through `/chat/completions` instead of the native translator, so
+ * native Gemini tool envelopes (googleSearch, codeExecution,
+ * responseModalities) never reach them. Hide the corresponding
+ * Studio pills here so the request, builder, and UI agree.
+ */
+function isGeminiCustomOpenAICompatBase(
+  baseUrl: string | null | undefined,
+): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host.length > 0 && host !== "generativelanguage.googleapis.com";
+  } catch {
+    return false;
+  }
 }
 
 /**

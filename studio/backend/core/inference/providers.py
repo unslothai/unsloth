@@ -83,9 +83,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # via the live ListModels fetch. Verified against the live
         # `/v1beta/models` catalog 2026-05-24.
         "default_models": [
-            "gemini-3.5-pro",
-            "gemini-3.5-flash",
             "gemini-3.1-pro-preview",
+            "gemini-3.5-flash",
             "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
             "gemini-pro-latest",

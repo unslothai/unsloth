@@ -906,6 +906,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             providerSupportsBuiltinWebSearch(
               externalProvider.providerType,
               externalSelection.modelId,
+              externalProvider.baseUrl,
             ),
         );
       const codeExecEnabledForThisTurn =

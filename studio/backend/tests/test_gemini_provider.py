@@ -362,13 +362,12 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
         assert tc == {"thinkingLevel": expected}, (effort, tc)
 
 
-def test_gemini3_pro_medium_effort_coerces_to_high(monkeypatch):
-    """Gemini 3 Pro only accepts thinkingLevel="low" or "high"; coerce
-    a "medium" effort request to "high" so the API does not 400."""
+def test_gemini3_pro_passes_medium_through(monkeypatch):
+    """Gemini 3.1+ Pro accepts thinkingLevel="medium" per
+    https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro;
+    forward as-is (medium is the documented mid-tier on Gemini 3.1)."""
     for model in (
         "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3.5-pro",
         "gemini-pro-latest",
     ):
         captured = _capture_body(
@@ -377,7 +376,7 @@ def test_gemini3_pro_medium_effort_coerces_to_high(monkeypatch):
             reasoning_effort = "medium",
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingLevel": "high"}, (model, tc)
+        assert tc == {"thinkingLevel": "medium"}, (model, tc)
 
 
 def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
@@ -653,14 +652,15 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
     assert tool_evs == [], tool_evs
 
 
-def test_image_generation_tool_drops_text_tools(monkeypatch):
+def test_image_generation_tool_on_image_model_drops_text_tools(monkeypatch):
     """`enabled_tools=["image_generation", "web_search", "code_execution"]`
-    on a text Gemini model flips responseModalities to TEXT+IMAGE; in
-    that mode googleSearch / codeExecution must NOT be forwarded
-    (Gemini rejects text tools alongside image responseModalities)."""
+    on a Gemini IMAGE model flips responseModalities to TEXT+IMAGE; in
+    that mode codeExecution must NOT be forwarded (Gemini rejects text
+    code tools alongside image responseModalities). Older image
+    families also drop googleSearch."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash",
+        model = "gemini-2.5-flash-image",
         enabled_tools = [
             "image_generation",
             "web_search",
@@ -780,10 +780,14 @@ def test_image_model_sets_response_modalities(monkeypatch):
     ]
 
 
-def test_image_generation_tool_sets_response_modalities(monkeypatch):
+def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypatch):
+    """`enabled_tools=["image_generation"]` flips responseModalities
+    only when the selected model is image-capable; otherwise the
+    request stays plain text (text-only models 400 on
+    responseModalities)."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash",
+        model = "gemini-2.5-flash-image",
         enabled_tools = ["image_generation"],
     )
     assert captured["body"]["generationConfig"]["responseModalities"] == [
@@ -1371,21 +1375,31 @@ def test_custom_gemini_proxy_base_url_not_rewritten():
     assert client.base_url == "https://proxy.example.com/team/openai"
 
 
-def test_custom_gemini_oai_compat_proxy_uses_openai_dispatch():
-    """A custom proxy that exposes only the OpenAI-compat Gemini
-    surface (base_url ending /openai on a non-Google host) must route
-    through the OpenAI-compatible forwarder, not the native translator.
-    Auth header must be Authorization: Bearer ..., not x-goog-api-key.
-    """
-    client = ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = "https://proxy.example.com/team/openai",
-        api_key = "AIza-test-key",
-    )
-    assert client._is_openai_compatible() is True
-    headers = client._auth_headers()
-    assert "x-goog-api-key" not in {k.lower() for k in headers}, headers
-    assert headers["Authorization"] == "Bearer AIza-test-key", headers
+def test_custom_gemini_proxy_uses_openai_dispatch():
+    """Any non-Google Gemini base (LiteLLM, custom OpenAI-compat
+    routers) must route through the OpenAI-compatible forwarder, not
+    the native translator. Auth uses Authorization: Bearer ..., not
+    x-goog-api-key."""
+    for base in (
+        "https://proxy.example.com/team/openai",
+        "https://proxy.example.com/v1",
+        "https://litellm.internal.example/v1",
+    ):
+        client = ExternalProviderClient(
+            provider_type = "gemini",
+            base_url = base,
+            api_key = "AIza-test-key",
+        )
+        assert client._is_openai_compatible() is True, base
+        headers = client._auth_headers()
+        assert "x-goog-api-key" not in {k.lower() for k in headers}, (
+            base,
+            headers,
+        )
+        assert headers["Authorization"] == "Bearer AIza-test-key", (
+            base,
+            headers,
+        )
 
 
 def test_google_hosted_gemini_still_uses_native_dispatch():
@@ -1398,6 +1412,140 @@ def test_google_hosted_gemini_still_uses_native_dispatch():
     assert client._is_openai_compatible() is False
     headers = client._auth_headers()
     assert headers.get("x-goog-api-key") == "AIza-test-key", headers
+
+
+def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
+    """Path-traversal model ids must be rejected before the URL is
+    interpolated so the configured API key isn't sent to unintended
+    Gemini endpoints."""
+
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            content = _gemini_sse([]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    out: list[str] = []
+
+    async def run():
+        client = _make_gemini_client()
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "../cachedContents/leak",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+        ):
+            out.append(line)
+        await client.close()
+
+    _drive(run())
+    # No outbound request should have been issued.
+    assert captured == [], captured
+    error_lines = [line for line in out if '"error"' in line]
+    assert error_lines, out
+
+
+def test_top_k_omitted_when_not_explicit_default_for_gemini(monkeypatch):
+    """top_k=None means "use provider default"; helper must not emit
+    `topK` in generationConfig when the caller didn't pass it."""
+    captured = _capture_body(monkeypatch, top_k = None)
+    assert "topK" not in captured["body"]["generationConfig"], captured["body"]
+
+
+def test_text_model_image_generation_tool_silently_dropped(monkeypatch):
+    """A stale `enabled_tools=["image_generation"]` on a text-only
+    Gemini model (e.g. gemini-2.5-flash) must NOT switch the request
+    into image mode -- Google's API 400s on responseModalities for
+    text models."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash",
+        enabled_tools = ["image_generation"],
+    )
+    gc = captured["body"]["generationConfig"]
+    assert "responseModalities" not in gc, gc
+
+
+def test_empty_text_part_with_thought_signature_emits_extra_content(
+    monkeypatch,
+):
+    """Gemini 3 can ship a content-free fragment whose only payload is
+    `thoughtSignature`. The translator must still surface that signature
+    on a delta.extra_content envelope so the next turn can replay it."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"text": "answer"},
+                            {"thoughtSignature": "SIG-FINAL"},
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": 1,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    extra_carriers = [
+        c
+        for c in chunks
+        if c.get("choices")
+        and c["choices"][0]["delta"].get("extra_content") == {
+            "google": {"thought_signature": "SIG-FINAL"}
+        }
+    ]
+    assert extra_carriers, chunks
+
+
+def test_enable_prompt_caching_false_string_coerces_to_bool():
+    """Pre-PR the field was Optional[bool]; widening to Union[bool,str]
+    must preserve historical coercion so callers sending `"false"`
+    still opt out of caching."""
+    from models.inference import ChatCompletionRequest
+
+    msg = {"role": "user", "content": "hi"}
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [msg],
+            "enable_prompt_caching": "false",
+        }
+    )
+    assert req.enable_prompt_caching is False, req.enable_prompt_caching
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [msg],
+            "enable_prompt_caching": "true",
+        }
+    )
+    assert req.enable_prompt_caching is True
+
+    # An actual cache resource name passes through untouched.
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [msg],
+            "enable_prompt_caching": "cachedContents/abc123",
+        }
+    )
+    assert req.enable_prompt_caching == "cachedContents/abc123"
 
 
 def test_legacy_google_openai_base_url_is_rewritten():

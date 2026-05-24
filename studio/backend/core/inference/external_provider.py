@@ -333,18 +333,15 @@ class ExternalProviderClient:
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
-        # Gemini connections pointed at a custom OpenAI-compat gateway
-        # (non-Google host, path ending /openai) speak the OpenAI surface
-        # and authenticate with Authorization: Bearer ..., not Google's
-        # native x-goog-api-key. Override the registry default so the
-        # OAI-compat dispatch path receives the right header.
+        # Gemini connections pointed at any non-Google host speak the
+        # OpenAI-compatible surface (LiteLLM, OpenAI-compat vLLM
+        # routers, custom gateways) and authenticate with
+        # Authorization: Bearer ..., not Google's native x-goog-api-key.
+        # Override the registry default so OAI-compat dispatch receives
+        # the right header.
         if self.provider_type == "gemini":
-            _p = urlparse(self.base_url)
-            _host = (_p.hostname or "").lower()
-            _path = _p.path.rstrip("/").lower()
-            if _host != "generativelanguage.googleapis.com" and _path.endswith(
-                "/openai"
-            ):
+            _host = (urlparse(self.base_url).hostname or "").lower()
+            if _host != "generativelanguage.googleapis.com":
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
 
@@ -367,18 +364,14 @@ class ExternalProviderClient:
         # and a native surface at `/v1beta/models/...:streamGenerateContent`
         # (x-goog-api-key). Google-hosted Gemini moved to native in this
         # PR for full feature coverage, but third-party gateways /
-        # custom proxies that still expose only the OpenAI-compat
-        # surface (e.g. https://proxy.example.com/team/openai) would
-        # break if we forced them through the native translator.
-        # Detect the OAI-compat suffix and fall back to OpenAI-compat
-        # forwarding for non-Google bases.
+        # custom OAI-compat proxies (LiteLLM, OpenAI-compatible vLLM
+        # routers, etc.) would break if we forced them through the
+        # native translator. Default ANY non-Google Gemini base to
+        # OpenAI-compatible dispatch so saved custom-proxy connections
+        # keep working.
         if self.provider_type == "gemini":
-            _p = urlparse(self.base_url)
-            _path = _p.path.rstrip("/").lower()
-            _host = (_p.hostname or "").lower()
-            if _host != "generativelanguage.googleapis.com" and _path.endswith(
-                "/openai"
-            ):
+            _host = (urlparse(self.base_url).hostname or "").lower()
+            if _host != "generativelanguage.googleapis.com":
                 return True
         return info.get("openai_compatible", True)
 
@@ -2877,19 +2870,20 @@ class ExternalProviderClient:
         if max_tokens is not None:
             gen_config["maxOutputTokens"] = max_tokens
 
-        # Nano Banana image generation. When the user picked an image
-        # model (id contains `-image` or `nano-banana`) or asked for
-        # `image_generation` as a tool, tell Gemini to return image
-        # bytes via `responseModalities`. The response carries an
-        # `inlineData` part on each candidate which we translate into a
-        # tool_end with image_b64/image_mime so the chat UI renders the
-        # picture inline. See
-        # https://ai.google.dev/gemini-api/docs/image-generation.
+        # Nano Banana image generation. Gemini only accepts
+        # `responseModalities: ["TEXT","IMAGE"]` on the image-capable
+        # model family (id contains `-image` or `nano-banana`). Text-
+        # only models such as `gemini-2.5-flash` 400 on the same body,
+        # so only force image mode when the selected model actually
+        # supports it -- a stale `enabled_tools=["image_generation"]`
+        # on a text model is silently treated as a regular turn.
+        # https://ai.google.dev/gemini-api/docs/image-generation
         model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
-        is_image_model = is_image_picker_model or bool(
-            enabled_tools and "image_generation" in enabled_tools
-        )
+        # `image_generation` is meaningful only on image-capable model
+        # IDs. A stale enabled_tools=["image_generation"] on a text
+        # model is dropped (text models 400 on responseModalities).
+        is_image_model = is_image_picker_model
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
 
@@ -2929,13 +2923,15 @@ class ExternalProviderClient:
         effort_lc = (reasoning_effort or "").strip().lower()
         if not is_image_model and is_gemini3_thinking:
             # Gemini 3.x: thinkingLevel only. Per Google's docs
-            # (https://ai.google.dev/gemini-api/docs/thinking):
-            #   - Gemini 3 Pro accepts only "low" or "high" (default high).
-            #   - Gemini 3 Flash + Flash-Lite accept minimal/low/medium/high
-            #     (default medium).
-            # Pro tier rejects "minimal" AND "medium"; coerce both to a
-            # valid neighbouring level so the UI's medium slider does
-            # not 400 on Pro.
+            # (https://ai.google.dev/gemini-api/docs/thinking and
+            # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro):
+            #   - Gemini 3.1+ Pro: low/medium/high (medium added in 3.1).
+            #   - Gemini 3 Pro (deprecated, shut down 2026-03-09): low/high.
+            #   - Gemini 3.x Flash + Flash-Lite + *-latest: minimal/low/
+            #     medium/high.
+            # Coerce "minimal" to "low" on Pro tier ("minimal" is the
+            # only level uniformly unsupported across Pro variants).
+            # "medium" stays intact -- 3.1+ Pro accepts it.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}
             level: Optional[str] = None
             if effort_lc in ("none", "off"):
@@ -2943,13 +2939,8 @@ class ExternalProviderClient:
             elif effort_lc == "max":
                 level = "high"
             elif effort_lc in _G3_LEVELS:
-                if is_gemini3_pro:
-                    if effort_lc == "minimal":
-                        level = "low"
-                    elif effort_lc == "medium":
-                        level = "high"
-                    else:
-                        level = effort_lc
+                if is_gemini3_pro and effort_lc == "minimal":
+                    level = "low"
                 else:
                     level = effort_lc
             elif enable_thinking is True:
@@ -3083,6 +3074,19 @@ class ExternalProviderClient:
         if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
             body["cachedContent"] = enable_prompt_caching
 
+        # Guard against path-traversal in the user-controlled model id
+        # before it lands in a URL path segment. A model like
+        # `../cachedContents/x` would otherwise normalize to
+        # `/v1beta/cachedContents/x` and send the configured API key to
+        # an unintended endpoint. Gemini model ids in the documented
+        # catalog match `[A-Za-z0-9._-]+` only.
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+            yield _error_sse_line(
+                400,
+                f"Invalid Gemini model id: {model!r}",
+                self.provider_type,
+            )
+            return
         url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
@@ -3337,10 +3341,34 @@ class ExternalProviderClient:
                                     # Gemini 3 turns that need an exact
                                     # signature echo round-trip cleanly.
                                     text = part.get("text")
+                                    _part_extra = _gemini_part_extra(part)
                                     if isinstance(text, str) and text:
                                         yield _text_chunk(
                                             text,
-                                            extra_content = _gemini_part_extra(part),
+                                            extra_content = _part_extra,
+                                        )
+                                    elif _part_extra is not None and not any(
+                                        k in part
+                                        for k in (
+                                            "functionCall",
+                                            "executableCode",
+                                            "codeExecutionResult",
+                                            "inlineData",
+                                        )
+                                    ):
+                                        # Final/empty-text fragment that
+                                        # still carries thoughtSignature
+                                        # (Gemini 3 sometimes ships the
+                                        # signature on a content-free
+                                        # part). Emit an empty-content
+                                        # delta with extra_content so
+                                        # the signature is preserved
+                                        # without spawning duplicate
+                                        # tool envelopes for parts that
+                                        # are handled below.
+                                        yield _text_chunk(
+                                            "",
+                                            extra_content = _part_extra,
                                         )
                                     # functionCall -> OpenAI tool_calls
                                     # delta envelope.
@@ -3739,6 +3767,15 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": f"(search aborted: connection error: {exc})",
+                    }
+                )
+                web_search_tool_ended = True
             yield _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",
@@ -3746,6 +3783,15 @@ class ExternalProviderClient:
             )
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": "(search aborted: read timeout)",
+                    }
+                )
+                web_search_tool_ended = True
             yield _error_sse_line(
                 504,
                 f"Timeout waiting for {self.provider_type} response",
@@ -3753,6 +3799,15 @@ class ExternalProviderClient:
             )
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": f"(search aborted: transport error: {exc})",
+                    }
+                )
+                web_search_tool_ended = True
             yield _error_sse_line(
                 502,
                 f"Error communicating with {self.provider_type}: {exc}",

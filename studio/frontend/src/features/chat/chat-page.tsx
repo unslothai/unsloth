@@ -768,6 +768,7 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
+      provider?.baseUrl,
     );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
@@ -998,6 +999,7 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
           selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
         );
         const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
           selectedProvider?.providerType,

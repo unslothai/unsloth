@@ -726,6 +726,23 @@ class ChatCompletionRequest(BaseModel):
             "every other provider. Treated as enabled when omitted."
         ),
     )
+
+    @field_validator("enable_prompt_caching", mode = "before")
+    @classmethod
+    def _coerce_enable_prompt_caching(cls, value: Any) -> Any:
+        """Preserve the pre-PR coercion: the field used to be Optional[bool],
+        so callers historically sent JSON strings `"true"` / `"false"` and
+        Pydantic v1 coerced them. Widening to Optional[Union[bool, str]] for
+        Gemini cache resource names lets `"false"` slip through as a truthy
+        string. Coerce the canonical bool literals back so explicit opt-outs
+        stay opt-out."""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes"):
+                return True
+            if lowered in ("false", "0", "no"):
+                return False
+        return value
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (

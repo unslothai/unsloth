@@ -1899,6 +1899,16 @@ async def _proxy_to_external_provider(
         api_key = api_key,
     )
 
+    # `top_k` defaults to 20 in ChatCompletionRequest because the local
+    # inference path expects an int, but the external-provider path
+    # should treat "field omitted from JSON" as "use provider default"
+    # so callers that send only model/messages do not silently get
+    # different sampling than before this PR. Pydantic's
+    # `model_fields_set` tracks explicit-vs-default per request.
+    _top_k_explicit = (
+        payload.top_k if "top_k" in payload.model_fields_set else None
+    )
+
     async def _stream():
         gen = client.stream_chat_completion(
             messages = chat_messages,
@@ -1907,7 +1917,7 @@ async def _proxy_to_external_provider(
             top_p = payload.top_p,
             max_tokens = payload.max_tokens,
             presence_penalty = payload.presence_penalty,
-            top_k = payload.top_k,
+            top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             enabled_tools = payload.enabled_tools,
