@@ -158,11 +158,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
         # Both k2.6 and k2.5 are reasoning-class. The API rejects
-        # custom sampling: "invalid temperature: only 1 is allowed for
-        # this model" (and the same shape for top_p). frequency_penalty
-        # is reported by reviewers to follow the same lock; strip it
-        # too so non-default values from stale clients do not 400.
-        "body_omit": ("temperature", "top_p", "frequency_penalty"),
+        # custom sampling ("invalid temperature: only 1 is allowed for
+        # this model", same for top_p). frequency_penalty follows the
+        # same lock on those models. seed and parallel_tool_calls are
+        # not in Kimi's documented chat schema; strip them too so a
+        # stale client or direct API caller cannot smuggle them onto
+        # the wire and 400 the request.
+        "body_omit": (
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "seed",
+            "parallel_tool_calls",
+        ),
         # Kimi accepts at most 5 stop strings (each <= 32 bytes) per
         # https://platform.kimi.ai/docs/api/chat
         "stop_max": 5,

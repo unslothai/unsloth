@@ -573,14 +573,14 @@ def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
 
     _drive(run())
     body = captured["body"]
-    # Per-provider drops: Kimi locks frequency_penalty/temperature/top_p.
+    # Kimi locks these: stripped by body_omit in providers.py.
     assert "frequency_penalty" not in body, body
     assert "temperature" not in body, body
     assert "top_p" not in body, body
-    # Other knobs forward through the bypass.
-    assert body.get("seed") == 7, body
+    assert "seed" not in body, body
+    assert "parallel_tool_calls" not in body, body
+    # Knobs not on Kimi's drop-list forward through the bypass.
     assert body.get("stop") == ["END"], body
-    assert body.get("parallel_tool_calls") is False, body
     assert body.get("presence_penalty") == 0.5, body
 
 
