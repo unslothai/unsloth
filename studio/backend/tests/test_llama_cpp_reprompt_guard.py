@@ -576,3 +576,133 @@ def test_no_reprompt_on_numbered_answer_with_bare_find_or_check():
     for s in samples:
         assert _has_answer_artifact(s), s
         assert not _would_reprompt(s), s
+
+
+# ── CommonMark fences with 4+ delimiters ──────────────────────────
+
+
+def test_artifact_regex_detects_four_or_more_backticks():
+    """CommonMark allows opening fences of 3+ backticks. Models use
+    4+ delimiters when the body itself contains a triple fence."""
+    samples = [
+        "First, let me show.\n````python\nprint('``` inside')\n````",
+        "Let me show.\n`````markdown\n```python\nprint(1)\n```\n`````",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+
+
+def test_artifact_regex_detects_four_or_more_tildes():
+    """Same 3+ delimiter rule for tilde fences."""
+    text = "First, let me show.\n~~~~python\nprint('hi')\n~~~~"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+# ── Query / consult online sources ────────────────────────────────
+
+
+def test_reprompts_on_numbered_plan_with_query_consult_synonyms():
+    """``query the web`` / ``consult online sources`` are tool-lookup
+    synonyms and STILL re-prompt as numbered tool plans."""
+    samples = [
+        "Here's my plan:\n1. Query the web for today's USD/EUR rate.\n2. Summarize.",
+        "Here's my plan:\n1. Consult online sources for the latest release.\n2. Answer.",
+        "First, I'll do this:\n1. Query the internet for the current chart.\n2. Summarize.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+# ── Delayed numbered tool action ──────────────────────────────────
+
+
+def test_reprompts_on_numbered_plan_when_action_after_long_first_item():
+    """Plans where the explicit tool action appears beyond the first 80
+    chars (long preamble or long item 1) must STILL re-prompt. The
+    framing scan needs to cover the whole short candidate, not just the
+    nearest 80 chars."""
+    samples = [
+        (
+            "Here's my plan:\n"
+            "1. Review the question and identify exactly what current data is "
+            "needed before using external sources.\n"
+            "2. Search the web for today's USD/EUR rate.\n"
+            "3. Answer with a citation."
+        ),
+        (
+            "Here's my plan:\n"
+            "1. Clarify the requirements and identify the exact data source "
+            "that contains the current numbers.\n"
+            "2. Search the web for the current Billboard chart.\n"
+            "3. Summarise the answer."
+        ),
+        (
+            "First, I'll explain the process before acting so the user can "
+            "follow along safely and so I can avoid using stale information.\n"
+            "1. Search the web for the current Billboard chart.\n"
+            "2. Summarise the answer."
+        ),
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+# ── Reasoning-only visible-output path ────────────────────────────
+
+
+def test_reasoning_only_visible_artifact_suppresses_reprompt():
+    """When content_accum is empty AND there are no content tokens, the
+    backend yields reasoning_accum as plain content. In that case the
+    reasoning text IS the user-visible answer and a complete artifact
+    inside it should suppress the re-prompt."""
+    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
+
+    content_accum = ""
+    reasoning_accum = (
+        "First, let me set up pygame.\n"
+        "```python\n"
+        "import pygame\n"
+        "pygame.init()\n"
+        "```"
+    )
+    has_content_tokens = False
+
+    visible = content_accum.strip()
+    reasoning = reasoning_accum.strip()
+    stripped = visible if visible else reasoning
+    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
+    would_reprompt = bool(
+        0 < len(stripped) < _REPROMPT_MAX_CHARS
+        and _INTENT_SIGNAL.search(stripped)
+        and not (artifact_text and _has_answer_artifact(artifact_text))
+    )
+    assert not would_reprompt
+
+
+def test_hidden_reasoning_artifact_still_reprompts():
+    """When content tokens were emitted but content_accum is empty (a
+    streaming oddity) and reasoning hides a complete artifact, the user
+    sees nothing, so the re-prompt MUST still fire."""
+    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
+
+    content_accum = ""
+    reasoning_accum = (
+        "First, let me draft it.\n"
+        "```python\n"
+        "print('hidden answer')\n"
+        "```"
+    )
+    has_content_tokens = True  # content existed but was stripped
+
+    visible = content_accum.strip()
+    reasoning = reasoning_accum.strip()
+    stripped = visible if visible else reasoning
+    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
+    would_reprompt = bool(
+        0 < len(stripped) < _REPROMPT_MAX_CHARS
+        and _INTENT_SIGNAL.search(stripped)
+        and not (artifact_text and _has_answer_artifact(artifact_text))
+    )
+    assert would_reprompt

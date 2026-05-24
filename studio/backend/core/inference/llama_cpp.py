@@ -66,6 +66,8 @@ logger = get_logger(__name__)
 # "check the answer" still read as valid answer text.
 _TOOL_ACTION_VERBS = (
     r"search|look up|fetch|browse|web[ _-]?search|"
+    r"(?:query|consult) (?:the |a |an )?"
+    r"(?:web|internet|online(?: sources?)?)|"
     r"(?:find|check|verify) (?:for )?(?:the |a |an )?"
     r"(?:current|latest|today['’]?s?|up[- ]to[- ]date|live|online|web)|"
     r"call (?:a |the )?tool|run (?:python|the code)|execute (?:python|the code)"
@@ -112,13 +114,14 @@ _MAX_REPROMPTS = 3
 #     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
 _HAS_ANSWER_ARTIFACT = re.compile(
     # Closed backtick code fence (any markdown info string, optional indent
-    # on close).  The closing fence must end the line: only optional
-    # trailing whitespace before a newline or end-of-string, so spam
-    # like ``` ```not actually closed ``` does not count.
-    r"```[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*```[ \t]*(?:\r?\n|\Z)"
-    # Closed tilde code fence (CommonMark also allows ~~~ fences; several
-    # models emit them when the body itself contains backticks).
-    r"|~~~[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*~~~[ \t]*(?:\r?\n|\Z)"
+    # on close).  CommonMark allows opening fences of 3+ backticks; the
+    # closing fence must have at least as many delimiters, and the line
+    # must end cleanly (only trailing whitespace before newline / EOS),
+    # so spam like ``` ```not actually closed ``` does not count.
+    r"(?P<bf>`{3,})[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    # Closed tilde code fence; same 3+ rule (several models emit ~~~ when
+    # the body itself contains backticks).
+    r"|(?P<tf>~{3,})[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
     # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
     # Complete SVG document.
@@ -133,17 +136,19 @@ _NUMBERED_LIST_ARTIFACT = re.compile(
 )
 
 # Markers that a numbered list is a plan (still re-promptable), not a
-# final answer. Only fires when an intent phrase from _INTENT_SIGNAL is
-# already followed within 80 chars by a narrow tool-action verb. The
-# apostrophe in ``i['’]ll`` is required (no ``?``) so the regex does
-# not accidentally match the word "ill". Without a tool-action verb the
-# numbered list is treated as a completed answer artifact.
+# final answer. Fires when an intent phrase from _INTENT_SIGNAL is
+# followed anywhere in the short re-prompt candidate by a tool-action
+# verb. The apostrophe in ``i['’]ll`` is required (no ``?``) so the
+# regex does not accidentally match the word "ill". Without a tool-
+# action verb the numbered list is treated as a completed answer
+# artifact. The scan window is bounded at _REPROMPT_MAX_CHARS by the
+# caller, so the lazy ``[\s\S]{0,2000}?`` quantifier stays linear.
 _PLAN_LIST_FRAMING = re.compile(
     r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|"
     r"step \d+|first|"
     r"i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
     r"i will|i shall|let me|allow me|now i|next i)\b"
-    r"[\s\S]{0,80}"
+    r"[\s\S]{0,2000}?"
     rf"\b(?:{_TOOL_ACTION_VERBS})\b",
     re.IGNORECASE,
 )
@@ -4902,14 +4907,21 @@ class LlamaCppBackend:
                         # like "4" or "Hello!" won't trigger this.
                         # Use content if available, otherwise fall back
                         # to reasoning text (reasoning-only stalls).
-                        # Artifact check uses VISIBLE content only:
-                        # a closed code fence inside hidden reasoning is
-                        # not a user-visible answer, so it must not
-                        # suppress the re-prompt.
+                        # Artifact check uses USER-VISIBLE text only.
+                        # Reasoning is only user-visible when there are
+                        # no content tokens (the branch above yields
+                        # reasoning_accum as plain content in that
+                        # case); otherwise reasoning stays hidden and
+                        # an artifact inside it must NOT suppress the
+                        # re-prompt.
                         _visible = content_accum.strip()
-                        _stripped = _visible if _visible else reasoning_accum.strip()
-                        _visible_has_artifact = bool(_visible) and _has_answer_artifact(
-                            _visible
+                        _reasoning = reasoning_accum.strip()
+                        _stripped = _visible if _visible else _reasoning
+                        _artifact_text = _visible if _visible else (
+                            _reasoning if not has_content_tokens else ""
+                        )
+                        _visible_has_artifact = bool(_artifact_text) and _has_answer_artifact(
+                            _artifact_text
                         )
                         if (
                             tools
