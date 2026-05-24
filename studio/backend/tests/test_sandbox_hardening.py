@@ -1801,9 +1801,9 @@ class TestR4_BraceCapOffByOne:
     def test_brace_with_n_dummies_blocked(self, n_dummies):
         dummies = ",".join(f"x{i}" for i in range(n_dummies))
         cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
-        assert _find_sensitive_paths(cmd), (
-            f"brace bomb with {n_dummies} dummies leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(
+            cmd
+        ), f"brace bomb with {n_dummies} dummies leaked: {cmd!r}"
 
     def test_brace_bomb_within_limit_blocked(self):
         # 100 alts x 100 dummy chars per alt = comfortably under cap;
@@ -1811,9 +1811,9 @@ class TestR4_BraceCapOffByOne:
         # value names a sensitive path.
         dummies = ",".join(f"x{i}" for i in range(500))
         cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
-        assert _find_sensitive_paths(cmd), (
-            f"brace bomb (501 alts) within cap leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(
+            cmd
+        ), f"brace bomb (501 alts) within cap leaked: {cmd!r}"
 
 
 class TestR4_ThreadSelfShellExpansion:
@@ -1831,9 +1831,9 @@ class TestR4_ThreadSelfShellExpansion:
         ],
     )
     def test_thread_self_shell_expansion_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"thread-self shell expansion leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(
+            cmd
+        ), f"thread-self shell expansion leaked: {cmd!r}"
 
 
 class TestR4_EvalExecPrepass:

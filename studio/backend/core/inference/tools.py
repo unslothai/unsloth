@@ -1352,9 +1352,7 @@ def _check_signal_escape_patterns(code: str):
                     if alias.name == "join":
                         bare_path_join_aliases.add(alias.asname or "join")
                     elif alias.name == "expanduser":
-                        bare_path_expanduser_aliases.add(
-                            alias.asname or "expanduser"
-                        )
+                        bare_path_expanduser_aliases.add(alias.asname or "expanduser")
             elif _node.module == "shutil":
                 for alias in _node.names:
                     if alias.name in _SHUTIL_COPY_NAMES:
@@ -1364,9 +1362,7 @@ def _check_signal_escape_patterns(code: str):
             elif _node.module == "pathlib":
                 for alias in _node.names:
                     if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
-                        path_class_aliases_prepass.add(
-                            alias.asname or alias.name
-                        )
+                        path_class_aliases_prepass.add(alias.asname or alias.name)
 
     # Cheap hint set used to bias ``string_bindings`` toward the most
     # sensitive value of a name when multiple literals are assigned.
@@ -1658,9 +1654,7 @@ def _check_signal_escape_patterns(code: str):
                         "eval",
                         "exec",
                     ):
-                        eval_exec_aliases.setdefault(
-                            _target.id, _assign.value.id
-                        )
+                        eval_exec_aliases.setdefault(_target.id, _assign.value.id)
                 elif isinstance(_target, (ast.Tuple, ast.List)) and isinstance(
                     _assign.value, (ast.Tuple, ast.List)
                 ):
@@ -3218,10 +3212,15 @@ def _check_signal_escape_patterns(code: str):
                 # shutil alias. The suffix-match guards against random
                 # ``something.copy(...)`` calls on unrelated objects.
                 _attr = node.func.attr
-                _recv_chain = fq[: -(len(_attr) + 1)] if _attr in _SHUTIL_COPY_NAMES else ""
+                _recv_chain = (
+                    fq[: -(len(_attr) + 1)] if _attr in _SHUTIL_COPY_NAMES else ""
+                )
                 if _recv_chain in shutil_module_aliases and _attr in _SHUTIL_COPY_NAMES:
                     file_copy_fq = f"shutil.{_attr}"
-            elif isinstance(node.func, ast.Name) and node.func.id in bare_shutil_copy_aliases:
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id in bare_shutil_copy_aliases
+            ):
                 file_copy_fq = bare_shutil_copy_aliases[node.func.id]
             if file_copy_fq is not None:
                 # Use the canonical ``shutil.X`` name in the error
