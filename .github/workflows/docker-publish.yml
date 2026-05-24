@@ -1,0 +1,118 @@
+# Builds and publishes the Blackwell-compatible Unsloth Docker image.
+#
+# The build runs on a free GitHub-hosted Ubuntu runner with NO GPU attached.
+# This is possible because:
+#   1. cu128 PyTorch wheels are fat binaries -- they already ship sm_70 through
+#      sm_120 SASS, cross-compiled upstream by the PyTorch team.
+#   2. The Dockerfile pins explicit wheel URLs (no --torch-backend=auto, no
+#      install.sh that introspects the host driver).
+#   3. The build-time sanity check uses torch._C._cuda_getArchFlags(), which
+#      reads compiled wheel metadata and does NOT require a CUDA device.
+#   4. UNSLOTH_COMPILE_DISABLE=1 prevents Unsloth from JIT-compiling a Triton
+#      kernel cache keyed to the (non-existent) build-host GPU.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+#
+# Optional repository variable (gates the smoke-test job):
+#   HAS_GPU_RUNNER = 'true' if a self-hosted GPU runner is available
+
+name: Publish Blackwell Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC (off-the-hour on purpose)
+  workflow_dispatch:
+    inputs:
+      unsloth_ref:
+        description: 'unsloth git ref to bake in'
+        required: false
+        default: 'main'
+      unsloth_zoo_ref:
+        description: 'unsloth-zoo git ref to bake in'
+        required: false
+        default: 'main'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: unsloth/unsloth
+
+jobs:
+  build:
+    runs-on: ubuntu-latest          # no GPU, 16GB RAM, 4 vCPU
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Free up ~20GB on the runner so cu128 wheels + cudnn fit.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            CUDA_VERSION=12.8.1
+            UBUNTU_VERSION=24.04
+            PYTHON_VERSION=3.12
+            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || 'main' }}
+            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || 'main' }}
+
+      - name: Image digest
+        run: echo "${{ steps.meta.outputs.tags }} -> ${{ steps.meta.outputs.digest }}"
+
+  # Optional: pull the freshly published image onto a self-hosted GPU runner
+  # and run smoke_test.py. Keeps "did the image actually work" decoupled from
+  # "was a GPU available at build time". Skipped automatically when no GPU
+  # runner is registered.
+  smoke-test:
+    needs: build
+    if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull and smoke-test
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker run --rm --gpus all \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            python /workspace/smoke_test.py

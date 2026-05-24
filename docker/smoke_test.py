@@ -1,0 +1,137 @@
+"""
+Smoke test for the unsloth-blackwell image.
+
+What this checks (in order, fail-fast):
+  1. torch sees the GPU and the arch list contains sm_100 + sm_120.
+  2. The runtime device's compute capability is supported.
+  3. xformers / bitsandbytes / triton import without ImportError.
+  4. unsloth imports and exposes FastLanguageModel.
+  5. A 5-step LoRA train on a tiny model actually runs forward + backward.
+
+Run inside the container:
+    docker run --rm --gpus all unsloth-blackwell:latest python /workspace/smoke_test.py
+
+Skip step 5 (faster, no model download):
+    docker run --rm --gpus all unsloth-blackwell:latest python /workspace/smoke_test.py --skip-train
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+
+
+def banner(title: str) -> None:
+    print(f"\n=== {title} ===", flush=True)
+
+
+def check_torch() -> tuple[int, int]:
+    banner("torch + arch list")
+    import torch
+    # Use the raw C++ accessor so this works even when CUDA isn't available
+    # (lets us run a partial smoke test on a no-GPU host).
+    arches = torch._C._cuda_getArchFlags().split()
+    print(f"torch       {torch.__version__}")
+    print(f"cuda build  {torch.version.cuda}")
+    print(f"arches      {arches}")
+    assert "sm_100" in arches, f"sm_100 missing: {arches}"
+    assert "sm_120" in arches, f"sm_120 missing: {arches}"
+
+    assert torch.cuda.is_available(), "CUDA not visible -- did you pass --gpus all?"
+    cap = torch.cuda.get_device_capability(0)
+    name = torch.cuda.get_device_name(0)
+    print(f"device 0    {name}  sm_{cap[0]}{cap[1]}")
+    if cap[0] < 8:
+        sys.exit(f"FAIL: pre-Ampere GPU {name} is not supported by this image")
+    return cap
+
+
+def check_imports() -> None:
+    banner("dep imports")
+    import triton; print(f"triton      {triton.__version__}")
+    import xformers; print(f"xformers    {xformers.__version__}")
+    import bitsandbytes as bnb; print(f"bnb         {bnb.__version__}")
+    import transformers; print(f"transformers {transformers.__version__}")
+    import trl; print(f"trl         {trl.__version__}")
+    import peft; print(f"peft        {peft.__version__}")
+    import unsloth_zoo; print(f"unsloth_zoo {unsloth_zoo.__version__}")
+
+
+def check_unsloth_import() -> None:
+    banner("unsloth import")
+    # Unsloth must be imported BEFORE transformers in real training scripts,
+    # but here we already imported transformers above for the version check.
+    # That's fine for this smoke -- we're not training Unsloth-patched models yet.
+    import unsloth
+    from unsloth import FastLanguageModel
+    print(f"unsloth     {unsloth.__version__}")
+    print(f"FastLanguageModel  {FastLanguageModel}")
+
+
+def check_tiny_train(cap: tuple[int, int]) -> None:
+    banner("tiny LoRA train (5 steps)")
+    import os
+    # Unsloth must be imported first.
+    import unsloth  # noqa: F401
+    from unsloth import FastLanguageModel
+    import torch
+
+    # Small, public, no-gate. ~125M params.
+    model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
+    print(f"loading     {model_name}")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_name,
+        max_seq_length=512,
+        dtype=None,
+        load_in_4bit=True,
+    )
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=0,
+    )
+
+    prompts = [
+        "Q: What is the capital of France?\nA:",
+        "Q: 2 + 2 = ?\nA:",
+        "Q: Name a primary color.\nA:",
+        "Q: Hello, who are you?\nA:",
+    ] * 2
+    enc = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=64)
+    enc = {k: v.cuda() for k, v in enc.items()}
+    labels = enc["input_ids"].clone()
+
+    model.train()
+    optim = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
+    for step in range(5):
+        out = model(**enc, labels=labels)
+        out.loss.backward()
+        optim.step()
+        optim.zero_grad(set_to_none=True)
+        print(f"step {step}  loss={out.loss.item():.4f}", flush=True)
+
+    print("OK: 5 LoRA steps completed")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--skip-train", action="store_true",
+                    help="Skip the tiny LoRA training step (no HF download).")
+    args = ap.parse_args()
+
+    cap = check_torch()
+    check_imports()
+    check_unsloth_import()
+    if not args.skip_train:
+        check_tiny_train(cap)
+
+    banner("all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
