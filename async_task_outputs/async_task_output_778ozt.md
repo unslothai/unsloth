@@ -1,1 +1,0 @@
-- `Failed to find C compiler`; exit 1

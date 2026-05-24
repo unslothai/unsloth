@@ -1,1 +1,0 @@
-- Docker ok; run `bash docker/test_locally.sh --skip-notebook`

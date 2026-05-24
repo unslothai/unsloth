@@ -1,1 +1,0 @@
-- Docker build needn't GPU; sm_120 only test

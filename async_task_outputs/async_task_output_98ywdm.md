@@ -1,1 +1,0 @@
-- Wants executable `sh`-like script

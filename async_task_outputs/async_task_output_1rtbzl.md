@@ -1,1 +1,0 @@
-- Docker GPU-free build rationale done

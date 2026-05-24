@@ -235,3 +235,4 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+async_task_outputs/
