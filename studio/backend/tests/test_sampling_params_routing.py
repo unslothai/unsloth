@@ -385,9 +385,7 @@ def test_openai_responses_forwards_service_tier(monkeypatch):
     assert body.get("service_tier") == "priority", body
 
 
-@pytest.mark.parametrize(
-    "value", ["auto", "default", "flex", "scale", "priority"]
-)
+@pytest.mark.parametrize("value", ["auto", "default", "flex", "scale", "priority"])
 def test_openai_responses_accepts_full_service_tier_enum(monkeypatch, value):
     """`openai-python`'s ResponseCreateParams declares
     `Optional[Literal["auto", "default", "flex", "scale", "priority"]]`
