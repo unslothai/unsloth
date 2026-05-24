@@ -9,6 +9,7 @@ import {
   deleteDocument as apiDeleteDocument,
   deleteKnowledgeBase as apiDeleteKB,
   getRagDefaults as apiGetRagDefaults,
+  getThreadRagSettings as apiGetThreadSettings,
   type JobEvent,
   type KnowledgeBase,
   listKBDocuments,
@@ -21,9 +22,12 @@ import {
   reingestKnowledgeBase as apiReingestKB,
   reingestThreadDocuments as apiReingestThread,
   setRagDefaults as apiSetRagDefaults,
+  setThreadRagSettings as apiSetThreadSettings,
   subscribeToJobEvents,
   type ThreadIndexSummary,
+  type ThreadRagSettings,
   type UpdateRagDefaultsRequest,
+  type UpdateThreadRagSettingsRequest,
   uploadKBDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
@@ -59,11 +63,21 @@ interface RagStoreState {
   clearThreadIndex: (threadId: string) => Promise<void>;
 
   reingestKB: (kbId: string, opts?: ReingestKBOptions) => Promise<string[]>;
-  reingestThread: (threadId: string) => Promise<string[]>;
+  reingestThread: (
+    threadId: string,
+    opts?: UpdateThreadRagSettingsRequest,
+  ) => Promise<string[]>;
 
   defaults: RagDefaults | null;
   loadDefaults: () => Promise<void>;
   updateDefaults: (patch: UpdateRagDefaultsRequest) => Promise<void>;
+
+  threadSettings: Record<string, ThreadRagSettings>;
+  loadThreadSettings: (threadId: string) => Promise<void>;
+  updateThreadSettings: (
+    threadId: string,
+    patch: UpdateThreadRagSettingsRequest,
+  ) => Promise<ThreadRagSettings>;
 
   subscribeJob: (jobId: string, onComplete?: () => void) => void;
 }
@@ -91,6 +105,8 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
   threadIndexesLoading: false,
 
   defaults: null,
+
+  threadSettings: {},
 
   async loadKnowledgeBases() {
     set({ kbsLoading: true, kbsError: null });
@@ -269,16 +285,40 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
     set({ defaults });
   },
 
-  async reingestThread(threadId) {
-    const response = await apiReingestThread(threadId);
+  async reingestThread(threadId, opts) {
+    const response = await apiReingestThread(threadId, opts ?? {});
     void get().loadThreadDocuments(threadId);
     void get().loadThreadIndexes();
+    if (opts) {
+      // The reingest endpoint persists the new settings as a side
+      // effect; refresh the local copy so the UI reflects them.
+      void get().loadThreadSettings(threadId);
+    }
     for (const jobId of response.job_ids) {
       get().subscribeJob(jobId, () => {
         void get().loadThreadDocuments(threadId);
       });
     }
     return response.job_ids;
+  },
+
+  async loadThreadSettings(threadId) {
+    try {
+      const settings = await apiGetThreadSettings(threadId);
+      set((state) => ({
+        threadSettings: { ...state.threadSettings, [threadId]: settings },
+      }));
+    } catch {
+      // Best-effort — falls back to defaults UI-side when missing.
+    }
+  },
+
+  async updateThreadSettings(threadId, patch) {
+    const settings = await apiSetThreadSettings(threadId, patch);
+    set((state) => ({
+      threadSettings: { ...state.threadSettings, [threadId]: settings },
+    }));
+    return settings;
   },
 
   subscribeJob(jobId, onComplete) {

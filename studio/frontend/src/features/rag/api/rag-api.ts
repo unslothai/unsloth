@@ -232,15 +232,52 @@ export async function reingestKnowledgeBase(
   return parseJsonOrThrow<ReingestResponse>(response);
 }
 
+export interface ThreadRagSettings {
+  chunking_strategy: ChunkingStrategy;
+  mode: KBMode;
+  embedding_model: string | null;
+}
+
+export interface UpdateThreadRagSettingsRequest {
+  chunking_strategy?: ChunkingStrategy;
+  mode?: KBMode;
+  embedding_model?: string | null;
+}
+
+export async function getThreadRagSettings(
+  threadId: string,
+): Promise<ThreadRagSettings> {
+  const response = await authFetch(
+    `/api/rag/threads/${encodeURIComponent(threadId)}/settings`,
+  );
+  return parseJsonOrThrow<ThreadRagSettings>(response);
+}
+
+export async function setThreadRagSettings(
+  threadId: string,
+  payload: UpdateThreadRagSettingsRequest,
+): Promise<ThreadRagSettings> {
+  const response = await authFetch(
+    `/api/rag/threads/${encodeURIComponent(threadId)}/settings`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonOrThrow<ThreadRagSettings>(response);
+}
+
 export async function reingestThreadDocuments(
   threadId: string,
+  opts: UpdateThreadRagSettingsRequest = {},
 ): Promise<ReingestResponse> {
   const response = await authFetch(
     `/api/rag/threads/${encodeURIComponent(threadId)}/reingest`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify(opts),
     },
   );
   return parseJsonOrThrow<ReingestResponse>(response);

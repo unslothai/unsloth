@@ -96,6 +96,10 @@ import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { useKnowledgeBases } from "@/features/rag/hooks/use-knowledge-bases";
 import { useThreadDocuments } from "@/features/rag/hooks/use-kb-documents";
 import { useRagStore } from "@/features/rag/stores/rag-store";
+import type {
+  ChunkingStrategy as RagChunkingStrategy,
+  KBMode,
+} from "@/features/rag/api/rag-api";
 import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 
 function ragSourceLabel(
@@ -448,6 +452,49 @@ export function ChatSettingsPanel({
   );
   const clearThreadIndex = useRagStore((s) => s.clearThreadIndex);
   const reingestThread = useRagStore((s) => s.reingestThread);
+  const threadSettings = useRagStore((s) =>
+    activeThreadId ? s.threadSettings[activeThreadId] : undefined,
+  );
+  const loadThreadSettings = useRagStore((s) => s.loadThreadSettings);
+  const updateThreadSettings = useRagStore((s) => s.updateThreadSettings);
+  const ragDefaults = useRagStore((s) => s.defaults);
+
+  // Load this thread's RAG settings once when the sheet sees a thread
+  // for the first time. Updates re-render automatically via the store.
+  useEffect(() => {
+    if (ragSource.kind === "thread" && activeThreadId && !threadSettings) {
+      void loadThreadSettings(activeThreadId);
+    }
+  }, [ragSource.kind, activeThreadId, threadSettings, loadThreadSettings]);
+
+  const effectiveThreadChunking: RagChunkingStrategy =
+    threadSettings?.chunking_strategy ??
+    ragDefaults?.chunking_strategy ??
+    "standard";
+  const effectiveThreadMode: KBMode =
+    threadSettings?.mode ?? ragDefaults?.mode ?? "text";
+
+  const applyThreadSettingChange = (
+    patch: { chunking_strategy?: RagChunkingStrategy; mode?: KBMode },
+  ) => {
+    if (!activeThreadId) return;
+    if (threadDocs.length === 0) {
+      // No existing chunks to invalidate — just persist.
+      void updateThreadSettings(activeThreadId, patch);
+      return;
+    }
+    const ok = window.confirm(
+      `Re-index ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} ` +
+        `with the new settings? Existing chunks will be deleted and rebuilt.`,
+    );
+    if (ok) {
+      void reingestThread(activeThreadId, patch);
+    } else {
+      // User declined — refresh the store so the select snaps back
+      // to the unchanged settings.
+      void loadThreadSettings(activeThreadId);
+    }
+  };
   const [kbCreateOpen, setKbCreateOpen] = useState(false);
   const ragEnabled = ragSource.kind !== "off";
   const activeKbId = ragSource.kind === "kb" ? ragSource.kbId : null;
@@ -1311,7 +1358,76 @@ export function ChatSettingsPanel({
               onCreated={(kb) => setRagSource({ kind: "kb", kbId: kb.id })}
             />
             {ragSource.kind === "thread" && activeThreadId ? (
-              <div className="flex flex-col gap-1.5">
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      Mode
+                    </label>
+                    <Select
+                      value={effectiveThreadMode}
+                      onValueChange={(v) => {
+                        const next = v as KBMode;
+                        if (next === effectiveThreadMode) return;
+                        applyThreadSettingChange({ mode: next });
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="text">Text only</SelectItem>
+                        <SelectItem
+                          value="multimodal"
+                          disabled={effectiveThreadChunking === "late"}
+                          title={
+                            effectiveThreadChunking === "late"
+                              ? "Multimodal cannot be combined with late chunking"
+                              : undefined
+                          }
+                        >
+                          Multimodal
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      Chunking
+                    </label>
+                    <Select
+                      value={effectiveThreadChunking}
+                      onValueChange={(v) => {
+                        const next = v as RagChunkingStrategy;
+                        if (next === effectiveThreadChunking) return;
+                        applyThreadSettingChange({ chunking_strategy: next });
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="standard">Standard</SelectItem>
+                        <SelectItem
+                          value="late"
+                          disabled={effectiveThreadMode === "multimodal"}
+                          title={
+                            effectiveThreadMode === "multimodal"
+                              ? "Late chunking cannot be combined with multimodal mode"
+                              : undefined
+                          }
+                        >
+                          Late
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Changing either setting will re-index this thread's existing
+                  documents.
+                </p>
+                <div className="flex flex-col gap-1.5">
                 <label className="text-[12px] font-medium text-muted-foreground">
                   Documents in this thread
                 </label>
@@ -1368,7 +1484,8 @@ export function ChatSettingsPanel({
                     </div>
                   </>
                 )}
-              </div>
+                </div>
+              </>
             ) : null}
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">

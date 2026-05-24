@@ -480,6 +480,89 @@ def set_rag_defaults(
     )
 
 
+class ThreadRagSettings(BaseModel):
+    chunking_strategy: ChunkingStrategy = "standard"
+    mode: KBMode = "text"
+    embedding_model: str | None = None
+
+
+class UpdateThreadRagSettingsRequest(BaseModel):
+    chunking_strategy: ChunkingStrategy | None = None
+    mode: KBMode | None = None
+    embedding_model: str | None = None
+
+
+def _thread_settings_key(thread_id: str) -> str:
+    return f"thread:{thread_id}:rag"
+
+
+def _load_thread_settings(thread_id: str) -> ThreadRagSettings:
+    """Per-thread RAG settings, falling back to app-level defaults.
+
+    Stored in chat_settings under "thread:<id>:rag" as a nested JSON
+    dict — same shape as RagDefaults.
+    """
+    settings = list_chat_settings()
+    raw = settings.get(_thread_settings_key(thread_id)) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    fallback = _load_rag_defaults()
+    return ThreadRagSettings(
+        chunking_strategy = (
+            raw.get("chunking_strategy") or fallback.chunking_strategy
+        ),
+        mode = raw.get("mode") or fallback.mode,
+        embedding_model = raw.get("embedding_model") or fallback.embedding_model,
+    )
+
+
+@router.get(
+    "/threads/{thread_id}/settings",
+    response_model = ThreadRagSettings,
+)
+def get_thread_rag_settings(
+    thread_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> ThreadRagSettings:
+    return _load_thread_settings(thread_id)
+
+
+@router.put(
+    "/threads/{thread_id}/settings",
+    response_model = ThreadRagSettings,
+)
+def set_thread_rag_settings(
+    thread_id: str,
+    payload: UpdateThreadRagSettingsRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> ThreadRagSettings:
+    current = _load_thread_settings(thread_id)
+    new_strategy = payload.chunking_strategy or current.chunking_strategy
+    new_mode = payload.mode or current.mode
+    if payload.embedding_model is None:
+        new_embedder = current.embedding_model
+    elif payload.embedding_model.strip() == "":
+        new_embedder = None
+    else:
+        new_embedder = payload.embedding_model.strip()
+    _validate_mode_combo(new_mode, new_strategy)
+
+    upsert_chat_settings_merge(
+        {
+            _thread_settings_key(thread_id): {
+                "chunking_strategy": new_strategy,
+                "mode": new_mode,
+                "embedding_model": new_embedder,
+            }
+        }
+    )
+    return ThreadRagSettings(
+        chunking_strategy = new_strategy,
+        mode = new_mode,
+        embedding_model = new_embedder,
+    )
+
+
 class ReingestKBRequest(BaseModel):
     """All fields optional — omitting one keeps the KB's current value."""
     chunking_strategy: ChunkingStrategy | None = None
@@ -619,20 +702,45 @@ def reingest_knowledge_base(
 )
 def reingest_thread_documents(
     thread_id: str,
+    payload: UpdateThreadRagSettingsRequest | None = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ReingestResponse:
-    """Rebuild a thread's RAG index using the current defaults.
+    """Rebuild a thread's RAG index.
 
-    No body — per-thread strategy/mode overrides aren't exposed in v1.
+    Optional body lets the caller change the thread's chunking
+    strategy / mode / embedder at the same time — persisted into
+    chat_settings before re-ingestion so subsequent uploads pick up
+    the new values too. With an empty body, current settings are
+    reused.
     """
-    from utils.rag.config import RAG_EMBEDDING_MODEL
+    from utils.rag.config import resolve_embedder
 
+    if payload is None:
+        payload = UpdateThreadRagSettingsRequest()
+    if (
+        payload.chunking_strategy is not None
+        or payload.mode is not None
+        or payload.embedding_model is not None
+    ):
+        # set_thread_rag_settings handles validation + persistence.
+        settings = set_thread_rag_settings(
+            thread_id,
+            payload,
+            current_subject = current_subject,
+        )
+    else:
+        settings = _load_thread_settings(thread_id)
+
+    embedder = settings.embedding_model or resolve_embedder(
+        settings.mode,
+        settings.chunking_strategy,
+    )
     return _reingest_scope(
         kb_id = None,
         thread_id = thread_id,
-        chunking_strategy = "standard",
-        mode = "text",
-        embedding_model = RAG_EMBEDDING_MODEL,
+        chunking_strategy = settings.chunking_strategy,
+        mode = settings.mode,
+        embedding_model = embedder,
     )
 
 
@@ -696,12 +804,19 @@ async def upload_thread_document(
     file: UploadFile,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadResponse:
-    from utils.rag.config import RAG_EMBEDDING_MODEL
+    from utils.rag.config import resolve_embedder
 
     # Don't validate against chat_threads — a brand-new chat won't be
     # persisted there until after the first runStart/runEnd. Users who
     # attach a document on a fresh thread would otherwise hit a 404.
     stored_path, filename, byte_size = await _save_upload(file)
+    # Per-thread settings fall back to app-level defaults inside the
+    # helper, so first-time-uploaded threads inherit user preferences.
+    settings = _load_thread_settings(thread_id)
+    embedder = settings.embedding_model or resolve_embedder(
+        settings.mode,
+        settings.chunking_strategy,
+    )
     return _start_ingestion(
         filename = filename,
         stored_path = stored_path,
@@ -709,7 +824,9 @@ async def upload_thread_document(
         content_type = file.content_type,
         kb_id = None,
         thread_id = thread_id,
-        embedding_model = RAG_EMBEDDING_MODEL,
+        embedding_model = embedder,
+        chunking_strategy = settings.chunking_strategy,
+        mode = settings.mode,
     )
 
 
