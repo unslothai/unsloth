@@ -33,14 +33,16 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Clone + install Studio into a dedicated venv under $UNSLOTH_STUDIO_HOME.
-# --local makes install.sh use the just-cloned source tree instead of PyPI.
-# We bake a known-good ref (`main`) so the image is reproducible; bump as
-# part of the regular Docker image refresh.
+# --local makes install.sh use the just-cloned source tree (editable
+# install), so the source dir MUST persist for the venv's `unsloth_cli`
+# entrypoint to keep resolving. Move it under $UNSLOTH_STUDIO_HOME/src
+# (already inside the persistent layer) instead of deleting it. Strip
+# .git to save ~120MB.
 RUN mkdir -p "${UNSLOTH_STUDIO_HOME}" \
- && git clone --depth 1 https://github.com/unslothai/unsloth /tmp/unsloth-studio-src \
- && cd /tmp/unsloth-studio-src \
+ && git clone --depth 1 https://github.com/unslothai/unsloth "${UNSLOTH_STUDIO_HOME}/src" \
+ && cd "${UNSLOTH_STUDIO_HOME}/src" \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" bash install.sh --local \
- && rm -rf /tmp/unsloth-studio-src /root/.cache
+ && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" /root/.cache
 
 # Expose Studio's HTTP port. Default CMD binds 0.0.0.0 because containers
 # isolate the namespace; the operator publishes it explicitly with `-p`.
