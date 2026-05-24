@@ -749,6 +749,69 @@ def test_artifact_regex_rejects_shorter_commonmark_closing_fence():
         assert _would_reprompt(content), content
 
 
+def test_artifact_regex_accepts_longer_commonmark_closing_fence():
+    """CommonMark allows the closing fence to have MORE delimiters than
+    the opener. A 3-backtick opener with a 4-backtick close, or a
+    3-tilde opener with a 4-tilde close, is still a complete artifact."""
+    samples = [
+        "First, let me show.\n```python\nprint('hi')\n````",
+        "First, let me show.\n````python\nprint('``` inside')\n`````",
+        "First, let me show.\n~~~python\nprint('hi')\n~~~~",
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_reprompts_on_explicit_plan_header_numbered_list():
+    """``Here's my plan`` / ``Here's my approach`` is a strong stand-alone
+    plan signal. The following numbered list is the plan itself, not a
+    final answer, even when no narrow tool-action verb appears."""
+    samples = [
+        "Here's my plan:\n1. Analyze the request.\n2. Draft the answer.",
+        "Here's my plan:\n1. Create the Python file.\n2. Add the game loop.\n3. Test.",
+        "Here's my approach:\n1. Outline.\n2. Write.\n3. Review.",
+        "Here's the plan:\n1. Define the variables.\n2. Return the result.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_reprompts_on_numbered_plan_with_python_tool_wording():
+    """``use python (tool) to ...`` / ``use the python tool`` / ``use the
+    search tool`` in a numbered plan still re-prompts."""
+    samples = [
+        "Here's my plan:\n1. Use Python to calculate the answer.\n2. Return.",
+        "First, I'll do this:\n1. Use the python tool to parse the file.\n2. Summarize.",
+        "Here's my plan:\n1. Use the search tool.\n2. Summarize.",
+    ]
+    for s in samples:
+        assert _would_reprompt(s), s
+
+
+def test_no_reprompt_on_lesson_plan_answer_without_explicit_header():
+    """A final answer with a ``Plan:`` heading (no ``Here's my``
+    possessive) and no tool framing must STILL count as an answer.
+    Common cases: lesson plan, workout plan, meal plan."""
+    samples = [
+        (
+            "Plan:\n"
+            "1. Warm up for 5 minutes.\n"
+            "2. Run for 20 minutes.\n"
+            "3. Cool down with stretching."
+        ),
+        (
+            "My weekly plan:\n"
+            "1. Monday: rest.\n"
+            "2. Tuesday: jog.\n"
+            "3. Wednesday: swim."
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
 def test_open_fence_with_inner_numbered_list_still_reprompts():
     """A response that opens a code fence and emits numbered lines INSIDE
     must NOT count those lines as a completed numbered-list answer."""

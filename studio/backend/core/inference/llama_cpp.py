@@ -74,6 +74,8 @@ _TOOL_ACTION_VERBS = (
     rf"{_TOOL_LOOKUP_TARGET}|"
     r"(?:research|investigate|find|check|verify) (?:for )?(?:the |a |an )?"
     rf"{_TOOL_LOOKUP_TARGET}|"
+    r"(?:use|invoke|call) (?:the )?(?:python|search) tool|"
+    r"use python(?: tool)? to|"
     r"call (?:a |the )?tool|run (?:python|the code)|execute (?:python|the code)"
 )
 
@@ -122,11 +124,11 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # closing fence must have at least as many delimiters, and the line
     # must end cleanly (only trailing whitespace before newline / EOS),
     # so spam like ``` ```not actually closed ``` does not count.
-    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)(?!`)[ \t]*(?:\r?\n|\Z)"
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     # Closed tilde code fence; same 3+ rule (several models emit ~~~ when
-    # the body itself contains backticks). Anchored to the full run of
-    # tildes on both sides so a 4-tilde open cannot match a 3-tilde close.
-    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)(?!~)[ \t]*(?:\r?\n|\Z)"
+    # the body itself contains backticks). Opener anchored to the full
+    # run of tildes; closer accepts >= opener length per CommonMark.
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
     # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
     # Complete SVG document.
@@ -155,6 +157,16 @@ _PLAN_LIST_FRAMING = re.compile(
     r"i will|i shall|let me|allow me|now i|next i)\b"
     r"[\s\S]{0,2000}?"
     rf"\b(?:{_TOOL_ACTION_VERBS})\b",
+    re.IGNORECASE,
+)
+
+# "Here's my plan" / "Here's my approach" are strong stand-alone plan
+# signals: a possessive, first-person framing where the model is
+# announcing what it WILL do. Treat the following numbered list as a
+# plan regardless of the specific verbs each item uses, so stalls like
+# ``Here's my plan: 1. Analyze 2. Draft`` still re-prompt.
+_EXPLICIT_PLAN_HEADER = re.compile(
+    r"\bhere['’]?s (?:my |the |a )?(?:plan|approach)\b",
     re.IGNORECASE,
 )
 
@@ -194,14 +206,19 @@ def _has_answer_artifact(text: str) -> bool:
     Code fences, complete HTML, and complete SVG count directly. A
     numbered list counts only when there is no plan framing, so stalls
     like ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
-    An unclosed fence disqualifies the numbered-list fallback so a list
-    INSIDE incomplete code does not look like a final answer.
+    An explicit ``Here's my plan`` / ``Here's my approach`` header is
+    also enough to flag the list as a plan, even when no narrow tool-
+    action verb appears in the items. An unclosed fence disqualifies
+    the numbered-list fallback so a list INSIDE incomplete code does
+    not look like a final answer.
     """
     if _HAS_ANSWER_ARTIFACT.search(text):
         return True
     if _has_unclosed_code_fence(text):
         return False
     if _NUMBERED_LIST_ARTIFACT.search(text):
+        if _EXPLICIT_PLAN_HEADER.search(text):
+            return False
         return _PLAN_LIST_FRAMING.search(text) is None
     return False
 
