@@ -166,19 +166,41 @@ class TrainingStartRequest(BaseModel):
             )
         return v
 
-    @field_validator("vision_image_size")
+    @field_validator("vision_image_size", mode = "before")
     @classmethod
-    def _check_vision_image_size(cls, v: Optional[int]) -> Optional[int]:
+    def _check_vision_image_size(cls, v: Any) -> Optional[int]:
+        # mode="before" runs ahead of Pydantic's int coercion so True/False
+        # surface as bool (not 1/0) and we can give a precise error.
         if v is None:
             return v
-        if isinstance(v, bool) or not isinstance(v, int):
+        if isinstance(v, bool):
             raise ValueError("vision_image_size must be an integer or null")
-        if v < _MIN_VISION_IMAGE_SIZE or v > _MAX_VISION_IMAGE_SIZE:
+        if isinstance(v, int):
+            coerced = v
+        elif isinstance(v, str) and v.strip().lstrip("+-").isdigit():
+            coerced = int(v)
+        elif isinstance(v, float) and v.is_integer():
+            coerced = int(v)
+        else:
+            # numpy ints and other Integral subclasses (no hard numpy import).
+            try:
+                import numbers
+                if isinstance(v, numbers.Integral):
+                    coerced = int(v)
+                elif isinstance(v, numbers.Real) and float(v).is_integer():
+                    coerced = int(v)
+                else:
+                    raise TypeError
+            except Exception:
+                raise ValueError(
+                    "vision_image_size must be an integer or null"
+                )
+        if coerced < _MIN_VISION_IMAGE_SIZE or coerced > _MAX_VISION_IMAGE_SIZE:
             raise ValueError(
                 f"vision_image_size must be in [{_MIN_VISION_IMAGE_SIZE}, "
-                f"{_MAX_VISION_IMAGE_SIZE}] (got {v!r})"
+                f"{_MAX_VISION_IMAGE_SIZE}] (got {coerced!r})"
             )
-        return v
+        return coerced
 
     @field_validator("warmup_steps")
     @classmethod
