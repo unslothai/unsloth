@@ -1924,9 +1924,7 @@ class TestR5_BashGlobUnderSensitiveRoot:
         ],
     )
     def test_glob_under_sensitive_root_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"glob under sensitive root leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(cmd), f"glob under sensitive root leaked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1944,9 +1942,7 @@ class TestR5_BashGlobUnderSensitiveRoot:
         ],
     )
     def test_glob_legit_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"legit glob blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(cmd), f"legit glob blocked: {cmd!r}"
 
 
 class TestR5_TernaryBranchResolution:
