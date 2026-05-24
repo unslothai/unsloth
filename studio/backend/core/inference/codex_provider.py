@@ -1001,10 +1001,22 @@ async def _stream_codex_parallel(
     if synthesis_text:
         yield _chunk_text(completion_id, synthesis_text)
 
+    # Account for ALL Codex turns the fan-out spawned: N parallel
+    # workers each ran the same prompt (≈ N * prompt_tokens), and the
+    # synthesis turn re-sent the prompt plus every tab's output. Without
+    # this the cost / context display is off by the fan-out factor and
+    # users see a wildly inaccurate token count for the request.
+    total_tab_completion_chars = sum(len(t) for t in per_tab_texts)
+    synthesis_prompt_chars = sum(len(t) for t in per_tab_texts) + len(prompt)
     yield _chunk_usage(
         completion_id,
-        prompt_tokens = max(1, len(prompt) // 4),
-        completion_tokens = max(0, len(synthesis_text) // 4),
+        # n worker prompts (same prompt each) + synthesis prompt (which
+        # carries the prompt again plus every tab's output).
+        prompt_tokens = max(1, (n * len(prompt) + synthesis_prompt_chars) // 4),
+        # Sum of every worker's output plus the synthesis text.
+        completion_tokens = max(
+            0, (total_tab_completion_chars + len(synthesis_text)) // 4
+        ),
     )
     yield _chunk_stop(completion_id)
 

@@ -1424,6 +1424,46 @@ class TestCodexHardenedRegressions:
         assert url_events and url_events[0]["url"].endswith("/codex/device")
         assert code_events and code_events[0]["code"] == "ABCD-EFGH"
 
+    def test_parallel_usage_accounts_for_all_calls(self, monkeypatch):
+        """The fan-out path runs N worker calls + 1 synthesis call.
+        The reported usage must reflect that, not just one call's
+        worth, otherwise the cost / context display is off by the
+        fan-out factor.
+        """
+        _install_fake_codex_sdk(
+            monkeypatch,
+            lambda: _FakeAsyncCodex(
+                chunks = ["AAAAAAAAAA"],  # 10 chars per tab
+                final = "SYNTHESISED" * 10,  # 110 chars synthesis
+            ),
+        )
+        from core.inference.codex_provider import stream_codex
+
+        n = 4
+        long_prompt = "a" * 200  # 200 chars
+        lines = _collect_stream(
+            stream_codex(
+                messages = [{"role": "user", "content": long_prompt}],
+                model = "gpt-5.4",
+                parallel_calls = n,
+            )
+        )
+        chunks = _parse_sse_chunks(lines)
+        usage_chunks = [c for c in chunks if c.get("choices") == [] and c.get("usage")]
+        assert len(usage_chunks) == 1
+        usage = usage_chunks[0]["usage"]
+        # Single-call prompt would be ~200/4 = 50 tokens. For n=4 with
+        # synthesis, prompt should be much larger: n*200 + (n*10 + 200)
+        # = 800 + 240 = 1040 chars ~= 260 tokens.
+        assert (
+            usage["prompt_tokens"] >= 200
+        ), f"prompt_tokens not scaled for fan-out: {usage['prompt_tokens']}"
+        # Completion = n*10 (tab outputs) + 110 (synthesis) = 150 chars
+        # ~= 37 tokens. Definitely > the synthesis-only count of 27.
+        assert (
+            usage["completion_tokens"] >= 30
+        ), f"completion_tokens not scaled for fan-out: {usage['completion_tokens']}"
+
     def test_buffered_result_none_final_does_not_emit_repr(self, monkeypatch):
         """A buffered TurnResult whose final_response is None must NOT
         send a Python object repr (``TurnResult(...)``) to the user.
