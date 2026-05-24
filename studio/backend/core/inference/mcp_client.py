@@ -101,13 +101,50 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
+    cancel_event = None,
 ) -> str:
+    """Synchronously call an MCP tool.
+
+    ``cancel_event``: optional ``threading.Event``. When set, the in-flight
+    HTTP call is cancelled and the function returns a cancellation Error.
+    Polled in parallel with the tool call via ``asyncio.wait`` so a /cancel
+    POST from the UI interrupts even mid-network-read.
+    """
     async def _call() -> Any:
         async with _client(url, headers, use_oauth) as client:
             return await client.call_tool(name, args)
 
+    async def _watch_cancel() -> None:
+        # 50 ms cadence keeps cancellation responsive without busy-looping;
+        # matches the cadence routes/inference.py uses for cancel watchers.
+        while cancel_event is not None and not cancel_event.is_set():
+            await asyncio.sleep(0.05)
+
+    async def _race() -> Any:
+        call_task = asyncio.create_task(_call())
+        if cancel_event is None:
+            return await asyncio.wait_for(call_task, timeout = timeout)
+        watch_task = asyncio.create_task(_watch_cancel())
+        try:
+            done, pending = await asyncio.wait(
+                {call_task, watch_task},
+                timeout = timeout,
+                return_when = asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for t in (call_task, watch_task):
+                if not t.done():
+                    t.cancel()
+        if not done:
+            raise asyncio.TimeoutError
+        if call_task in done:
+            return call_task.result()
+        raise _MCPCancelled
+
     try:
-        result = asyncio.run(asyncio.wait_for(_call(), timeout = timeout))
+        result = asyncio.run(_race())
+    except _MCPCancelled:
+        return f"Error: MCP tool '{name}' cancelled"
     except asyncio.TimeoutError:
         return f"Error: MCP tool '{name}' timed out after {timeout:g}s"
     except Exception as exc:
@@ -115,3 +152,7 @@ def call_tool_sync(
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result)
+
+
+class _MCPCancelled(Exception):
+    """Internal sentinel raised when cancel_event fires before the tool returns."""

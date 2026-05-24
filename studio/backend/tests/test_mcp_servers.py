@@ -164,3 +164,71 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
         execute_tool("mcp__srv1__do_thing", {})
         == "Error: MCP server 'srv1' is disabled"
     )
+
+
+def test_mcp_specs_skip_invalid_openai_function_names():
+    """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; tools whose
+    names contain '.', '/', spaces, etc. would 400 the whole request."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {"name": "ok"},
+        {"name": "with.dot"},
+        {"name": "weird/slash"},
+        {"name": "has space"},
+        {"name": "good-dash_ok"},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    names = {s["function"]["name"] for s in specs}
+    assert {"mcp__srv__ok", "mcp__srv__good-dash_ok"} == names
+
+
+def test_mcp_specs_skip_empty_tool_name():
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    specs = _mcp_specs_for_server(server, [{"name": "", "description": "x"}])
+    assert specs == []
+
+
+def test_mcp_specs_drops_duplicate_names():
+    """Same tool name twice from one MCP server -> OpenAI rejects the
+    request as 'duplicates'. Drop the duplicate before forwarding."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [{"name": "echo"}, {"name": "echo"}]
+    specs = _mcp_specs_for_server(server, tools)
+    assert len(specs) == 1
+
+
+def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
+    """cancel_event already set before the call -> immediate Error: cancelled
+    without making a network round-trip."""
+    import threading
+    from core.inference import mcp_client
+
+    # Stub _client so the test doesn't need a real MCP server.
+    class _StubClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def call_tool(self, name, args):
+            import asyncio as _asyncio
+            await _asyncio.sleep(30)  # never finishes within the test
+
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda *a, **kw: _StubClient()
+    )
+
+    cancel = threading.Event()
+    cancel.set()
+    out = mcp_client.call_tool_sync(
+        url = "https://example/mcp",
+        headers = None,
+        name = "slow",
+        args = {},
+        timeout = 30.0,
+        cancel_event = cancel,
+    )
+    assert "cancelled" in out.lower()

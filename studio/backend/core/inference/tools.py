@@ -514,20 +514,44 @@ TERMINAL_TOOL = {
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
 
+# OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
+# streaming starts. MCP servers can return tool names containing '.', '/',
+# spaces, etc., which the prefix scheme would forward to OpenAI verbatim
+# and 400 the whole request. Validate up front and skip with a warning.
+_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
     specs: list[dict] = []
+    seen_names: set[str] = set()
     for tool in mcp_tools:
-        name = f"{MCP_TOOL_PREFIX}{server['id']}__{tool.get('name') or ''}"
-        # OpenAI rejects function.name > 64 chars before streaming starts.
-        if len(name) > 64:
+        raw_name = tool.get("name") or ""
+        if not raw_name:
+            logger.warning("Skipping MCP tool on '%s': empty name.", display)
+            continue
+        name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+        # OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad chars
+        # (., /, spaces, etc.) or oversized names would 400 the whole
+        # request. Skip + warn so the rest of the tools still ship.
+        if not _OPENAI_FN_NAME_RE.fullmatch(name):
             logger.warning(
-                "Skipping MCP tool '%s' on '%s': composed name exceeds 64 chars.",
-                tool.get("name"),
+                "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
+                "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
+                raw_name,
                 display,
+                name,
             )
             continue
+        # Same MCP server returning duplicate tool names would also 400
+        # OpenAI ("tools[N].function.name duplicates ..."). Drop dupes.
+        if name in seen_names:
+            logger.warning(
+                "Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display
+            )
+            continue
+        seen_names.add(name)
         specs.append(
             {
                 "type": "function",
@@ -613,6 +637,7 @@ def execute_tool(
             args = arguments,
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
+            cancel_event = cancel_event,
         )
     if name == "web_search":
         return _web_search(
