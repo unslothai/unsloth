@@ -984,9 +984,10 @@ def _resize_mlx_vlm_image(image, resize):
     if new_size != image.size:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         image = image.resize(new_size, resampling)
-    # mlx-vlm's internal collator square-resizes PIL images. Return an ndarray
-    # so Studio's max-dimension resize is the final resize, like trainer.py.
-    return np.asarray(image)
+    # mlx-vlm's internal collator square-resizes PIL images. Return a writable
+    # ndarray so Studio's max-dimension resize is the final one (like
+    # trainer.py) and HF processors don't warn on non-writable views.
+    return np.array(image, copy = True)
 
 
 def _resize_mlx_vlm_images(value, resize):
