@@ -4294,8 +4294,7 @@ class ExternalProviderClient:
                 if _tc_lc in ("auto", "none", "required"):
                     responses_tool_choice = _tc_lc
             elif (
-                isinstance(tool_choice, dict)
-                and tool_choice.get("type") == "function"
+                isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
             ):
                 _fn_pick = tool_choice.get("function") or {}
                 _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None

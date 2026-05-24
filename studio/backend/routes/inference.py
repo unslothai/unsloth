@@ -1744,11 +1744,7 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
-            if (
-                emit_extra_content
-                and msg.role == "assistant"
-                and msg.extra_content
-            ):
+            if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                 out["extra_content"] = msg.extra_content
             result.append(out)
             continue
@@ -1807,11 +1803,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if (
-                    emit_extra_content
-                    and msg.role == "assistant"
-                    and msg.extra_content
-                ):
+                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
             else:
@@ -1839,11 +1831,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if (
-                    emit_extra_content
-                    and msg.role == "assistant"
-                    and msg.extra_content
-                ):
+                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
     return result
