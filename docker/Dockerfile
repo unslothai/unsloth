@@ -237,11 +237,19 @@ print(f"OK: {' + '.join(LIGHT_IMPORTS)} import cleanly on no-GPU host")
 PY
 
 # =============================================================================
-# Stage 2: runtime  -- slim runtime image, no nvcc, no headers
+# Stage 2: runtime  -- slim runtime image, no nvcc, no cuDNN/cuBLAS layers
 # =============================================================================
-FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+# The "-base-" variant (vs "-cudnn-runtime-") drops ~2.7 GB of system CUDA
+# libraries we never load. torch wheels bake their OWN cuDNN/cuBLAS/cuSPARSE/
+# cuRAND/cuSOLVER/cuFFT/NCCL/cuSparseLt inside `torch/lib/`, and libtorch_cuda.so
+# has RPATH `$ORIGIN/../../nvidia/cudnn/lib:$ORIGIN/../../nvidia/cublas/lib:...`
+# so the dynamic loader resolves through the wheel, never the system. Empirical
+# verification via `readelf -d torch/lib/libtorch_cuda.so` (Fork 5 audit). The
+# base image still provides nvidia-smi, libcuda stubs, libnvidia-ml -- which
+# is everything our entrypoint pre-flight + torch.cuda need.
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
 
-# The nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 manifest is multi-arch
+# The nvidia/cuda:12.8.1-base-ubuntu24.04 manifest is multi-arch
 # (linux/amd64 + linux/arm64). docker/buildx picks the right one for
 # TARGETPLATFORM at this FROM line; no conditional needed.
 ARG TARGETARCH
