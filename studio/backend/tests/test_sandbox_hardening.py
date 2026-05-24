@@ -2258,7 +2258,9 @@ class TestR7_DeepPathTraversal:
         ],
     )
     def test_deep_traversal_bash_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), f"deep ~/foo/../../etc traversal leaked: {cmd!r}"
+        assert _find_sensitive_paths(
+            cmd
+        ), f"deep ~/foo/../../etc traversal leaked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "code",
@@ -2280,7 +2282,9 @@ class TestR7_DeepPathTraversal:
         ],
     )
     def test_in_home_traversal_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), f"legit in-home ../ traversal blocked: {cmd!r}"
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"legit in-home ../ traversal blocked: {cmd!r}"
 
 
 class TestR7_BraceFalsePositive:
@@ -2301,7 +2305,9 @@ class TestR7_BraceFalsePositive:
         ],
     )
     def test_user_data_brace_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), f"user-data brace falsely blocked: {cmd!r}"
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"user-data brace falsely blocked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2324,7 +2330,9 @@ class TestR7_BraceFalsePositive:
         ],
     )
     def test_home_credential_brace_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), f"home-credential brace listing leaked: {cmd!r}"
+        assert _find_sensitive_paths(
+            cmd
+        ), f"home-credential brace listing leaked: {cmd!r}"
 
 
 class TestR7_BinOpAddDepthCap:
@@ -2344,7 +2352,9 @@ class TestR7_BinOpAddDepthCap:
         parts = ["''"] * pad + [repr(c) for c in target]
         expr = " + ".join(parts)
         code = f"open({expr}).read()"
-        assert _is_blocked(code), f"long {n_parts}-operand concat leaked: open({expr!r})"
+        assert _is_blocked(
+            code
+        ), f"long {n_parts}-operand concat leaked: open({expr!r})"
 
     def test_long_concat_legit_allowed(self):
         # A long concatenation that resolves to a benign path must

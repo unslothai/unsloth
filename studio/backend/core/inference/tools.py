@@ -552,9 +552,13 @@ def _build_brace_re(prefix_alt: str, names: tuple[str, ...]) -> "re.Pattern[str]
         non-word -- so it cannot anchor here)."""
     return re.compile(
         _PATH_TOKEN_START
-        + r"(?:" + prefix_alt + r")"
+        + r"(?:"
+        + prefix_alt
+        + r")"
         + r"[^\s'\";&|`$]*?"
-        + r"\{[^{}]*?(?<=[,{/])(?:" + "|".join(names) + r")(?=,|\}|/)[^{}]*\}",
+        + r"\{[^{}]*?(?<=[,{/])(?:"
+        + "|".join(names)
+        + r")(?=,|\}|/)[^{}]*\}",
         re.IGNORECASE,
     )
 
@@ -568,16 +572,12 @@ _HOME_BRACE_PREFIX_ALT = (
     + r"|%USERPROFILE%/+"
     + r"|%HOMEDRIVE%%HOMEPATH%/+"
 )
-_HOME_BRACE_RE = _build_brace_re(
-    _HOME_BRACE_PREFIX_ALT, _HOME_BRACE_SENSITIVE_NAMES
-)
+_HOME_BRACE_RE = _build_brace_re(_HOME_BRACE_PREFIX_ALT, _HOME_BRACE_SENSITIVE_NAMES)
 _ETC_BRACE_RE = _build_brace_re(r"/etc/+", _ETC_BRACE_SENSITIVE_NAMES)
 _PROC_BRACE_RE = _build_brace_re(
     r"/proc/(?:self|thread-self|\d+)/+", _PROC_BRACE_SENSITIVE_NAMES
 )
-_VAR_SPOOL_BRACE_RE = _build_brace_re(
-    r"/var/spool/cron/+", (r"[\w.-]+",)
-)
+_VAR_SPOOL_BRACE_RE = _build_brace_re(r"/var/spool/cron/+", (r"[\w.-]+",))
 
 
 def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
@@ -3248,10 +3248,7 @@ def _check_signal_escape_patterns(code: str):
             ):
                 recv = node.value.value.id
                 attr = node.value.attr
-                if (
-                    recv in self.pathlib_aliases
-                    and attr in _PATHLIB_PATH_CLASSES
-                ):
+                if recv in self.pathlib_aliases and attr in _PATHLIB_PATH_CLASSES:
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             self.path_aliases.add(tgt.id)
