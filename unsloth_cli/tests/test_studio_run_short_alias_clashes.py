@@ -217,7 +217,9 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     ],
 )
 def test_legacy_model_aliases_still_promote_to_model(
-    monkeypatch, legacy_args, expected_model,
+    monkeypatch,
+    legacy_args,
+    expected_model,
 ):
     """Pre-PR `-m X` / `-hfr X` set --model X. The preprocessor must
     keep those scripts working."""
@@ -228,9 +230,7 @@ def test_legacy_model_aliases_still_promote_to_model(
     # The legacy alias must not also leak into the pass-through tail.
     for alias in ("-m", "-hfr"):
         if alias in legacy_args:
-            assert alias not in argv, (
-                f"legacy {alias} leaked into child argv: {argv}"
-            )
+            assert alias not in argv, f"legacy {alias} leaked into child argv: {argv}"
 
 
 def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
@@ -246,9 +246,9 @@ def test_legacy_model_alias_conflicts_with_long_form(monkeypatch):
     """Passing both --model X and -m Y should error -- ambiguous intent."""
     captured = _invoke(monkeypatch, ["--model", "X", "-m", "Y"])
     # The preprocessor raises typer.BadParameter before reaching execvp.
-    assert len(captured) == 0, (
-        f"expected error before re-exec, got launch with argv = {captured}"
-    )
+    assert (
+        len(captured) == 0
+    ), f"expected error before re-exec, got launch with argv = {captured}"
 
 
 def test_clustered_tokens_are_not_promoted(monkeypatch):

@@ -227,9 +227,9 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     result, captured = _invoke_run(monkeypatch, _BASE + ["-np", "8"])
     assert len(captured) == 1
     argv = captured[0]["argv"]
-    assert _value_after(argv, "--parallel") == "8", (
-        f"-np 8 silently became 4 after re-exec; argv = {argv}"
-    )
+    assert (
+        _value_after(argv, "--parallel") == "8"
+    ), f"-np 8 silently became 4 after re-exec; argv = {argv}"
     # Confirm `-np 8` did not collide with --port either way.
     assert _value_after(argv, "--port") == "8888", argv
 

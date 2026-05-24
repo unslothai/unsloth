@@ -771,7 +771,10 @@ def run(
     # tokens from the pass-through tail back into their typer parameters.
     # Clustered tokens (`-fa`, `-mg`, `-fitt`, ...) are left as extras.
     model, extra_llama_args = _consume_legacy_short_aliases(
-        extra_llama_args, ("-m", "-hfr"), model, "--model",
+        extra_llama_args,
+        ("-m", "-hfr"),
+        model,
+        "--model",
     )
     legacy_frontend, extra_llama_args = _consume_legacy_short_aliases(
         extra_llama_args,
