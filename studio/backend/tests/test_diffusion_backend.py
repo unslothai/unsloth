@@ -53,6 +53,11 @@ def test_detect_family_flux2_klein():
     assert fam.name == "flux.2-klein"
     assert fam.pipeline_class == "Flux2KleinPipeline"
     assert fam.transformer_class == "Flux2Transformer2DModel"
+    # Family default base must point to a real Hub repo (not the bare
+    # "FLUX.2-klein" slug that does not exist). The frontend curated
+    # picker still passes base_repo explicitly per size so this default
+    # only fires for the "custom HF repo" mode.
+    assert fam.base_repo == "black-forest-labs/FLUX.2-klein-base-4B"
 
 
 def test_detect_family_flux2_dev_is_not_klein():
@@ -363,14 +368,14 @@ def test_load_model_gguf_path_happy(monkeypatch):
     backend = get_diffusion_backend()
     status = backend.load_model(
         "unsloth/FLUX.2-klein-4B-GGUF",
-        gguf_filename = "FLUX.2-klein-4B-Q4_K_S.gguf",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
     )
     assert status["is_loaded"] is True
     assert status["family"] == "flux.2-klein"
     assert status["pipeline_class"] == "Flux2KleinPipeline"
-    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein"
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
     assert status["gguf_path"] == (
-        "/fake/unsloth/FLUX.2-klein-4B-GGUF/FLUX.2-klein-4B-Q4_K_S.gguf"
+        "/fake/unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_S.gguf"
     )
 
 
@@ -397,12 +402,223 @@ def test_load_model_swap_drops_previous(monkeypatch):
     backend = get_diffusion_backend()
     backend.load_model(
         "unsloth/FLUX.2-klein-4B-GGUF",
-        gguf_filename = "FLUX.2-klein-4B-Q4_K_S.gguf",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
     )
     first_pipe = backend._pipe
     backend.load_model(
         "unsloth/FLUX.2-dev-GGUF",
-        gguf_filename = "FLUX.2-dev-Q4_K_S.gguf",
+        gguf_filename = "flux2-dev-Q4_K_S.gguf",
     )
     assert backend._pipe is not first_pipe
     assert backend.status()["family"] == "flux.2"
+
+
+def test_load_model_base_repo_override(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-9B-GGUF",
+        gguf_filename = "flux-2-klein-9b-Q4_K_S.gguf",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
+    )
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+
+
+def test_load_model_full_repo_does_not_substitute(monkeypatch):
+    """A full diffusers repo (no gguf_filename) must call from_pretrained
+    with the user-supplied repo, not the family default. This was the
+    silent-substitution bug surfaced by review."""
+    fake = _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/FLUX.1-finetune-diffusers",
+        family_override = "flux.1",
+    )
+    # base_repo must echo the user repo, not the family default.
+    assert status["base_repo"] == "owner/FLUX.1-finetune-diffusers"
+    assert status["repo_id"] == "owner/FLUX.1-finetune-diffusers"
+    # And the fake pipeline records what we called from_pretrained with.
+    assert backend._pipe.base_repo == "owner/FLUX.1-finetune-diffusers"
+
+
+def test_load_model_concurrent_serialises(monkeypatch):
+    """Two concurrent load_model() calls must NOT both reach
+    pipeline_cls.from_pretrained at the same time (race fix)."""
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+    import threading
+    import time as _t
+
+    backend = get_diffusion_backend()
+    active = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    import sys as _sys
+
+    fake_pipeline_cls = _sys.modules["diffusers"].Flux2KleinPipeline
+    original_from_pretrained = fake_pipeline_cls.from_pretrained.__func__
+
+    def _instrumented_from_pretrained(cls, base_repo, **kwargs):
+        with lock:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+        try:
+            _t.sleep(0.1)
+            return original_from_pretrained(cls, base_repo, **kwargs)
+        finally:
+            with lock:
+                active["n"] -= 1
+
+    fake_pipeline_cls.from_pretrained = classmethod(_instrumented_from_pretrained)
+
+    errors: list = []
+
+    def _do_load():
+        try:
+            backend.load_model(
+                "unsloth/FLUX.2-klein-base-4B-GGUF",
+                gguf_filename = "flux-2-klein-base-4b-Q4_K_S.gguf",
+            )
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target = _do_load) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    assert active["max"] == 1, (
+        f"Expected concurrent loads to serialise; max_active={active['max']}"
+    )
+
+
+def test_pipe_accepts_kwarg_filter():
+    """The negative_prompt filter must drop the kwarg on classes that
+    do not accept it (FLUX.2 / FLUX.2 klein) and keep it on the rest."""
+    from core.inference.diffusion import _pipe_accepts_kwarg
+
+    class _NoNeg:
+        def __call__(self, *, prompt, num_inference_steps, guidance_scale, width, height):
+            pass
+
+    class _Neg:
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt = None,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+        ):
+            pass
+
+    class _VarKw:
+        def __call__(self, **kw):
+            pass
+
+    assert _pipe_accepts_kwarg(_NoNeg(), "negative_prompt") is False
+    assert _pipe_accepts_kwarg(_Neg(), "negative_prompt") is True
+    # Anything with **kwargs is assumed to accept the kwarg (the
+    # alternative is to silently drop legitimate params).
+    assert _pipe_accepts_kwarg(_VarKw(), "negative_prompt") is True
+
+
+def test_generate_image_strips_negative_prompt_on_flux2(monkeypatch):
+    """generate_image must drop negative_prompt when the loaded pipeline
+    does not accept it; otherwise FLUX.2 would 500 on a user-visible
+    field."""
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+
+    received: dict = {}
+
+    class _Flux2LikePipe:
+        # Signature mirrors Flux2Pipeline.__call__: NO negative_prompt.
+        # No **kw either, since the real FLUX.2 pipeline does not accept
+        # arbitrary kwargs (passing negative_prompt to it raises TypeError).
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+            generator = None,
+        ):
+            received["prompt"] = prompt
+            class _Out:
+                pass
+            o = _Out()
+            o.images = [Image.new("RGB", (width, height), (1, 2, 3))]
+            return o
+
+    backend._pipe = _Flux2LikePipe()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[0]
+    backend._repo_id = "stub/stub"
+
+    # If generate_image forwarded negative_prompt, the pipeline call
+    # would raise TypeError. The PR's filter drops it, so the call
+    # succeeds and we observe the prompt was still delivered.
+    backend.generate_image(
+        prompt = "a sloth",
+        negative_prompt = "blurry, low quality",
+        num_inference_steps = 4,
+        guidance_scale = 1.0,
+        width = 256,
+        height = 256,
+    )
+    assert received["prompt"] == "a sloth"
+
+
+def test_generate_image_keeps_negative_prompt_on_supporting_pipe(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    captured: dict = {}
+
+    class _NegOK:
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt = None,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+            **kw,
+        ):
+            captured["negative_prompt"] = negative_prompt
+            class _Out:
+                pass
+            o = _Out()
+            o.images = [Image.new("RGB", (width, height), (4, 5, 6))]
+            return o
+
+    backend._pipe = _NegOK()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[2]  # flux.1 supports negative_prompt
+    backend._repo_id = "stub/stub"
+
+    backend.generate_image(
+        prompt = "a sloth",
+        negative_prompt = "blurry",
+        num_inference_steps = 4,
+        guidance_scale = 1.0,
+        width = 256,
+        height = 256,
+    )
+    assert captured["negative_prompt"] == "blurry"

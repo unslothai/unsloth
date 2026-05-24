@@ -28,47 +28,64 @@ import {
 } from "./api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// Curated short list of working unsloth/* diffusion GGUFs. Picked to
-// span size + license so any GPU class has at least one viable option:
-//   FLUX.2 klein 4B  -> ~10-12 GB VRAM with Q4_K_S, Apache 2.0
-//   FLUX.2 klein 9B  -> ~16-18 GB VRAM, FLUX [klein] non-commercial
-//   FLUX.2 dev       -> ~24+ GB VRAM, FLUX [dev] non-commercial
-// The CLI on the backend can load anything supported by detect_family();
-// this list just keeps the picker compact for the v1 UI.
+// Curated short list of working diffusion GGUFs. Picked to span
+// size + license so any GPU class has at least one viable option:
+//   FLUX.2 klein 4B  -> ~13 GB VRAM with Q4_K_S, Apache 2.0
+//   FLUX.2 klein 9B  -> ~17 GB VRAM, FLUX [klein] non-commercial (gated)
+//   FLUX.2 dev       -> ~24+ GB VRAM, FLUX [dev] non-commercial (gated)
+//   FLUX.1 dev       -> ~12 GB VRAM, older but widely tested (gated)
+//
+// Filenames mirror the Hub canonical case (lowercase 'flux-2-klein-4b')
+// and base_repo is set explicitly so the backend never falls back to the
+// family default. The CLI on the backend can load anything supported by
+// detect_family(); this list just keeps the picker compact for the v1 UI.
 const CURATED_MODELS: Array<{
   label: string;
   repo_id: string;
   default_gguf: string;
+  base_repo: string;
   family: string;
   notes: string;
 }> = [
   {
-    label: "FLUX.2 klein 4B (Q4_K_S, Apache 2.0)",
+    label: "FLUX.2 klein base 4B (Q4_K_S, Apache 2.0)",
+    repo_id: "unsloth/FLUX.2-klein-base-4B-GGUF",
+    default_gguf: "flux-2-klein-base-4b-Q4_K_S.gguf",
+    base_repo: "black-forest-labs/FLUX.2-klein-base-4B",
+    family: "flux.2-klein",
+    notes: "13 GB VRAM, fastest. Apache 2.0, ungated.",
+  },
+  {
+    label: "FLUX.2 klein 4B (Q4_K_S, distilled)",
     repo_id: "unsloth/FLUX.2-klein-4B-GGUF",
-    default_gguf: "FLUX.2-klein-4B-Q4_K_S.gguf",
+    default_gguf: "flux-2-klein-4b-Q4_K_S.gguf",
+    base_repo: "black-forest-labs/FLUX.2-klein-base-4B",
     family: "flux.2-klein",
-    notes: "13 GB VRAM, fastest. Apache 2.0.",
+    notes: "13 GB VRAM. Distilled klein 4B with the Apache base.",
   },
   {
-    label: "FLUX.2 klein 9B (Q4_K_S)",
+    label: "FLUX.2 klein 9B (Q4_K_S, gated)",
     repo_id: "unsloth/FLUX.2-klein-9B-GGUF",
-    default_gguf: "FLUX.2-klein-9B-Q4_K_S.gguf",
+    default_gguf: "flux-2-klein-9b-Q4_K_S.gguf",
+    base_repo: "black-forest-labs/FLUX.2-klein-base-9B",
     family: "flux.2-klein",
-    notes: "17 GB VRAM, higher quality.",
+    notes: "17 GB VRAM. Higher quality. Requires HF access to FLUX.2 klein base 9B.",
   },
   {
-    label: "FLUX.2 dev (Q4_K_S)",
+    label: "FLUX.2 dev (Q4_K_S, gated)",
     repo_id: "unsloth/FLUX.2-dev-GGUF",
-    default_gguf: "FLUX.2-dev-Q4_K_S.gguf",
+    default_gguf: "flux2-dev-Q4_K_S.gguf",
+    base_repo: "black-forest-labs/FLUX.2-dev",
     family: "flux.2",
-    notes: "24+ GB VRAM, best for prompt following.",
+    notes: "24+ GB VRAM. Requires HF access to FLUX.2 dev.",
   },
   {
-    label: "FLUX.1 dev (Q4_K_S, city96)",
+    label: "FLUX.1 dev (Q4_K_S, city96, gated)",
     repo_id: "city96/FLUX.1-dev-gguf",
     default_gguf: "flux1-dev-Q4_K_S.gguf",
+    base_repo: "black-forest-labs/FLUX.1-dev",
     family: "flux.1",
-    notes: "12 GB VRAM, older but well tested.",
+    notes: "12 GB VRAM. Older but widely tested. Requires HF access to FLUX.1 dev.",
   },
 ];
 
@@ -132,6 +149,11 @@ export function ImagesPage() {
       const repo = useCustom ? customRepoId.trim() : preset.repo_id;
       const gguf = useCustom ? customGguf.trim() || undefined : preset.default_gguf;
       const family = useCustom ? undefined : preset.family;
+      // Always pass base_repo for curated entries; custom-repo mode
+      // lets the backend either infer it from the family default or
+      // (when no GGUF is given) treat the repo as a full diffusers
+      // checkpoint and call from_pretrained on it directly.
+      const baseRepo = useCustom ? undefined : preset.base_repo;
       if (!repo) {
         toast.error("Pick a model first");
         return;
@@ -139,6 +161,7 @@ export function ImagesPage() {
       const next = await loadDiffusionModel({
         repo_id: repo,
         gguf_filename: gguf,
+        base_repo: baseRepo,
         family,
         hf_token: hfToken.trim() || undefined,
       });
@@ -207,6 +230,19 @@ export function ImagesPage() {
     }
     return "Not loaded";
   }, [status, refreshingStatus]);
+
+  // FLUX.2 / FLUX.2 klein pipelines do NOT accept negative_prompt and
+  // would 500 if we sent one through. The backend strips the field
+  // defensively but hiding it client-side keeps the UI honest.
+  const supportsNegativePrompt = useMemo(() => {
+    const family = status?.family;
+    if (!family) {
+      const candidate = useCustom ? undefined : preset.family;
+      if (!candidate) return true;
+      return !candidate.startsWith("flux.2");
+    }
+    return !family.startsWith("flux.2");
+  }, [status, useCustom, preset.family]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
@@ -327,15 +363,22 @@ export function ImagesPage() {
               data-testid="diffusion-prompt"
             />
           </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="diffusion-negative">Negative prompt (optional)</Label>
-            <Textarea
-              id="diffusion-negative"
-              value={negativePrompt}
-              onChange={(e) => setNegativePrompt(e.target.value)}
-              rows={2}
-            />
-          </div>
+          {supportsNegativePrompt ? (
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="diffusion-negative">Negative prompt (optional)</Label>
+              <Textarea
+                id="diffusion-negative"
+                value={negativePrompt}
+                onChange={(e) => setNegativePrompt(e.target.value)}
+                rows={2}
+              />
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {"FLUX.2 and FLUX.2 klein do not accept a negative prompt. "}
+              {"Steer the output via the main prompt instead."}
+            </p>
+          )}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">

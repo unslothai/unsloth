@@ -73,11 +73,18 @@ class DiffusionFamily:
 
 
 _FAMILIES: tuple[DiffusionFamily, ...] = (
+    # The "9b" alias is checked first so a "flux-2-klein-9b" GGUF picks
+    # the 9B base instead of the 4B one when the user does not pass an
+    # explicit base_repo. Apache 2.0 is preferred as the auto-default for
+    # the 4B path because BFL's 9B base is gated.
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
         transformer_class = "Flux2Transformer2DModel",
-        base_repo = "black-forest-labs/FLUX.2-klein",
+        # Default for klein when no explicit base_repo: Apache-2.0 4B Base.
+        # The frontend curated picker always passes base_repo explicitly,
+        # so this default only fires for "custom HF repo" mode.
+        base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
         aliases = ("flux2-klein", "flux-2-klein", "flux.2.klein"),
     ),
     DiffusionFamily(
@@ -111,7 +118,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "stable-diffusion-xl",
         pipeline_class = "StableDiffusionXLPipeline",
-        transformer_class = "",  # SDXL uses a UNet, not a transformer
+        # SDXL uses a UNet, not a transformer. Loading SDXL GGUFs would
+        # require UNet2DConditionModel.from_single_file + GGUF, which is
+        # not the same code path as the FLUX / Qwen-Image transformers
+        # this PR ships. Until that path is wired and smoke-tested,
+        # treat SDXL as full-repo-only and surface a clear error when a
+        # user tries to pass gguf_filename for it.
+        transformer_class = "",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
         aliases = ("sdxl",),
     ),
@@ -171,7 +184,15 @@ class DiffusionBackend:
 
     def __init__(self) -> None:
         self._pipe: Any = None
+        # `_lock` protects mutations to the small state fields and the
+        # pipe call inside generate_image. `_load_lock` serialises the
+        # entire load_model call so two concurrent /images/load requests
+        # cannot both reach pipeline_cls.from_pretrained at the same
+        # time (which would double-spend VRAM and corrupt _pipe). The
+        # locks are taken in order load -> state so a generation in
+        # flight cannot deadlock the next load.
         self._lock = threading.Lock()
+        self._load_lock = threading.Lock()
         self._family: Optional[DiffusionFamily] = None
         self._repo_id: Optional[str] = None
         self._gguf_path: Optional[str] = None
@@ -269,86 +290,109 @@ class DiffusionBackend:
 
         device, dtype = self._pick_device_and_dtype()
 
-        with self._lock:
-            self._loading = True
-            self._last_error = None
-        try:
-            pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
-            if pipeline_cls is None:
-                raise RuntimeError(
-                    f"diffusers {diffusers.__version__} has no "
-                    f"{fam.pipeline_class}; upgrade diffusers and retry."
-                )
-            transformer_cls = (
-                getattr(diffusers, fam.transformer_class, None)
-                if fam.transformer_class
-                else None
-            )
+        # _load_lock serialises the entire load so two concurrent calls
+        # cannot both kick off a multi-GB download + GPU upload at once.
+        # The second caller waits behind the first and then loads on top
+        # of the now-populated state via the normal swap path.
+        with self._load_lock:
+            with self._lock:
+                self._loading = True
+                self._last_error = None
+            try:
+                # Unload any chat model that is holding GPU memory so the
+                # diffusion load does not OOM on a < 24 GB GPU. Best
+                # effort: if the llama-cpp backend module is absent (eg
+                # tests, headless tooling) we just continue.
+                _release_chat_backend_for_diffusion()
 
-            effective_base = base_repo or fam.base_repo
-            logger.info(
-                "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
-                repo_id,
-                fam.name,
-                device,
-                dtype,
-                effective_base,
-            )
-
-            transformer = None
-            local_gguf_path: Optional[str] = None
-            if gguf_filename:
-                if transformer_cls is None:
+                pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
+                if pipeline_cls is None:
                     raise RuntimeError(
-                        f"Family {fam.name} does not have a GGUF transformer "
-                        "path; load the full repo instead."
+                        f"diffusers {diffusers.__version__} has no "
+                        f"{fam.pipeline_class}; upgrade diffusers and retry."
                     )
-                local_gguf_path = hf_hub_download(
-                    repo_id = repo_id,
-                    filename = gguf_filename,
-                    token = hf_token,
-                )
-                quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
-                transformer = transformer_cls.from_single_file(
-                    local_gguf_path,
-                    quantization_config = quant_config,
-                    torch_dtype = dtype,
+                transformer_cls = (
+                    getattr(diffusers, fam.transformer_class, None)
+                    if fam.transformer_class
+                    else None
                 )
 
-            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
-            if transformer is not None:
-                pipe_kwargs["transformer"] = transformer
-            if hf_token:
-                pipe_kwargs["token"] = hf_token
+                # Resolution rules for the "what repo to call
+                # from_pretrained on" question:
+                #   1. caller-supplied base_repo wins
+                #   2. if no GGUF file was requested the user is loading a
+                #      full diffusers repo; use repo_id directly so we do
+                #      not silently substitute the family default
+                #   3. otherwise fall back to the family default
+                if base_repo:
+                    effective_base = base_repo
+                elif not gguf_filename:
+                    effective_base = repo_id
+                else:
+                    effective_base = fam.base_repo
+                logger.info(
+                    "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
+                    repo_id,
+                    fam.name,
+                    device,
+                    dtype,
+                    effective_base,
+                )
 
-            pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
-            if enable_model_cpu_offload and device == "cuda":
-                pipe.enable_model_cpu_offload()
-            else:
-                pipe.to(device)
+                transformer = None
+                local_gguf_path: Optional[str] = None
+                if gguf_filename:
+                    if transformer_cls is None:
+                        raise RuntimeError(
+                            f"Family {fam.name} does not have a GGUF transformer "
+                            "path wired in this build; load the full repo instead."
+                        )
+                    local_gguf_path = hf_hub_download(
+                        repo_id = repo_id,
+                        filename = gguf_filename,
+                        token = hf_token,
+                    )
+                    quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
+                    transformer = transformer_cls.from_single_file(
+                        local_gguf_path,
+                        quantization_config = quant_config,
+                        torch_dtype = dtype,
+                    )
 
-            # Drop the old pipeline only after the new one is in place.
-            old = self._pipe
-            with self._lock:
-                self._pipe = pipe
-                self._family = fam
-                self._repo_id = repo_id
-                self._gguf_path = local_gguf_path
-                self._base_repo = effective_base
-                self._device = device
-                self._dtype = str(dtype).replace("torch.", "")
-                self._loaded_at = time.time()
-            _release(old)
+                pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                if transformer is not None:
+                    pipe_kwargs["transformer"] = transformer
+                if hf_token:
+                    pipe_kwargs["token"] = hf_token
 
-            return self.status()
-        except Exception as exc:
-            with self._lock:
-                self._last_error = str(exc)
-            logger.exception("Diffusion load failed for %s", repo_id)
-            raise RuntimeError(f"Failed to load diffusion model: {exc}") from exc
-        finally:
-            with self._lock:
-                self._loading = False
+                pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                if enable_model_cpu_offload and device == "cuda":
+                    pipe.enable_model_cpu_offload()
+                else:
+                    pipe.to(device)
+
+                # Drop the old pipeline only after the new one is in place.
+                old = self._pipe
+                with self._lock:
+                    self._pipe = pipe
+                    self._family = fam
+                    self._repo_id = repo_id
+                    self._gguf_path = local_gguf_path
+                    self._base_repo = effective_base
+                    self._device = device
+                    self._dtype = str(dtype).replace("torch.", "")
+                    self._loaded_at = time.time()
+                _release(old)
+
+                return self.status()
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = str(exc)
+                logger.exception("Diffusion load failed for %s", repo_id)
+                raise RuntimeError(f"Failed to load diffusion model: {exc}") from exc
+            finally:
+                with self._lock:
+                    self._loading = False
 
     def unload_model(self) -> dict[str, Any]:
         with self._lock:
@@ -420,8 +464,18 @@ class DiffusionBackend:
                 "width": int(width),
                 "height": int(height),
             }
+            # FLUX.2 / FLUX.2 klein pipelines do NOT accept
+            # negative_prompt and 500 if you pass it in. Inspect the
+            # signature and only forward when supported; warn otherwise
+            # so the UI can disable the field for incompatible families.
             if negative_prompt is not None and negative_prompt.strip():
-                call_kwargs["negative_prompt"] = negative_prompt
+                if _pipe_accepts_kwarg(pipe, "negative_prompt"):
+                    call_kwargs["negative_prompt"] = negative_prompt
+                else:
+                    logger.info(
+                        "Dropping negative_prompt: %s does not accept it",
+                        type(pipe).__name__,
+                    )
             if generator is not None:
                 call_kwargs["generator"] = generator
 
@@ -430,6 +484,26 @@ class DiffusionBackend:
             if not images:
                 raise RuntimeError("Diffusion pipeline returned no images.")
             return images[0]
+
+
+def _pipe_accepts_kwarg(pipe: Any, name: str) -> bool:
+    """True if ``pipe.__call__`` advertises a kwarg called ``name``.
+
+    Cheap inspect-based probe so we do not have to maintain a manual
+    list of which pipeline classes accept negative_prompt. Returns
+    False on any introspection error so callers stay on the safe path.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(pipe.__call__)
+    except (TypeError, ValueError):
+        return False
+    if name in sig.parameters:
+        return True
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
 
 
 def encode_png_base64(pil_image: "Any") -> str:
@@ -442,6 +516,36 @@ def encode_png_base64(pil_image: "Any") -> str:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
+
+
+def _release_chat_backend_for_diffusion() -> None:
+    """Unload any running chat backend before a diffusion load.
+
+    Diffusion pipelines on FLUX-class models can eat 12-24 GB of VRAM,
+    and llama-server typically holds onto its loaded GGUF until told to
+    drop it. Asking the chat backend to release its weights first means
+    a typical 24 GB consumer GPU can host one chat model OR one
+    diffusion model without manual unload steps.
+
+    Best effort: if the chat backend module is not importable (CI,
+    isolated tests, custom builds) we silently continue. Failures
+    inside the unload itself are logged but not propagated; the
+    diffusion load can still try and surface its own OOM.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # type: ignore
+    except Exception:
+        return
+    try:
+        backend = get_llama_cpp_backend()
+    except Exception:
+        return
+    try:
+        if getattr(backend, "is_loaded", False):
+            logger.info("Unloading llama-server before diffusion load")
+            backend.unload_model()
+    except Exception as exc:
+        logger.warning("Could not unload chat backend before diffusion: %s", exc)
 
 
 def _release(obj: Any) -> None:

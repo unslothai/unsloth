@@ -118,7 +118,7 @@ def test_load_then_generate_round_trip(app_with_stub):
         "/api/inference/images/load",
         json = {
             "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
-            "gguf_filename": "FLUX.2-klein-4B-Q4_K_S.gguf",
+            "gguf_filename": "flux-2-klein-4b-Q4_K_S.gguf",
         },
     )
     assert r.status_code == 200, r.text
