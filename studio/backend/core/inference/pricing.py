@@ -147,8 +147,18 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
     # like "gpt-5.4-mini-2026-..." match "gpt-5.4-mini" before they
     # collide with the shorter "gpt-5.4" entry. Sorting keys by
     # length descending picks the most specific table row first.
+    #
+    # The match has to land on a token boundary -- otherwise a future
+    # "claude-opus-4-15" would falsely inherit "claude-opus-4-1" prices,
+    # and a hypothetical "gpt-5.5-prod" would silently bill as
+    # "gpt-5.5-pro" (5x overcharge). We require the next character after
+    # the prefix to be "-" so we only match on dash-separated
+    # date / variant suffixes, never on a longer numeric or alpha
+    # continuation of the same component.
     for key in sorted(table, key = len, reverse = True):
-        if model.startswith(key):
+        if model.startswith(key) and (
+            len(model) == len(key) or model[len(key)] == "-"
+        ):
             return table[key]
     return None
 
@@ -206,17 +216,21 @@ def calculate_cost(
     #   raw OpenAI:       input_tokens INCLUDES cache_read (no cache_create)
     #   Studio Anthropic: prompt_tokens INCLUDES cache_creation + cache_read
     #   Studio OpenAI:    prompt_tokens == raw input_tokens (includes cache_read)
-    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    # Defense in depth: clamp every token count to >=0 so a corrupted
+    # upstream payload (negative cached count, off-by-one in a fixture)
+    # can never produce a NEGATIVE bill that masks real spend in the
+    # session total tooltip.
+    cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
+    cache_read = max(0, int(usage.get("cache_read_input_tokens") or 0))
     has_input_tokens = "input_tokens" in usage and usage.get("input_tokens") is not None
     if has_input_tokens:
         # Raw upstream envelope.
-        input_tokens = int(usage.get("input_tokens") or 0)
+        input_tokens = max(0, int(usage.get("input_tokens") or 0))
     else:
         # Studio chat-style envelope: prompt_tokens already folds the
         # cache buckets for Anthropic, so peel them off to recover the
         # raw uncached prompt count and keep downstream math symmetric.
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        prompt_tokens = max(0, int(usage.get("prompt_tokens") or 0))
         if provider == "anthropic":
             input_tokens = max(0, prompt_tokens - cache_creation - cache_read)
         else:
@@ -226,9 +240,9 @@ def calculate_cost(
     # ``completion_tokens`` for an empty completion. Mirrors the
     # has_input_tokens precedence above.
     if "output_tokens" in usage and usage.get("output_tokens") is not None:
-        output_tokens = int(usage.get("output_tokens") or 0)
+        output_tokens = max(0, int(usage.get("output_tokens") or 0))
     else:
-        output_tokens = int(usage.get("completion_tokens") or 0)
+        output_tokens = max(0, int(usage.get("completion_tokens") or 0))
     if provider == "openai":
         # Cached prompt tokens live on different sub-objects depending on
         # which envelope landed here. Raw OpenAI Responses usage uses
@@ -277,10 +291,13 @@ def calculate_cost(
 
     if provider == "anthropic":
         # Split cache_creation across 5m / 1h buckets when the
-        # response surfaces the breakdown.
-        cc_breakdown = usage.get("cache_creation") or {}
-        cc_5m = int(cc_breakdown.get("ephemeral_5m_input_tokens") or 0)
-        cc_1h = int(cc_breakdown.get("ephemeral_1h_input_tokens") or 0)
+        # response surfaces the breakdown. Tolerate a non-dict value
+        # (some upstream proxies fold the field down to an int total)
+        # so we don't crash the cost calculation on a malformed payload.
+        cc_raw = usage.get("cache_creation")
+        cc_breakdown = cc_raw if isinstance(cc_raw, dict) else {}
+        cc_5m = max(0, int(cc_breakdown.get("ephemeral_5m_input_tokens") or 0))
+        cc_1h = max(0, int(cc_breakdown.get("ephemeral_1h_input_tokens") or 0))
         if cc_5m + cc_1h == 0 and cache_creation > 0:
             # Fall back: assume default 5m pool when no breakdown is given.
             cc_5m = cache_creation
