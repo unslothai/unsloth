@@ -335,13 +335,14 @@ def test_reprompts_on_incomplete_html_intent():
 
 
 def test_reprompts_on_plan_colon_intent():
-    """Bare ``Plan:`` / ``Approach:`` at the start of a structured reply
-    is now an intent signal so the plan stall re-prompts. Pre-fix the
-    response slipped past ``_INTENT_SIGNAL`` entirely."""
+    """Bare ``Plan:`` / ``Approach:`` followed by a newline at the start
+    of a structured reply is now an intent signal so the plan stall
+    re-prompts. Inline ``Plan: <text>`` (no newline) is NOT an intent
+    signal because that shape is common in marketing / product answers
+    such as ``Plan: Pro is $10/month``."""
     samples = [
         "Plan:\n1. search the docs\n2. summarise",
         "Approach:\n1. fetch the data\n2. compare",
-        "Plan: search the docs then summarise",
     ]
     for s in samples:
         assert _INTENT_SIGNAL.search(s), s
@@ -403,17 +404,25 @@ def test_plan_colon_intent_is_line_anchored():
     re-prompt path and risk wiping a valid response."""
     # These mid-line "plan:" / "approach:" mentions are NOT intent signals.
     # The qualifier before "plan" is a content noun ("lesson", "meal",
-    # "migration") rather than a generic determiner ("my", "the", ...).
+    # "migration") rather than a generic determiner, OR the colon is
+    # followed by inline content instead of a newline-anchored header.
     direct_answers = [
         "Here is a lesson plan:\n1. Warm-up\n2. Group practice\n3. Assessment",
         "I prepared a meal plan: rice, beans, eggs.",
         "Quick approach: top-down then bottom-up.",
+        "Your current Plan: Pro includes local chats.",
+        "The plan: Basic is free, Pro is $10/month, Enterprise is custom.",
+        "My plan: use dynamic programming with memoisation.",
+        "Recommended approach: use the Python SDK for uploads.",
+        "The migration plan: backup, run, verify all in one window.",
     ]
     for s in direct_answers:
         assert not _INTENT_SIGNAL.search(s), s
         assert not _would_reprompt(s), s
     # "Plan:" / "Approach:" with optional generic determiner at the start
-    # of a line IS an intent signal.
+    # of a line, FOLLOWED BY A NEWLINE, IS an intent signal. The newline
+    # requirement is what filters inline product/answer text such as
+    # "The plan: Pro is $10/month" out of the intent path.
     plan_starts = [
         "Plan:\n1. search\n2. summarise",
         "Approach:\n1. fetch\n2. compare",

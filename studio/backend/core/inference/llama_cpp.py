@@ -69,10 +69,11 @@ _INTENT_SIGNAL = re.compile(
     r"here (?:is|are) (?:my |the |a )?(?:plan|approach|steps))"
     r"|"
     # Bare "Plan:" / "Approach:" (optionally preceded by a determiner
-    # like "My" / "The" / "Our") anchored to start of line so direct
-    # answers like "Here is a lesson plan:" or "meal plan:" do not trip
-    # the re-prompt path.
-    r"(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):"
+    # like "My" / "The" / "Our") anchored to start of line AND followed
+    # by a newline. Inline forms like "Your current Plan: Pro includes
+    # local chats" or "The plan: $10/month" must NOT trip the re-prompt
+    # path; only header-style framings ("Plan:\n1. ...") count.
+    r"(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):[ \t]*(?=\r?\n)"
     r"|"
     # "Now I" / "Next I" patterns
     r"\b(?:now i|next i)\b"
@@ -138,7 +139,7 @@ _PLAN_LIST_FRAMING = re.compile(
     r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
     r"check|find|open|verify|compare|summari[sz]e|think|respond|"
     r"answer|analy[sz]e|explore|outline|gather|query|reason)\b"
-    r"|(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):",
+    r"|(?:^|\r?\n)[ \t]*(?:(?:my|the|our|a|this|that)\s+)?(?:plan|approach):[ \t]*(?=\r?\n)",
     re.IGNORECASE,
 )
 
