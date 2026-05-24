@@ -1505,9 +1505,8 @@ def test_empty_text_part_with_thought_signature_emits_extra_content(
         c
         for c in chunks
         if c.get("choices")
-        and c["choices"][0]["delta"].get("extra_content") == {
-            "google": {"thought_signature": "SIG-FINAL"}
-        }
+        and c["choices"][0]["delta"].get("extra_content")
+        == {"google": {"thought_signature": "SIG-FINAL"}}
     ]
     assert extra_carriers, chunks
 

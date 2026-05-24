@@ -1905,9 +1905,7 @@ async def _proxy_to_external_provider(
     # so callers that send only model/messages do not silently get
     # different sampling than before this PR. Pydantic's
     # `model_fields_set` tracks explicit-vs-default per request.
-    _top_k_explicit = (
-        payload.top_k if "top_k" in payload.model_fields_set else None
-    )
+    _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
     async def _stream():
         gen = client.stream_chat_completion(

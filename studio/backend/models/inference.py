@@ -743,6 +743,7 @@ class ChatCompletionRequest(BaseModel):
             if lowered in ("false", "0", "no"):
                 return False
         return value
+
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
