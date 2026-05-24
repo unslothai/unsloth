@@ -266,3 +266,35 @@ def test_clustered_tokens_are_not_promoted(monkeypatch):
     # All three llama-server tokens survive verbatim in the tail.
     for flag in ("-mg", "-fa", "-fitt"):
         assert flag in argv, f"{flag!r} was promoted instead of passed through: {argv}"
+
+
+def test_legacy_m_with_repo_variant_syntax(monkeypatch):
+    """`-m unsloth/foo:UD-Q4_K_XL` must round-trip through the preprocessor
+    AND _split_repo_variant so the child sees --model + --gguf-variant."""
+    captured = _invoke(
+        monkeypatch,
+        ["-m", "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"],
+    )
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[argv.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF", argv
+    assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
+
+
+def test_missing_model_after_preprocessor_errors(monkeypatch):
+    """If neither --model nor any legacy alias is supplied, the
+    preprocessor's required-check must trigger a clean exit(2)."""
+    captured = _invoke(monkeypatch, ["--parallel", "8"])
+    # No execvp because the missing-model check raises typer.Exit(2)
+    # before reaching the re-exec branch.
+    assert len(captured) == 0, (
+        f"expected exit before re-exec, got launch with argv = {captured}"
+    )
+
+
+def test_legacy_m_inline_value_form(monkeypatch):
+    """`-m=foo` inline form must be promoted just like `-m foo`."""
+    captured = _invoke(monkeypatch, ["-m=unsloth/Qwen3-1.7B-GGUF"])
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[argv.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF", argv
