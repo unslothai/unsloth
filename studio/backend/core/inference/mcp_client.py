@@ -44,6 +44,21 @@ def _oauth_store():
     return _oauth_token_store
 
 
+async def clear_oauth_tokens_async(url: str) -> None:
+    """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by
+    MCP URL, so on server delete / URL change / OAuth disable we have to
+    clear the old credentials explicitly. Otherwise re-registering the
+    same URL would silently reuse the old account's token."""
+    from fastmcp.client.auth import OAuth
+
+    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    try:
+        await auth.token_storage_adapter.clear()
+    except Exception as exc:  # noqa: BLE001
+        # Cleanup is best-effort; the row delete still wins.
+        logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
+
+
 def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     from fastmcp import Client
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport

@@ -9,7 +9,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import get_current_subject
-from core.inference.mcp_client import list_tools_async, parse_server_headers
+from core.inference.mcp_client import (
+    clear_oauth_tokens_async,
+    list_tools_async,
+    parse_server_headers,
+)
 from models.mcp_servers import (
     McpServerCreate,
     McpServerProbeResult,
@@ -129,11 +133,20 @@ async def update_mcp_server(
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
 ):
-    if not mcp_servers_db.get_server(server_id):
+    old = mcp_servers_db.get_server(server_id)
+    if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     changes = _changes_from_payload(payload)
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
+    # Clear persisted OAuth tokens when the URL changes or OAuth is
+    # disabled; fastmcp keys tokens by URL and would otherwise let a
+    # re-pointed server silently inherit the old account's credentials.
+    if bool(old.get("use_oauth")) and (
+        ("url" in changes and changes["url"] != old["url"])
+        or changes.get("use_oauth") is False
+    ):
+        await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
@@ -143,8 +156,12 @@ async def delete_mcp_server(
     server_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    if not mcp_servers_db.delete_server(server_id):
+    old = mcp_servers_db.get_server(server_id)
+    if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if old.get("use_oauth"):
+        await clear_oauth_tokens_async(old["url"])
+    mcp_servers_db.delete_server(server_id)
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)

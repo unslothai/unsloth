@@ -235,3 +235,146 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
         cancel_event = cancel,
     )
     assert "cancelled" in out.lower()
+
+
+def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
+    """clear_oauth_tokens_async on a URL with no stored token must not raise --
+    the delete + update handlers call it best-effort regardless of prior state."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    asyncio.run(mcp_client.clear_oauth_tokens_async("https://example.com/mcp"))
+
+
+def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(
+    tmp_path, monkeypatch
+):
+    """delete_mcp_server route helper should invoke clear_oauth_tokens_async
+    when the deleted row had use_oauth=true."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    mcp_servers_db.create_server(
+        id = "oauth1",
+        display_name = "GH",
+        url = "https://gh-mcp.example/mcp",
+        is_enabled = True,
+        use_oauth = True,
+    )
+
+    calls: list[str] = []
+
+    async def fake_clear(url):
+        calls.append(url)
+
+    monkeypatch.setattr(mcp_client, "clear_oauth_tokens_async", fake_clear)
+    # Re-import the route's binding through the module so the patch is seen.
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
+    asyncio.run(routes_mcp.delete_mcp_server("oauth1", current_subject = "u"))
+    assert calls == ["https://gh-mcp.example/mcp"]
+    assert mcp_servers_db.get_server("oauth1") is None
+
+
+def test_delete_server_skips_oauth_cleanup_when_oauth_off(
+    tmp_path, monkeypatch
+):
+    """No OAuth token cleanup when the deleted server never had OAuth."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    mcp_servers_db.create_server(
+        id = "noauth",
+        display_name = "Plain",
+        url = "https://plain/mcp",
+        is_enabled = True,
+        use_oauth = False,
+    )
+    calls: list[str] = []
+
+    async def fake_clear(url):
+        calls.append(url)
+
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
+    asyncio.run(routes_mcp.delete_mcp_server("noauth", current_subject = "u"))
+    assert calls == []
+
+
+def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
+    """Changing the URL on an OAuth server must drop the old URL's tokens
+    so the new URL doesn't silently inherit credentials."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "https://old/mcp",
+        is_enabled = True,
+        use_oauth = True,
+    )
+    calls: list[str] = []
+
+    async def fake_clear(url):
+        calls.append(url)
+
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(url = "https://new/mcp"),
+            current_subject = "u",
+        )
+    )
+    assert calls == ["https://old/mcp"]
+    row = mcp_servers_db.get_server("s1")
+    assert row["url"] == "https://new/mcp"
+
+
+def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
+    """Flipping use_oauth false must drop the old URL's tokens."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "https://u/mcp",
+        is_enabled = True,
+        use_oauth = True,
+    )
+    calls: list[str] = []
+
+    async def fake_clear(url):
+        calls.append(url)
+
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(use_oauth = False),
+            current_subject = "u",
+        )
+    )
+    assert calls == ["https://u/mcp"]

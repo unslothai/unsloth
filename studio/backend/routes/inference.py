@@ -2376,9 +2376,12 @@ async def openai_chat_completions(
         # ── Tool-calling path (agentic loop) ──────────────────
         # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
         # hard-override the per-request value. Without a CLI override, falls
-        # back to `payload.enable_tools` (existing behavior).
+        # back to `payload.enable_tools` (existing behavior). `mcp_enabled=true`
+        # also opens the tool loop so MCP-only callers do not have to flip a
+        # second flag (matches the documented "append MCP tools" semantics).
+        _tools_on = _effective_enable_tools(payload)
         use_tools = (
-            _effective_enable_tools(payload)
+            (_tools_on or payload.mcp_enabled)
             and llama_backend.supports_tools
             and not has_gguf_image
         )
@@ -2386,7 +2389,10 @@ async def openai_chat_completions(
         if use_tools:
             from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
-            if payload.enabled_tools is not None:
+            if not _tools_on:
+                # MCP-only request: skip built-ins, leave room for MCP tools.
+                tools_to_use = []
+            elif payload.enabled_tools is not None:
                 tools_to_use = [
                     t
                     for t in ALL_TOOLS
@@ -2873,8 +2879,10 @@ async def openai_chat_completions(
         else 25
     )
 
+    # Match the GGUF path: mcp_enabled also opens the tool loop on its own.
+    _sf_tools_on = _effective_enable_tools(payload)
     _sf_use_tools = (
-        _effective_enable_tools(payload)
+        (_sf_tools_on or payload.mcp_enabled)
         and _sf_features.get("supports_tools", False)
         and image is None
         and not _sf_is_gptoss
@@ -2884,7 +2892,9 @@ async def openai_chat_completions(
     if _sf_use_tools:
         from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
-        if payload.enabled_tools is not None:
+        if not _sf_tools_on:
+            _sf_tools_to_use = []
+        elif payload.enabled_tools is not None:
             _sf_tools_to_use = [
                 t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]
