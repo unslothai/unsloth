@@ -86,6 +86,12 @@ class _BGEVLAdapter:
 
         return F.normalize(tensor, p = 2.0, dim = -1)
 
+    # CLIP-family text encoder context cap. BGE-VL inherits CLIP's
+    # 77-token text positional embedding table — exceeding it triggers
+    # a shape-mismatch in the embedding layer. Pre-truncate any text
+    # chunk to this length before calling the model.
+    _CLIP_TEXT_MAX_TOKENS = 77
+
     def encode(
         self,
         inputs,
@@ -121,14 +127,59 @@ class _BGEVLAdapter:
                 with torch.no_grad():
                     vecs = self._model.encode(images = pil_batch)
             else:
-                with torch.no_grad():
-                    vecs = self._model.encode(text = [str(t) for t in batch])
+                vecs = self._encode_text_truncated([str(t) for t in batch])
             if normalize_embeddings:
                 vecs = self._normalize(vecs)
             chunks_out.append(vecs.detach().cpu())
 
         out = torch.cat(chunks_out, dim = 0)
         return out.numpy() if convert_to_numpy else out
+
+    def _encode_text_truncated(self, texts: list[str]):
+        """Tokenize with explicit truncation to CLIP's 77-token limit, then
+        call get_text_features directly. BGE-VL's high-level encode() does
+        not truncate, so longer chunks overflow the position-embedding
+        table and crash inside the text model. Text chunks beyond the cap
+        are silently truncated — the multimodal mode is primarily about
+        the image side; large text chunks should land in text-mode RAG.
+        """
+        import torch
+
+        tokenizer = self._get_text_tokenizer()
+        inputs = tokenizer(
+            texts,
+            return_tensors = "pt",
+            padding = True,
+            truncation = True,
+            max_length = self._CLIP_TEXT_MAX_TOKENS,
+        )
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        # Some chunks were almost certainly truncated; flag it once per
+        # batch so users running multimodal on long-form text know the
+        # text channel is lossy by design.
+        overflowed = any(
+            len(t.split()) > 30  # ~rough proxy; tokens vary by lang
+            for t in texts
+        )
+        if overflowed:
+            logger.info(
+                "BGE-VL text encode: truncating chunks to %d tokens (CLIP cap)",
+                self._CLIP_TEXT_MAX_TOKENS,
+            )
+        with torch.no_grad():
+            return self._model.get_text_features(**inputs)
+
+    def _get_text_tokenizer(self):
+        """Locate the tokenizer set up by ``set_processor`` for text input."""
+        processor = getattr(self._model, "processor", None)
+        if processor is not None:
+            tok = getattr(processor, "tokenizer", None)
+            if tok is not None:
+                return tok
+        tok = getattr(self._model, "tokenizer", None)
+        if tok is not None:
+            return tok
+        raise AttributeError("BGE-VL adapter could not locate a text tokenizer")
 
     def get_sentence_embedding_dimension(self) -> int:
         if self._dim is None:
@@ -142,12 +193,11 @@ class _BGEVLAdapter:
         Falls back gracefully — the caller already handles exceptions
         by approximating tokens as ``len(text) // 4`` when this raises.
         """
-        processor = getattr(self._model, "processor", None) or getattr(
-            self._model, "tokenizer", None
+        return self._get_text_tokenizer()(
+            texts,
+            return_tensors = "pt",
+            padding = True,
         )
-        if processor is None:
-            raise AttributeError("BGE-VL adapter has no tokenizer attached")
-        return processor(text = texts, return_tensors = "pt", padding = True)
 
 
 def get_embedder(model_name: str | None = None) -> Any:
