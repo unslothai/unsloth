@@ -370,7 +370,9 @@ _BASH_DIR_EXFIL_RE = re.compile(
     + r")\b[^;&|\n]*?"
     + r"(?:"
     + _HOME_PREFIX_RE
-    + r"(?:" + "|".join(_BASH_SENSITIVE_DIR_NAMES) + r")"
+    + r"(?:"
+    + "|".join(_BASH_SENSITIVE_DIR_NAMES)
+    + r")"
     + r"(?=/?$|/?[\s'\";&|)<>])"
     + r"|"
     + r"(?<![A-Za-z0-9_./~$%-])/etc(?=/?$|/?[\s'\";&|)<>])"
@@ -446,17 +448,13 @@ def _normalize_path_separators(text: str) -> str:
                 tail = collapsed[len(prefix) :]
                 if tail.startswith("..") or tail.startswith("./.."):
                     return posixpath.normpath("/" + tail)
-                return prefix + posixpath.normpath(
-                    "/" + tail
-                ).lstrip("/")
+                return prefix + posixpath.normpath("/" + tail).lstrip("/")
         tilde_user = _TILDE_USER_PREFIX_RE.match(collapsed)
         if tilde_user:
             tail = collapsed[tilde_user.end() :]
             if tail.startswith("..") or tail.startswith("./.."):
                 return posixpath.normpath("/" + tail)
-            return tilde_user.group(0) + posixpath.normpath(
-                "/" + tail
-            ).lstrip("/")
+            return tilde_user.group(0) + posixpath.normpath("/" + tail).lstrip("/")
         collapsed = posixpath.normpath(collapsed)
     return collapsed
 
@@ -1542,9 +1540,7 @@ def _check_signal_escape_patterns(code: str):
                 elif _node.module == "pathlib":
                     for alias in _node.names:
                         if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
-                            path_class_aliases_prepass.add(
-                                alias.asname or alias.name
-                            )
+                            path_class_aliases_prepass.add(alias.asname or alias.name)
 
     _run_alias_prepass(tree)
 
@@ -1894,9 +1890,11 @@ def _check_signal_escape_patterns(code: str):
             # Annotated assignment (``path: str = '/etc/shadow'``) is
             # an ast.AnnAssign, not an ast.Assign. Same surface: a
             # single Name target bound to a single value.
-            if isinstance(_assign, ast.AnnAssign) and isinstance(
-                _assign.target, ast.Name
-            ) and _assign.value is not None:
+            if (
+                isinstance(_assign, ast.AnnAssign)
+                and isinstance(_assign.target, ast.Name)
+                and _assign.value is not None
+            ):
                 _val = _extract_string_from_node(_assign.value)
                 if _val is None:
                     _val = _extract_pathlib_target(

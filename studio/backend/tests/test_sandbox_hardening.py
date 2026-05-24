@@ -2062,9 +2062,7 @@ class TestR6_PathTraversalNormalization:
         ],
     )
     def test_path_traversal_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"path traversal leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(cmd), f"path traversal leaked: {cmd!r}"
 
 
 class TestR6_PandasNumpyKeywordArgs:
@@ -2126,9 +2124,7 @@ class TestR6_BashDirectoryExfil:
         ],
     )
     def test_bash_dir_exfil_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"bash dir exfil leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(cmd), f"bash dir exfil leaked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2142,9 +2138,7 @@ class TestR6_BashDirectoryExfil:
         ],
     )
     def test_bash_dir_exfil_legit_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"legit bash dir blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(cmd), f"legit bash dir blocked: {cmd!r}"
 
 
 class TestR6_InnerTreeAliasWalk:
@@ -2194,9 +2188,7 @@ class TestR6_ChainedAndAnnAssign:
         ],
     )
     def test_chained_annassign_legit_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"legit chained/AnnAssign blocked: {code!r}"
-        )
+        assert not _is_blocked(code), f"legit chained/AnnAssign blocked: {code!r}"
 
 
 class TestR6_BraceBombEmptyAlt:
@@ -2215,9 +2207,9 @@ class TestR6_BraceBombEmptyAlt:
     def test_brace_bomb_empty_alt_blocked(self, n_dummies):
         dummies = ",".join(f"x{i}" for i in range(n_dummies))
         cmd = f"cat ~/{{,{dummies}}}/{{.ssh/id_rsa,other}}"
-        assert _find_sensitive_paths(cmd), (
-            f"brace empty-alt bomb leaked at n={n_dummies}: {cmd!r}"
-        )
+        assert _find_sensitive_paths(
+            cmd
+        ), f"brace empty-alt bomb leaked at n={n_dummies}: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2228,9 +2220,7 @@ class TestR6_BraceBombEmptyAlt:
         ],
     )
     def test_inner_brace_sensitive_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"inner-brace sensitive name leaked: {cmd!r}"
-        )
+        assert _find_sensitive_paths(cmd), f"inner-brace sensitive name leaked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2241,6 +2231,4 @@ class TestR6_BraceBombEmptyAlt:
         ],
     )
     def test_brace_legit_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"legit brace blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(cmd), f"legit brace blocked: {cmd!r}"
