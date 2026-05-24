@@ -170,6 +170,27 @@ _EXPLICIT_PLAN_HEADER = re.compile(
     re.IGNORECASE,
 )
 
+# Direct first-person intent + a tool/work verb that the model is about
+# to perform + a numbered list. Catches stalls like
+# ``First, I'll do this:\n1. Search ...`` or ``Let me do this:\n1. Parse
+# the file ...`` where each list item is an action the model promised
+# to take without actually invoking a tool. The follow-up verb list
+# stays narrow to "do/proceed/build/run" style words so common
+# answer prose like "Let me explain", "Let me show", "Let me draft a
+# poem" is not misclassified as a stall.
+_DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
+    r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
+    r"i will|i shall|let me|allow me|now i|next i)\b"
+    r"[^\r\n]{0,160}"
+    r"\b(?:do (?:this|these|the following|it)|"
+    r"proceed|start|begin|"
+    r"create|build|implement|set up|add|"
+    r"calculate|compute|analy[sz]e|parse|load|run|execute|test)\b"
+    r"[\s\S]{0,500}?"
+    r"(?:^|\r?\n)[ \t]*\d+\.",
+    re.IGNORECASE,
+)
+
 
 _FENCE_LINE_RE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<trailing>[^\r\n]*)$")
 
@@ -206,18 +227,22 @@ def _has_answer_artifact(text: str) -> bool:
     Code fences, complete HTML, and complete SVG count directly. A
     numbered list counts only when there is no plan framing, so stalls
     like ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
-    An explicit ``Here's my plan`` / ``Here's my approach`` header is
-    also enough to flag the list as a plan, even when no narrow tool-
-    action verb appears in the items. An unclosed fence disqualifies
-    the numbered-list fallback so a list INSIDE incomplete code does
-    not look like a final answer.
+    An explicit ``Here's my plan`` / ``Here's my approach`` header, or a
+    direct first-person ``I'll do this:\\n1. ...`` framing with a
+    work/tool verb before the list, also flags the list as a plan even
+    when no narrow tool-action verb appears in the items. An unclosed
+    fence anywhere in the response (including after an earlier complete
+    fence) disqualifies the answer-artifact path so half-finished code
+    does not look like a final answer.
     """
-    if _HAS_ANSWER_ARTIFACT.search(text):
-        return True
     if _has_unclosed_code_fence(text):
         return False
+    if _HAS_ANSWER_ARTIFACT.search(text):
+        return True
     if _NUMBERED_LIST_ARTIFACT.search(text):
         if _EXPLICIT_PLAN_HEADER.search(text):
+            return False
+        if _DIRECT_NUMBERED_PLAN_FRAMING.search(text):
             return False
         return _PLAN_LIST_FRAMING.search(text) is None
     return False

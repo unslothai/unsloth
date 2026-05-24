@@ -812,6 +812,80 @@ def test_no_reprompt_on_lesson_plan_answer_without_explicit_header():
         assert not _would_reprompt(content), content
 
 
+def test_reprompts_on_direct_intent_numbered_local_action_plan():
+    """Direct first-person intent (``I'll do this``, ``Let me do this``,
+    etc.) followed by a numbered list of work/tool actions is a plan
+    stall, not a final answer. Even when no narrow lookup verb appears
+    in the items, the model is announcing actions it has not yet
+    taken."""
+    samples = [
+        (
+            "First, I'll do this:\n"
+            "1. Load the uploaded CSV.\n"
+            "2. Compute the total revenue.\n"
+            "3. Return the answer."
+        ),
+        (
+            "Let me do this:\n"
+            "1. Parse the pasted JSON.\n"
+            "2. Calculate the average.\n"
+            "3. Explain the result."
+        ),
+        (
+            "First, I'll create a Python game:\n"
+            "1. Set up pygame.\n"
+            "2. Add the game loop."
+        ),
+        (
+            "First, I'll do these:\n"
+            "1. Create the Python file.\n"
+            "2. Add the game loop.\n"
+            "3. Test it."
+        ),
+    ]
+    for content in samples:
+        assert _would_reprompt(content), content
+
+
+def test_no_reprompt_on_let_me_explain_numbered_answer():
+    """``Let me explain`` / ``Let me show`` followed by a numbered
+    answer must NOT be misclassified as a plan stall. The verb after
+    the intent phrase is not in the work/tool whitelist."""
+    samples = [
+        (
+            "Let me explain in steps:\n"
+            "1. Apples are red.\n"
+            "2. Bananas are yellow.\n"
+            "3. Cherries are red."
+        ),
+        (
+            "Let me show the matches:\n"
+            "1. Maroon 5 - Animals.\n"
+            "2. Hozier - Take Me to Church."
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_reprompts_when_later_fence_is_open_after_closed_fence():
+    """A response with a complete code fence followed by a SECOND,
+    unclosed fence is still mid-stream and must re-prompt. The
+    `_has_unclosed_code_fence` cross-check must short-circuit even
+    after `_HAS_ANSWER_ARTIFACT` finds the first complete fence."""
+    content = (
+        "First, let me provide two files:\n"
+        "```python\n"
+        "print('main')\n"
+        "```\n"
+        "```python\n"
+        "print('utils')"
+    )
+    assert not _has_answer_artifact(content)
+    assert _would_reprompt(content)
+
+
 def test_open_fence_with_inner_numbered_list_still_reprompts():
     """A response that opens a code fence and emits numbered lines INSIDE
     must NOT count those lines as a completed numbered-list answer."""
