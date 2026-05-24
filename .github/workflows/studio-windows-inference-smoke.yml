@@ -190,20 +190,6 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
-
       - name: Install OpenAI + Anthropic Python SDKs
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
 
@@ -542,20 +528,6 @@ jobs:
             exit 1
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
 
       - name: Reset auth + boot Studio (API-only, default tool policy)
         run: |
@@ -981,20 +953,6 @@ jobs:
             exit 1
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
