@@ -771,7 +771,24 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     # strip it since Origin never contains credentials.
     if "@" in netloc:
         netloc = netloc.rsplit("@", 1)[1]
-    host, _, port_str = netloc.partition(":")
+    # IPv6 hosts ride in brackets (RFC 3986 §3.2.2): ``[::1]:8902``.
+    # A bare ``partition(":")`` mis-parses these (host=``[``, port=
+    # ``:1]:8902``) which collapses every IPv6 same-origin request to
+    # cross-origin and silently breaks ``unsloth studio -H ::1``.
+    if netloc.startswith("["):
+        close = netloc.find("]")
+        if close == -1:
+            return None
+        host = netloc[1:close]
+        rest = netloc[close + 1 :]
+        if rest.startswith(":"):
+            port_str = rest[1:]
+        elif rest == "":
+            port_str = ""
+        else:
+            return None
+    else:
+        host, _, port_str = netloc.partition(":")
     host = host.strip().lower()
     if not host:
         return None
