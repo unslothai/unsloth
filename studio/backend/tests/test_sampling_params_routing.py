@@ -360,10 +360,16 @@ def test_openai_compat_empty_stop_omitted(monkeypatch):
     assert "stop" not in body, body
 
 
-def test_openai_compat_forwards_service_tier(monkeypatch):
+def test_openai_compat_drops_service_tier_by_default(monkeypatch):
+    """Generic OAI-compat providers (mistral, deepseek, openrouter, ...)
+    do not document a `service_tier` field. The dispatcher must drop
+    it unless the provider registry explicitly opts in with
+    `accepts_service_tier=True`; otherwise a stale frontend could
+    smuggle Anthropic/OpenAI-Responses-only values onto unrelated
+    providers."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
     body = _drive_openai_compat(captured, service_tier = "flex")
-    assert body.get("service_tier") == "flex", body
+    assert "service_tier" not in body, body
 
 
 def test_openai_compat_forwards_parallel_tool_calls(monkeypatch):
@@ -567,14 +573,15 @@ def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
 
     _drive(run())
     body = captured["body"]
-    assert body.get("frequency_penalty") == 1.25, body
+    # Per-provider drops: Kimi locks frequency_penalty/temperature/top_p.
+    assert "frequency_penalty" not in body, body
+    assert "temperature" not in body, body
+    assert "top_p" not in body, body
+    # Other knobs forward through the bypass.
     assert body.get("seed") == 7, body
     assert body.get("stop") == ["END"], body
     assert body.get("parallel_tool_calls") is False, body
     assert body.get("presence_penalty") == 0.5, body
-    # body_omit still strips temperature / top_p for Kimi.
-    assert "temperature" not in body, body
-    assert "top_p" not in body, body
 
 
 def test_kimi_web_search_uses_kimi_stop_cap_5(monkeypatch):

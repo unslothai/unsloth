@@ -519,7 +519,10 @@ class ExternalProviderClient:
         normalized_stop = _normalize_stop_for_provider(stop, provider_info)
         if normalized_stop:
             body["stop"] = normalized_stop
-        if service_tier is not None:
+        # service_tier is OpenAI Chat-only on the generic OAI-compat
+        # branch; opt-in via `accepts_service_tier=True` on the registry
+        # entry. Anthropic and Responses handle it in their own helpers.
+        if service_tier is not None and provider_info.get("accepts_service_tier", False):
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = parallel_tool_calls

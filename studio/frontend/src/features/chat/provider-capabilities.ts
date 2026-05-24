@@ -454,7 +454,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: true,
-    frequencyPenalty: true,
+    // K2.5/K2.6 lock sampling the same way temperature/top_p are
+    // locked; reviewers report non-default frequency_penalty 400s
+    // upstream, so hide the slider and strip the field in body_omit.
+    frequencyPenalty: false,
     seed: false,
     stop: true,
     serviceTier: false,
