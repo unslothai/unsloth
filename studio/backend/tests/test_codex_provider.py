@@ -648,9 +648,11 @@ class TestCodexHardenedRegressions:
         send that text to the client; the SSE codex_tab_error event
         must carry a generic message + exception_type.
         """
-        fake = _FakeAsyncCodex(raise_on_start=RuntimeError(
-            "secret /home/alice/.codex/config.json token=abc"
-        ))
+        fake = _FakeAsyncCodex(
+            raise_on_start = RuntimeError(
+                "secret /home/alice/.codex/config.json token=abc"
+            )
+        )
         _install_fake_codex_sdk(monkeypatch, lambda: fake)
         from core.inference.codex_provider import stream_codex
 
@@ -658,17 +660,17 @@ class TestCodexHardenedRegressions:
 
         async def _collect():
             async for c in stream_codex(
-                messages=[{"role": "user", "content": "hi"}],
-                model="gpt-5.5",
-                parallel_calls=2,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 2,
             ):
                 chunks.append(c)
 
         asyncio.run(_collect())
         body = "".join(chunks)
-        assert "secret /home/alice" not in body, (
-            "raw exception text leaked into codex_tab_error SSE frame"
-        )
+        assert (
+            "secret /home/alice" not in body
+        ), "raw exception text leaked into codex_tab_error SSE frame"
         assert "Codex tab failed" in body or "exception_type" in body
 
     def test_thread_turn_stream_path_taken(self, monkeypatch):
@@ -718,9 +720,9 @@ class TestCodexHardenedRegressions:
 
         async def _collect():
             async for c in stream_codex(
-                messages=[{"role": "user", "content": "hi"}],
-                model="gpt-5.5",
-                parallel_calls=1,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
             ):
                 chunks.append(c)
 
