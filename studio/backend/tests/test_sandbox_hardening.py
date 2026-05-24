@@ -1897,3 +1897,84 @@ class TestR4_PathlibNameBinding:
     )
     def test_pathlib_name_binding_legit_allowed(self, code):
         assert not _is_blocked(code), f"legit pathlib name binding blocked: {code!r}"
+
+
+class TestR5_BashGlobUnderSensitiveRoot:
+    """``cat /etc/sha*ow`` / ``cat /etc/sh?dow`` -- bash expands ``*``
+    and ``?`` glob wildcards against the filesystem at runtime.
+    Statically we cannot enumerate the matches, but a glob immediately
+    attached to a sensitive root is an attempt to escape literal-path
+    detection. ``find /etc/ -name '*.conf'`` (whitespace between the
+    root and the glob) stays allowed because the glob lives in a
+    separate argument."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/sha*ow",
+            "cat /etc/sh?dow",
+            "cat /etc/*",
+            "cat /etc/passw?",
+            "cat /etc/shado?",
+            "cat ~/.ssh/*_rsa",
+            "cat ~/.ssh/id_*",
+            "cat /home/u/.aws/credential?",
+            "cat /proc/self/envir*",
+            "cat /proc/thread-self/env*",
+        ],
+    )
+    def test_glob_under_sensitive_root_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"glob under sensitive root leaked: {cmd!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Glob in a separate argument is fine -- the static gate
+            # cannot prove it expands to a sensitive file.
+            "find /etc/ -name '*.conf'",
+            "find /etc/ -type f",
+            # No glob, no match
+            "ls /etc/",
+            "cat /etc/hosts",
+            # Project-local globs
+            "cat ./src/*.py",
+            "ls ./logs/*.log",
+        ],
+    )
+    def test_glob_legit_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"legit glob blocked: {cmd!r}"
+        )
+
+
+class TestR5_TernaryBranchResolution:
+    """``open('/etc/shadow' if cond else 'data.txt')`` -- either branch
+    can execute at runtime. The static gate prefers the sensitive
+    branch so the downstream gate fires."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/etc/shadow' if True else 'data.txt')",
+            "open('data.txt' if False else '/etc/shadow')",
+            "open('/etc/shadow' if cond else '/etc/passwd')",
+            "x = '/etc/shadow'\nopen(x if True else 'data.txt')",
+            "x = '/etc/shadow'\nopen('data.txt' if False else x)",
+            # Ternary inside an f-string
+            "p = '/etc/shadow' if True else 'data.txt'\nopen(p)",
+        ],
+    )
+    def test_ternary_branch_blocked(self, code):
+        assert _is_blocked(code), f"ternary branch leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('a.txt' if True else 'b.txt')",
+            "open('./data.csv' if cond else './data.tsv')",
+        ],
+    )
+    def test_ternary_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit ternary blocked: {code!r}"

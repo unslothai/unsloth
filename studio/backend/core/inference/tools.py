@@ -332,6 +332,29 @@ _SENSITIVE_ROOT_WITH_EXPANSION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``cat /etc/sha*ow`` / ``cat /etc/sh?dow`` -- bash expands ``*`` and
+# ``?`` glob wildcards against the filesystem. The brace expander above
+# only handles ``{a,b}`` braces; this pattern catches the wildcard
+# globs that target a sensitive root path. The literal-text-only
+# constraint (``[^\s'\";&|`$]*[*?]``) ensures we match an attached
+# glob char and not a glob that lives in a separate argument like
+# ``find /etc/ -name '*.conf'`` (whitespace breaks the token).
+_SENSITIVE_ROOT_WITH_GLOB_RE = re.compile(
+    _PATH_TOKEN_START
+    + r"(?:"
+    + r"~(?:[^/\s'\";&|)<>]*)?/"
+    + r"|\$\{?HOME\}?/"
+    + r"|/home/[^/\s'\"]+/"
+    + r"|/root/"
+    + r"|/Users/[^/\s'\"]+/"
+    + r"|/etc/"
+    + r"|/proc/(?:self|thread-self|\d+)/"
+    + r"|/var/spool/"
+    + r")"
+    + r"[^\s'\";&|`$]*[*?]",
+    re.IGNORECASE,
+)
+
 _BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 
 
@@ -503,6 +526,13 @@ def _find_sensitive_paths(command: str) -> set[str]:
         # Sensitive prefix + shell substitution that the literal scan
         # cannot statically resolve (``cat /etc/$(printf shadow)``).
         for m in _SENSITIVE_ROOT_WITH_EXPANSION_RE.finditer(text):
+            found.add(m.group(0))
+        # Sensitive prefix + bash glob (``cat /etc/sha*ow``,
+        # ``cat /etc/sh?dow``, ``cat /etc/*``). The shell expands the
+        # glob at runtime; statically we cannot enumerate the matches
+        # but a glob immediately attached to a sensitive root is
+        # an attempt to escape literal-path detection.
+        for m in _SENSITIVE_ROOT_WITH_GLOB_RE.finditer(text):
             found.add(m.group(0))
 
     # Recurse into nested shells. Mirrors the structure in
@@ -1525,6 +1555,19 @@ def _check_signal_escape_patterns(code: str):
             if val is not None and isinstance(node.target, ast.Name):
                 string_bindings.setdefault(node.target.id, val)
             return val
+        if isinstance(node, ast.IfExp):
+            # Ternary ``'/etc/shadow' if cond else 'data.txt'``: either
+            # branch can execute at runtime, so a sensitive value in
+            # ANY branch must reach the gate. Prefer the sensitive one
+            # so the downstream check fires; fall back to whichever
+            # branch resolves.
+            body_val = _extract_string_from_node(node.body, _depth + 1)
+            orelse_val = _extract_string_from_node(node.orelse, _depth + 1)
+            if body_val is not None and _looks_sensitive(body_val):
+                return body_val
+            if orelse_val is not None and _looks_sensitive(orelse_val):
+                return orelse_val
+            return body_val if body_val is not None else orelse_val
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _extract_string_from_node(node.left, _depth + 1)
             right = _extract_string_from_node(node.right, _depth + 1)
