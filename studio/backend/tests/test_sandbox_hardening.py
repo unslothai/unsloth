@@ -2232,3 +2232,176 @@ class TestR6_BraceBombEmptyAlt:
     )
     def test_brace_legit_allowed(self, cmd):
         assert not _find_sensitive_paths(cmd), f"legit brace blocked: {cmd!r}"
+
+
+# ---------------------------------------------------------------------------
+# Round 7 -- four more bypass classes from a follow-on sonnet panel.
+# ---------------------------------------------------------------------------
+
+
+class TestR7_DeepPathTraversal:
+    """``~/foo/../../etc/shadow`` and longer chains slipped because the
+    previous escape check only fired when the tail started with ``..``.
+    The depth-counter walk in ``_tail_escapes_home`` now catches a
+    ``..`` chain that takes the cursor above HOME no matter where in
+    the tail it appears."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/foo/../../etc/shadow",
+            "cat ~/a/b/../../../etc/shadow",
+            "cat ~/a/b/c/../../../../etc/shadow",
+            "cat ~/a/b/c/d/../../../../../etc/shadow",
+            "cat ~/x/../../etc/sudoers",
+            "cat ~/foo/bar/../../../etc/shadow",
+        ],
+    )
+    def test_deep_traversal_bash_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"deep ~/foo/../../etc traversal leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('~/foo/../../etc/shadow').read()",
+            "open('~/a/b/../../../etc/shadow').read()",
+            "open('~/a/b/c/d/../../../../../etc/shadow').read()",
+        ],
+    )
+    def test_deep_traversal_python_blocked(self, code):
+        assert _is_blocked(code), f"deep python traversal leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/a/b/../c/file.txt",
+            "cat ~/a/./b/file.txt",
+            "cat ~/notes/2026/../2025/draft.md",
+        ],
+    )
+    def test_in_home_traversal_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"legit in-home ../ traversal blocked: {cmd!r}"
+
+
+class TestR7_BraceFalsePositive:
+    """The single unscoped brace regex over-matched ``~/data/{maps,routes}``
+    because ``maps`` lives in the generic sensitive-name list. The
+    round-7 split now applies ``maps`` / ``mem`` / ``environ`` only
+    under ``/proc/<pid>/`` and home-credential names only under a home
+    root, so legitimate user-data brace listings stay allowed."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/data/{maps,routes}",
+            "cat ~/data/{maps,docs}/file.txt",
+            "ls ~/projects/{frontend,backend}",
+            "cp ~/{src,dst}/file.txt /tmp/",
+            "cat /home/u/{maps,routes}/data.csv",
+        ],
+    )
+    def test_user_data_brace_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"user-data brace falsely blocked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /proc/self/{maps,environ}",
+            "cat /proc/1/{cmdline,environ}",
+            "cat /proc/self/{maps,status}",
+            "cat /proc/12345/{environ,auxv}",
+        ],
+    )
+    def test_proc_brace_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"/proc/<pid>/ brace listing leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/{.ssh/id_rsa,notes}",
+            "cat ~/{.aws/credentials,other}",
+            "cat /home/u/{.ssh/id_rsa,safe}",
+        ],
+    )
+    def test_home_credential_brace_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"home-credential brace listing leaked: {cmd!r}"
+
+
+class TestR7_BinOpAddDepthCap:
+    """The recursive ``_extract_string_from_node`` BinOp.Add walk hit
+    its 64-level depth cap for chains over ~63 operands. The iterative
+    flatten now collects the entire left-leaning ``+`` chain in a
+    single pass so arbitrarily long concatenations resolve."""
+
+    @pytest.mark.parametrize("n_parts", [10, 64, 65, 100, 200])
+    def test_long_concat_blocked(self, n_parts):
+        # Build ``open('/' + 'e' + 't' + 'c' + '/' + 's' + ...)`` so the
+        # full chain resolves to ``/etc/shadow``.
+        target = "/etc/shadow"
+        # Pad with empty string parts at the start so the full chain has
+        # >= n_parts operands but still reaches the sensitive literal.
+        pad = max(0, n_parts - len(target))
+        parts = ["''"] * pad + [repr(c) for c in target]
+        expr = " + ".join(parts)
+        code = f"open({expr}).read()"
+        assert _is_blocked(code), f"long {n_parts}-operand concat leaked: open({expr!r})"
+
+    def test_long_concat_legit_allowed(self):
+        # A long concatenation that resolves to a benign path must
+        # still be allowed -- no over-blocking from the iterative walk.
+        parts = ["'a'"] * 80
+        code = f"name = {' + '.join(parts)}\nopen(name)"
+        # ``aaaa...`` is not a sensitive path; should not be blocked
+        # purely because of the BinOp depth.
+        assert not _is_blocked(code), "long benign concat falsely blocked"
+
+
+class TestR7_NetworkAndIoVisitorModuleRebinding:
+    """``import shutil as sh`` was tracked by the alias prepass, but
+    ``import shutil; sh = shutil`` (a plain Name = Name assignment) was
+    not, so ``sh.copytree('~/.ssh', dst)`` slipped past the
+    ``NetworkAndIoVisitor`` shutil gate. The new ``visit_Assign``
+    propagates pathlib, shutil, builtins, and Path-class aliases."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil\nsh = shutil\nsh.copytree('/home/u/.ssh', '/tmp/out')",
+            "import shutil\nsh = shutil\nsh.copytree('~/.ssh', '/tmp/out')",
+            "import shutil\nx = shutil\ny = x\ny.copytree('~/.aws', '/tmp/out')",
+        ],
+    )
+    def test_shutil_rebound_blocked(self, code):
+        assert _is_blocked(code), f"shutil rebinding leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pathlib\npl = pathlib\npl.Path('/etc/shadow').read_text()",
+            "import pathlib\nP = pathlib\nQ = P\nQ.Path('/etc/shadow').read_text()",
+            "import pathlib\npl = pathlib\nr = pl.Path\nr('/etc/shadow').read_text()",
+        ],
+    )
+    def test_pathlib_rebound_blocked(self, code):
+        assert _is_blocked(code), f"pathlib rebinding leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nb = builtins\nb.exec(\"open('/etc/shadow').read()\")",
+            "import builtins\nb = builtins\nb.eval(\"open('/etc/shadow').read()\")",
+        ],
+    )
+    def test_builtins_rebound_blocked(self, code):
+        assert _is_blocked(code), f"builtins rebinding leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil\nsh = shutil\nsh.copytree('./src', './dst')",
+            "import pathlib\npl = pathlib\npl.Path('./data.json').read_text()",
+            "import os\no = os\no.path.join('a', 'b')",
+        ],
+    )
+    def test_rebound_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit rebinding blocked: {code!r}"

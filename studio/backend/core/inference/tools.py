@@ -416,6 +416,29 @@ _BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _TILDE_USER_PREFIX_RE = re.compile(r"^~[^/]+/")
 
 
+def _tail_escapes_home(tail: str) -> bool:
+    """Return True if *tail* (the path after a home prefix) contains
+    a ``..`` chain that takes the cursor above its starting directory.
+
+    A simple ``startswith('..')`` check misses ``foo/../../etc/shadow``
+    where a regular segment precedes the chain. Walks segments with a
+    depth counter -- a negative depth at any point means the path has
+    escaped its starting directory and the runtime resolve will land
+    outside HOME (worst case ``/etc/shadow`` on a single-segment HOME
+    like ``/root``)."""
+    depth = 0
+    for seg in tail.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            depth -= 1
+            if depth < 0:
+                return True
+        else:
+            depth += 1
+    return False
+
+
 def _normalize_path_separators(text: str) -> str:
     """Collapse ``//`` to ``/``, remove ``/./`` segments, and resolve
     ``/..`` parent-directory traversal so that filesystem-equivalent
@@ -446,13 +469,13 @@ def _normalize_path_separators(text: str) -> str:
         for prefix in ("~/", "$HOME/", "${HOME}/", "%USERPROFILE%/"):
             if collapsed.startswith(prefix):
                 tail = collapsed[len(prefix) :]
-                if tail.startswith("..") or tail.startswith("./.."):
+                if _tail_escapes_home(tail):
                     return posixpath.normpath("/" + tail)
                 return prefix + posixpath.normpath("/" + tail).lstrip("/")
         tilde_user = _TILDE_USER_PREFIX_RE.match(collapsed)
         if tilde_user:
             tail = collapsed[tilde_user.end() :]
-            if tail.startswith("..") or tail.startswith("./.."):
+            if _tail_escapes_home(tail):
                 return posixpath.normpath("/" + tail)
             return tilde_user.group(0) + posixpath.normpath("/" + tail).lstrip("/")
         collapsed = posixpath.normpath(collapsed)
@@ -471,10 +494,17 @@ def _expand_token_normalisations(token: str) -> set[str]:
     return out
 
 
-# Sensitive-name fragments that the brace-aware regex below catches
-# even when the full string is never expanded (e.g. when the brace
-# group has so many alternatives that the expansion cap stops short).
-_SENSITIVE_BRACE_NAMES = (
+# Brace-defence sensitive names are SPLIT by root context so the gate
+# does not over-block. ``cat ~/data/{maps,routes}`` is a legitimate
+# user-data brace listing whose ``maps`` alternative is the name of
+# a folder, NOT ``/proc/<pid>/maps``. Pairing each root with its own
+# applicable sensitive-name set keeps the gate precise.
+
+# Names that target a home / credential root. Apply to ``~/``,
+# ``$HOME/``, ``/home/<u>/``, ``/root/``, ``/Users/<u>/``,
+# ``%USERPROFILE%/`` -- the credential families that live under the
+# user's home directory.
+_HOME_BRACE_SENSITIVE_NAMES = (
     r"\.ssh/id_rsa",
     r"\.ssh/id_ed25519",
     r"\.ssh/id_ecdsa",
@@ -487,40 +517,66 @@ _SENSITIVE_BRACE_NAMES = (
     r"\.npmrc",
     r"\.docker/config\.json",
     r"\.kube/config",
+)
+# Names that target ``/etc/``: only the four well-defined credential /
+# privilege files. ``hosts`` / ``hostname`` / ``resolv.conf`` /
+# ``os-release`` are still allowed.
+_ETC_BRACE_SENSITIVE_NAMES = (
     r"shadow",
     r"sudoers",
     r"passwd",
+    r"gshadow",
+)
+# Names that target ``/proc/<pid>/``: the per-process state files that
+# leak the runtime environment. Generic words like ``maps`` and
+# ``mem`` only fire under this root, never under a home or local path.
+_PROC_BRACE_SENSITIVE_NAMES = (
     r"environ",
     r"cmdline",
     r"maps",
     r"mem",
+    r"auxv",
 )
-_SENSITIVE_IN_BRACE_RE = re.compile(
-    _PATH_TOKEN_START
-    + r"(?:"
-    + r"~(?:[^/\s'\";&|)<>]*)?/+"
+
+
+def _build_brace_re(prefix_alt: str, names: tuple[str, ...]) -> "re.Pattern[str]":
+    """Compile a brace-aware sensitive-name regex for a single root
+    alternation. Anchors:
+      * ``_PATH_TOKEN_START`` -- shell-token boundary so project-local
+        lookalikes (``./workspace/home/u/...``) do not match.
+      * Path body between root and final brace can contain its own
+        brace groups (the empty-alt + dummies bypass uses this).
+      * ``(?<=[,{/])`` lookbehind plus ``(?=,|\\}|/)`` lookahead so
+        the sensitive name is one complete brace alternative
+        (``\\b`` does not fire between ``.`` and ``{`` -- both
+        non-word -- so it cannot anchor here)."""
+    return re.compile(
+        _PATH_TOKEN_START
+        + r"(?:" + prefix_alt + r")"
+        + r"[^\s'\";&|`$]*?"
+        + r"\{[^{}]*?(?<=[,{/])(?:" + "|".join(names) + r")(?=,|\}|/)[^{}]*\}",
+        re.IGNORECASE,
+    )
+
+
+_HOME_BRACE_PREFIX_ALT = (
+    r"~(?:[^/\s'\";&|)<>]*)?/+"
     + r"|\$\{?HOME\}?/+"
     + r"|/home/[^/\s'\"]+/+"
     + r"|/root/+"
     + r"|/Users/[^/\s'\"]+/+"
-    + r"|/etc/+"
-    + r"|/proc/(?:self|thread-self|\d+)/+"
-    + r"|/var/spool/cron/+"
-    + r")"
-    # Path body between the sensitive root and the final brace can
-    # contain its own brace groups (the bypass uses a leading brace
-    # with many dummy alternatives plus one empty alt that elides the
-    # intermediate path segment). ``[^\s'\";&|`$]*`` allows any path
-    # content but no shell-token terminator. The inner alternative
-    # is anchored with a ``(?<=[,{/])`` lookbehind plus a ``(?=,|\}|/)``
-    # lookahead so the sensitive name is matched as a complete brace
-    # alternative (``\b`` does not fire between ``.`` and ``{`` -- both
-    # non-word -- so it cannot be used here).
-    + r"[^\s'\";&|`$]*?"
-    + r"\{[^{}]*?(?<=[,{/])(?:"
-    + "|".join(_SENSITIVE_BRACE_NAMES)
-    + r")(?=,|\}|/)[^{}]*\}",
-    re.IGNORECASE,
+    + r"|%USERPROFILE%/+"
+    + r"|%HOMEDRIVE%%HOMEPATH%/+"
+)
+_HOME_BRACE_RE = _build_brace_re(
+    _HOME_BRACE_PREFIX_ALT, _HOME_BRACE_SENSITIVE_NAMES
+)
+_ETC_BRACE_RE = _build_brace_re(r"/etc/+", _ETC_BRACE_SENSITIVE_NAMES)
+_PROC_BRACE_RE = _build_brace_re(
+    r"/proc/(?:self|thread-self|\d+)/+", _PROC_BRACE_SENSITIVE_NAMES
+)
+_VAR_SPOOL_BRACE_RE = _build_brace_re(
+    r"/var/spool/cron/+", (r"[\w.-]+",)
 )
 
 
@@ -670,11 +726,19 @@ def _find_sensitive_paths(command: str) -> set[str]:
         # Brace-bomb defence. ``cat ~/{,x0,...,x341}/{.ssh/id_rsa,...}``
         # exceeds ``_expand_brace_projections``'s cap so the leaf
         # projection ``~/.ssh/id_rsa`` never reaches the literal regex.
-        # This pattern catches the sensitive-name fragments inside a
-        # brace group attached to a sensitive root and fires
-        # regardless of whether the expansion completed.
-        for m in _SENSITIVE_IN_BRACE_RE.finditer(text):
-            found.add(m.group(0))
+        # These patterns catch sensitive-name fragments inside a brace
+        # group attached to a sensitive root and fire regardless of
+        # whether the expansion completed. Split by root so legitimate
+        # brace listings like ``cat ~/data/{maps,routes}`` are not
+        # flagged (``maps`` only matches under ``/proc/<pid>/``).
+        for regex in (
+            _HOME_BRACE_RE,
+            _ETC_BRACE_RE,
+            _PROC_BRACE_RE,
+            _VAR_SPOOL_BRACE_RE,
+        ):
+            for m in regex.finditer(text):
+                found.add(m.group(0))
 
     # Recurse into nested shells. Mirrors the structure in
     # _find_blocked_commands so ``bash -c "cat ~/.ssh/id_rsa"`` and
@@ -1635,11 +1699,24 @@ def _check_signal_escape_patterns(code: str):
             # Walrus (``open((p := '/etc/shadow'))``): resolve the RHS.
             return _extract_string_literal(node.value, _depth + 1)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = _extract_string_literal(node.left, _depth + 1)
-            right = _extract_string_literal(node.right, _depth + 1)
-            if left is not None and right is not None:
-                return left + right
-            return None
+            # Flatten left-leaning ``+`` chains iteratively so a long
+            # concat ``v0+v1+...+v64+'/etc/shadow'`` does not blow the
+            # depth cap (each level adds 1, so the recursive form
+            # fails closed at 64 operands).
+            operands: list[ast.AST] = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                operands.append(cur.right)
+                cur = cur.left
+            operands.append(cur)
+            operands.reverse()
+            parts: list[str] = []
+            for op in operands:
+                s = _extract_string_literal(op, _depth + 1)
+                if s is None:
+                    return None
+                parts.append(s)
+            return "".join(parts)
         if isinstance(node, ast.JoinedStr):
             parts: list[str] = []
             for v in node.values:
@@ -1770,11 +1847,23 @@ def _check_signal_escape_patterns(code: str):
                         return v
                 return None
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = _extract_string_from_node(node.left, _depth + 1)
-            right = _extract_string_from_node(node.right, _depth + 1)
-            if left is not None and right is not None:
-                return left + right
-            return None
+            # Flatten left-leaning ``+`` chains iteratively to avoid
+            # the recursion depth cap rejecting long concat bypasses
+            # like ``open(v0+v1+...+v64+'/etc/shadow')``.
+            operands: list[ast.AST] = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                operands.append(cur.right)
+                cur = cur.left
+            operands.append(cur)
+            operands.reverse()
+            parts: list[str] = []
+            for op in operands:
+                s = _extract_string_from_node(op, _depth + 1)
+                if s is None:
+                    return None
+                parts.append(s)
+            return "".join(parts)
         if isinstance(node, ast.JoinedStr):
             parts: list[str] = []
             for v in node.values:
@@ -3128,6 +3217,44 @@ def _check_signal_escape_patterns(code: str):
                         node.module == "codecs" and alias.name == "open"
                     ):
                         self.file_reader_aliases.add(alias.asname or alias.name)
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            # Module rebinding: ``import pathlib; pl = pathlib``,
+            # ``import shutil; sh = shutil`` (and the equivalent for
+            # ``io`` / ``codecs``). Mirrors ``SignalEscapeVisitor.visit_Assign``
+            # so the file-read / shutil-copy / pathlib gates see the
+            # bound alias the same way they see the import-time alias.
+            if isinstance(node.value, ast.Name):
+                src = node.value.id
+                for tgt in node.targets:
+                    if not isinstance(tgt, ast.Name):
+                        continue
+                    if src in self.pathlib_aliases:
+                        self.pathlib_aliases.add(tgt.id)
+                    if src in shutil_module_aliases:
+                        shutil_module_aliases.add(tgt.id)
+                    if src in self.builtins_aliases:
+                        self.builtins_aliases.add(tgt.id)
+                    if src in self.path_aliases:
+                        self.path_aliases.add(tgt.id)
+            # Method rebinding inside the file-read surface:
+            # ``r = pl.Path`` so a later ``r('/etc/shadow').read_text()``
+            # flows through the pathlib resolver. The receiver alias
+            # for ``shutil.copy`` etc. is handled by the shutil-fq
+            # canonicalisation in the gate itself.
+            if isinstance(node.value, ast.Attribute) and isinstance(
+                node.value.value, ast.Name
+            ):
+                recv = node.value.value.id
+                attr = node.value.attr
+                if (
+                    recv in self.pathlib_aliases
+                    and attr in _PATHLIB_PATH_CLASSES
+                ):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.path_aliases.add(tgt.id)
             self.generic_visit(node)
 
         def visit_Call(self, node):
