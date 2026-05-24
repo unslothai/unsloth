@@ -1974,3 +1974,67 @@ class TestR5_TernaryBranchResolution:
     )
     def test_ternary_legit_allowed(self, code):
         assert not _is_blocked(code), f"legit ternary blocked: {code!r}"
+
+
+class TestR5_SubscriptResolution:
+    """``open(['/etc/shadow'][0])`` / ``open({'k':'/etc/shadow'}['k'])``
+    -- statically resolvable index expressions are now folded so the
+    file-read gate sees the target path."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(['/etc/shadow'][0])",
+            "open(['safe.txt', '/etc/shadow'][-1])",
+            "open(['safe.txt', '/etc/shadow'][1])",
+            "open({'k': '/etc/shadow'}['k'])",
+            "open(('/etc/shadow',)[0])",
+            "import shutil; shutil.copy(['/etc/shadow', 'a.txt'][0], '/tmp')",
+            # Any sensitive entry surfaces even when the index is non-static
+            "open(['data.txt', '/etc/shadow'][some_index])",
+            "open({'a': 'safe.txt', 'b': '/etc/shadow'}[some_key])",
+        ],
+    )
+    def test_subscript_resolution_blocked(self, code):
+        assert _is_blocked(code), f"subscript path leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(['data.txt'][0])",
+            "open({'k': 'data.txt'}['k'])",
+            "x = [1, 2, 3]; open(x[0])",  # x is opaque to extractor
+        ],
+    )
+    def test_subscript_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit subscript blocked: {code!r}"
+
+
+class TestR5_UdpAndConnectExMetadata:
+    """``socket.sendto(data, ('169.254.169.254', 80))`` and
+    ``socket.sendmsg(...)`` carry the destination tuple at a non-zero
+    positional index. ``socket.connect_ex(...)`` is the non-raising
+    variant of ``connect()``. All three previously slipped through
+    the connect-only metadata gate."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import socket\ns=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.sendto(b'x', ('169.254.169.254', 80))",
+            "import socket\ns=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.sendto(b'x', ('metadata.google.internal', 80))",
+            "import socket\ns=socket.socket()\ns.sendmsg([b'x'], [], 0, ('169.254.169.254', 80))",
+            "import socket\ns=socket.socket()\ns.connect_ex(('169.254.169.254', 80))",
+        ],
+    )
+    def test_udp_metadata_blocked(self, code):
+        assert _is_blocked(code), f"udp/connect_ex metadata leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import socket\ns=socket.socket()\ns.sendto(b'x', ('huggingface.co', 443))",
+            "import socket\ns=socket.socket()\ns.connect_ex(('wikipedia.org', 80))",
+        ],
+    )
+    def test_udp_metadata_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit udp blocked: {code!r}"

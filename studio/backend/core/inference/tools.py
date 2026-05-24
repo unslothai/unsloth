@@ -1568,6 +1568,59 @@ def _check_signal_escape_patterns(code: str):
             if orelse_val is not None and _looks_sensitive(orelse_val):
                 return orelse_val
             return body_val if body_val is not None else orelse_val
+        if isinstance(node, ast.Subscript):
+            # ``['/etc/shadow'][0]`` and ``{'k':'/etc/shadow'}['k']``
+            # are statically resolvable index expressions. Attempt the
+            # literal value lookup; otherwise return any sensitive
+            # candidate in the container so the gate still fires.
+            #
+            # ``ast.Index`` was folded in Python 3.9 -- on older
+            # grammars the slice node would itself be an ``ast.Index``
+            # wrapping the constant. Strip the wrapper if present.
+            key_node = node.slice
+            if isinstance(key_node, getattr(ast, "Index", tuple())):
+                key_node = key_node.value
+            container = node.value
+            if isinstance(container, (ast.List, ast.Tuple)):
+                # Indexed list / tuple of literals: prefer the indexed
+                # element when the index is a static int; otherwise
+                # take any sensitive element so the gate fires.
+                if isinstance(key_node, ast.Constant) and isinstance(
+                    key_node.value, int
+                ):
+                    idx = key_node.value
+                    if -len(container.elts) <= idx < len(container.elts):
+                        v = _extract_string_from_node(
+                            container.elts[idx], _depth + 1
+                        )
+                        if v is not None:
+                            return v
+                for elt in container.elts:
+                    v = _extract_string_from_node(elt, _depth + 1)
+                    if v is not None and _looks_sensitive(v):
+                        return v
+                for elt in container.elts:
+                    v = _extract_string_from_node(elt, _depth + 1)
+                    if v is not None:
+                        return v
+                return None
+            if isinstance(container, ast.Dict):
+                # Indexed dict of literals: prefer the value at the
+                # static key; otherwise return any sensitive value.
+                if isinstance(key_node, ast.Constant):
+                    for k_node, v_node in zip(container.keys, container.values):
+                        if (
+                            isinstance(k_node, ast.Constant)
+                            and k_node.value == key_node.value
+                        ):
+                            v = _extract_string_from_node(v_node, _depth + 1)
+                            if v is not None:
+                                return v
+                for v_node in container.values:
+                    v = _extract_string_from_node(v_node, _depth + 1)
+                    if v is not None and _looks_sensitive(v):
+                        return v
+                return None
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _extract_string_from_node(node.left, _depth + 1)
             right = _extract_string_from_node(node.right, _depth + 1)
@@ -2952,18 +3005,34 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
+            # ``sendto`` / ``sendmsg`` / ``connect_ex`` carry the dest
+            # ``(host, port)`` tuple the same way ``connect`` does
+            # (datagram sockets never call ``.connect()``). Match them
+            # all so ``s.sendto(b'x', ('169.254.169.254', 80))`` is
+            # gated by the same metadata-host check.
+            _SOCKET_DEST_METHODS = {"connect", "connect_ex", "sendto", "sendmsg"}
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _SOCKET_DEST_METHODS
+            ):
                 # Resolve the host through the strict literal extractor:
                 # variable assignments stay opaque to this gate so
                 # ``host = some_input; sock.connect((host, 80))`` keeps
                 # legitimate dynamic-host tool calls passing through.
+                #
+                # ``sendto(data, address)`` and ``sendmsg(buffers,
+                # ancdata, flags, address)`` carry the address tuple at
+                # a non-zero positional index, so scan every positional
+                # arg for a ``(host, port)`` tuple shape -- the first
+                # match wins.
                 host_lit = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Tuple) and a0.elts:
-                        host_lit = _extract_string_literal(a0.elts[0])
-                    else:
-                        host_lit = _extract_string_literal(a0)
+                for a in node.args:
+                    if isinstance(a, ast.Tuple) and a.elts:
+                        host_lit = _extract_string_literal(a.elts[0])
+                        if host_lit:
+                            break
+                if host_lit is None and node.args:
+                    host_lit = _extract_string_literal(node.args[0])
                 # Keyword forms: sock.connect(address=(host, port)).
                 if host_lit is None:
                     for kw in node.keywords or []:
