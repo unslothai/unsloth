@@ -10,6 +10,7 @@ import shutil
 import site
 import subprocess
 import sys
+import threading
 
 from loggers import get_logger
 
@@ -24,6 +25,27 @@ _sandbox_available_cache: bool | None = None
 # strips PATH down to a fixed allow-list that won't cover Nix-style or
 # custom-prefix installs).
 _linux_bwrap_path: str | None = None
+# Guards probe + cache so concurrent first-callers see a consistent
+# (cache, bwrap_path) snapshot rather than racing on partial writes.
+_sandbox_probe_lock = threading.Lock()
+
+# Extra macOS exec/read prefixes Studio actually puts on PATH via
+# _build_safe_env (Homebrew on Intel + Apple Silicon). Without these
+# in the Seatbelt profile, a tool like `bash_exec("uv --version")` or
+# even `bash` itself resolving to /usr/local/bin/bash fails with
+# Operation not permitted on common dev macs.
+_MACOS_EXTRA_EXEC_PREFIXES = (
+    "/usr/local/bin",
+    "/usr/local/lib",
+    "/usr/local/sbin",
+    "/usr/local/opt",
+    "/usr/local/Cellar",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/lib",
+    "/opt/homebrew/sbin",
+    "/opt/homebrew/opt",
+    "/opt/homebrew/Cellar",
+)
 
 
 def _probe(argv: list[str], label: str) -> bool:
@@ -97,27 +119,37 @@ def sandbox_available() -> bool:
     parent may have ``sandbox-exec`` / ``bwrap`` present but be unable
     to apply additional policies. Confirm by spawning a no-op sandboxed
     ``/usr/bin/true`` once at first call and caching the result.
+
+    Thread-safe: the run.py background probe and concurrent tool calls
+    can hit this entry point at the same time. The lock prevents a
+    slow-failing probe from overwriting a fast-succeeding probe (or
+    vice versa) and ensures _linux_bwrap_path is set before any caller
+    observes _sandbox_available_cache=True.
     """
     global _sandbox_available_cache
     if _sandbox_available_cache is not None:
         return _sandbox_available_cache
 
-    if sys.platform == "darwin":
-        ok = _macos_probe()
-        label = "macOS Seatbelt"
-    elif sys.platform == "linux":
-        ok = _linux_probe()
-        label = "Linux bubblewrap"
-    else:
-        ok = False
-        label = "no sandbox primitive for this platform"
+    with _sandbox_probe_lock:
+        if _sandbox_available_cache is not None:
+            return _sandbox_available_cache
 
-    _sandbox_available_cache = ok
-    if ok:
-        logger.info("%s sandbox available; tool execution sandboxed", label)
-    elif sys.platform not in ("darwin", "linux"):
-        logger.warning("%s; tool execution will run unsandboxed", label)
-    return ok
+        if sys.platform == "darwin":
+            ok = _macos_probe()
+            label = "macOS Seatbelt"
+        elif sys.platform == "linux":
+            ok = _linux_probe()
+            label = "Linux bubblewrap"
+        else:
+            ok = False
+            label = "no sandbox primitive for this platform"
+
+        _sandbox_available_cache = ok
+        if ok:
+            logger.info("%s sandbox available; tool execution sandboxed", label)
+        elif sys.platform not in ("darwin", "linux"):
+            logger.warning("%s; tool execution will run unsandboxed", label)
+        return ok
 
 
 def _safe_subpath(p: str) -> str:
@@ -223,9 +255,23 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 
     wd = _safe_subpath(os.path.realpath(workdir))
     py_block = "\n    ".join(py_subpaths)
+    # Optional Homebrew prefixes (Intel + Apple Silicon). Skipped when
+    # the directory doesn't exist so the profile stays minimal on macs
+    # without Homebrew. Without this, _build_safe_env's PATH includes
+    # /usr/local/bin but Seatbelt blocks exec/read there, and a stock
+    # `bash` that resolves to /usr/local/bin/bash fails.
+    homebrew_subpaths = [
+        f'(subpath "{_safe_subpath(p)}")'
+        for p in _MACOS_EXTRA_EXEC_PREFIXES
+        if os.path.isdir(p)
+    ]
+    workdir_subpath = f'(subpath "{wd}")'
     # Paths the kernel needs mmap(PROT_EXEC) on so the loader can map
     # binaries and dylibs as code. Narrower than the full read allow
     # because most things we permit reads of are data, not executables.
+    # workdir is included so a tool that compiles + dlopens a local
+    # .dylib in its session folder works on macOS, matching how the
+    # Linux side allows exec from the bind-mounted workdir.
     executable_map_block = "\n    ".join(
         [
             '(subpath "/usr/lib")',
@@ -237,9 +283,14 @@ def _macos_seatbelt_profile(workdir: str) -> str:
             '(subpath "/System/Volumes/Preboot/Cryptexes")',
             '(subpath "/Library/Frameworks")',
             *py_subpaths,
+            *homebrew_subpaths,
+            workdir_subpath,
         ]
     )
 
+    # Same symmetry on process-exec: tools may need to run ./run.sh
+    # they just generated inside the workdir; Linux already allows that
+    # via the workdir bind.
     process_exec_block = "\n    ".join(
         [
             '(subpath "/usr/lib")',
@@ -251,7 +302,13 @@ def _macos_seatbelt_profile(workdir: str) -> str:
             '(subpath "/System/Volumes/Preboot/Cryptexes")',
             '(subpath "/Library/Frameworks")',
             *py_subpaths,
+            *homebrew_subpaths,
+            workdir_subpath,
         ]
+    )
+
+    homebrew_read_block = (
+        "\n    " + "\n    ".join(homebrew_subpaths) if homebrew_subpaths else ""
     )
 
     return f"""(version 1)
@@ -305,7 +362,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
     (literal "/dev/urandom")
     (literal "/dev/dtracehelper")
     (literal "/dev/autofs_nowait")
-    {py_block}
+    {py_block}{homebrew_read_block}
 )
 
 ; Required for mmap(PROT_EXEC) on dylibs — without this Python cannot

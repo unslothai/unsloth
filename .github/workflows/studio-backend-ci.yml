@@ -61,6 +61,19 @@ jobs:
           python-version: '${{ matrix.python }}'
           cache: 'pip'
 
+      - name: Install bubblewrap for sandbox tests
+        # Required by studio/backend/tests/test_sandbox.py: the fixture
+        # calls pytest.fail() under CI=true when sandbox_available()
+        # returns False. ubuntu-latest does not preinstall bubblewrap,
+        # and Ubuntu 24.04 ships AppArmor with unprivileged userns
+        # restricted by default so the bwrap probe fails with
+        # "RTM_NEWADDR: Operation not permitted" until we drop the gate.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --unshare-all --die-with-parent /usr/bin/true
+
       - name: Install backend test dependencies (CPU only)
         run: |
           python -m pip install --upgrade pip
@@ -115,6 +128,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+
+      - name: Install bubblewrap for sandbox tests
+        # Repo-cpu-tests auto-discovers studio/backend/tests/test_sandbox.py.
+        # Same CI gate as the matrix job above; see that step for why
+        # apparmor_restrict_unprivileged_userns must be cleared too.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --unshare-all --die-with-parent /usr/bin/true
 
       # node + uv unlock ~60 tests that previously skipped on CI:
       #   - 9 tests in test_chat_preset_builtin_invariants.py need node to

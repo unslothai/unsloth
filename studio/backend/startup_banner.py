@@ -60,6 +60,12 @@ def print_sandbox_unavailable_notice() -> None:
             "  Restart this server after install.",
         ):
             lines.append(style(line))
+    lines.append(
+        style(
+            "  Set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse tool calls "
+            "until the sandbox is available."
+        )
+    )
     lines.append("")
     print("\n".join(lines))
 

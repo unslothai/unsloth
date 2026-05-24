@@ -406,10 +406,42 @@ def _sandbox_preexec_for_bwrap():
     _sandbox_preexec_impl(apply_no_new_privs = False)
 
 
+# Sentinel returned by tool entry points when the operator asked for
+# strict sandboxing and the OS primitive cannot be applied. Surfaces as
+# the tool output so the LLM (and the user) see why the call refused.
+_SANDBOX_REQUIRED_UNAVAILABLE_MSG = (
+    "Execution blocked: UNSLOTH_STUDIO_SANDBOX_STRICT=1 is set but the OS "
+    "sandbox is unavailable. Install / enable bubblewrap on Linux "
+    "(apt install bubblewrap, ensure unprivileged user namespaces are "
+    "permitted) or sandbox-exec on macOS, or unset "
+    "UNSLOTH_STUDIO_SANDBOX_STRICT to allow unsandboxed execution."
+)
+
+
+def _strict_sandbox_required() -> bool:
+    """True iff the operator wants tool execution to fail closed.
+
+    Opt-in: default is the original fail-open behavior so installs
+    without bubblewrap (locked-down kernels, nested containers, hosts
+    without bwrap) keep working. Operators who care about the security
+    boundary set UNSLOTH_STUDIO_SANDBOX_STRICT=1.
+    """
+    return os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip() in ("1", "true", "True", "yes")
+
+
 def _get_shell_cmd(command: str) -> list[str]:
-    """Return the platform-appropriate shell invocation for a command string."""
+    """Return the platform-appropriate shell invocation for a command string.
+
+    Uses an absolute /bin/bash on Unix so the Seatbelt profile's /bin
+    allowlist actually matches; bare "bash" would resolve to whatever
+    PATH lookup finds first, e.g. /usr/local/bin/bash from Homebrew on
+    Intel macs, which Seatbelt denies. /bin/bash is ABI-stable on both
+    macOS (SIP-protected) and Linux (usrmerge symlink or real binary).
+    """
     if sys.platform == "win32":
         return ["cmd", "/c", command]
+    if os.path.exists("/bin/bash"):
+        return ["/bin/bash", "-c", command]
     return ["bash", "-c", command]
 
 
@@ -1919,6 +1951,8 @@ def _python_exec(
 
         inner_argv = [sys.executable, tmp_path]
         sandboxed = sandbox_available()
+        if not sandboxed and _strict_sandbox_required() and sys.platform in ("darwin", "linux"):
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)
         else:
@@ -2020,6 +2054,8 @@ def _bash_exec(
 
         inner_argv = _get_shell_cmd(command)
         sandboxed = sandbox_available()
+        if not sandboxed and _strict_sandbox_required() and sys.platform in ("darwin", "linux"):
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
         if sandboxed:
             argv = build_sandbox_argv(inner_argv, workdir)
         else:

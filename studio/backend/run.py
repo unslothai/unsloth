@@ -685,22 +685,37 @@ def run_server(
     if not silent:
         # Probe in background: on kernel.unprivileged_userns_clone=0 hosts
         # sandbox_available() stalls for its full 5s timeout otherwise.
+        # The notice fires from whichever path resolves first (fast main
+        # thread if the probe is quick, deferred background thread if
+        # the probe is slow) so slow-failing sandbox hosts still see it.
         import threading
 
         from core.inference.sandbox import sandbox_available
 
         probe_result: list[bool] = []
         probe_done = threading.Event()
+        notice_lock = threading.Lock()
+        notice_printed = [False]
+
+        def _print_notice_once() -> None:
+            with notice_lock:
+                if notice_printed[0]:
+                    return
+                notice_printed[0] = True
+            print_sandbox_unavailable_notice()
 
         def _bg_probe():
             try:
-                probe_result.append(sandbox_available())
+                available = sandbox_available()
+                probe_result.append(available)
+                if not available:
+                    _print_notice_once()
             finally:
                 probe_done.set()
 
         threading.Thread(target = _bg_probe, daemon = True).start()
         if probe_done.wait(timeout = 2.0) and probe_result and not probe_result[0]:
-            print_sandbox_unavailable_notice()
+            _print_notice_once()
         wildcard_bind = host in ("0.0.0.0", "::")
         # For wildcard binds, run the reachability check between the URL
         # section and the stop hint so the stop hint stays last on screen.

@@ -141,22 +141,36 @@ def test_network_denied(sandboxed_workdir):
     """Hit a routable IP so the test does not depend on DNS or external service.
 
     Host is assembled at runtime so the static AST allowlist does not
-    pre-block it; only the sandbox can deny the egress.
+    pre-block it; only the sandbox can deny the egress. Imports socket
+    BEFORE the try block so a broken-socket-module false-positive cannot
+    silently pass the denial assertion.
     """
     sid, _ = sandboxed_workdir
     code = (
+        "import socket\n"
         "try:\n"
-        "    import socket\n"
         "    host = '.'.join(['8', '8', '8', '8'])\n"
         "    s = socket.create_connection((host, 80), timeout=5)\n"
         "    s.close()\n"
         "    print('LEAKED')\n"
-        "except Exception as e:\n"
-        "    print('DENIED:', type(e).__name__)\n"
+        "except OSError as e:\n"
+        "    print('DENIED:', type(e).__name__, str(e)[:200])\n"
     )
     out = _run_python(code, sid)
     assert "LEAKED" not in out, out
     assert "DENIED:" in out, out
+    # The sandbox-induced denial must mention a network/permission error
+    # rather than a Python-side import/syntax failure.
+    assert any(
+        token in out
+        for token in (
+            "Network is unreachable",
+            "Operation not permitted",
+            "Permission denied",
+            "Address family not supported",
+            "Errno",
+        )
+    ), out
 
 
 def test_sandbox_off_actually_leaks(tmp_path, monkeypatch, home_sentinel):
@@ -350,3 +364,114 @@ def test_get_workdir_idempotent(tmp_path, monkeypatch):
         assert first == second
     finally:
         tools._workdirs.pop("_idem_test", None)
+
+
+# ---------------------------------------------------------------------------
+# Strict-mode opt-in: when UNSLOTH_STUDIO_SANDBOX_STRICT=1 and the OS
+# sandbox cannot be applied, tool execution must refuse rather than run
+# unsandboxed.
+# ---------------------------------------------------------------------------
+
+
+def test_strict_mode_refuses_when_sandbox_unavailable(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "sandbox_available", lambda: False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", "1")
+    monkeypatch.setattr(sys, "platform", "linux")
+    sid = "_strict_refuse"
+    monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
+
+    py_out = tools._python_exec("print('would have leaked')", session_id=sid)
+    assert "Execution blocked" in py_out, py_out
+    assert "UNSLOTH_STUDIO_SANDBOX_STRICT" in py_out, py_out
+
+    bash_out = tools._bash_exec("echo would have leaked", session_id=sid)
+    assert "Execution blocked" in bash_out, bash_out
+    assert "would have leaked" not in bash_out, bash_out
+
+
+def test_strict_mode_off_falls_back_unsandboxed(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "sandbox_available", lambda: False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_STRICT", raising=False)
+    sid = "_strict_off"
+    monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
+
+    out = tools._python_exec("print('hello-unsandboxed')", session_id=sid)
+    assert "hello-unsandboxed" in out, out
+
+
+# ---------------------------------------------------------------------------
+# Shell resolution: bash must come from /bin/bash on Unix so the Seatbelt
+# allowlist for /bin matches. Bare "bash" can resolve to Homebrew bash on
+# Intel macs and break the sandbox.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-only")
+def test_get_shell_cmd_uses_absolute_bin_bash():
+    from core.inference import tools
+
+    cmd = tools._get_shell_cmd("echo hi")
+    assert cmd[0] == "/bin/bash", cmd
+
+
+# ---------------------------------------------------------------------------
+# macOS Seatbelt symmetry: workdir must appear in process-exec and
+# file-map-executable so tools can run / dlopen a freshly written file in
+# the session folder, matching the Linux side which bind-mounts the workdir.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS-only")
+def test_macos_profile_allows_workdir_exec(tmp_path):
+    sandbox = _load_sandbox_module()
+    # _macos_seatbelt_profile realpaths the workdir before embedding it,
+    # so the test must also realpath because macOS /var is symlinked to
+    # /private/var (and pytest tmp_path lives under /var).
+    wd = os.path.realpath(str(tmp_path))
+    profile = sandbox._macos_seatbelt_profile(str(tmp_path))
+    # Workdir should appear inside both (allow process-exec ...) and
+    # (allow file-map-executable ...), not just file-read*/file-write*.
+    process_exec_idx = profile.index("(allow process-exec")
+    process_exec_close = profile.index(")", process_exec_idx)
+    file_map_idx = profile.index("(allow file-map-executable")
+    file_map_close = profile.index(")", file_map_idx)
+    assert wd in profile[process_exec_idx:process_exec_close], profile
+    assert wd in profile[file_map_idx:file_map_close], profile
+
+
+# ---------------------------------------------------------------------------
+# Probe lock: concurrent sandbox_available() callers see the same answer
+# even when probing races; the run.py background probe must not lose a
+# successful detection to a duplicate concurrent call.
+# ---------------------------------------------------------------------------
+
+
+def test_sandbox_available_concurrent_calls_consistent(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
+
+    import threading
+
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        results.append(sandbox.sandbox_available())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # All callers must agree, and on Linux the bwrap path must be set
+    # whenever sandbox_available() reports True.
+    assert len(set(results)) == 1, results
+    if results[0] and sys.platform == "linux":
+        assert sandbox._linux_bwrap_path is not None
