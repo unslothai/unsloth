@@ -263,7 +263,7 @@ _http_client = httpx.AsyncClient()
 # calls of the same name (local llama.cpp web_search, OpenAI
 # function-calling tool literally named `web_search`, etc.).
 _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
-    {"web_search", "code_execution", "image_generation"}
+    {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
 
 
@@ -4086,6 +4086,78 @@ class ExternalProviderClient:
                             instructions_parts.append(part["text"])
                 continue
 
+            # OpenAI Responses uses item-shape history for function
+            # calling: assistant turns that invoked user tools must
+            # serialize each call as a `function_call` input item, and
+            # each role="tool" follow-up as a `function_call_output`
+            # item keyed by the matching `call_id`. Without this the
+            # second turn after a function call sends Chat Completions
+            # shape and Responses 400s the request.
+            if role == "tool":
+                _call_id = msg.get("tool_call_id") or ""
+                if isinstance(content, list):
+                    _flat_parts: list[str] = []
+                    for part in content:
+                        if part.get("type") == "text" and part.get("text"):
+                            _flat_parts.append(part["text"])
+                    _output_text = "".join(_flat_parts)
+                else:
+                    _output_text = content if isinstance(content, str) else ""
+                if _call_id:
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": _call_id,
+                            "output": _output_text,
+                        }
+                    )
+                continue
+
+            # Assistant turns that returned tool_calls translate each
+            # call as a `function_call` item (carrying name + JSON
+            # arguments + call_id). Skip builtin server-side cards
+            # (marked `args._server_tool`) which never round-trip as
+            # user functions.
+            _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+            if role == "assistant" and isinstance(_tool_calls, list):
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _fn = _tc.get("function") or {}
+                    if not isinstance(_fn, dict) or not _fn.get("name"):
+                        continue
+                    _args_raw = _fn.get("arguments") or ""
+                    if not isinstance(_args_raw, str):
+                        try:
+                            _args_raw = _json.dumps(_args_raw)
+                        except Exception:
+                            _args_raw = ""
+                    _is_server_builtin = False
+                    try:
+                        _args_obj = _json.loads(_args_raw) if _args_raw else {}
+                        if (
+                            isinstance(_args_obj, dict)
+                            and _args_obj.get("_server_tool") is True
+                        ):
+                            _is_server_builtin = True
+                    except Exception:
+                        _is_server_builtin = False
+                    if _is_server_builtin:
+                        continue
+                    _call_id_out = _tc.get("id") or f"call_{time.time_ns()}"
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": _call_id_out,
+                            "name": _fn["name"],
+                            "arguments": _args_raw,
+                        }
+                    )
+                # Skip the assistant text payload when content is empty
+                # (the model produced only tool calls on this turn).
+                if not content:
+                    continue
+
             if isinstance(content, str):
                 input_items.append({"role": role, "content": content})
                 continue
@@ -4442,8 +4514,12 @@ class ExternalProviderClient:
                     # Track caller-supplied function tool calls so the
                     # final chunk reports finish_reason="tool_calls"
                     # instead of "stop" when the model invoked a user
-                    # function on the Responses path.
+                    # function on the Responses path. function_call_index
+                    # advances per emit so parallel calls land on
+                    # distinct delta.tool_calls[].index slots (matches
+                    # the Gemini branch's distinct-index pattern).
                     saw_function_call = False
+                    function_call_index = 0
                     # Latched from response.completed / response.incomplete so
                     # the final log can surface input_tokens_details.cached_tokens —
                     # the field that proves prompt_cache_retention="24h" is
@@ -4896,6 +4972,8 @@ class ExternalProviderClient:
                                             fn_args = _json.dumps(fn_args)
                                         except Exception:
                                             fn_args = ""
+                                    _tc_index = function_call_index
+                                    function_call_index += 1
                                     yield (
                                         "data: "
                                         + _json.dumps(
@@ -4908,7 +4986,7 @@ class ExternalProviderClient:
                                                         "delta": {
                                                             "tool_calls": [
                                                                 {
-                                                                    "index": 0,
+                                                                    "index": _tc_index,
                                                                     "id": fn_call_id,
                                                                     "type": "function",
                                                                     "function": {
