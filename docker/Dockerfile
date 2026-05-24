@@ -4,11 +4,15 @@
 # on both linux/amd64 and linux/arm64.
 #
 # Why this image works:
-#   * cu128 wheels are fat binaries: SASS for sm_75;80;86;89;90;100;120 on
-#     amd64 and sm_80;90;100;120 on arm64 (confirmed against pytorch/pytorch
-#     v2.10.0 .ci/manywheel/build_cuda.sh: aarch64 builds drop 7.0/7.5/8.6).
-#     sm_120 is forward-compatible to sm_121 (GB10 / DGX Spark) -- a build
-#     containing sm_120 kernels runs fine on sm_121, per PyTorch maintainers.
+#   * cu128 wheels ship native SASS (no PTX), empirically verified via
+#     `cuobjdump --list-elf` against the downloaded wheels:
+#       amd64:  sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120
+#       arm64:  sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a
+#   * SASS is binary-compatible UPWARDS within a major (per ptrblck on the
+#     PyTorch forum, May 2026): sm_86 SASS runs on sm_89 hardware (Ada);
+#     sm_100 SASS runs on sm_103 (B300/GB300); sm_120 SASS runs on sm_121
+#     (DGX Spark / GB10). So every non-Jetson NVIDIA GPU on
+#     https://developer.nvidia.com/cuda/gpus is covered.
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
 #     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX",
@@ -197,17 +201,12 @@ print("arches:", arches)
 assert torch.__version__.startswith("2.10.0"), f"torch silently moved: {torch.__version__}"
 assert "+cu128" in torch.__version__, f"cu build silently changed: {torch.__version__}"
 assert "sm_100" in arches, f"sm_100 (B200/GB200) missing: {arches}"
-if target == "amd64":
-    # The consumer Blackwell SKUs RTX 5090 / RTX PRO 6000 are sm_120.
-    assert "sm_120" in arches, f"sm_120 (RTX 5090) missing on amd64: {arches}"
-    print("OK: torch 2.10.0+cu128 with sm_100 + sm_120 fat binary intact (amd64)")
-elif target == "arm64":
-    # DGX Spark / GB10 reports sm_121. Per PyTorch maintainers sm_120 SASS is
-    # forward-compatible to sm_121, and PTX from sm_120 JITs to sm_121 as a
-    # last resort. Accept either as proof we have a usable Blackwell SASS path.
-    assert any(a in arches for a in ("sm_120", "sm_121")), \
-        f"no Blackwell consumer SASS (sm_120 or sm_121) on arm64: {arches}"
-    print(f"OK: torch 2.10.0+cu128 with sm_100 + Blackwell-consumer fat binary intact (arm64)")
+# cu128 wheels ship sm_120 native SASS on BOTH amd64 (RTX 5090 / RTX PRO 6000
+# Blackwell) and aarch64 (Grace systems). On arm64 sm_120 is what DGX Spark
+# (sm_121) runs via minor-forward-compat within major 12; sm_121 itself is
+# never in any cu128 wheel.
+assert "sm_120" in arches, f"sm_120 missing: {arches}"
+print(f"OK: torch 2.10.0+cu128 with sm_100 + sm_120 native SASS intact ({target})")
 
 from importlib.metadata import version, PackageNotFoundError
 # xformers has no cu128 aarch64 wheel as of 0.0.34, so we only require it
