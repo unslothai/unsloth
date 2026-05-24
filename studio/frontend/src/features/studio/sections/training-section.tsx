@@ -80,7 +80,11 @@ export function TrainingSection() {
   };
 
   const handleSaveConfig = () => {
-    const yamlStr = serializeConfigToYaml(store, store.isVisionModel);
+    // Match the API mapper gate so exported YAML never carries
+    // vision_image_size for non-image datasets.
+    const includeVisionFields =
+      store.isVisionModel && store.isDatasetImage === true;
+    const yamlStr = serializeConfigToYaml(store, includeVisionFields);
     const blob = new Blob([yamlStr], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

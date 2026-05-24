@@ -139,7 +139,8 @@ export function ParamsSection(): ReactElement {
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
-  const visionImageSizePresets = [384, 512, 768, 1024, 1536, 2048];
+  // Backend validator allows [256, 2048]; offer the full span.
+  const visionImageSizePresets = [256, 384, 512, 768, 1024, 1536, 2048];
 
   // Keep input in sync when the store value changes externally
   // (e.g. model defaults being applied after model selection).
@@ -953,6 +954,16 @@ export function ParamsSection(): ReactElement {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="default">Default</SelectItem>
+                          {store.visionImageSize != null &&
+                            !visionImageSizePresets.includes(
+                              store.visionImageSize,
+                            ) && (
+                              <SelectItem
+                                value={String(store.visionImageSize)}
+                              >
+                                {store.visionImageSize}
+                              </SelectItem>
+                            )}
                           {visionImageSizePresets.map((size) => (
                             <SelectItem key={size} value={String(size)}>
                               {size}
