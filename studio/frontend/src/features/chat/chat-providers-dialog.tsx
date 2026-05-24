@@ -68,7 +68,8 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
-import { fetchCodexStatus } from "./api/codex-api";
+import { fetchCodexStatus, type CodexStatus } from "./api/codex-api";
+import { CodexLoginButton } from "./components/codex-login-button";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
@@ -224,6 +225,20 @@ export function ChatProvidersSettings({
     null,
   );
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
+  // Codex CLI / SDK availability snapshot. Used to (a) decide whether
+  // to render the synthetic Codex registry row, and (b) drive the
+  // sign-in button when the host is installed but logged out.
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const refreshCodexStatus = async () => {
+    try {
+      const next = await fetchCodexStatus();
+      setCodexStatus(next);
+      return next;
+    } catch {
+      setCodexStatus(null);
+      return null;
+    }
+  };
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [syncingProviders, setSyncingProviders] = useState(false);
@@ -376,6 +391,7 @@ export function ChatProvidersSettings({
         );
         if (!isMounted) return;
         syncSucceeded = true;
+        setCodexStatus(codexStatusRaw);
         const registryRows: ProviderRegistryEntry[] =
           codexStatusRaw && codexStatusRaw.installed &&
           !registryRowsRaw.some(
@@ -964,6 +980,30 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
+    // Codex dispatches via the local CLI / SDK -- there is no remote
+    // endpoint to ping. Reuse `/api/codex/status` as the test result.
+    if (isCodexProviderType(provider.providerType)) {
+      try {
+        const status = await fetchCodexStatus();
+        if (!status.installed) {
+          toast.error("Codex CLI or SDK is not available on this host.");
+          return;
+        }
+        if (!status.logged_in) {
+          toast.info("Sign in to Codex before testing this connection.");
+          return;
+        }
+        toast.success(
+          status.version
+            ? `Codex is available (${status.version}).`
+            : "Codex is available.",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        toast.error(`Codex status check failed: ${message}`);
+      }
+      return;
+    }
     // Local OpenAI-compat presets skip API keys — run the connection check.
     if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
       if (isCustomProviderType(provider.providerType)) {
@@ -1114,6 +1154,26 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+
+              {isCodexProvider &&
+              codexStatus?.installed &&
+              !codexStatus.logged_in ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label className="text-sm font-medium">
+                      Codex sign-in
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Authenticate the local Codex CLI before chatting.
+                    </p>
+                  </div>
+                  <CodexLoginButton
+                    onLoggedIn={() => {
+                      void refreshCodexStatus();
+                    }}
+                  />
+                </div>
+              ) : null}
 
               {showApiKeyField ? (
                 <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">

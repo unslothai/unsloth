@@ -1585,6 +1585,47 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // Codex parallel-calls fan-out events: render each
+                // per-tab chunk inline with a "Tab N:" prefix so users
+                // see the N independent attempts even before the
+                // dedicated CodexParallelTabs UI is wired into the
+                // chat surface. `codex_gather` carries the synthesis
+                // payload which the backend also emits as a normal
+                // content delta, so we drop it here to avoid showing
+                // the synthesis twice. tab_open / tab_close / tab_error
+                // are header markers we surface as one-line notes.
+                if (typeof toolEvent.type === "string" && toolEvent.type.startsWith("codex_")) {
+                  if (toolEvent.type === "codex_tab_open") {
+                    const tabId = Number(toolEvent.tab_id);
+                    const total = Number(toolEvent.total_tabs);
+                    if (Number.isFinite(tabId) && Number.isFinite(total)) {
+                      cumulativeText += `\n\n[Codex tab ${tabId}/${total}]\n`;
+                    }
+                  } else if (toolEvent.type === "codex_tab_chunk") {
+                    const text = typeof toolEvent.text === "string" ? toolEvent.text : "";
+                    if (text) cumulativeText += text;
+                  } else if (toolEvent.type === "codex_tab_error") {
+                    const tabId = Number(toolEvent.tab_id);
+                    const err = typeof toolEvent.error === "string" ? toolEvent.error : "error";
+                    if (Number.isFinite(tabId)) {
+                      cumulativeText += `\n[Codex tab ${tabId} error: ${err}]\n`;
+                    }
+                  } else if (toolEvent.type === "codex_tab_close") {
+                    // Mark end of tab block so synthesis is visually separated.
+                    cumulativeText += "\n";
+                  } else if (toolEvent.type === "codex_gather") {
+                    // Synthesis is also emitted as a normal content
+                    // delta later in the same SSE stream; nothing to
+                    // add here. Surface a divider so the user can tell
+                    // where the synthesis starts.
+                    cumulativeText += "\n--- Synthesis ---\n";
+                  }
+                  const codexParts = parseAssistantContent(cumulativeText);
+                  yield {
+                    content: [...toolCallParts, ...codexParts],
+                  };
+                  continue;
+                }
                 // OpenAI shell-tool container persistence — see
                 // ThreadRecord.openaiCodeExecContainerId. The backend
                 // emits these synthetic events on the OpenAI Responses
