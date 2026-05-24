@@ -38,13 +38,26 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Inject minimal stand-ins ONLY when the real modules are unavailable.
+# Using ``setdefault`` with a non-package ``ModuleType`` would otherwise
+# poison ``sys.modules`` for any later test that does
+# ``from loggers.handlers import ...`` (Python would raise "loggers is
+# not a package" because the stub has no ``__path__``).
+try:  # noqa: E402
+    import loggers  # type: ignore  # real backend package
+except ModuleNotFoundError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.__path__ = []  # type: ignore[attr-defined]
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
 
-_structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+try:  # noqa: E402
+    import structlog  # type: ignore
+except ModuleNotFoundError:
+    _structlog_stub = _types.ModuleType("structlog")
+    _structlog_stub.__path__ = []  # type: ignore[attr-defined]
+    _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    sys.modules["structlog"] = _structlog_stub
 
 from core.inference.llama_cpp import (  # noqa: E402
     _HAS_ANSWER_ARTIFACT,
@@ -220,16 +233,16 @@ def test_numbered_list_without_plan_framing_is_artifact():
 
 
 def test_numbered_list_with_plan_framing_is_NOT_artifact():
-    """A numbered list paired with explicit plan framing must NOT count
-    as a completed artifact. The list IS the plan, not the answer."""
+    """A numbered list paired with explicit plan framing (intent phrase
+    followed by a narrow tool-action verb such as ``search`` / ``fetch``
+    / ``browse``) must NOT count as a completed artifact. The list IS
+    the plan, not the answer. Broad verbs like ``compare`` / ``use`` /
+    ``verify`` are intentionally NOT plan framing because real answer
+    lists use them."""
     samples = [
-        # "Here's my plan" / "plan:" / "approach:".
-        "Here's my plan:\n1. Search the web\n2. Summarise the result.",
-        "Here is the plan:\n1. Look up the date.\n2. Compare versions.",
-        "My approach:\n1. Search\n2. Verify\n3. Answer.",
-        # Intent phrase + tool-action verb in close proximity.
+        "Here's my plan:\n1. Search the web\n2. then summarise.",
         "First, I'll do these:\n1. search for the song list\n2. cross-check the chart",
-        "Let me look up the values:\n1. fetch the data\n2. compare to baseline",
+        "Let me look up the values: fetch the data first.",
     ]
     for s in samples:
         assert _PLAN_LIST_FRAMING.search(s), s
@@ -334,32 +347,8 @@ def test_reprompts_on_incomplete_html_intent():
     assert _would_reprompt(content)
 
 
-def test_reprompts_on_plan_colon_intent():
-    """Bare ``Plan:`` / ``Approach:`` followed by a newline at the start
-    of a structured reply is now an intent signal so the plan stall
-    re-prompts. Inline ``Plan: <text>`` (no newline) is NOT an intent
-    signal because that shape is common in marketing / product answers
-    such as ``Plan: Pro is $10/month``."""
-    samples = [
-        "Plan:\n1. search the docs\n2. summarise",
-        "Approach:\n1. fetch the data\n2. compare",
-    ]
-    for s in samples:
-        assert _INTENT_SIGNAL.search(s), s
-        assert _would_reprompt(s), s
 
 
-def test_reprompts_on_plan_with_extended_action_verbs():
-    """The plan-framing verb whitelist also covers think / respond /
-    answer / analy[sz]e / explore / outline / gather / query / reason
-    so plan stalls phrased with those verbs still re-prompt."""
-    samples = [
-        "Here is what I will do:\n1. think it through\n2. respond clearly",
-        "First, let me reason about this:\n1. weigh options\n2. answer concisely",
-        "Now I will analyse this:\n1. break it down\n2. summarise findings",
-    ]
-    for s in samples:
-        assert _would_reprompt(s), s
 
 
 def test_plan_framing_requires_apostrophe_in_ill():
@@ -398,10 +387,10 @@ def test_reprompts_on_all_intent_form_numbered_action_plans():
 
 def test_no_reprompt_on_plan_titled_final_answer_without_actions():
     """A final answer naturally titled ``Plan:`` / ``My plan:`` /
-    ``Approach:`` whose numbered items are content (not action verbs)
-    must NOT wipe. The action-verb lookahead on the Plan: intent
-    branch is what filters lesson plans, meal plans, dinner plans,
-    and similar from being misclassified as tool-action stalls."""
+    ``Approach:`` must NOT wipe. Bare ``Plan:`` / ``Approach:`` is
+    deliberately NOT an intent signal in _INTENT_SIGNAL because it
+    too often appears as a normal answer heading (lesson plan, meal
+    plan, business plan, project plan, ...)."""
     samples = [
         "Plan:\n1. Warm-up: Students review fractions.\n2. Group practice.\n3. Assessment.",
         "My plan:\n1. Breakfast: oatmeal and fruit.\n2. Lunch: rice bowl.\n3. Dinner: lentil soup.",
@@ -411,16 +400,21 @@ def test_no_reprompt_on_plan_titled_final_answer_without_actions():
         assert not _would_reprompt(s), s
 
 
-def test_reprompts_on_plan_titled_action_stall():
-    """A ``Plan:`` / ``Approach:`` header whose items DO contain action
-    verbs (search / fetch / verify / ...) still re-prompts."""
+def test_no_reprompt_on_bare_plan_header_action_stall():
+    """Bare ``Plan:`` / ``Approach:`` headers paired with tool-action
+    verbs are NOT classified as plan stalls. Adding them as intent
+    markers caused false positives on legitimate plan answers; we
+    accept the smaller false negative (action plans titled only with
+    ``Plan:`` slip through) in exchange for not wiping valid answers.
+    Plan stalls that use an explicit first-person intent phrase ("I'll
+    search...", "First, I'll fetch...") are still caught."""
     samples = [
         "Plan:\n1. search the docs\n2. summarise the result",
         "My plan:\n1. fetch the data\n2. verify the rows",
         "The approach:\n1. look up the value\n2. compare versions",
     ]
     for s in samples:
-        assert _would_reprompt(s), s
+        assert not _would_reprompt(s), s
 
 
 def test_no_reprompt_on_here_is_the_plan_prose_answer():
@@ -436,47 +430,6 @@ def test_no_reprompt_on_here_is_the_plan_prose_answer():
         assert not _would_reprompt(s), s
 
 
-def test_plan_colon_intent_is_line_anchored():
-    """``Plan:`` / ``Approach:`` only counts as an intent marker when it
-    is at the start of a line. Without this anchor, normal direct
-    answers containing phrases like ``lesson plan:``, ``meal plan:``,
-    ``migration plan:``, or ``My approach:`` would trigger the
-    re-prompt path and risk wiping a valid response."""
-    # These mid-line "plan:" / "approach:" mentions are NOT intent signals.
-    # The qualifier before "plan" is a content noun ("lesson", "meal",
-    # "migration") rather than a generic determiner, OR the colon is
-    # followed by inline content instead of a newline-anchored header.
-    direct_answers = [
-        "Here is a lesson plan:\n1. Warm-up\n2. Group practice\n3. Assessment",
-        "I prepared a meal plan: rice, beans, eggs.",
-        "Quick approach: top-down then bottom-up.",
-        "Your current Plan: Pro includes local chats.",
-        "The plan: Basic is free, Pro is $10/month, Enterprise is custom.",
-        "My plan: use dynamic programming with memoisation.",
-        "Recommended approach: use the Python SDK for uploads.",
-        "The migration plan: backup, run, verify all in one window.",
-    ]
-    for s in direct_answers:
-        assert not _INTENT_SIGNAL.search(s), s
-        assert not _would_reprompt(s), s
-    # "Plan:" / "Approach:" with optional generic determiner at the start
-    # of a line, followed by a newline AND followed by an action verb
-    # within 120 chars, IS an intent signal. The newline requirement
-    # filters inline product/answer text such as "The plan: Pro is
-    # $10/month"; the action-verb requirement filters real prose answers
-    # such as "Plan:\n1. Warm-up\n2. Group practice".
-    plan_starts = [
-        "Plan:\n1. search\n2. summarise",
-        "Approach:\n1. fetch\n2. compare",
-        "  Plan:\n1. think\n2. respond",  # leading indent OK
-        "Lorem ipsum\nPlan:\n1. search\n2. fetch",  # plan: on a later line
-        "My plan:\n1. search\n2. summarise",
-        "The plan:\n1. look up\n2. compare",
-        "Our approach:\n1. fetch\n2. verify",
-    ]
-    for s in plan_starts:
-        assert _INTENT_SIGNAL.search(s), s
-        assert _would_reprompt(s), s
 
 
 # ── Cross-platform line endings ────────────────────────────────────
