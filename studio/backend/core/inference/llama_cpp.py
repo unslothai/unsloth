@@ -2981,6 +2981,7 @@ class LlamaCppBackend:
                 # OpenMP's spin-wait pool doesn't burn 100% of logical cores polling
                 # for GPU completion — #5692.
                 import sys as _sys
+
                 if _sys.platform == "win32" and _fully_gpu_offloaded:
                     _t = 2
                 else:
