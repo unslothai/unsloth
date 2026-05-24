@@ -46,6 +46,7 @@ function Install-UnslothStudio {
         param([string]$TorchIndexUrl)
         if ($SkipTorch) { return "none" }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return "none" }
+        if ($TorchIndexUrl -like "direct:gfx1150-*") { return "gfx1150" }
         $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if (@("cpu", "cu118", "cu124", "cu126", "cu128", "cu130") -contains $leaf) { return $leaf }
         if ($leaf -match '^rocm[0-9]+\.[0-9]+$') { return $leaf }
@@ -93,12 +94,14 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $ShortcutsOnly = $false
+    $ForceAmdRocmWindows = ($env:UNSLOTH_AMD_ROCM_WINDOWS -eq "1")
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--amd-rocm" { $ForceAmdRocmWindows = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -132,6 +135,20 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
+    function Test-WindowsHipSdkPresent {
+        if ($ForceAmdRocmWindows) { return $true }
+        if (Get-Command hipconfig -ErrorAction SilentlyContinue) { return $true }
+        foreach ($p in @(
+            "$env:ProgramFiles\AMD\ROCm\6.4\bin\hipconfig.exe",
+            "$env:ProgramFiles\AMD\ROCm\6.3\bin\hipconfig.exe",
+            "$env:ProgramFiles\AMD\ROCm\6.2\bin\hipconfig.exe"
+        )) {
+            if (Test-Path -LiteralPath $p -PathType Leaf) { return $true }
+        }
+        return $false
+    }
+
+    $PreferWindowsRocm = Test-WindowsHipSdkPresent
     $PythonVersion = "3.13"
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
@@ -928,7 +945,8 @@ shell.Run cmd, 0, False
         # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
         if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            foreach ($minor in @("3.13", "3.12", "3.11")) {
+            $minorPreference = @("3.13", "3.12", "3.11")
+            foreach ($minor in $minorPreference) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
@@ -1198,9 +1216,49 @@ shell.Run cmd, 0, False
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
+    function Find-WindowsHipTool {
+        param([string]$Name)
+        $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) { return $cmd.Source }
+        foreach ($root in @(
+            "$env:ProgramFiles\AMD\ROCm\6.4\bin",
+            "$env:ProgramFiles\AMD\ROCm\6.3\bin",
+            "$env:ProgramFiles\AMD\ROCm\6.2\bin"
+        )) {
+            $candidate = Join-Path $root "$Name.exe"
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+        return $null
+    }
+
+    function Test-WindowsAmdHipGpu {
+        $hipInfoExe = Find-WindowsHipTool "hipInfo"
+        if (-not $hipInfoExe) { return $false }
+        try {
+            $output = & $hipInfoExe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $output -match "gfx1150") {
+                return $true
+            }
+        } catch {}
+        return $false
+    }
+
+    function Get-WindowsRocmTorchSpecs {
+        param([string]$PythonMinor)
+        if (@("3.12", "3.13") -notcontains $PythonMinor) { return @() }
+        return @(
+            "torch==2.9.1+rocm7.12.0",
+            "torchvision==0.24.0+rocm7.12.0",
+            "torchaudio==2.9.0+rocm7.12.0"
+        )
+    }
+
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
+    $HasAmdHipGpu = $false
+    $script:WindowsRocmRepoUrl = "https://repo.amd.com/rocm/whl/gfx1150"
+    $script:WindowsRocmTorchSpecs = @()
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd) {
@@ -1221,17 +1279,33 @@ shell.Run cmd, 0, False
             }
         }
     }
+    if (-not $HasNvidiaSmi) {
+        $HasAmdHipGpu = Test-WindowsAmdHipGpu
+        if (-not $HasAmdHipGpu -and $ForceAmdRocmWindows) {
+            $HasAmdHipGpu = Test-WindowsHipSdkPresent
+        }
+    }
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
+    } elseif ($HasAmdHipGpu) {
+        step "gpu" "AMD ROCm/HIP GPU detected"
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        substep "Training and GPU inference require NVIDIA CUDA or AMD ROCm/HIP drivers." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        if (-not $NvidiaSmiExe -and $HasAmdHipGpu) {
+            $script:WindowsRocmTorchSpecs = Get-WindowsRocmTorchSpecs $DetectedPython.Version
+            if ($script:WindowsRocmTorchSpecs.Count -gt 0) {
+                return "direct:gfx1150-rocm7.12"
+            }
+            substep "AMD gfx1150 ROCm Windows PyTorch wheels require Python 3.12 or 3.13; falling back to CPU PyTorch." "Yellow"
+            return "$baseUrl/cpu"
+        }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = & $NvidiaSmiExe 2>&1 | Out-String
@@ -1343,8 +1417,16 @@ shell.Run cmd, 0, False
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
-            substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            if ($TorchIndexUrl -like "direct:gfx1150-*") {
+                substep "installing PyTorch for AMD gfx1150 ROCm ($TorchIndexUrl)..."
+                $torchInstallExit = Invoke-InstallCommand {
+                    $rocmTorchSpecs = $script:WindowsRocmTorchSpecs
+                    uv pip install --python $VenvPython --index-url $script:WindowsRocmRepoUrl @rocmTorchSpecs
+                }
+            } else {
+                substep "installing PyTorch ($TorchIndexUrl)..."
+                $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)

@@ -1093,6 +1093,23 @@ def install_python_stack() -> int:
         # Validate actual AMD GPU presence (not just tool existence)
         import re as _re_win
 
+        def _win_torch_has_hip() -> bool:
+            try:
+                _tr = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import torch; print(getattr(torch.version, 'hip', '') or '')",
+                    ],
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 15,
+                )
+            except Exception:
+                return False
+            return _tr.returncode == 0 and bool(_tr.stdout.strip())
+
         def _win_amd_smi_has_gpu(stdout: str) -> bool:
             return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
@@ -1117,7 +1134,7 @@ def install_python_stack() -> int:
             if _wr.returncode == 0 and _check_fn(_wr.stdout):
                 _win_amd_gpu = True
                 break
-        if _win_amd_gpu:
+        if _win_amd_gpu and not _win_torch_has_hip():
             _safe_print(
                 _dim("  Note:"),
                 "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",

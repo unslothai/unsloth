@@ -651,6 +651,10 @@ try {
 # ============================================
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
+$HasAmdHipGpu = $false
+$AmdHipArch = $null
+$HipSdkRoot = $null
+$AmdGfx1150TorchIndex = "https://repo.amd.com/rocm/whl/gfx1150"
 try {
     $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     if ($nvSmiCmd) {
@@ -682,10 +686,43 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
+function Find-WindowsHipTool {
+    param([string]$Name)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+    foreach ($root in @(
+        "$env:ProgramFiles\AMD\ROCm\6.4\bin",
+        "$env:ProgramFiles\AMD\ROCm\6.3\bin",
+        "$env:ProgramFiles\AMD\ROCm\6.2\bin"
+    )) {
+        $candidate = Join-Path $root "$Name.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+if (-not $HasNvidiaSmi) {
+    $hipInfoExe = Find-WindowsHipTool "hipInfo"
+    if ($hipInfoExe) {
+        try {
+            $hipInfoOut = & $hipInfoExe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipInfoOut -match "gcnArchName:\s*(gfx[0-9]{3,4})") {
+                $HasAmdHipGpu = $true
+                $AmdHipArch = $Matches[1]
+                $HipSdkRoot = Split-Path (Split-Path $hipInfoExe -Parent) -Parent
+            }
+        } catch {}
+    }
+}
 if (-not $HasNvidiaSmi) {
     Write-Host ""
-    step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    if ($HasAmdHipGpu) {
+        step "gpu" "AMD ROCm/HIP GPU detected"
+        substep "HIP SDK: $HipSdkRoot"
+        if ($AmdHipArch) { substep "GPU arch: $AmdHipArch" }
+    } else {
+        step "gpu" "none (chat-only / GGUF)" "Yellow"
+        substep "Training and GPU inference require NVIDIA CUDA or AMD ROCm/HIP drivers." "Yellow"
+    }
     Write-Host ""
 } else {
     step "gpu" "NVIDIA GPU detected"
@@ -1094,7 +1131,19 @@ if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
 } else {
-    step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+    if ($HasAmdHipGpu -and $HipSdkRoot) {
+        [Environment]::SetEnvironmentVariable('HIP_PATH', $HipSdkRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('ROCM_PATH', $HipSdkRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('AMDGPU_TARGETS', 'gfx1150', 'Process')
+        $hipBin = Join-Path $HipSdkRoot "bin"
+        if ($env:PATH -notlike "*$hipBin*") {
+            [Environment]::SetEnvironmentVariable('PATH', "$hipBin;$env:PATH", 'Process')
+        }
+        step "rocm" $HipSdkRoot
+        substep "AMDGPU_TARGETS = gfx1150"
+    } else {
+        step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+    }
 }
 
 # ============================================
@@ -1615,6 +1664,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
                 if ($torchVer -match '\+(cu\d+)') {
                     $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+rocm') {
+                    $installedTorchTag = "rocm"
                 } elseif ($torchVer -match '\+cpu') {
                     $installedTorchTag = "cpu"
                 } else {
@@ -1634,7 +1685,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     if (-not $shouldRebuild) {
-        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } elseif ($HasAmdHipGpu) { "rocm" } else { "cpu" }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }
@@ -1786,13 +1837,30 @@ substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
 if ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} elseif ($HasAmdHipGpu -and $AmdHipArch -eq "gfx1150") {
+    $CuTag = "gfx1150"
 } else {
     $CuTag = "cpu"
 }
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-if ($CuTag -eq "cpu") {
+if ($CuTag -eq "gfx1150") {
+    substep "installing PyTorch for AMD gfx1150 ROCm..."
+    if ($script:UnslothVerbose) {
+        Fast-Install --index-url $AmdGfx1150TorchIndex "torch==2.9.1+rocm7.12.0" "torchvision==0.24.0+rocm7.12.0" "torchaudio==2.9.0+rocm7.12.0"
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --index-url $AmdGfx1150TorchIndex "torch==2.9.1+rocm7.12.0" "torchvision==0.24.0+rocm7.12.0" "torchaudio==2.9.0+rocm7.12.0" | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[FAILED] PyTorch AMD gfx1150 ROCm install failed (exit code $torchInstallExit)" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        exit 1
+    }
+} elseif ($CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
@@ -2294,6 +2362,8 @@ if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
+    } elseif ($HasAmdHipGpu) {
+        substep "building llama.cpp with HIP/ROCm support..."
     } else {
         substep "building llama.cpp (CPU-only, no NVIDIA GPU detected)..."
     }
@@ -2603,6 +2673,12 @@ if (-not $NeedLlamaSourceBuild) {
                     # else: omit flag entirely, let cmake pick defaults
                 }
             }
+        } elseif ($HasAmdHipGpu -and $HipSdkRoot) {
+            $CmakeArgs += '-DGGML_CUDA=OFF'
+            $CmakeArgs += '-DGGML_HIP=ON'
+            $CmakeArgs += '-DAMDGPU_TARGETS=gfx1150'
+            $CmakeArgs += '-DCMAKE_HIP_ARCHITECTURES=gfx1150'
+            $CmakeArgs += "-DCMAKE_PREFIX_PATH=$HipSdkRoot"
         } else {
             $CmakeArgs += '-DGGML_CUDA=OFF'
         }
