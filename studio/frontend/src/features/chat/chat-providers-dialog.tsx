@@ -53,6 +53,9 @@ import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
+  CODEX_DEFAULT_PARALLEL_CALLS,
+  CODEX_MAX_PARALLEL_CALLS,
+  clampCodexParallelCalls,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
@@ -249,6 +252,14 @@ export function ChatProvidersSettings({
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState("Custom");
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  // Per-Codex-connection fan-out width. Stored on the provider so
+  // restoring it after a refresh / page reload does not collapse back
+  // to single-call. Clamped to [1, MAX] at every write because the
+  // input is a plain `<input type="number">` and a hand-edited
+  // localStorage entry could otherwise overflow.
+  const [codexParallelCalls, setCodexParallelCalls] = useState<number>(
+    CODEX_DEFAULT_PARALLEL_CALLS,
+  );
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -462,6 +473,15 @@ export function ChatProvidersSettings({
               isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
                 ? existing?.isReasoningModel === true
                 : undefined,
+              // Preserve the per-Codex fan-out width on sync. The
+              // backend provider row does not carry it (it lives in
+              // localStorage only), so we read it from `existing` and
+              // skip the field entirely for non-Codex providers.
+              codexParallelCalls: isCodexProviderType(uiProviderType)
+                ? clampCodexParallelCalls(
+                    existing?.codexParallelCalls ?? CODEX_DEFAULT_PARALLEL_CALLS,
+                  )
+                : undefined,
               createdAt: existing?.createdAt ?? createdAt,
               updatedAt,
             };
@@ -519,6 +539,7 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setCodexParallelCalls(CODEX_DEFAULT_PARALLEL_CALLS);
   }
 
   function openAddProvider() {
@@ -756,6 +777,11 @@ export function ChatProvidersSettings({
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
+        // Persist the fan-out width on the Codex provider only; other
+        // providers must not carry the field through normalization.
+        codexParallelCalls: isCodexProviderType(uiProviderType)
+          ? clampCodexParallelCalls(codexParallelCalls)
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -876,6 +902,12 @@ export function ChatProvidersSettings({
                 )
                   ? isReasoningModel
                   : undefined,
+                // Carry through the fan-out width for Codex; clear it on
+                // every other provider type so a left-over value cannot
+                // hitchhike on the persisted record.
+                codexParallelCalls: isCodexProviderType(existing.providerType)
+                  ? clampCodexParallelCalls(codexParallelCalls)
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -907,6 +939,13 @@ export function ChatProvidersSettings({
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true
         : false,
+    );
+    setCodexParallelCalls(
+      isCodexProviderType(provider.providerType)
+        ? clampCodexParallelCalls(
+            provider.codexParallelCalls ?? CODEX_DEFAULT_PARALLEL_CALLS,
+          )
+        : CODEX_DEFAULT_PARALLEL_CALLS,
     );
     if (
       isCustomProviderType(provider.providerType) &&
@@ -1172,6 +1211,46 @@ export function ChatProvidersSettings({
                       void refreshCodexStatus();
                     }}
                   />
+                </div>
+              ) : null}
+
+              {isCodexProvider ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="codex-parallel-calls"
+                      className="text-sm font-medium"
+                    >
+                      Parallel calls
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Fan-out width. Each call runs the same prompt against
+                      Codex and the results are unified in a final synthesis
+                      tab. 1-{CODEX_MAX_PARALLEL_CALLS}.
+                    </p>
+                  </div>
+                  <div className="min-w-0">
+                    <Input
+                      id="codex-parallel-calls"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={CODEX_MAX_PARALLEL_CALLS}
+                      step={1}
+                      value={codexParallelCalls}
+                      onChange={(event) => {
+                        const raw = Number(event.target.value);
+                        setCodexParallelCalls(
+                          clampCodexParallelCalls(
+                            Number.isFinite(raw)
+                              ? raw
+                              : CODEX_DEFAULT_PARALLEL_CALLS,
+                          ),
+                        );
+                      }}
+                      className="h-9 text-sm"
+                    />
+                  </div>
                 </div>
               ) : null}
 
