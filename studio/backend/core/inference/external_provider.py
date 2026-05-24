@@ -2803,9 +2803,8 @@ class ExternalProviderClient:
                         if isinstance(_ge, dict):
                             _google_extra = _ge
                             _native_part = _ge.get("native_part")
-                    if (
-                        fn_name in ("code_execution", "image_generation")
-                        and isinstance(_native_part, dict)
+                    if fn_name in ("code_execution", "image_generation") and isinstance(
+                        _native_part, dict
                     ):
                         for _native_key in (
                             "executableCode",
@@ -2843,9 +2842,9 @@ class ExternalProviderClient:
                     # `extra_content.google.thought_signature` (see
                     # the inbound emit below).
                     fc_part: dict[str, Any] = {"functionCall": function_call_part}
-                    sig = _google_extra.get(
-                        "thought_signature"
-                    ) or _google_extra.get("thoughtSignature")
+                    sig = _google_extra.get("thought_signature") or _google_extra.get(
+                        "thoughtSignature"
+                    )
                     if isinstance(sig, str) and sig:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
