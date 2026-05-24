@@ -145,17 +145,13 @@ def test_fast_mode_attaches_on_dated_opus_4_7_snapshot(monkeypatch):
     ``str.startswith`` against the tuple of family aliases, so a dated
     snapshot of an opted-in family is implicitly included.
     """
-    cap, _ = _capture(
-        monkeypatch, fast_mode = True, model = "claude-opus-4-7-2026-02-01"
-    )
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
-    cap, _ = _capture(
-        monkeypatch, fast_mode = True, model = "claude-opus-4-6-2026-02-01"
-    )
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
@@ -183,9 +179,7 @@ def test_fast_mode_does_not_auto_enable_on_sonnet_dated_snapshot(monkeypatch):
     """``claude-sonnet-4-6-2026-...`` shares the family prefix tuple with
     compaction but NOT with fast_mode -- the gate must keep them
     separate."""
-    cap, _ = _capture(
-        monkeypatch, fast_mode = True, model = "claude-sonnet-4-6-2026-02-01"
-    )
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-sonnet-4-6-2026-02-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
@@ -327,9 +321,7 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     the finish_reason chunk so a streaming UI paints the text first,
     then flips state to ``content_filter``."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
-    notice_idx = next(
-        i for i, l in enumerate(lines) if "stopped by Anthropic" in l
-    )
+    notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
     filter_idx = next(
         i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l
     )
@@ -420,8 +412,6 @@ def test_fast_mode_speed_field_value_is_literal_fast(monkeypatch):
 def test_fast_mode_dropped_on_opus_4_5_dated_snapshot(monkeypatch):
     """``claude-opus-4-5-2025-...`` is the previous-family snapshot
     pattern; must NOT match the fast-mode prefix."""
-    cap, _ = _capture(
-        monkeypatch, fast_mode = True, model = "claude-opus-4-5-2025-08-01"
-    )
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-5-2025-08-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
