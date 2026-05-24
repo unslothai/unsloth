@@ -290,7 +290,7 @@ def test_reasoning_effort_levels_map_to_budgets(monkeypatch):
         "low": 2048,
         "medium": 8192,
         "high": 24576,
-        "max": -1,    # dynamic
+        "max": -1,  # dynamic
         "xhigh": -1,
     }
     for effort, expected in cases.items():

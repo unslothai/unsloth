@@ -2801,8 +2801,10 @@ class ExternalProviderClient:
         # we translate to a tool_end with image_b64/image_mime so the
         # chat UI renders the picture inline. See
         # https://ai.google.dev/gemini-api/docs/image-generation.
-        is_image_model = "-image" in model.lower() or "nano-banana" in model.lower() or bool(
-            enabled_tools and "image_generation" in enabled_tools
+        is_image_model = (
+            "-image" in model.lower()
+            or "nano-banana" in model.lower()
+            or bool(enabled_tools and "image_generation" in enabled_tools)
         )
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
@@ -2840,7 +2842,7 @@ class ExternalProviderClient:
             "medium": 8192,
             "high": 24576,
             "xhigh": -1,  # dynamic
-            "max": -1,    # dynamic
+            "max": -1,  # dynamic
         }
         thinking_budget: Optional[int] = None
         effort_lc = (reasoning_effort or "").strip().lower()
