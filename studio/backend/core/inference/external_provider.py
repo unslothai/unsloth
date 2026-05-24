@@ -1432,9 +1432,7 @@ class ExternalProviderClient:
                 # this only matters when callers paste pathologically
                 # long lists by accident).
                 sequences = list(
-                    dict.fromkeys(
-                        s for s in stop if isinstance(s, str) and s.strip()
-                    )
+                    dict.fromkeys(s for s in stop if isinstance(s, str) and s.strip())
                 )
             if len(sequences) > 16:
                 logger.warning(
