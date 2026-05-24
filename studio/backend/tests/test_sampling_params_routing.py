@@ -105,13 +105,29 @@ def test_anthropic_empty_stop_omitted(monkeypatch):
     assert "stop" not in body, body
 
 
-def test_anthropic_stop_sequences_dedup_and_drop_empties(monkeypatch):
-    """Whitespace-only / duplicate chips shouldn't reach the wire and
-    waste budget against Anthropic's 16-entry cap."""
+def test_anthropic_stop_sequences_dedup_and_drop_whitespace(monkeypatch):
+    """Anthropic 400s on any stop sequence that contains no non-
+    whitespace character (`stop_sequences: each stop sequence must
+    contain non-whitespace`). Empty strings, " ", "\\n", "\\n\\n", and
+    other whitespace-only chips are filtered out client-side so the
+    request reaches the wire. Duplicates are deduped to avoid wasting
+    slots against the cap.
+    """
     captured = _install_mock(monkeypatch)
-    body = _drive_anthropic(captured, stop = ["END", "", "END", "DONE", "  ", "END"])
-    # Order preserved on first sight, duplicates and empties dropped.
-    assert body.get("stop_sequences") == ["END", "DONE", "  "], body
+    body = _drive_anthropic(
+        captured,
+        stop = ["END", "", "END", "DONE", "  ", "END", "\n\n", "\t"],
+    )
+    # Order preserved on first sight, duplicates + every whitespace-only
+    # entry dropped.
+    assert body.get("stop_sequences") == ["END", "DONE"], body
+
+
+def test_anthropic_single_whitespace_stop_string_dropped(monkeypatch):
+    """Single-string stop="\\n\\n" must not reach the wire either."""
+    captured = _install_mock(monkeypatch)
+    body = _drive_anthropic(captured, stop = "\n\n")
+    assert "stop_sequences" not in body, body
 
 
 def test_anthropic_stop_sequences_truncated_to_16(monkeypatch):
@@ -137,21 +153,58 @@ def test_anthropic_service_tier_unsupported_values_dropped(monkeypatch, bogus):
     assert "service_tier" not in body, body
 
 
-def test_anthropic_disable_parallel_tool_use_only_when_false(monkeypatch):
+def _drive_anthropic_with_tools(captured, **kwargs) -> dict:
+    """Same as `_drive_anthropic` but enables a server-side tool
+    (`web_search`) so the request body carries `tools`. Needed to
+    exercise the `disable_parallel_tool_use` nesting path, which only
+    fires when there is at least one tool defined.
+    """
+    enabled_tools = kwargs.pop("enabled_tools", None) or ["web_search"]
+    return _drive_anthropic(captured, enabled_tools = enabled_tools, **kwargs)
+
+
+def test_anthropic_disable_parallel_tool_use_nested_under_tool_choice(monkeypatch):
+    """`disable_parallel_tool_use` must be a property of `tool_choice`,
+    NOT a top-level body field. Top-level placement is rejected with
+    `extraneous key [disable_parallel_tool_use] is not permitted`. See
+    https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use.
+    """
+    captured = _install_mock(monkeypatch)
+    body = _drive_anthropic_with_tools(captured, parallel_tool_calls = False)
+    # Top-level fields must not carry the flag — Anthropic 400s otherwise.
+    assert "disable_parallel_tool_use" not in body, body
+    assert "parallel_tool_calls" not in body, body
+    # The flag is set on tool_choice. Default type is "auto" when the
+    # user didn't pick one explicitly.
+    tc = body.get("tool_choice")
+    assert isinstance(tc, dict), body
+    assert tc.get("disable_parallel_tool_use") is True, body
+    assert tc.get("type") == "auto", body
+
+
+def test_anthropic_disable_parallel_tool_use_skipped_without_tools(monkeypatch):
+    """Without any tools defined, `disable_parallel_tool_use` is a
+    no-op upstream — skip it so the request body stays minimal and the
+    flag never lands at top level either.
+    """
     captured = _install_mock(monkeypatch)
     body = _drive_anthropic(captured, parallel_tool_calls = False)
-    assert body.get("disable_parallel_tool_use") is True, body
-    # Anthropic has no `parallel_tool_calls` field.
+    assert "disable_parallel_tool_use" not in body, body
     assert "parallel_tool_calls" not in body, body
+    assert "tool_choice" not in body, body
 
 
 def test_anthropic_parallel_tool_calls_default_not_sent(monkeypatch):
     captured = _install_mock(monkeypatch)
-    body = _drive_anthropic(captured, parallel_tool_calls = True)
-    # True is the upstream default; do not surface
-    # `disable_parallel_tool_use: false` which would over-specify the request.
+    body = _drive_anthropic_with_tools(captured, parallel_tool_calls = True)
+    # True is the upstream default; do not surface a tool_choice we
+    # would otherwise not have set, and definitely no top-level
+    # `disable_parallel_tool_use`.
     assert "disable_parallel_tool_use" not in body, body
     assert "parallel_tool_calls" not in body, body
+    tc = body.get("tool_choice")
+    if isinstance(tc, dict):
+        assert "disable_parallel_tool_use" not in tc, body
 
 
 def test_anthropic_rejects_openai_only_knobs(monkeypatch):

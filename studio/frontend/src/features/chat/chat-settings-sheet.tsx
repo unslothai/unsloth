@@ -429,8 +429,14 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.parallelToolCalls);
   // OpenAI Chat docs cap `stop` at 4 entries; Anthropic accepts more.
   // Pick the right ceiling per active connection so the chips editor's
-  // placeholder doesn't lie.
-  const stopMaxEntries = externalProviderType === "anthropic" ? 16 : 4;
+  // placeholder doesn't lie. Local backends (llama.cpp / vLLM / ollama
+  // / generic OpenAI-compat connections) accept many more — match the
+  // Anthropic cap there so we do not block users from using stop
+  // sequences the backend would happily accept. The wire-side
+  // truncation in `_stream_openai_compat` will still trim to OpenAI's
+  // 4-entry hard cap when a cloud OpenAI endpoint receives the body.
+  const stopMaxEntries =
+    !isExternalModel || externalProviderType === "anthropic" ? 16 : 4;
   const serviceTierOptions = getServiceTierOptions(externalProviderType);
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;

@@ -47,12 +47,20 @@ const NUMERIC_INFERENCE_FIELDS = [
 
 // `seed` is numeric but nullable (null = "no seed field on the wire") so
 // it can't go through the NUMERIC_INFERENCE_FIELDS Finite-number filter.
+// Keep this set in sync with `ServiceTier` in ../types/runtime.ts and with
+// `getServiceTierOptions` in ../provider-capabilities.ts. `standard_only`
+// is Anthropic-only and was missing here — dropping it on save erased the
+// user's Anthropic tier choice on reload. `scale` was removed from the UI
+// (Codex review feedback) but accepting it on load is harmless for stale
+// persisted state, so it stays in the allowlist; the resolver no longer
+// surfaces it.
 const VALID_SERVICE_TIERS = new Set([
   "auto",
   "default",
   "flex",
   "priority",
   "scale",
+  "standard_only",
 ]);
 
 const CHAT_PRESET_SOURCES = new Set<string>([
@@ -157,10 +165,16 @@ function sanitizeInferenceParams(
   } else if (typeof value.seed === "number" && Number.isInteger(value.seed)) {
     params.seed = value.seed;
   }
-  // stop: capped string array per OpenAI's max-4 rule.
+  // stop: capped string array. Use Anthropic's 16-entry max so the
+  // sanitizer never silently discards entries the user actually typed
+  // for an Anthropic session. The backend's per-provider stream helper
+  // re-truncates to the wire cap (4 for OpenAI Chat, 16 for Anthropic,
+  // dropped entirely for OpenAI Responses) before the request hits the
+  // network. Capping to 4 here would defeat Anthropic's UI cap of 16
+  // for users who switch providers between sessions.
   if (Array.isArray(value.stop)) {
     const stops = value.stop.filter((s): s is string => typeof s === "string");
-    if (stops.length > 0) params.stop = stops.slice(0, 4);
+    if (stops.length > 0) params.stop = stops.slice(0, 16);
   }
   // serviceTier: nullable enum string.
   if (value.serviceTier === null) {
