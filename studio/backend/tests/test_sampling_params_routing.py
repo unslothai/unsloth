@@ -642,6 +642,35 @@ def test_openrouter_stop_cap_is_4(monkeypatch):
     assert body["stop"] == ["S0", "S1", "S2", "S3"], body
 
 
+def test_gemini_stop_cap_is_4(monkeypatch):
+    """Gemini's OpenAI-compatible layer inherits OpenAI's 4-entry stop
+    cap (https://ai.google.dev/gemini-api/docs/openai). The default
+    16-cap is too permissive."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "gemini",
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
+            api_key = "gemini-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gemini-3.1-pro-preview",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            stop = [f"S{i}" for i in range(10)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert len(body.get("stop", [])) == 4, body
+    assert body["stop"] == ["S0", "S1", "S2", "S3"], body
+
+
 def test_kimi_drops_stop_strings_over_32_bytes(monkeypatch):
     """Kimi limits each stop string to <= 32 bytes per
     https://platform.kimi.ai/docs/api/chat. Drop overlong entries

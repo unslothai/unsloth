@@ -69,6 +69,7 @@ export interface ProviderCapabilities {
  *   - kimi:       5   (https://platform.kimi.ai/docs/api/chat)
  *   - deepseek:   16  (https://api-docs.deepseek.com/api/create-chat-completion)
  *   - mistral:    16  (no documented max; widen to permissive default)
+ *   - gemini:     4   (https://ai.google.dev/gemini-api/docs/openai inherits OAI cap)
  *   - openrouter: 4   (normalises to OpenAI's chat schema)
  *   - default:    16  (covers ollama, vllm, llama.cpp, custom)
  */
@@ -78,6 +79,7 @@ const PROVIDER_STOP_MAX: Record<string, number> = {
   kimi: 5,
   deepseek: 16,
   mistral: 16,
+  gemini: 4,
   openrouter: 4,
 };
 

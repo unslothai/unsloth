@@ -88,6 +88,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"gemini-3\.1-pro-preview|gemini-pro-latest|"
             r"gemini-flash-latest|gemini-flash-lite-latest)$"
         ),
+        # Gemini's OpenAI-compatible layer inherits OpenAI's 4-stop cap
+        # (https://ai.google.dev/gemini-api/docs/openai). Without the
+        # explicit cap the default 16 leaks through and the upstream
+        # silently drops the overflow.
+        "stop_max": 4,
     },
     "deepseek": {
         "display_name": "DeepSeek",
