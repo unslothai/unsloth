@@ -170,6 +170,35 @@ def _now_ms() -> int:
     return int(time.time())
 
 
+def _resolve_scope_embedder(scope: str) -> str | None:
+    """Look up the embedder that populated `scope`'s Qdrant collection.
+
+    Returns the model name to use for query-side embedding so the
+    similarity math doesn't mix vector spaces (Qwen3-VL 2048-d
+    documents vs. bge-small 384-d query would crash with a shape
+    mismatch). Returns None for unknown scopes; callers should treat
+    None as "fall back to the default embedder".
+    """
+    from utils.rag.config import resolve_embedder
+
+    if scope.startswith("kb_"):
+        kb_id = scope[len("kb_"):]
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT embedding_model FROM rag_knowledge_bases WHERE id = ?",
+                (kb_id,),
+            ).fetchone()
+        return row["embedding_model"] if row else None
+    if scope.startswith("thread_"):
+        thread_id = scope[len("thread_"):]
+        settings = _load_thread_settings(thread_id)
+        return settings.embedding_model or resolve_embedder(
+            settings.mode,
+            settings.chunking_strategy,
+        )
+    return None
+
+
 def _row_to_kb(row: Any) -> KBResponse:
     # chunking_strategy / mode may be absent on rows fetched through a
     # pre-Phase-3 connection in tests; fall back to the schema defaults.
@@ -1052,9 +1081,14 @@ def search(
     else:
         scope = thread_scope(payload.thread_id)
 
+    # Embed the query with the same model that populated this scope's
+    # vectors. Mixing spaces (e.g. Qwen3-VL 2048-d docs vs bge-small
+    # 384-d query) crashes inside the cosine-distance compute.
+    scope_embedder = _resolve_scope_embedder(scope)
     logger.info(
-        "RAG search: scope=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
         scope,
+        scope_embedder or "<default>",
         payload.mode,
         payload.top_k,
         payload.min_score,
@@ -1078,6 +1112,7 @@ def search(
             payload.query,
             candidate_k,
             document_ids = payload.document_ids,
+            embedder_model = scope_embedder,
         )
     else:
         hits = retrieval.retrieve_hybrid(
@@ -1085,6 +1120,7 @@ def search(
             payload.query,
             k = candidate_k,
             document_ids = payload.document_ids,
+            embedder_model = scope_embedder,
         )
 
     retrieved_count = len(hits)

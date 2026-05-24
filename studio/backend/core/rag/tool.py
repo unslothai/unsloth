@@ -126,9 +126,17 @@ def search_knowledge_base(
     else:
         candidate_k = k
 
+    # Resolve the scope's embedder (the one that populated its
+    # vectors). Inline import to avoid a backend-route → core
+    # dependency cycle at module load.
+    from routes.rag import _resolve_scope_embedder
+
+    scope_embedder = _resolve_scope_embedder(scope)
+
     logger.info(
-        "search_knowledge_base: scope=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        "search_knowledge_base: scope=%s embedder=%s top_k=%d min_score=%.3f rerank=%s query=%r",
         scope,
+        scope_embedder or "<default>",
         k,
         min_score,
         enable_rerank,
@@ -136,7 +144,12 @@ def search_knowledge_base(
     )
 
     try:
-        hits = retrieval.retrieve_hybrid(scope, query.strip(), k = candidate_k)
+        hits = retrieval.retrieve_hybrid(
+            scope,
+            query.strip(),
+            k = candidate_k,
+            embedder_model = scope_embedder,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("search_knowledge_base retrieval failed")
         return f"Error: retrieval failed ({type(exc).__name__})."

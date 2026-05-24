@@ -52,9 +52,20 @@ def retrieve_dense(
     k: int | None = None,
     *,
     document_ids: list[str] | None = None,
+    embedder_model: str | None = None,
 ) -> list[Hit]:
+    """Dense retrieval. `embedder_model` MUST match the model that
+    populated this scope's vectors — using a different one yields a
+    dim mismatch (shape (N, scope_dim) vs (query_dim,)) at distance
+    compute time. Callers should resolve from the KB / thread settings
+    before passing.
+    """
     limit = k or RAG_TOP_K_DENSE
-    vector = embeddings.encode([query], normalize = True)[0].tolist()
+    vector = embeddings.encode(
+        [query],
+        normalize = True,
+        model_name = embedder_model,
+    )[0].tolist()
     raw = vector_store.search(
         scope,
         query_vector = vector,
@@ -117,6 +128,7 @@ def retrieve_hybrid(
     k_bm25: int | None = None,
     k_dense: int | None = None,
     document_ids: list[str] | None = None,
+    embedder_model: str | None = None,
 ) -> list[Hit]:
     bm25_hits = retrieve_bm25(scope, query, k_bm25 or RAG_TOP_K_BM25)
     dense_hits = retrieve_dense(
@@ -124,6 +136,7 @@ def retrieve_hybrid(
         query,
         k_dense or RAG_TOP_K_DENSE,
         document_ids = document_ids,
+        embedder_model = embedder_model,
     )
     return _rrf_fuse(
         [bm25_hits, dense_hits],
