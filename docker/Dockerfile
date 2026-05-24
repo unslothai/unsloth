@@ -184,7 +184,7 @@ ARG INSTALL_VLLM=auto
 RUN set -eux \
  && WANT_VLLM=0 \
  && case "${INSTALL_VLLM}" in \
-        auto) [ "${TARGETARCH:-amd64}" = "amd64" ] && WANT_VLLM=1 ;; \
+        auto) if [ "${TARGETARCH:-amd64}" = "amd64" ]; then WANT_VLLM=1; fi ;; \
         1|true|yes) WANT_VLLM=1 ;; \
         0|false|no) WANT_VLLM=0 ;; \
         *) echo "ERROR: invalid INSTALL_VLLM=${INSTALL_VLLM}" >&2; exit 1 ;; \
