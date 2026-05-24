@@ -110,6 +110,7 @@ def call_tool_sync(
     Polled in parallel with the tool call via ``asyncio.wait`` so a /cancel
     POST from the UI interrupts even mid-network-read.
     """
+
     async def _call() -> Any:
         async with _client(url, headers, use_oauth) as client:
             return await client.call_tool(name, args)

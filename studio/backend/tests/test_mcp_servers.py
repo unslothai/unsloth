@@ -211,15 +211,18 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 
     # Stub _client so the test doesn't need a real MCP server.
     class _StubClient:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *args): return False
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
         async def call_tool(self, name, args):
             import asyncio as _asyncio
+
             await _asyncio.sleep(30)  # never finishes within the test
 
-    monkeypatch.setattr(
-        mcp_client, "_client", lambda *a, **kw: _StubClient()
-    )
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
 
     cancel = threading.Event()
     cancel.set()
