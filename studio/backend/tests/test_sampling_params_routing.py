@@ -31,7 +31,18 @@ from core.inference.external_provider import ExternalProviderClient
 
 
 def _drive(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    # Explicit loop lifecycle + asyncgen shutdown so the httpx /
+    # MockTransport-backed async generators in the providers are
+    # finalised in this task instead of being collected later (which
+    # triggers the "aiter_text aclose was never awaited" warning the
+    # reviewer round noticed).
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(coro)
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        return result
+    finally:
+        loop.close()
 
 
 def _install_mock(monkeypatch, *, sse_payload: bytes | None = None) -> dict:
