@@ -438,8 +438,8 @@ async def _await_disconnect_then_close(request, resp) -> None:
             await asyncio.sleep(0.1)
         try:
             await resp.aclose()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to close response on disconnect: %s", e)
     except asyncio.CancelledError:
         return
 
