@@ -353,12 +353,8 @@ def main(argv: list[str] | None = None) -> int:
 
     findings = diff_new_install_scripts(base_lock, head_lock)
     if allowlist:
-        skipped = [
-            f for f in findings if _finding_allowlist_key(f) in allowlist
-        ]
-        findings = [
-            f for f in findings if _finding_allowlist_key(f) not in allowlist
-        ]
+        skipped = [f for f in findings if _finding_allowlist_key(f) in allowlist]
+        findings = [f for f in findings if _finding_allowlist_key(f) not in allowlist]
         for f in skipped:
             print(
                 f"[install-script-diff] SKIP {_finding_allowlist_key(f)} "
