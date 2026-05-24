@@ -198,7 +198,11 @@ _DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
     r"[^\r\n]{0,160}"
     r"\b(?:open|read|search|look (?:this |that |it |them )?up|browse|"
     r"google|find|check|verify|compare|review|inspect|examine|"
-    r"do (?:this|these|the following|it)|proceed|start|begin|"
+    r"do (?:this|these|the following|it)|"
+    r"take (?:these|the following) steps|"
+    r"follow (?:these|the following) steps|"
+    r"perform (?:these|the following) actions|"
+    r"proceed|start|begin|"
     r"create|build|implement|set up|add|calculate|compute|analy[sz]e|"
     r"parse|load|run|execute|test)\b"
     r"|"
@@ -224,13 +228,12 @@ _FENCE_RUN_RE = re.compile(
 def _has_unclosed_code_fence(text: str) -> bool:
     """True if ``text`` contains a code fence whose closer is missing.
 
-    A complete fence answer is already caught by _HAS_ANSWER_ARTIFACT.
-    This helper exists so that an OPEN fence (model still streaming
-    code, or stream cut short) does not let an embedded numbered list
-    inside the fence body masquerade as a final answer. The scan is
-    done per line and uses ``search`` (not ``match``) so an inline
-    opener such as ``First, let me write it. \\`\\`\\`python`` is also
-    tracked.
+    Each line is scanned so inline openers like ``First. \\`\\`\\`python``
+    are tracked. Prose mentions such as ``Use \\`\\`\\` to start a
+    fence.`` are filtered out by requiring the trailing characters
+    after the fence run to look like a CommonMark info string: empty,
+    or starting with a non-space character (so prose with a leading
+    space disqualifies the run).
     """
     active_char: Optional[str] = None
     active_len = 0
@@ -239,8 +242,13 @@ def _has_unclosed_code_fence(text: str) -> bool:
         if not m:
             continue
         fence = m.group("backticks") or m.group("tildes")
-        trailing = line[m.end() :].strip()
+        raw_trailing = line[m.end():]
+        trailing = raw_trailing.strip()
         ch = fence[0]
+        # Prose mention guard: a real fence line never has a space
+        # immediately after the delimiters followed by sentence text.
+        if raw_trailing and raw_trailing[0] == " " and trailing:
+            continue
         if active_char is None:
             active_char = ch
             active_len = len(fence)

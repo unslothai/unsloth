@@ -985,6 +985,43 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
         assert not _would_reprompt(content), content
 
 
+def test_reprompts_on_take_or_follow_steps_numbered_plan():
+    """``I'll take these steps:`` / ``I will follow these steps:`` +
+    numbered list of work items is a plan stall."""
+    samples = [
+        (
+            "I'll take these steps:\n"
+            "1. Open the URL.\n"
+            "2. Read the page.\n"
+            "3. Summarize the answer."
+        ),
+        (
+            "I will follow these steps:\n"
+            "1. Open the current docs.\n"
+            "2. Read the relevant section.\n"
+            "3. Answer."
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_no_reprompt_on_prose_mention_of_triple_backticks_after_code():
+    """Closed code fence followed by prose that describes triple-
+    backtick syntax (with leading space after the ticks) must NOT be
+    treated as an unclosed fence."""
+    content = (
+        "Here is the snippet:\n"
+        "```python\n"
+        "print(1)\n"
+        "```\n"
+        "Use ``` to start a markdown code fence in your reply."
+    )
+    assert _has_answer_artifact(content)
+    assert not _would_reprompt(content)
+
+
 def test_reprompts_on_direct_first_person_read_check_open_plan():
     """Direct first-person intent + open/read/check/review/inspect verbs
     + numbered list is a tool stall. The broader verb set applies to
