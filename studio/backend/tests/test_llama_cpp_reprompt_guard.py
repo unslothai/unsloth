@@ -20,9 +20,12 @@ would still match (length < 2000, intent signal present) and the next
 synthetic user turn ("STOP. Do NOT write code or explain.") wiped the
 visible code from the conversation.
 
-The new ``_HAS_ANSWER_ARTIFACT`` regex blocks the re-prompt whenever
-the response already contains a real answer artifact: a closed code
-fence, an HTML page, a complete SVG, or a numbered list of items.
+The guard recognises completed code fences (any markdown info string,
+indented closing fence allowed), complete HTML documents, and complete
+SVGs as answer artifacts. A numbered list is an artifact only when the
+response does NOT also contain plan framing ("Here's my plan", a tool-
+action verb following intent phrasing, etc.), so plan-only stalls of
+the form ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
 """
 
 from __future__ import annotations
@@ -46,6 +49,9 @@ sys.modules.setdefault("structlog", _structlog_stub)
 from core.inference.llama_cpp import (  # noqa: E402
     _HAS_ANSWER_ARTIFACT,
     _INTENT_SIGNAL,
+    _NUMBERED_LIST_ARTIFACT,
+    _PLAN_LIST_FRAMING,
+    _has_answer_artifact,
 )
 
 
@@ -81,23 +87,78 @@ def test_intent_signal_ignores_direct_answers():
         assert not _INTENT_SIGNAL.search(s), f"_INTENT_SIGNAL must not match {s!r}"
 
 
-# ── _HAS_ANSWER_ARTIFACT recognises substantive content ────────────
+# ── Code fence artifact detection ──────────────────────────────────
 
 
 def test_artifact_regex_detects_closed_code_fence():
     """Closed Python code fence is an answer artifact."""
     text = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
-    assert _HAS_ANSWER_ARTIFACT.search(
-        text
-    ), "Closed code fence must be detected as an answer artifact"
+    assert _has_answer_artifact(text)
+
+
+def test_artifact_regex_detects_non_alpha_info_strings():
+    """Common languages with digits / symbols in the fence info string
+    (python3, c++, c#, objective-c, ts-node, bash-session) must all be
+    recognised as complete code answers."""
+    samples = [
+        "First, let me write it.\n```python3\nprint('hi')\n```",
+        "First, let me write it.\n```c++\nint main() { return 0; }\n```",
+        "First, let me write it.\n```c#\nConsole.WriteLine(\"hi\");\n```",
+        "First, let me write it.\n```objective-c\nNSLog(@\"hi\");\n```",
+        "First, let me write it.\n```ts-node\nconsole.log('hi')\n```",
+        "First, let me script it.\n```bash-session\n$ echo hi\n```",
+        "First, let me show it.\n```python linenums=\"1\"\nprint('hi')\n```",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+
+
+def test_artifact_regex_detects_indented_close_fence():
+    """A closing fence indented under a list / blockquote still counts.
+    Common when the model nests code in markdown structure."""
+    text = "First, let me show:\n```python\nx = 1\n  ```"
+    assert _has_answer_artifact(text)
+
+
+def test_artifact_regex_ignores_open_code_fence():
+    """An UNCLOSED code fence is not yet a complete artifact."""
+    text = "Let me set up pygame.\n```python\nimport pygame"
+    assert not _has_answer_artifact(text)
+
+
+def test_artifact_regex_ignores_plain_text():
+    """Plain conversational text contains no artifact."""
+    text = "First, I will search for the songs that charted #3 in 2015."
+    assert not _has_answer_artifact(text)
+
+
+# ── HTML artifact detection ────────────────────────────────────────
 
 
 def test_artifact_regex_detects_html_page():
-    """HTML pages (doctype or <html> root) are answer artifacts."""
+    """Complete HTML pages (doctype optional, </html> required) match."""
     text_a = "<!doctype html><html><body><script>fetch('...')</script></body></html>"
     text_b = "Sure, here is the dashboard:\n<html><body>...</body></html>"
-    assert _HAS_ANSWER_ARTIFACT.search(text_a)
-    assert _HAS_ANSWER_ARTIFACT.search(text_b)
+    assert _has_answer_artifact(text_a)
+    assert _has_answer_artifact(text_b)
+
+
+def test_artifact_regex_ignores_incomplete_html_mention():
+    """A plan-only mention of <html> / <!doctype> without </html> close
+    must NOT be treated as a completed answer. Pre-fix the guard matched
+    bare ``<!doctype\\b`` and ``<html\\b`` and suppressed the re-prompt
+    even though the model never emitted a complete page."""
+    samples = [
+        "First, I'll create an <html> skeleton, then add CSS and JavaScript.",
+        "First, I'll write a complete <!doctype html> page with a button.",
+        "Let me design a <html> structure for the dashboard.",
+    ]
+    for s in samples:
+        assert not _has_answer_artifact(s), s
+
+
+# ── SVG artifact detection ─────────────────────────────────────────
 
 
 def test_artifact_regex_detects_complete_svg():
@@ -109,32 +170,57 @@ def test_artifact_regex_detects_complete_svg():
         "<ellipse cx='100' cy='50' rx='40' ry='20'/>"
         "</svg>"
     )
-    assert _HAS_ANSWER_ARTIFACT.search(text)
+    assert _has_answer_artifact(text)
 
 
-def test_artifact_regex_detects_numbered_list():
-    """A list of 2+ numbered items is an answer artifact."""
+def test_artifact_regex_ignores_incomplete_svg():
+    text = "Let me draw a sloth: <svg width='200'><circle"
+    assert not _has_answer_artifact(text)
+
+
+# ── Numbered list semantics ────────────────────────────────────────
+
+
+def test_numbered_list_artifact_regex_matches_two_items():
+    """The raw numbered-list pattern still recognises a 2+ item list.
+    The artifact decision combines this with plan-framing checks via
+    ``_has_answer_artifact``."""
     text = (
         "Let me list these:\n"
-        "1. Animals — Maroon 5\n"
-        "2. Take Me to Church — Hozier\n"
-        "3. Love Me Like You Do — Ellie Goulding\n"
+        "1. Animals - Maroon 5\n"
+        "2. Take Me to Church - Hozier\n"
+        "3. Love Me Like You Do - Ellie Goulding\n"
     )
-    assert _HAS_ANSWER_ARTIFACT.search(text)
+    assert _NUMBERED_LIST_ARTIFACT.search(text)
 
 
-def test_artifact_regex_ignores_open_code_fence():
-    """An UNCLOSED code fence is not yet a complete artifact."""
-    text = "Let me set up pygame.\n```python\nimport pygame"
-    assert not _HAS_ANSWER_ARTIFACT.search(
-        text
-    ), "Open code fence must not satisfy the artifact guard"
+def test_numbered_list_without_plan_framing_is_artifact():
+    """A plain numbered answer (no intent / plan markers) counts as a
+    completed artifact."""
+    text = (
+        "1. Animals - Maroon 5\n"
+        "2. Take Me to Church - Hozier\n"
+        "3. Drag Me Down - One Direction\n"
+    )
+    assert _has_answer_artifact(text)
+    assert not _PLAN_LIST_FRAMING.search(text)
 
 
-def test_artifact_regex_ignores_plain_text():
-    """Plain conversational text contains no artifact."""
-    text = "First, I will search for the songs that charted #3 in 2015."
-    assert not _HAS_ANSWER_ARTIFACT.search(text)
+def test_numbered_list_with_plan_framing_is_NOT_artifact():
+    """A numbered list paired with explicit plan framing must NOT count
+    as a completed artifact. The list IS the plan, not the answer."""
+    samples = [
+        # "Here's my plan" / "plan:" / "approach:".
+        "Here's my plan:\n1. Search the web\n2. Summarise the result.",
+        "Here is the plan:\n1. Look up the date.\n2. Compare versions.",
+        "My approach:\n1. Search\n2. Verify\n3. Answer.",
+        # Intent phrase + tool-action verb in close proximity.
+        "First, I'll do these:\n1. search for the song list\n2. cross-check the chart",
+        "Let me look up the values:\n1. fetch the data\n2. compare to baseline",
+    ]
+    for s in samples:
+        assert _PLAN_LIST_FRAMING.search(s), s
+        assert not _has_answer_artifact(s), s
 
 
 # ── End-to-end guard semantics on realistic responses ──────────────
@@ -148,7 +234,7 @@ def _would_reprompt(content: str) -> bool:
     return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)
-        and not _HAS_ANSWER_ARTIFACT.search(stripped)
+        and not _has_answer_artifact(stripped)
     )
 
 
@@ -165,9 +251,7 @@ def test_no_reprompt_on_complete_python_game():
         "        if e.type == pygame.QUIT: break\n"
         "```"
     )
-    assert not _would_reprompt(
-        content
-    ), "Re-prompt must not fire after a complete code block was produced"
+    assert not _would_reprompt(content)
 
 
 def test_no_reprompt_on_complete_svg():
@@ -185,12 +269,12 @@ def test_no_reprompt_on_complete_svg():
 
 
 def test_no_reprompt_on_numbered_list_answer():
-    """Response with intent + numbered list (Billboard-style) does NOT re-prompt."""
+    """A list answer without plan framing does NOT re-prompt."""
     content = (
         "Here's my list of #3 hits:\n"
-        "1. Animals — Maroon 5\n"
-        "2. Take Me to Church — Hozier\n"
-        "3. Drag Me Down — One Direction\n"
+        "1. Animals - Maroon 5\n"
+        "2. Take Me to Church - Hozier\n"
+        "3. Drag Me Down - One Direction\n"
     )
     assert not _would_reprompt(content)
 
@@ -198,12 +282,42 @@ def test_no_reprompt_on_numbered_list_answer():
 def test_reprompts_on_plan_only_stall():
     """Response that is purely a plan and no artifact STILL re-prompts."""
     content = "I'll search the web for the answer."
-    assert _would_reprompt(content), "Plan-only stalls must still trigger the re-prompt"
+    assert _would_reprompt(content)
 
 
 def test_reprompts_on_intent_with_open_fence():
     """Open code fence is not a complete artifact, so we still re-prompt."""
     content = "First, let me write the code.\n```python\nimport"
+    assert _would_reprompt(content)
+
+
+def test_reprompts_on_numbered_plan_only_stall():
+    """Numbered plan ("Here's my plan: 1. search 2. summarise") STILL
+    re-prompts. Pre-fix the numbered-list artifact branch suppressed
+    the tool-call nudge, which contradicted the PR's stated invariant."""
+    content = (
+        "Here's my plan:\n"
+        "1. Search the web for the current Billboard Hot 100 2015 data.\n"
+        "2. Use python to categorise the matching songs."
+    )
+    assert _would_reprompt(content)
+
+
+def test_reprompts_on_intent_with_numbered_action_plan():
+    """Numbered list where each item is an action (search, fetch, ...)
+    paired with intent phrasing is treated as a plan, not an answer."""
+    content = (
+        "First, I'll do these:\n"
+        "1. Search the web\n"
+        "2. Compare the sources\n"
+        "3. Answer concisely"
+    )
+    assert _would_reprompt(content)
+
+
+def test_reprompts_on_incomplete_html_intent():
+    """A plan-only mention of <html> without close STILL re-prompts."""
+    content = "First, I'll create an <html> skeleton, then add CSS."
     assert _would_reprompt(content)
 
 
@@ -213,38 +327,13 @@ def test_reprompts_on_intent_with_open_fence():
 def test_artifact_regex_handles_crlf_code_fence():
     """Windows / CRLF-converted content still detects a closed fence."""
     content = "First, let me code.\r\n```python\r\nimport sys\r\nprint('hi')\r\n```"
-    assert _HAS_ANSWER_ARTIFACT.search(
-        content
-    ), "CRLF (\\r\\n) line endings inside a code fence must still match"
-
-
-def test_artifact_regex_handles_crlf_numbered_list():
-    """CRLF numbered list also matches."""
-    content = "Here's the plan:\r\n1. one\r\n2. two\r\n"
-    assert _HAS_ANSWER_ARTIFACT.search(content)
+    assert _has_answer_artifact(content)
 
 
 def test_artifact_regex_handles_mixed_lf_crlf():
     """Mixed line endings (real-world: paste-and-edit on Windows)."""
     content = "Here's the code:\r\n```python\nimport sys\r\n```"
-    assert _HAS_ANSWER_ARTIFACT.search(content)
-
-
-def test_no_backtrack_on_crlf_spam():
-    """10K of `\\r\\n` repeats must complete fast.
-
-    Pre-fix the numbered-list alternative `(?:^|\\r?\\n)\\s*\\d+\\.` would
-    O(n^2)-backtrack on this kind of input (measured at ~630ms for 10KB
-    of `\\r\\n` repeats). The post-fix `[ \\t]*` indent restriction
-    keeps it linear.
-    """
-    import time
-
-    payload = "\r\n" * 5000
-    t0 = time.time()
-    _HAS_ANSWER_ARTIFACT.search(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"regex took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+    assert _has_answer_artifact(content)
 
 
 def test_no_reprompt_on_crlf_complete_python_game():
@@ -259,6 +348,36 @@ def test_no_reprompt_on_crlf_complete_python_game():
         "        if e.type == pygame.QUIT: break\r\n"
         "```"
     )
-    assert not _would_reprompt(
-        content
-    ), "CRLF-encoded complete fence must also suppress the re-prompt"
+    assert not _would_reprompt(content)
+
+
+# ── ReDoS guards ───────────────────────────────────────────────────
+
+
+def test_no_backtrack_on_crlf_spam():
+    """10K of `\\r\\n` repeats must complete fast.
+
+    The numbered-list alternative previously used greedy `\\s*` which
+    O(n^2)-backtracked through embedded `\\r\\n` characters (~630 ms on
+    10 KB). The current `[ \\t]*` indent restriction plus length-bounded
+    `[\\s\\S]{...}?` runs keep every alternative linear."""
+    import time
+
+    payload = "\r\n" * 5000
+    t0 = time.time()
+    _has_answer_artifact(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+
+
+def test_no_backtrack_on_open_html_spam():
+    """Many `<html ` openings without `</html>` close must still complete
+    quickly. Bounded `[\\s\\S]{0,4000}?` between the open and close caps
+    the scan per occurrence."""
+    import time
+
+    payload = "<html " * 200  # ~1200 chars, under _REPROMPT_MAX_CHARS
+    t0 = time.time()
+    _has_answer_artifact(payload)
+    elapsed_ms = (time.time() - t0) * 1000
+    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on <html spam"

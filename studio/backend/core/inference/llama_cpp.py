@@ -80,20 +80,59 @@ _MAX_REPROMPTS = 3
 # require ALL of (intent signal, length < _REPROMPT_MAX_CHARS, no
 # answer artifact) to fire.
 #
-# `\r?\n` is used everywhere a newline is required so Windows-authored or
-# CRLF-converted content still matches. The numbered-list indent uses
-# `[ \t]*` (spaces / tabs only) rather than `\s*` so the regex stays
-# linear on long whitespace runs -- greedy `\s*` + failing `\d+` caused
-# O(n^2) backtracking through embedded `\r\n` characters on adversarial
-# inputs.
+# Notes on the patterns:
+#   * `\r?\n` everywhere a newline is required so Windows-authored or
+#     CRLF-converted content still matches.
+#   * Code-fence info string is `[^\r\n]{0,200}` so common languages with
+#     digits / symbols (python3, c++, c#, objective-c, ts-node, ...) are
+#     all recognised; closing fence may be indented (` ``` ` inside a
+#     list or blockquote).
+#   * HTML branches require a closing `</html>` so plan-only mentions of
+#     `<html>` or `<!doctype>` do not bypass the re-prompt.
+#   * All `[\s\S]{...}?` runs are length-bounded so the search stays
+#     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
 _HAS_ANSWER_ARTIFACT = re.compile(
-    r"```[a-zA-Z]*\r?\n[\s\S]+?\r?\n```"  # closed code fence
-    r"|<!doctype\b"  # HTML page
-    r"|<html\b"
-    r"|<svg\b[\s\S]*?</svg>"  # complete SVG
-    r"|(?:^|\r?\n)[ \t]*\d+\.[ \t]+\S.*?\r?\n[ \t]*\d+\.",  # 2+ numbered list items
+    # Closed code fence (any markdown info string, optional indent on close).
+    r"```[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*```"
+    # Complete HTML page; doctype prefix is optional.
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
+    # Complete SVG document.
+    r"|<svg\b[\s\S]{0,4000}?</svg>",
     re.IGNORECASE,
 )
+
+# Two or more numbered list items at column 0. Indent is spaces / tabs
+# only so the regex stays linear on long whitespace runs.
+_NUMBERED_LIST_ARTIFACT = re.compile(
+    r"(?:^|\r?\n)[ \t]*\d+\.[ \t]+\S.*?\r?\n[ \t]*\d+\.",
+)
+
+# Markers that a numbered list is a plan (still re-promptable), not a
+# final answer. Explicit "Here's my plan" / "plan:" / "approach:", OR
+# intent phrasing followed shortly by a tool-action verb.
+_PLAN_LIST_FRAMING = re.compile(
+    r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|step \d+|"
+    r"i['’]?ll|i will|i am going to|let me|now i|next i)\b"
+    r"[\s\S]{0,80}"
+    r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
+    r"check|find|open|verify|compare|summari[sz]e)\b"
+    r"|\b(?:plan|approach):",
+    re.IGNORECASE,
+)
+
+
+def _has_answer_artifact(text: str) -> bool:
+    """True if ``text`` looks like a completed answer artifact.
+
+    Code fences, complete HTML, and complete SVG count directly. A
+    numbered list counts only when there is no plan framing, so stalls
+    like ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
+    """
+    if _HAS_ANSWER_ARTIFACT.search(text):
+        return True
+    if _NUMBERED_LIST_ARTIFACT.search(text):
+        return _PLAN_LIST_FRAMING.search(text) is None
+    return False
 
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
@@ -4842,7 +4881,7 @@ class LlamaCppBackend:
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped)
-                            and not _HAS_ANSWER_ARTIFACT.search(_stripped)
+                            and not _has_answer_artifact(_stripped)
                         ):
                             _reprompt_count += 1
                             logger.info(
