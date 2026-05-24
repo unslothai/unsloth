@@ -307,9 +307,7 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    CliRunner().invoke(
-        app, _BASE + ["--parallel", str(value)], catch_exceptions = True
-    )
+    CliRunner().invoke(app, _BASE + ["--parallel", str(value)], catch_exceptions = True)
 
     assert (
         captured.get("llama_parallel_slots") == value
