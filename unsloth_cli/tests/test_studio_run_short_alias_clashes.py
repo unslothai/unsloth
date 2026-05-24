@@ -460,3 +460,46 @@ def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
     assert argv[argv.index("--parallel") + 1] == "8", argv
     # Port must stay at the typer default (not silently rewritten to 8).
     assert argv[argv.index("--port") + 1] == "8888", argv
+
+
+def test_expand_np_stops_at_double_dash(monkeypatch):
+    """`--` ends option processing; post-`--` `-np8` must stay raw."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["unsloth", "run", "--model", "X", "--", "-np8"],
+    )
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "--model", "X", "--", "-np8"]
+
+
+def test_consume_helper_stops_at_double_dash():
+    """Legacy alias promotion must not consume tokens past `--`."""
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["--top-k", "20", "--", "-m", "FOO"],
+        ("-m",),
+        None,
+        "--model",
+    )
+    assert value is None
+    assert remaining == ["--top-k", "20", "--", "-m", "FOO"]
+
+
+def test_consume_helper_rejects_flag_as_value():
+    """`-m -fa` should error: -fa is a flag, not a model name."""
+    import typer as _typer
+
+    helper = _studio_mod()._consume_legacy_short_aliases
+    with pytest.raises(_typer.BadParameter, match = "-fa"):
+        helper(["-m", "-fa"], ("-m",), None, "--model")
+
+
+def test_consume_helper_allows_bare_dash_as_value():
+    """A lone `-` is a valid stdin/path sentinel, not a flag."""
+    helper = _studio_mod()._consume_legacy_short_aliases
+    value, remaining = helper(
+        ["-m", "-", "--top-k", "20"], ("-m",), None, "--model"
+    )
+    assert value == "-"
+    assert remaining == ["--top-k", "20"]

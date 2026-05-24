@@ -642,10 +642,13 @@ def _expand_attached_np_short() -> None:
     # Click clusters `-np8` as `-n -p 8` (because `-p` is the typer short
     # for `--port`), silently dropping the parallel value. Rewrite to
     # separated `-np <N>` so the typer alias matches. Space/equals forms
-    # (`-np 8`, `-np=8`) already parse correctly.
+    # (`-np 8`, `-np=8`) already parse correctly. Stop at `--` so explicit
+    # post-`--` payload tokens are never rewritten.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
+        if tok == "--":
+            break
         if (
             len(tok) > 3
             and tok.startswith("-np")
@@ -679,6 +682,11 @@ def _consume_legacy_short_aliases(
     i, n = 0, len(args)
     while i < n:
         tok = args[i]
+        # `--` ends option processing; everything after is raw payload and
+        # must not be promoted, even if it lexically matches an alias.
+        if tok == "--":
+            out.extend(args[i:])
+            break
         name, sep, inline = tok.partition("=")
         if name not in aliases:
             out.append(tok)
@@ -692,7 +700,15 @@ def _consume_legacy_short_aliases(
             value = inline
             i += 1
         elif i + 1 < n:
-            value = args[i + 1]
+            nxt = args[i + 1]
+            # Reject `-m -fa` style usage: the next token is clearly a
+            # flag, not a value. Surface the error here instead of
+            # silently consuming a llama-server flag as the model name.
+            if nxt.startswith("-") and nxt not in {"-", "--"}:
+                raise typer.BadParameter(
+                    f"{name} expects a value but got the flag {nxt}"
+                )
+            value = nxt
             i += 2
         else:
             raise typer.BadParameter(f"{name} requires a value")
@@ -807,7 +823,8 @@ def run(
 
     if model is None:
         typer.echo(
-            "Error: Missing option '--model' / '-hf' / '--hf-repo'.",
+            "Error: Missing option '--model' / '-hf' / '--hf-repo' "
+            "(legacy aliases '-m' / '-hfr' are still accepted).",
             err = True,
         )
         raise typer.Exit(2)
