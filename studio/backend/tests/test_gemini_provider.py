@@ -2211,6 +2211,45 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
     assert params["required"] == ["key"]
 
 
+def test_chat_message_extra_content_round_trips_through_validation():
+    """Round 9: ChatMessage was missing `extra_content`, so Pydantic
+    discarded the field during request validation and the text-part
+    signature replay path read nothing. The field must survive
+    model_validate and pass through _build_external_messages."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                    ],
+                    "extra_content": {
+                        "google": {"thought_signature": "SIG-TEXT"},
+                    },
+                },
+                {"role": "user", "content": "again"},
+            ],
+            "max_tokens": 64,
+            "stream": True,
+        }
+    )
+    assistant_msg = req.messages[1]
+    assert assistant_msg.extra_content == {
+        "google": {"thought_signature": "SIG-TEXT"},
+    }
+    built = _build_external_messages(req.messages, supports_vision=True)
+    assistant_out = built[1]
+    assert assistant_out["extra_content"] == {
+        "google": {"thought_signature": "SIG-TEXT"},
+    }
+
+
 def test_image_models_drop_function_declarations(monkeypatch):
     """Image-mode requests cannot mix tools with responseModalities so
     user-supplied function declarations must be dropped."""

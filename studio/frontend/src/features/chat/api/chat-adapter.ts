@@ -374,20 +374,23 @@ function collectAssistantToolCalls(
         typeof argsGoogle.native_part === "object" &&
         argsGoogle.native_part !== null,
     );
-    const tcResult = (tc as { result?: unknown }).result;
-    const hasResult = tcResult !== undefined && tcResult !== null;
-    // Disambiguate server-side builtins from same-named user-declared
-    // functions. Provider-emitted builtins (Gemini grounding /
-    // code_execution / image_generation) carry google.native_part and
-    // no caller-supplied result; user-declared functions with the same
-    // name have a result attached after the client executed them and
-    // no native_part. When neither is present we skip the entry rather
-    // than emit a fake functionCall the provider has no declaration
-    // for (typical web_search grounding card).
+    // Server-side builtins are not user-declared functions and must
+    // not round-trip as functionCall/functionResponse on the next
+    // turn — providers reject that history because no matching
+    // declaration exists.
+    //  - web_search: grounding is in the assistant text + provider
+    //    grounding metadata; the synthetic tool card is UI-only. Drop
+    //    by name. A caller-supplied function literally named
+    //    "web_search" must use a different name.
+    //  - code_execution / image_generation: only round-trip when the
+    //    backend stowed the native Gemini part (executableCode /
+    //    codeExecutionResult / inlineData) on args.google.native_part.
+    if (toolNameLower === "web_search") {
+      continue;
+    }
     if (
       SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower) &&
-      !hasNativePart &&
-      !hasResult
+      !hasNativePart
     ) {
       continue;
     }
@@ -452,31 +455,13 @@ function collectToolResultMessages(
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
     const result = (tc as { result?: unknown }).result;
-    // Server-side builtins emitted by the provider (Gemini grounding,
-    // code execution, image generation) carry google.native_part on
-    // args. Those replay via the assistant tool_call native_part path
-    // and must NOT emit a role="tool" message (the provider would 400
-    // on a functionResponse with no matching declaration). A
-    // user-declared function with the same name has no native_part —
-    // round-trip its result normally.
-    const argsObj =
-      tc.args && typeof tc.args === "object"
-        ? (tc.args as Record<string, unknown>)
-        : null;
-    const argsGoogle =
-      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
-        ? (argsObj.google as Record<string, unknown>)
-        : null;
-    const hasNativePart = Boolean(
-      argsGoogle &&
-        typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null,
-    );
-    if (
-      tc.toolName &&
-      SERVER_SIDE_BUILTIN_TOOL_NAMES.has(tc.toolName.toLowerCase()) &&
-      hasNativePart
-    ) {
+    // Mirror collectAssistantToolCalls: web_search server-side
+    // grounding never round-trips as a tool result; code_execution
+    // and image_generation only round-trip on the assistant
+    // tool_calls native-part path, never as a separate
+    // role="tool" message.
+    const toolNameLower = tc.toolName ? tc.toolName.toLowerCase() : "";
+    if (SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
       continue;
     }
     if (result === undefined || result === null) continue;

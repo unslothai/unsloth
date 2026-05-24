@@ -1738,15 +1738,22 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
+            if msg.role == "assistant" and msg.extra_content:
+                out["extra_content"] = msg.extra_content
             result.append(out)
             continue
         # Assistant messages with content=None but populated tool_calls
         # are valid (post-tool-call assistant turn). Forward them so the
         # provider helper can rebuild the functionCall part.
         if msg.content is None and msg.role == "assistant" and msg.tool_calls:
-            result.append(
-                {"role": "assistant", "content": "", "tool_calls": msg.tool_calls}
-            )
+            _assistant_only: dict[str, Any] = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": msg.tool_calls,
+            }
+            if msg.extra_content:
+                _assistant_only["extra_content"] = msg.extra_content
+            result.append(_assistant_only)
             continue
         if isinstance(msg.content, list):
             if supports_vision:
@@ -1790,6 +1797,8 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
+                if msg.role == "assistant" and msg.extra_content:
+                    entry["extra_content"] = msg.extra_content
                 result.append(entry)
             else:
                 # Non-vision provider: strip images / documents, keep
@@ -1816,6 +1825,8 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
+                if msg.role == "assistant" and msg.extra_content:
+                    entry["extra_content"] = msg.extra_content
                 result.append(entry)
     return result
 

@@ -541,6 +541,14 @@ class ChatMessage(BaseModel):
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
+    extra_content: Optional[dict] = Field(
+        None,
+        description = (
+            "Provider-specific extra fields the translator may read. "
+            "Gemini reads `extra_content.google.thought_signature` "
+            "from assistant messages to replay text-part signatures."
+        ),
+    )
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
