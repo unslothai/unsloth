@@ -93,6 +93,12 @@ _SAFE_CODEX_ENV_KEYS: tuple[str, ...] = (
     "PROGRAMDATA",
     "CODEX_HOME",
     "CODEX_OPENAI_API_KEY",
+    # Studio-internal override for the round 6b fail-closed safety
+    # pin gate. Kept in the safe-list so the round 6 SDK env-scrub
+    # wrapper does not delete it from `os.environ` before
+    # `_start_thread_with_system` checks it. The variable is not a
+    # secret; the codex subprocess receiving it is harmless.
+    "UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS",
 )
 
 

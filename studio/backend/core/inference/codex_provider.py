@@ -795,20 +795,41 @@ async def _start_thread_with_system(
     ``_safe_thread_safety_kwargs``) -- the upstream defaults would let
     a model decide on its own to execute shell commands or write to
     the operator's filesystem, which is not appropriate for a
-    server-side chat surface with no per-action approval UI.
+    server-side chat surface with no per-action approval UI. If the
+    installed SDK rev cannot expose those enums we fail closed by
+    default (raise ``CodexUnavailableError``) rather than silently
+    falling through to upstream's ``auto_review`` default. Power
+    users on a dev install can set ``UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS=1``
+    to override -- the variable name is deliberately long and explicit
+    so it does not creep into production environments by accident.
     """
+    import os as _os
+
     safety_kwargs = _safe_thread_safety_kwargs()
     if not safety_kwargs:
-        # The SDK rev does not expose ApprovalMode / SandboxMode. The
-        # provider still runs (so we do not brick users on older builds),
-        # but operators need to see this in their logs.
-        logger.warning(
-            "codex_provider.safety_kwargs_unavailable",
-            note = (
+        allow_unsafe = _os.environ.get(
+            "UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if not allow_unsafe:
+            # Fail closed: the user sees a clear 503 with a typed
+            # error rather than discovering after the fact that
+            # Codex ran with auto_review approvals.
+            raise CodexUnavailableError(
                 "Installed openai_codex SDK does not expose ApprovalMode "
-                "/ SandboxMode; Codex threads will use SDK defaults "
-                "(auto_review approvals, unspecified sandbox). Upgrade "
-                "the SDK to pin safe Studio defaults."
+                "/ SandboxMode, so Studio cannot pin the safe deny_all / "
+                "read_only defaults required for a server-side chat "
+                "surface. Upgrade openai_codex to a build that exports "
+                "those enums, or set "
+                "UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS=1 to opt in to the "
+                "SDK's auto_review default on a trusted dev host."
+            )
+        logger.warning(
+            "codex_provider.safety_kwargs_unavailable_override",
+            note = (
+                "UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS is set; Codex "
+                "threads will use the SDK auto_review default with no "
+                "explicit sandbox. This should only be enabled on a "
+                "trusted dev host."
             ),
         )
     base_kwargs: dict[str, Any] = {"model": model, **safety_kwargs}

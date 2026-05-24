@@ -116,13 +116,31 @@ class _FakeAsyncCodex:
         return _FakeThread(self._chunks, self._final)
 
 
-def _install_fake_codex_sdk(monkeypatch, async_codex_cls):
+def _install_fake_codex_sdk(monkeypatch, async_codex_cls, *, with_safety_enums = True):
     """Drop a fake ``codex_app_server`` module into sys.modules so the
     production lazy-import path picks it up without the real SDK
     being installed.
+
+    ``with_safety_enums=True`` (the default) also injects fake
+    ``ApprovalMode`` + ``SandboxMode`` so the round 6b fail-closed
+    path in ``_safe_thread_safety_kwargs`` is not triggered for every
+    test that just wants to exercise stream translation. The two
+    dedicated round 6b tests (fail_closed / explicit_opt_in) pass
+    ``with_safety_enums=False`` so they can prove the fail-closed
+    branch fires when those enums are missing.
     """
     fake_mod = types.ModuleType("codex_app_server")
     fake_mod.AsyncCodex = async_codex_cls  # type: ignore[attr-defined]
+    if with_safety_enums:
+        fake_mod.ApprovalMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deny_all = "DENY_ALL",
+            auto_review = "AUTO_REVIEW",
+        )
+        fake_mod.SandboxMode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            read_only = "READ_ONLY",
+            workspace_write = "WORKSPACE_WRITE",
+            danger_full_access = "DANGER_FULL_ACCESS",
+        )
     monkeypatch.setitem(sys.modules, "codex_app_server", fake_mod)
     # importlib.util.find_spec walks finders, not sys.modules; patch
     # it directly so the lazy-import gate accepts the fake.
@@ -913,6 +931,16 @@ class TestCodexHardenedRegressions:
         fake_mod = _types.ModuleType("openai_codex")
         fake_mod.AsyncCodex = _Async  # type: ignore[attr-defined]
         fake_mod.AppServerConfig = _FakeAppServerConfig  # type: ignore[attr-defined]
+        # Round 6b: safety enums must be present or the fail-closed
+        # path raises before AppServerConfig ever gets consulted.
+        fake_mod.ApprovalMode = _types.SimpleNamespace(  # type: ignore[attr-defined]
+            deny_all = "DENY_ALL",
+            auto_review = "AUTO",
+        )
+        fake_mod.SandboxMode = _types.SimpleNamespace(  # type: ignore[attr-defined]
+            read_only = "READ_ONLY",
+            workspace_write = "WW",
+        )
         monkeypatch.setitem(sys.modules, "openai_codex", fake_mod)
         real_find_spec = _iu.find_spec
         monkeypatch.setattr(
@@ -1477,12 +1505,17 @@ class TestCodexHardenedRegressions:
             os.environ.get("HF_TOKEN") == "must_survive"
         ), "scrubbed env leaked permanently when SDK construction failed"
 
-    def test_thread_start_skips_safety_kwargs_on_old_sdk(self, monkeypatch):
-        """If the installed SDK does not expose ApprovalMode or
-        SandboxMode (older rev / alias), thread_start must still run
-        -- failing closed would brick anyone on a pre-release build.
-        The provider logs a warning and proceeds without the kwargs.
+    def test_thread_start_fails_closed_when_safety_unavailable(self, monkeypatch):
+        """Round 6b: if the installed SDK cannot expose ApprovalMode or
+        SandboxMode, the provider MUST fail closed rather than
+        silently fall through to the SDK's `auto_review` default. A
+        server-side chat surface with no per-action approval UI
+        cannot tolerate the model deciding on its own to run shell
+        commands. The error surfaces as a typed CodexUnavailableError
+        the route layer translates to 503.
         """
+        # Make sure the override env var is NOT set.
+        monkeypatch.delenv("UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS", raising = False)
         seen_kwargs: list[dict] = []
 
         class _Async:
@@ -1496,8 +1529,54 @@ class TestCodexHardenedRegressions:
                 seen_kwargs.append(dict(kw))
                 return _FakeThread(chunks = ["ok"])
 
-        # Fake SDK without ApprovalMode / SandboxMode.
-        _install_fake_codex_sdk(monkeypatch, _Async)
+        _install_fake_codex_sdk(monkeypatch, _Async, with_safety_enums = False)
+        from core.inference.codex_provider import (
+            CodexUnavailableError,
+            stream_codex,
+        )
+
+        async def _collect():
+            async for _ in stream_codex(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
+            ):
+                pass
+
+        with pytest.raises(CodexUnavailableError) as exc_info:
+            asyncio.run(_collect())
+        assert "ApprovalMode" in str(exc_info.value) or "SandboxMode" in str(
+            exc_info.value
+        )
+        assert not seen_kwargs, (
+            "thread_start must NOT have been called when safety pins "
+            "could not be applied"
+        )
+
+    def test_thread_start_allows_unsafe_defaults_with_explicit_opt_in(
+        self, monkeypatch
+    ):
+        """When the operator deliberately sets the
+        UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS escape hatch, the provider
+        proceeds without the safety pins (logs a warning) instead of
+        raising. This is the dev-only override for pre-release alpha
+        SDK builds that have not yet exposed ApprovalMode/SandboxMode.
+        """
+        monkeypatch.setenv("UNSLOTH_CODEX_ALLOW_UNSAFE_DEFAULTS", "1")
+        seen_kwargs: list[dict] = []
+
+        class _Async:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def thread_start(self, **kw):
+                seen_kwargs.append(dict(kw))
+                return _FakeThread(chunks = ["ok"])
+
+        _install_fake_codex_sdk(monkeypatch, _Async, with_safety_enums = False)
         from core.inference.codex_provider import stream_codex
 
         async def _collect():
@@ -1509,14 +1588,10 @@ class TestCodexHardenedRegressions:
                 pass
 
         asyncio.run(_collect())
-        assert seen_kwargs, "thread_start never called"
+        assert seen_kwargs, "thread_start never called under override"
         kw = seen_kwargs[0]
-        assert "approval_mode" not in kw, (
-            "should not pass an unknown approval_mode value on an "
-            "SDK that does not expose the enum"
-        )
+        assert "approval_mode" not in kw
         assert "sandbox" not in kw
-        # Model still passed so the request is well-formed.
         assert kw.get("model") == "gpt-5.5"
 
     def test_device_login_log_filter_drops_unknown_lines(self, monkeypatch):
