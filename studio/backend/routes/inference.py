@@ -1712,11 +1712,39 @@ def _build_external_messages(
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
-            # Skip assistant messages with empty content (some providers reject them)
-            if msg.role == "assistant" and not msg.content.strip():
+            # Drop bare assistant messages with no content AND no
+            # tool_calls (some providers reject empty assistant turns).
+            # Preserve assistant turns whose only payload is tool_calls
+            # so multi-turn function-call loops round-trip.
+            if (
+                msg.role == "assistant"
+                and not msg.content.strip()
+                and not msg.tool_calls
+            ):
                 continue
-            result.append({"role": msg.role, "content": msg.content})
-        elif isinstance(msg.content, list):
+            out: dict[str, Any] = {"role": msg.role, "content": msg.content}
+            if msg.role == "assistant" and msg.tool_calls:
+                out["tool_calls"] = msg.tool_calls
+            if msg.role == "tool":
+                if msg.tool_call_id:
+                    out["tool_call_id"] = msg.tool_call_id
+                if msg.name:
+                    out["name"] = msg.name
+            result.append(out)
+            continue
+        # Assistant messages with content=None but populated tool_calls
+        # are valid (post-tool-call assistant turn). Forward them so the
+        # provider helper can rebuild the functionCall part.
+        if (
+            msg.content is None
+            and msg.role == "assistant"
+            and msg.tool_calls
+        ):
+            result.append(
+                {"role": "assistant", "content": "", "tool_calls": msg.tool_calls}
+            )
+            continue
+        if isinstance(msg.content, list):
             if supports_vision:
                 parts = []
                 for part in msg.content:
@@ -1750,7 +1778,15 @@ def _build_external_messages(
                         # provider would 400 on the unknown part, so
                         # gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
-                result.append({"role": msg.role, "content": parts})
+                entry: dict[str, Any] = {"role": msg.role, "content": parts}
+                if msg.role == "assistant" and msg.tool_calls:
+                    entry["tool_calls"] = msg.tool_calls
+                if msg.role == "tool":
+                    if msg.tool_call_id:
+                        entry["tool_call_id"] = msg.tool_call_id
+                    if msg.name:
+                        entry["name"] = msg.name
+                result.append(entry)
             else:
                 # Non-vision provider: strip images / documents, keep
                 # text, optionally keep compaction (Anthropic only --
@@ -1766,9 +1802,17 @@ def _build_external_messages(
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses back to a string for
                     # providers that don't accept content arrays.
-                    result.append({"role": msg.role, "content": preserved[0]["text"]})
+                    entry = {"role": msg.role, "content": preserved[0]["text"]}
                 else:
-                    result.append({"role": msg.role, "content": preserved})
+                    entry = {"role": msg.role, "content": preserved}
+                if msg.role == "assistant" and msg.tool_calls:
+                    entry["tool_calls"] = msg.tool_calls
+                if msg.role == "tool":
+                    if msg.tool_call_id:
+                        entry["tool_call_id"] = msg.tool_call_id
+                    if msg.name:
+                        entry["name"] = msg.name
+                result.append(entry)
     return result
 
 

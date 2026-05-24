@@ -501,6 +501,73 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     assert sig == "SIG-FROM-GEMINI", deltas
 
 
+def test_image_models_suppress_phantom_web_search_card(monkeypatch):
+    """When the image guard filters googleSearch out of the outbound
+    request, the inbound stream must NOT emit web_search tool_start /
+    tool_end (otherwise the UI shows a misleading 'Search complete'
+    card on a turn where Gemini never actually searched)."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": "drawn"}]},
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = ["web_search", "code_execution"],
+    )
+    chunks = _parse_chunks(lines)
+    tool_evs = [
+        ev for c in chunks
+        for ev in [c.get("_toolEvent")]
+        if isinstance(ev, dict) and ev.get("tool_name") == "web_search"
+    ]
+    assert tool_evs == [], tool_evs
+
+
+def test_image_generation_tool_drops_text_tools(monkeypatch):
+    """`enabled_tools=["image_generation", "web_search", "code_execution"]`
+    on a text Gemini model flips responseModalities to TEXT+IMAGE; in
+    that mode googleSearch / codeExecution must NOT be forwarded
+    (Gemini rejects text tools alongside image responseModalities)."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash",
+        enabled_tools = [
+            "image_generation",
+            "web_search",
+            "code_execution",
+        ],
+    )
+    assert "tools" not in captured["body"], captured["body"]
+    assert captured["body"]["generationConfig"].get("responseModalities") == [
+        "TEXT",
+        "IMAGE",
+    ]
+
+
+def test_prompt_feedback_block_reason_surfaces_as_error(monkeypatch):
+    """`promptFeedback.blockReason` with zero candidates must produce
+    an error chunk, not a silent empty assistant reply."""
+    sse = [
+        {
+            "promptFeedback": {"blockReason": "SAFETY"},
+        }
+    ]
+    chunks = _parse_chunks(_collect(monkeypatch, sse))
+    error_chunks = [c for c in chunks if "error" in c]
+    assert error_chunks, chunks
+    assert "SAFETY" in (error_chunks[0].get("error", {}).get("message") or ""), (
+        error_chunks
+    )
+
+
 def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
     """`thoughtsTokenCount` is the hidden-reasoning slice of output;
     roll it into `output_tokens` AND surface it on

@@ -2894,10 +2894,13 @@ class ExternalProviderClient:
         #   https://ai.google.dev/gemini-api/docs/grounding
         # - `{codeExecution: {}}` -- sandboxed Python tool.
         #   https://ai.google.dev/gemini-api/docs/code-execution
-        # Image models reject both (the response modalities path is
-        # mutually exclusive with text-tool wiring). Drop them silently
-        # so stale UI state or direct API callers do not 400 the turn.
-        text_tools_allowed = not is_image_picker_model
+        # Any image-mode request rejects both (response modalities is
+        # mutually exclusive with text-tool wiring -- confirmed via the
+        # live API: "Search as tool is not enabled for this model" /
+        # "Code execution is not enabled for this model"). Cover BOTH
+        # the picker case (`-image` / `nano-banana` id) and the
+        # text-model + `image_generation` tool case.
+        text_tools_allowed = not is_image_model
         tools_array: list[dict[str, Any]] = []
         if enabled_tools and "web_search" in enabled_tools and text_tools_allowed:
             tools_array.append({"googleSearch": {}})
@@ -2979,7 +2982,14 @@ class ExternalProviderClient:
         # tool_calls delta followed by finish_reason="stop" never
         # executes the tool).
         emitted_any_function_call = False
-        web_search_active = bool(enabled_tools and "web_search" in enabled_tools)
+        # web_search_active drives the tool_start / tool_end envelope.
+        # Track on whether `googleSearch` was actually forwarded above,
+        # not the raw caller intent -- image-mode requests filter the
+        # tool out, and emitting a phantom "search complete" card on a
+        # turn where Gemini was never told to search confuses the UI.
+        web_search_active = any(
+            "googleSearch" in t for t in tools_array
+        )
         web_search_tool_id = "gemini_web_search"
         web_search_tool_started = False
         web_search_tool_ended = False
@@ -3055,6 +3065,28 @@ class ExternalProviderClient:
                         usage_meta = event.get("usageMetadata")
                         if isinstance(usage_meta, dict):
                             last_usage = usage_meta
+
+                        # Prompt-level safety block: Gemini ships zero
+                        # candidates plus a `promptFeedback.blockReason`
+                        # (e.g. SAFETY). The downstream OAI client would
+                        # otherwise see an empty successful assistant
+                        # response. Surface as a content_filter error
+                        # event so the UI can render the block reason.
+                        prompt_feedback = event.get("promptFeedback")
+                        if (
+                            isinstance(prompt_feedback, dict)
+                            and prompt_feedback.get("blockReason")
+                        ):
+                            block_reason = str(
+                                prompt_feedback.get("blockReason")
+                            )
+                            yield _error_sse_line(
+                                400,
+                                f"Gemini blocked prompt: {block_reason}",
+                                self.provider_type,
+                            )
+                            await response.aclose()
+                            return
 
                         candidates = event.get("candidates") or []
                         if not isinstance(candidates, list):
