@@ -282,7 +282,13 @@ class TrainingStartRequest(BaseModel):
             "back to the incoming activation dtype."
         ),
     )
-    random_seed: int = Field(42, description = "Random seed")
+    random_seed: int = Field(
+        3407,
+        description = (
+            "Random seed; matches the Studio backend / MLX worker default "
+            "and unsloth's historical recommended value."
+        ),
+    )
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")

@@ -190,14 +190,43 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
 
-        self.assertIn(
-            "max_grad_value = None if max_grad_value is None else float(max_grad_value)",
-            source,
-        )
+        # None must survive to the MLX trainer so it picks its own runtime
+        # default, and any other value must coerce to float without
+        # rebinding None to 1.0 (which the legacy code did).
+        self.assertIn('max_grad_value = config.get("max_grad_value")', source)
+        self.assertIn("max_grad_value = float(max_grad_value)", source)
         self.assertNotIn(
             "max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)",
             source,
         )
+
+    def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
+        # Raw / backend callers can pass `random_seed=None`,
+        # `cast_norm_output_to_input_dtype=None`, and
+        # `max_grad_value=None` (or omit them) and must NOT leak the
+        # `None` past `TrainingBackend.start_training`. Otherwise
+        # transformers.set_seed(None) raises, PEFT init becomes
+        # nondeterministic, and the MLX norm-output cast silently flips.
+        from core.training.training import (
+            _coerce_seed,
+            _coerce_optional_bool,
+            _coerce_optional_nonneg_float,
+        )
+
+        self.assertEqual(_coerce_seed(None), 3407)
+        self.assertEqual(_coerce_seed("123"), 123)
+        self.assertEqual(_coerce_seed("not-a-number"), 3407)
+
+        self.assertTrue(_coerce_optional_bool(None, True))
+        self.assertFalse(_coerce_optional_bool(None, False))
+        self.assertFalse(_coerce_optional_bool("false", True))
+        self.assertTrue(_coerce_optional_bool("true", False))
+
+        self.assertIsNone(_coerce_optional_nonneg_float("max_grad_value", None))
+        self.assertEqual(_coerce_optional_nonneg_float("max_grad_value", "2.5"), 2.5)
+        self.assertEqual(_coerce_optional_nonneg_float("max_grad_value", 0), 0.0)
+        with self.assertRaises(ValueError):
+            _coerce_optional_nonneg_float("max_grad_value", -1)
 
     def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
         # `cast_norm_output_to_input_dtype` and `dataset_order` ship in the

@@ -41,6 +41,58 @@ from utils.paths import outputs_root
 logger = get_logger(__name__)
 
 
+def _coerce_seed(value, default = 3407) -> int:
+    """Treat absent / None / non-int values uniformly as `default`.
+
+    transformers.set_seed(None) raises TypeError, and PEFT init with
+    random_state=None disables determinism. Normalize once here so MLX,
+    CUDA, and embedding workers all receive a usable int seed.
+    """
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_optional_bool(value, default: bool) -> bool:
+    """Treat explicit None as `default` instead of `bool(None) == False`."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off", ""):
+            return False
+    return bool(value)
+
+
+def _coerce_optional_nonneg_float(name: str, value):
+    """Reject negative numeric values from raw/backend callers.
+
+    The Pydantic route model already enforces `ge=0` on these fields,
+    but `TrainingBackend.start_training(**kwargs)` accepts arbitrary
+    kwargs; without this guard, a negative value would bypass the HTTP
+    validator and reach the worker, where MLX silently disables the
+    clip (treats non-positive as "off") instead of erroring loudly.
+    """
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Unsloth: {name}={value!r} must be a non-negative float or None."
+        )
+    if coerced < 0:
+        raise ValueError(
+            f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable)."
+        )
+    return coerced
+
+
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
@@ -218,11 +270,17 @@ class TrainingBackend:
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
             "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "max_grad_value": kwargs.get("max_grad_value"),
-            "cast_norm_output_to_input_dtype": kwargs.get(
-                "cast_norm_output_to_input_dtype", True
+            "max_grad_value": _coerce_optional_nonneg_float(
+                "max_grad_value", kwargs.get("max_grad_value")
             ),
-            "random_seed": kwargs.get("random_seed", 3407),
+            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+                kwargs.get("cast_norm_output_to_input_dtype"), True
+            ),
+            # Normalize seed once for every training path. An explicit
+            # None from a raw / backend caller is treated the same as
+            # an absent key, so MLX, CUDA, and embedding workers all
+            # see an int (transformers.set_seed(None) raises TypeError).
+            "random_seed": _coerce_seed(kwargs.get("random_seed")),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
             "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),

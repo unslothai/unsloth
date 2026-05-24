@@ -1401,9 +1401,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # MLX Studio uses per-element clipping by default and keeps norm clipping
     # disabled. Preserve None so the MLX trainer owns its runtime default.
+    # `training.py` already normalizes / validates these; double-check
+    # here for direct worker callers and explicit-None robustness.
     max_grad_norm = 0.0
     max_grad_value = config.get("max_grad_value")
-    max_grad_value = None if max_grad_value is None else float(max_grad_value)
+    if max_grad_value is not None:
+        max_grad_value = float(max_grad_value)
+        if max_grad_value < 0:
+            raise ValueError(
+                f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
+                "(0 or None disables elementwise clipping)."
+            )
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
@@ -1437,8 +1445,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # constructable; once the floor is bumped this guard is a no-op.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
-        mlx_config_kwargs["cast_norm_output_to_input_dtype"] = bool(
-            config.get("cast_norm_output_to_input_dtype", True)
+        # Explicit None must fall back to the default True; raw / backend
+        # callers can pass None via `kwargs.get(key, True)` upstream.
+        _raw_cast = config.get("cast_norm_output_to_input_dtype", True)
+        mlx_config_kwargs["cast_norm_output_to_input_dtype"] = (
+            True if _raw_cast is None else bool(_raw_cast)
         )
     if "dataset_order" in _supported_fields:
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
