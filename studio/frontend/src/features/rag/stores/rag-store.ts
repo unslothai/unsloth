@@ -8,18 +8,22 @@ import {
   type CreateKnowledgeBaseRequest,
   deleteDocument as apiDeleteDocument,
   deleteKnowledgeBase as apiDeleteKB,
+  getRagDefaults as apiGetRagDefaults,
   type JobEvent,
   type KnowledgeBase,
   listKBDocuments,
   listKnowledgeBases,
   listThreadDocuments,
   listThreadIndexes,
+  type RagDefaults,
   type RagDocument,
   type ReingestKBOptions,
   reingestKnowledgeBase as apiReingestKB,
   reingestThreadDocuments as apiReingestThread,
+  setRagDefaults as apiSetRagDefaults,
   subscribeToJobEvents,
   type ThreadIndexSummary,
+  type UpdateRagDefaultsRequest,
   uploadKBDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
@@ -57,6 +61,10 @@ interface RagStoreState {
   reingestKB: (kbId: string, opts?: ReingestKBOptions) => Promise<string[]>;
   reingestThread: (threadId: string) => Promise<string[]>;
 
+  defaults: RagDefaults | null;
+  loadDefaults: () => Promise<void>;
+  updateDefaults: (patch: UpdateRagDefaultsRequest) => Promise<void>;
+
   subscribeJob: (jobId: string, onComplete?: () => void) => void;
 }
 
@@ -81,6 +89,8 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
 
   threadIndexes: [],
   threadIndexesLoading: false,
+
+  defaults: null,
 
   async loadKnowledgeBases() {
     set({ kbsLoading: true, kbsError: null });
@@ -241,6 +251,22 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
       });
     }
     return response.job_ids;
+  },
+
+  async loadDefaults() {
+    try {
+      const defaults = await apiGetRagDefaults();
+      set({ defaults });
+    } catch {
+      // Defaults endpoint is best-effort; a 401 / network blip just
+      // leaves defaults null and dialogs fall back to hard-coded
+      // ('standard', 'text', no embedder override).
+    }
+  },
+
+  async updateDefaults(patch) {
+    const defaults = await apiSetRagDefaults(patch);
+    set({ defaults });
   },
 
   async reingestThread(threadId) {

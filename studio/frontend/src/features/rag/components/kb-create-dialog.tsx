@@ -19,13 +19,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   ChunkingStrategy,
   KBMode,
   KnowledgeBase,
 } from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
+import { useRagStore } from "../stores/rag-store";
 
 export function KBCreateDialog({
   open,
@@ -37,21 +38,48 @@ export function KBCreateDialog({
   onCreated?: (kb: KnowledgeBase) => void;
 }) {
   const { createKB } = useKnowledgeBases();
+  const defaults = useRagStore((s) => s.defaults);
+  const loadDefaults = useRagStore((s) => s.loadDefaults);
+
+  // Cache the initial values so reset() puts us back to the latest
+  // saved defaults rather than the hard-coded ones.
+  const initialStrategy: ChunkingStrategy =
+    defaults?.chunking_strategy ?? "standard";
+  const initialMode: KBMode = defaults?.mode ?? "text";
+  const initialEmbedder = defaults?.embedding_model ?? "";
+
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [embeddingModel, setEmbeddingModel] = useState("");
+  const [embeddingModel, setEmbeddingModel] = useState(initialEmbedder);
   const [chunkingStrategy, setChunkingStrategy] =
-    useState<ChunkingStrategy>("standard");
-  const [mode, setMode] = useState<KBMode>("text");
+    useState<ChunkingStrategy>(initialStrategy);
+  const [mode, setMode] = useState<KBMode>(initialMode);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch defaults on first open and re-sync the form when they arrive.
+  useEffect(() => {
+    if (open && !defaults) {
+      void loadDefaults();
+    }
+  }, [open, defaults, loadDefaults]);
+
+  useEffect(() => {
+    if (open && defaults) {
+      setChunkingStrategy(defaults.chunking_strategy);
+      setMode(defaults.mode);
+      setEmbeddingModel(defaults.embedding_model ?? "");
+    }
+    // Intentional: only when `open` flips, not on every defaults change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const reset = () => {
     setName("");
     setDescription("");
-    setEmbeddingModel("");
-    setChunkingStrategy("standard");
-    setMode("text");
+    setEmbeddingModel(defaults?.embedding_model ?? "");
+    setChunkingStrategy(defaults?.chunking_strategy ?? "standard");
+    setMode(defaults?.mode ?? "text");
     setError(null);
     setSubmitting(false);
   };

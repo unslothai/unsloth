@@ -5,6 +5,7 @@ import { Separator } from "@/components/ui/separator";
 import type { KnowledgeBase } from "@/features/rag/api/rag-api";
 import { KBDetailPanel } from "@/features/rag/components/kb-detail-panel";
 import { KBList } from "@/features/rag/components/kb-list";
+import { RagDefaultsSection } from "@/features/rag/components/rag-defaults-section";
 import { ThreadIndexList } from "@/features/rag/components/thread-index-list";
 import { useState } from "react";
 
@@ -38,6 +39,8 @@ export function KnowledgeBasesTab() {
       </div>
       <Separator />
       <ThreadIndexList />
+      <Separator />
+      <RagDefaultsSection />
     </div>
   );
 }

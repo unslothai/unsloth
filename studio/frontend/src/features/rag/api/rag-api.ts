@@ -246,6 +246,34 @@ export async function reingestThreadDocuments(
   return parseJsonOrThrow<ReingestResponse>(response);
 }
 
+export interface RagDefaults {
+  chunking_strategy: ChunkingStrategy;
+  mode: KBMode;
+  embedding_model: string | null;
+}
+
+export async function getRagDefaults(): Promise<RagDefaults> {
+  const response = await authFetch("/api/rag/defaults");
+  return parseJsonOrThrow<RagDefaults>(response);
+}
+
+export interface UpdateRagDefaultsRequest {
+  chunking_strategy?: ChunkingStrategy;
+  mode?: KBMode;
+  embedding_model?: string | null;
+}
+
+export async function setRagDefaults(
+  payload: UpdateRagDefaultsRequest,
+): Promise<RagDefaults> {
+  const response = await authFetch("/api/rag/defaults", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<RagDefaults>(response);
+}
+
 // ------------------------------------------------------------------
 // Search
 // ------------------------------------------------------------------

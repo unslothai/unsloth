@@ -43,7 +43,11 @@ async def _sse_auth(
 from core.rag import embeddings, ingestion, reranker, retrieval, vector_store
 from core.rag.vector_store import kb_scope, thread_scope
 from loggers import get_logger
-from storage.studio_db import get_connection
+from storage.studio_db import (
+    get_connection,
+    list_chat_settings,
+    upsert_chat_settings_merge,
+)
 from utils.paths.storage_roots import ensure_dir, rag_uploads_root
 from utils.rag.config import (
     RAG_MAX_UPLOAD_MB,
@@ -405,6 +409,75 @@ def list_knowledge_bases(
             "SELECT * FROM rag_knowledge_bases ORDER BY created_at DESC"
         ).fetchall()
     return KBListResponse(knowledge_bases = [_row_to_kb(r) for r in rows])
+
+
+class RagDefaults(BaseModel):
+    chunking_strategy: ChunkingStrategy = "standard"
+    mode: KBMode = "text"
+    embedding_model: str | None = None
+
+
+class UpdateRagDefaultsRequest(BaseModel):
+    """Patch shape — only fields present overwrite stored values."""
+    chunking_strategy: ChunkingStrategy | None = None
+    mode: KBMode | None = None
+    embedding_model: str | None = None
+
+
+_DEFAULTS_KEY = "rag.defaults"
+
+
+def _load_rag_defaults() -> RagDefaults:
+    settings = list_chat_settings()
+    raw = settings.get(_DEFAULTS_KEY) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return RagDefaults(
+        chunking_strategy = raw.get("chunking_strategy") or "standard",
+        mode = raw.get("mode") or "text",
+        embedding_model = raw.get("embedding_model"),
+    )
+
+
+@router.get("/defaults", response_model = RagDefaults)
+def get_rag_defaults(
+    current_subject: str = Depends(get_current_subject),
+) -> RagDefaults:
+    return _load_rag_defaults()
+
+
+@router.put("/defaults", response_model = RagDefaults)
+def set_rag_defaults(
+    payload: UpdateRagDefaultsRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> RagDefaults:
+    current = _load_rag_defaults()
+    new_strategy = payload.chunking_strategy or current.chunking_strategy
+    new_mode = payload.mode or current.mode
+    # PATCH-style — passing an empty string clears the override; a
+    # null/missing field keeps the current value.
+    if payload.embedding_model is None:
+        new_embedder = current.embedding_model
+    elif payload.embedding_model.strip() == "":
+        new_embedder = None
+    else:
+        new_embedder = payload.embedding_model.strip()
+    _validate_mode_combo(new_mode, new_strategy)
+
+    upsert_chat_settings_merge(
+        {
+            _DEFAULTS_KEY: {
+                "chunking_strategy": new_strategy,
+                "mode": new_mode,
+                "embedding_model": new_embedder,
+            }
+        }
+    )
+    return RagDefaults(
+        chunking_strategy = new_strategy,
+        mode = new_mode,
+        embedding_model = new_embedder,
+    )
 
 
 class ReingestKBRequest(BaseModel):
