@@ -426,16 +426,24 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
-  const searchDisabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
-  const codeDisabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
-  // Images pill is only ever lit on OpenAI cloud's Responses-API models.
-  // No local tool runtime fallback because the only image-generation
-  // server tool we wire today is OpenAI's; local models cannot dispatch
-  // it. Hidden entirely when the active model does not advertise it so
-  // the pill row stays compact for providers without the capability.
+  // Gemini rejects googleSearch + codeExecution alongside image
+  // modalities, and the backend strips them. Disable the Search/Code
+  // pills whenever Gemini image mode is active so the UI matches the
+  // request actually sent.
+  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  const imageModeDisablesTextTools =
+    isExternalGemini && imageToolsEnabled && !imageDisabled;
+  const searchDisabled =
+    !modelLoaded ||
+    !(supportsTools || supportsBuiltinWebSearch) ||
+    imageModeDisablesTextTools;
+  const codeDisabled =
+    !modelLoaded ||
+    !(supportsTools || supportsBuiltinCodeExecution) ||
+    imageModeDisablesTextTools;
+  // Images pill is only ever lit on OpenAI cloud's Responses-API models
+  // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).

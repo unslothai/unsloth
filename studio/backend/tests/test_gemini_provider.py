@@ -1234,3 +1234,366 @@ def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     assert "https://example.com/b" in result
     assert "Example A" in result
     assert "Example B" in result
+
+
+# ── round 3 review follow-ups ─────────────────────────────────────────
+
+
+def test_custom_gemini_proxy_base_url_not_rewritten():
+    """Only the Google-hosted /v1beta/openai base is normalized; a
+    custom gateway whose path ends in /openai must be left alone."""
+    client = ExternalProviderClient(
+        provider_type = "gemini",
+        base_url = "https://proxy.example.com/team/openai",
+        api_key = "AIza-test-key",
+    )
+    assert client.base_url == "https://proxy.example.com/team/openai"
+
+
+def test_legacy_google_openai_base_url_is_rewritten():
+    """The Google-hosted /v1beta/openai legacy base IS still rewritten."""
+    client = ExternalProviderClient(
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key = "AIza-test-key",
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
+def test_remote_image_url_mime_inferred_from_extension(monkeypatch):
+    """Non-data image_url parts must guess MIME from the path so PNG /
+    WebP / GIF inputs are not silently mislabeled as JPEG."""
+    cases = {
+        "https://cdn.example.com/diagram.png": "image/png",
+        "https://cdn.example.com/diagram.webp": "image/webp",
+        "https://cdn.example.com/diagram.gif": "image/gif",
+        "https://cdn.example.com/diagram.jpg": "image/jpeg",
+        "https://cdn.example.com/path/no-ext": "image/jpeg",
+    }
+    for url, expected in cases.items():
+        captured = _capture_body(
+            monkeypatch,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                }
+            ],
+        )
+        parts = captured["body"]["contents"][-1]["parts"]
+        file_parts = [p for p in parts if "fileData" in p]
+        assert file_parts, (url, parts)
+        assert file_parts[0]["fileData"]["mimeType"] == expected, (
+            url,
+            file_parts,
+        )
+
+
+def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
+    """`toolUsePromptTokenCount` must roll into the OpenAI prompt
+    total -- otherwise tool turns silently undercount input tokens."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "result"}],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "toolUsePromptTokenCount": 100,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 2,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    usage_chunks = [c for c in chunks if c.get("usage")]
+    assert len(usage_chunks) == 1, chunks
+    usage = usage_chunks[0]["usage"]
+    assert usage["prompt_tokens"] == 110, usage
+    assert usage["completion_tokens"] == 7, usage
+    assert usage["total_tokens"] == 117, usage
+    assert (
+        usage["completion_tokens_details"]["reasoning_tokens"] == 2
+    ), usage
+
+
+def test_usage_chunk_reasoning_tokens_surfaced(monkeypatch):
+    """thoughtsTokenCount must surface as completion_tokens_details.
+    reasoning_tokens in the emitted OpenAI usage chunk."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "ok"}],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 20,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    usage_chunks = [c for c in chunks if c.get("usage")]
+    assert len(usage_chunks) == 1, chunks
+    usage = usage_chunks[0]["usage"]
+    assert usage["completion_tokens"] == 25, usage
+    assert (
+        usage["completion_tokens_details"]["reasoning_tokens"] == 20
+    ), usage
+
+
+def test_prompt_block_pairs_web_search_tool_end(monkeypatch):
+    """When `promptFeedback.blockReason` triggers after the synthetic
+    web_search tool_start, the helper must emit a matching tool_end so
+    the UI does not leave a "searching..." spinner stuck on screen."""
+    sse = [
+        {"promptFeedback": {"blockReason": "SAFETY"}},
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        enabled_tools = ["web_search"],
+    )
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    starts = [e for e in tool_events if e.get("type") == "tool_start"]
+    ends = [e for e in tool_events if e.get("type") == "tool_end"]
+    assert len(starts) == 1, tool_events
+    assert len(ends) == 1, tool_events
+    assert ends[0]["tool_call_id"] == "gemini_web_search"
+    assert "aborted" in ends[0]["result"]
+    error_chunks = [c for c in chunks if c.get("error")]
+    assert error_chunks, chunks
+
+
+def test_code_execution_tool_events_stow_native_part(monkeypatch):
+    """executableCode / codeExecutionResult must round-trip native ids
+    and thoughtSignature in google.native_part so follow-up turns can
+    replay Gemini's required history shape."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "executableCode": {
+                                    "id": "code_a",
+                                    "language": "PYTHON",
+                                    "code": "print(1+1)",
+                                },
+                                "thoughtSignature": "SIG-CODE",
+                            },
+                            {
+                                "codeExecutionResult": {
+                                    "id": "result_a",
+                                    "outcome": "OUTCOME_OK",
+                                    "output": "2\n",
+                                },
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 4,
+            },
+        }
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        enabled_tools = ["code_execution"],
+    )
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    starts = [e for e in tool_events if e.get("type") == "tool_start"]
+    ends = [e for e in tool_events if e.get("type") == "tool_end"]
+    code_start = next(
+        (e for e in starts if e.get("tool_name") == "code_execution"),
+        None,
+    )
+    code_end = next(iter(ends), None)
+    assert code_start is not None, starts
+    assert code_start["tool_call_id"] == "code_a", code_start
+    native = code_start["arguments"]["google"]["native_part"]
+    assert native["executableCode"]["id"] == "code_a"
+    assert native["thoughtSignature"] == "SIG-CODE"
+    assert code_end is not None, ends
+    assert code_end["tool_call_id"] == "code_a", code_end
+    native_end = code_end["google"]["native_part"]
+    assert native_end["codeExecutionResult"]["id"] == "result_a"
+
+
+def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
+    """Inline image parts with thoughtSignature must persist it on the
+    emitted tool_end so Gemini 3 image editing can echo it back."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": base64.b64encode(b"PNG").decode(),
+                                },
+                                "thoughtSignature": "SIG-IMG",
+                            }
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 1,
+            },
+        }
+    ]
+    lines = _collect(
+        monkeypatch,
+        sse,
+        model = "gemini-2.5-flash-image",
+    )
+    chunks = _parse_chunks(lines)
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
+    image_ends = [
+        e
+        for e in tool_events
+        if e.get("type") == "tool_end" and e.get("image_b64")
+    ]
+    assert image_ends, tool_events
+    assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
+
+
+def test_text_chunk_carries_thought_signature(monkeypatch):
+    """Text parts with thoughtSignature surface it on delta.extra_content
+    so frontend persistence can replay it on the follow-up turn."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "text": "hello",
+                                "thoughtSignature": "SIG-TEXT",
+                            }
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": 1,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    text_chunks = [
+        c
+        for c in chunks
+        if c.get("choices") and c["choices"][0]["delta"].get("content") == "hello"
+    ]
+    assert text_chunks, chunks
+    extra = text_chunks[0]["choices"][0]["delta"].get("extra_content")
+    assert extra == {"google": {"thought_signature": "SIG-TEXT"}}, text_chunks
+
+
+def test_openai_tools_translated_into_function_declarations(monkeypatch):
+    """Standard ChatCompletionRequest.tools must be forwarded into
+    Gemini's tools[].functionDeclarations envelope."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Look up the weather for a city.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string"},
+                        },
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        tool_choice = {"type": "function", "function": {"name": "get_weather"}},
+    )
+    tools_arr = captured["body"].get("tools") or []
+    fn_decls = [t for t in tools_arr if "functionDeclarations" in t]
+    assert fn_decls, captured["body"]
+    decls = fn_decls[0]["functionDeclarations"]
+    assert decls[0]["name"] == "get_weather"
+    assert decls[0]["parameters"]["properties"]["city"]["type"] == "string"
+    tool_config = captured["body"].get("toolConfig")
+    assert tool_config is not None, captured["body"]
+    fcc = tool_config["functionCallingConfig"]
+    assert fcc["mode"] == "ANY"
+    assert fcc["allowedFunctionNames"] == ["get_weather"]
+
+
+def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
+    """tool_choice="auto" maps to toolConfig.functionCallingConfig.mode."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "noop", "parameters": {"type": "object"}},
+            }
+        ],
+        tool_choice = "auto",
+    )
+    fcc = captured["body"]["toolConfig"]["functionCallingConfig"]
+    assert fcc["mode"] == "AUTO"
+    assert "allowedFunctionNames" not in fcc
+
+
+def test_image_models_drop_function_declarations(monkeypatch):
+    """Image-mode requests cannot mix tools with responseModalities so
+    user-supplied function declarations must be dropped."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "noop", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    assert captured["body"].get("tools") is None
+    assert captured["body"]["generationConfig"]["responseModalities"] == [
+        "TEXT",
+        "IMAGE",
+    ]

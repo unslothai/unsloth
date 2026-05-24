@@ -9,6 +9,7 @@ Anthropic uses native Messages API with translation in this client.
 """
 
 import json as _json
+import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
@@ -300,9 +301,18 @@ class ExternalProviderClient:
         # switched Gemini onto the native streamGenerateContent endpoint
         # (`/v1beta/openai/models/{model}:streamGenerateContent` 404s).
         # Strip the `/openai` suffix transparently so saved providers keep
-        # working without a manual re-config.
-        if self.provider_type == "gemini" and self.base_url.endswith("/openai"):
-            self.base_url = self.base_url[: -len("/openai")]
+        # working without a manual re-config. Gate strictly to the
+        # Google-hosted base so custom proxies whose paths also end in
+        # `/openai` (e.g. `https://proxy.example.com/team/openai`) are
+        # left untouched.
+        if self.provider_type == "gemini":
+            _parsed_base = urlparse(self.base_url)
+            if (
+                (_parsed_base.hostname or "").lower()
+                == "generativelanguage.googleapis.com"
+                and _parsed_base.path.rstrip("/") == "/v1beta/openai"
+            ):
+                self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
         # Separate timeout for SSE streams: reasoning-heavy providers
@@ -356,6 +366,8 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -387,6 +399,8 @@ class ExternalProviderClient:
                     enable_prompt_caching,
                     enable_thinking,
                     reasoning_effort,
+                    tools,
+                    tool_choice,
                 ):
                     yield line
                 return
@@ -2586,6 +2600,8 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[Any] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -2693,12 +2709,22 @@ class ExternalProviderClient:
                         elif url:
                             # Remote image. Gemini's `fileData` part takes
                             # a `fileUri` for both Files-API uploads and
-                            # public https URLs.
+                            # public https URLs. Guess MIME from the URL
+                            # path so PNG/WebP/GIF inputs are not mislabeled
+                            # as JPEG (Gemini rejects mismatched mime).
+                            _path = urlparse(url).path
+                            _guessed, _ = mimetypes.guess_type(_path)
+                            _media_type = (
+                                _guessed
+                                if isinstance(_guessed, str)
+                                and _guessed.startswith("image/")
+                                else "image/jpeg"
+                            )
                             parts.append(
                                 {
                                     "fileData": {
                                         "fileUri": url,
-                                        "mimeType": "image/jpeg",
+                                        "mimeType": _media_type,
                                     }
                                 }
                             )
@@ -2906,8 +2932,59 @@ class ExternalProviderClient:
             tools_array.append({"googleSearch": {}})
         if enabled_tools and "code_execution" in enabled_tools and text_tools_allowed:
             tools_array.append({"codeExecution": {}})
+        # OpenAI-style function declarations -> Gemini functionDeclarations.
+        # https://ai.google.dev/gemini-api/docs/function-calling#step_1
+        function_declarations: list[dict[str, Any]] = []
+        if tools and text_tools_allowed:
+            for _tool in tools:
+                if not isinstance(_tool, dict) or _tool.get("type") != "function":
+                    continue
+                _fn = _tool.get("function")
+                if not isinstance(_fn, dict) or not _fn.get("name"):
+                    continue
+                _decl: dict[str, Any] = {
+                    "name": _fn["name"],
+                    "description": _fn.get("description") or "",
+                }
+                _params = _fn.get("parameters")
+                if isinstance(_params, dict):
+                    _decl["parameters"] = _params
+                function_declarations.append(_decl)
+        if function_declarations:
+            tools_array.append({"functionDeclarations": function_declarations})
         if tools_array:
             body["tools"] = tools_array
+        # Tool-choice mapping: OpenAI "auto"/"none"/"required"/{name=...}
+        # -> Gemini toolConfig.functionCallingConfig.mode + allowedFunctionNames.
+        if (
+            tool_choice is not None
+            and function_declarations
+            and text_tools_allowed
+        ):
+            _mode: Optional[str] = None
+            _allowed: Optional[list[str]] = None
+            if isinstance(tool_choice, str):
+                _tc_lc = tool_choice.strip().lower()
+                if _tc_lc == "auto":
+                    _mode = "AUTO"
+                elif _tc_lc == "none":
+                    _mode = "NONE"
+                elif _tc_lc in ("required", "any"):
+                    _mode = "ANY"
+            elif (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") == "function"
+            ):
+                _fn_pick = tool_choice.get("function") or {}
+                _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
+                if isinstance(_name, str) and _name:
+                    _mode = "ANY"
+                    _allowed = [_name]
+            if _mode is not None:
+                _fcc: dict[str, Any] = {"mode": _mode}
+                if _allowed:
+                    _fcc["allowedFunctionNames"] = _allowed
+                body["toolConfig"] = {"functionCallingConfig": _fcc}
 
         # Prompt caching. The Gemini caching contract is "create a
         # CachedContent resource, then pass its name on
@@ -2946,19 +3023,34 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(text: str) -> str:
+        def _text_chunk(
+            text: str, extra_content: Optional[dict[str, Any]] = None
+        ) -> str:
+            delta: dict[str, Any] = {"content": text}
+            if extra_content:
+                delta["extra_content"] = extra_content
             chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"content": text},
+                        "delta": delta,
                         "finish_reason": None,
                     }
                 ],
             }
             return f"data: {_json.dumps(chunk)}"
+
+        def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
+            """Return ``{"google": {"thought_signature": ...}}`` when the
+            Gemini stream part carries a `thoughtSignature` we need to
+            replay on a follow-up turn (Gemini 3 image editing + tool
+            contexts both require an exact signature echo)."""
+            sig = part.get("thoughtSignature") or part.get("thought_signature")
+            if isinstance(sig, str) and sig:
+                return {"google": {"thought_signature": sig}}
+            return None
 
         # Gemini finish reasons -> OpenAI vocabulary. Reference:
         # https://ai.google.dev/api/rest/v1beta/Candidate#FinishReason
@@ -3075,12 +3167,30 @@ class ExternalProviderClient:
                             "blockReason"
                         ):
                             block_reason = str(prompt_feedback.get("blockReason"))
+                            # Close out the synthetic web_search start so
+                            # the UI does not show a spinner stuck on
+                            # "searching..." after the error toast lands.
+                            if (
+                                web_search_active
+                                and web_search_tool_started
+                                and not web_search_tool_ended
+                            ):
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": web_search_tool_id,
+                                        "result": (
+                                            "(search aborted: Gemini blocked "
+                                            f"prompt: {block_reason})"
+                                        ),
+                                    }
+                                )
+                                web_search_tool_ended = True
                             yield _error_sse_line(
                                 400,
                                 f"Gemini blocked prompt: {block_reason}",
                                 self.provider_type,
                             )
-                            await response.aclose()
                             return
 
                         candidates = event.get("candidates") or []
@@ -3128,10 +3238,16 @@ class ExternalProviderClient:
                                 for part in parts:
                                     if not isinstance(part, dict):
                                         continue
-                                    # Text delta.
+                                    # Text delta. Stow part-level
+                                    # `thoughtSignature` on the delta so
+                                    # Gemini 3 turns that need an exact
+                                    # signature echo round-trip cleanly.
                                     text = part.get("text")
                                     if isinstance(text, str) and text:
-                                        yield _text_chunk(text)
+                                        yield _text_chunk(
+                                            text,
+                                            extra_content=_gemini_part_extra(part),
+                                        )
                                     # functionCall -> OpenAI tool_calls
                                     # delta envelope.
                                     fc = part.get("functionCall")
@@ -3209,9 +3325,30 @@ class ExternalProviderClient:
                                         code_str = exec_code.get("code") or ""
                                         if code_str:
                                             code_tool_id = (
-                                                f"gemini_code_exec_{time.time_ns()}"
+                                                exec_code.get("id")
+                                                or f"gemini_code_exec_{time.time_ns()}"
                                             )
                                             gemini_code_exec_pending_id = code_tool_id
+                                            # Stow the raw Gemini part so
+                                            # follow-up turns can replay
+                                            # the native `executableCode`
+                                            # (Gemini rejects a generic
+                                            # functionCall echo for code
+                                            # execution history).
+                                            _exec_thought_sig = (
+                                                part.get("thoughtSignature")
+                                                or part.get("thought_signature")
+                                            )
+                                            _exec_native: dict[str, Any] = {
+                                                "executableCode": exec_code,
+                                            }
+                                            if (
+                                                isinstance(_exec_thought_sig, str)
+                                                and _exec_thought_sig
+                                            ):
+                                                _exec_native["thoughtSignature"] = (
+                                                    _exec_thought_sig
+                                                )
                                             yield _emit_tool_event(
                                                 {
                                                     "type": "tool_start",
@@ -3228,6 +3365,9 @@ class ExternalProviderClient:
                                                             ).lower()
                                                         ),
                                                         "code": code_str,
+                                                        "google": {
+                                                            "native_part": _exec_native,
+                                                        },
                                                     },
                                                 }
                                             )
@@ -3251,8 +3391,15 @@ class ExternalProviderClient:
                                         # present; otherwise mint a fresh
                                         # id so the UI still renders the
                                         # output as a code_execution event.
+                                        # Pair the tool_end with the most
+                                        # recent code_exec tool_start id so
+                                        # the UI matches start/end. Fall back
+                                        # to exec_result.id (no preceding
+                                        # executableCode part), then mint a
+                                        # fresh id as a last resort.
                                         pair_id = (
                                             gemini_code_exec_pending_id
+                                            or exec_result.get("id")
                                             or f"gemini_code_exec_{time.time_ns()}"
                                         )
                                         if gemini_code_exec_pending_id is None:
@@ -3267,11 +3414,28 @@ class ExternalProviderClient:
                                                     },
                                                 }
                                             )
+                                        _result_thought_sig = (
+                                            part.get("thoughtSignature")
+                                            or part.get("thought_signature")
+                                        )
+                                        _result_native: dict[str, Any] = {
+                                            "codeExecutionResult": exec_result,
+                                        }
+                                        if (
+                                            isinstance(_result_thought_sig, str)
+                                            and _result_thought_sig
+                                        ):
+                                            _result_native["thoughtSignature"] = (
+                                                _result_thought_sig
+                                            )
                                         yield _emit_tool_event(
                                             {
                                                 "type": "tool_end",
                                                 "tool_call_id": pair_id,
                                                 "result": result_text,
+                                                "google": {
+                                                    "native_part": _result_native,
+                                                },
                                             }
                                         )
                                         gemini_code_exec_pending_id = None
@@ -3297,15 +3461,35 @@ class ExternalProviderClient:
                                                     },
                                                 }
                                             )
-                                            yield _emit_tool_event(
-                                                {
-                                                    "type": "tool_end",
-                                                    "tool_call_id": img_id,
-                                                    "result": "",
-                                                    "image_b64": b64,
-                                                    "image_mime": mime,
-                                                }
+                                            # Gemini 3 image editing
+                                            # requires the prior turn's
+                                            # `thoughtSignature` to be
+                                            # echoed back on the inline
+                                            # image part of the user
+                                            # message; persist it on the
+                                            # tool_end so the frontend
+                                            # can replay it.
+                                            _img_thought_sig = (
+                                                part.get("thoughtSignature")
+                                                or part.get("thought_signature")
                                             )
+                                            _img_tool_end: dict[str, Any] = {
+                                                "type": "tool_end",
+                                                "tool_call_id": img_id,
+                                                "result": "",
+                                                "image_b64": b64,
+                                                "image_mime": mime,
+                                            }
+                                            if (
+                                                isinstance(_img_thought_sig, str)
+                                                and _img_thought_sig
+                                            ):
+                                                _img_tool_end["google"] = {
+                                                    "thought_signature": (
+                                                        _img_thought_sig
+                                                    ),
+                                                }
+                                            yield _emit_tool_event(_img_tool_end)
                             finish_reason = cand.get("finishReason")
                             if isinstance(finish_reason, str):
                                 mapped = _finish_reason_map.get(finish_reason, "stop")
@@ -3375,13 +3559,21 @@ class ExternalProviderClient:
                     if isinstance(last_usage, dict):
                         thought_tokens = last_usage.get("thoughtsTokenCount") or 0
                         candidate_tokens = last_usage.get("candidatesTokenCount") or 0
+                        prompt_tokens = last_usage.get("promptTokenCount") or 0
+                        # Gemini bills tool-call prompt slices separately
+                        # via `toolUsePromptTokenCount`. Fold into input
+                        # so total_tokens does not undercount tool turns.
+                        tool_use_prompt_tokens = (
+                            last_usage.get("toolUsePromptTokenCount") or 0
+                        )
                         translated_usage = {
-                            "input_tokens": (last_usage.get("promptTokenCount") or 0),
+                            "input_tokens": prompt_tokens + tool_use_prompt_tokens,
                             "output_tokens": candidate_tokens + thought_tokens,
                             "input_tokens_details": {
                                 "cached_tokens": (
                                     last_usage.get("cachedContentTokenCount") or 0
-                                )
+                                ),
+                                "tool_use_prompt_tokens": tool_use_prompt_tokens,
                             },
                             "output_tokens_details": {
                                 "reasoning_tokens": thought_tokens,
@@ -3394,11 +3586,19 @@ class ExternalProviderClient:
                             yield usage_line
 
                     yield "data: [DONE]"
-                    await response.aclose()
-                except GeneratorExit:
+                finally:
+                    # Close BOTH the upstream response and the manual
+                    # aiter_lines() iterator on every exit path -- normal
+                    # [DONE], prompt-block return, and GeneratorExit on
+                    # client cancellation. response.aclose() FIRST so
+                    # PoolByteStream._closed=True and lines_gen.aclose()
+                    # is a no-op (avoids the httpcore 1.0.x
+                    # "async generator ignored GeneratorExit" path).
+                    # Skipping lines_gen.aclose() emits
+                    # `RuntimeWarning: coroutine method 'aclose' of
+                    # 'Response.aiter_lines' was never awaited`.
                     await response.aclose()
                     await lines_gen.aclose()
-                    raise
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
@@ -4889,6 +5089,17 @@ def _build_usage_chunk(
             "total_tokens": prompt_tokens + completion_tokens,
             "prompt_tokens_details": {"cached_tokens": cached},
         }
+        # Surface OpenAI Responses / Gemini reasoning-token detail. The
+        # caller pre-populates last_usage["output_tokens_details"] with
+        # at least {"reasoning_tokens": ...}; mirror it into the OAI
+        # `completion_tokens_details` shape so SDKs can render the
+        # hidden-thoughts slice.
+        out_details = last_usage.get("output_tokens_details")
+        if isinstance(out_details, dict) and out_details:
+            usage_block["completion_tokens_details"] = {
+                "reasoning_tokens": out_details.get("reasoning_tokens") or 0,
+            }
+            usage_block["output_tokens_details"] = out_details
 
     chunk = {
         "id": completion_id,
