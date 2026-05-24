@@ -1215,9 +1215,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # (image_size, base_size, crop_mode), so resizing dataset images outside
     # that preset desyncs the token grid. Skip the resize on MLX too.
     _model_name_lower = str(config.get("model_name", "")).lower()
-    _is_deepseek_ocr = (
-        "deepseek" in _model_name_lower and "ocr" in _model_name_lower
-    )
+    _is_deepseek_ocr = "deepseek" in _model_name_lower and "ocr" in _model_name_lower
     if is_vlm and vision_image_size is not None and _is_deepseek_ocr:
         _send(
             "status",
