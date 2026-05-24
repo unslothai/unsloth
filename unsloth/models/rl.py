@@ -1312,7 +1312,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_nan_inf_filter": False,
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
-        "weight_decay": 0.01,
+        # LoRA decays A and B toward 0 so effective W = W_init + (alpha/r) * B @ A is pulled toward W_init, not 0 as in full FT.
+        # 0.001 keeps a small Frobenius prior |A|_F^2 + |B|_F^2 without measurably dragging the merged adapter back to base.
+        "weight_decay": 0.001,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
