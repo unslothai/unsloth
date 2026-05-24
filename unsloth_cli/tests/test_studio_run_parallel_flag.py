@@ -245,3 +245,72 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--parallel") == "8", argv
     assert _value_after(argv, "--top-k") == "20", argv
     assert _value_after(argv, "--temp") == "0.7", argv
+
+
+# Runtime behaviour test: bypass the re-exec branch by faking sys.prefix
+# into the studio venv, then assert run_server gets the typer --parallel
+# value as llama_parallel_slots. Complements the source-text check in
+# test_run_kwargs_use_parallel_value so refactors of the call site that
+# preserve runtime semantics don't trip a false failure.
+
+
+class _RunServerCaptured(SystemExit):
+    def __init__(self, kwargs):
+        super().__init__(0)
+        self.kwargs = dict(kwargs)
+
+
+def _types_module(name):
+    import types as _types
+
+    return _types.ModuleType(name)
+
+
+@pytest.mark.parametrize("value", [1, 4, 8, 64])
+def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
+    """When already in the studio venv, run() must forward --parallel to
+    run_server(llama_parallel_slots=N) instead of hardcoding 4."""
+    studio_mod = _load_run_command()
+
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    # sys.prefix.startswith(STUDIO_HOME / "unsloth_studio") gates the
+    # in-venv path; pin STUDIO_HOME so the predicate is true.
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    captured: dict = {}
+
+    def fake_run_server(**kwargs):
+        captured.update(kwargs)
+        raise _RunServerCaptured(kwargs)
+
+    fake_backend_run = sys.modules.setdefault(
+        "studio.backend.run", _types_module("studio.backend.run")
+    )
+    fake_backend_run.run_server = fake_run_server
+    fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    CliRunner().invoke(
+        app, _BASE + ["--parallel", str(value)], catch_exceptions = True
+    )
+
+    assert (
+        captured.get("llama_parallel_slots") == value
+    ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"

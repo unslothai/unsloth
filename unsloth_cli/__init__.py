@@ -19,10 +19,19 @@ from unsloth_cli.commands.studio import (
 
 
 # Run the studio `-np<N>` argv canonicalisation only when invoked through
-# the unsloth console-script / cli.py entry; tests and notebooks that
-# import this module must not have their argv mutated.
+# a known entry-point launcher; tests and notebooks that import this
+# module must not have their argv mutated. Exact-basename match (not
+# endswith) so an unrelated third-party `mycli.py` that happens to
+# import unsloth_cli isn't side-effected.
 _entry_base = _osp.basename(_sys.argv[0]).lower() if _sys.argv else ""
-if _entry_base in {"unsloth", "unsloth.exe"} or _entry_base.endswith("cli.py"):
+if _entry_base in {
+    "unsloth",
+    "unsloth.exe",
+    "unsloth-cli",
+    "unsloth-cli.exe",
+    "cli.py",
+    "unsloth-cli.py",
+}:
     _expand_attached_np_short()
 del _entry_base
 
