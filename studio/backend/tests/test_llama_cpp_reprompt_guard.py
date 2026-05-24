@@ -956,6 +956,90 @@ def test_reprompts_on_empty_html_or_svg_skeleton_mention():
         assert _would_reprompt(content), content
 
 
+def test_no_reprompt_on_code_fence_containing_markup_literal():
+    """A closed code fence whose body contains literal ``<html>``,
+    ``<svg>``, ``<body>`` strings is still a complete code answer.
+    The unclosed-markup cross-check operates on text with closed
+    fences stripped out so code literals do not falsely trip it."""
+    samples = [
+        (
+            "First, let me write the scraper.\n"
+            "```python\n"
+            "html = '<html><body>'\n"
+            "svg = \"<svg width='100'>\"\n"
+            "print(html, svg)\n"
+            "```"
+        ),
+        (
+            "First, let me write the parser.\n"
+            "```javascript\n"
+            "const open = '<html>';\n"
+            "const fragment = '<svg width=\"10\">';\n"
+            "console.log(open, fragment);\n"
+            "```"
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_no_reprompt_on_html_containing_backtick_literal():
+    """A complete <html> answer whose body contains a JS string with
+    literal backticks is still a complete page. The unclosed-fence
+    cross-check operates on text with closed markup stripped out."""
+    content = (
+        "First, here is the page.\n"
+        "<html><body><script>const fence = '```';</script></body></html>"
+    )
+    assert _has_answer_artifact(content)
+    assert not _would_reprompt(content)
+
+
+def test_empty_markup_before_real_artifact_still_counts_real_artifact():
+    """An empty <html></html> / <svg></svg> skeleton that PRECEDES a
+    real complete artifact must not hide it. _looks_like_real_artifact
+    iterates every match."""
+    samples = [
+        (
+            "First, the minimal skeleton is <html></html>. "
+            "Here is the full page: <html><body><h1>Hello</h1></body></html>"
+        ),
+        (
+            "First, the icon skeleton is <svg></svg>. "
+            "Here is the full SVG: "
+            "<svg width='10'><circle cx='5' cy='5' r='4'/></svg>"
+        ),
+    ]
+    for content in samples:
+        assert _has_answer_artifact(content), content
+        assert not _would_reprompt(content), content
+
+
+def test_doctype_empty_html_skeleton_still_reprompts():
+    """``<!doctype html><html></html>`` is an empty skeleton even with
+    a doctype prefix; the artifact check must reject it."""
+    content = (
+        "First, I'll create a <!doctype html><html></html> skeleton, then add CSS."
+    )
+    assert not _has_answer_artifact(content)
+    assert _would_reprompt(content)
+
+
+def test_reprompts_on_bare_intent_colon_numbered_plan():
+    """Bare ``I'll:`` / ``Let me:`` immediately followed by a numbered
+    list of work verbs is a tool stall regardless of whether the verbs
+    sit before or in the list."""
+    samples = [
+        "I'll:\n1. Open the URL.\n2. Read the page.\n3. Summarize the answer.",
+        "First, I'll:\n1. Create the Python file.\n2. Build the game loop.\n3. Test it.",
+        "Let me:\n1. Parse the JSON.\n2. Calculate the average.",
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
 def test_reprompts_on_intent_plus_numbered_action_items():
     """``First, I'll:\\n1. Load CSV\\n2. Compute total`` is a plan stall:
     the work verbs are in the list ITEMS even though no work verb

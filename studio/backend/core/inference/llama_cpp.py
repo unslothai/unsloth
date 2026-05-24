@@ -119,6 +119,16 @@ _MAX_REPROMPTS = 3
 #     `<html>` or `<!doctype>` do not bypass the re-prompt.
 #   * All `[\s\S]{...}?` runs are length-bounded so the search stays
 #     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
+_CLOSED_CODE_FENCE = re.compile(
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)",
+    re.IGNORECASE,
+)
+_CLOSED_MARKUP_ARTIFACT = re.compile(
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
+    r"|<svg\b[\s\S]{0,4000}?</svg>",
+    re.IGNORECASE,
+)
 _HAS_ANSWER_ARTIFACT = re.compile(
     # Closed backtick code fence (any markdown info string, optional indent
     # on close).  CommonMark allows opening fences of 3+ backticks; the
@@ -254,6 +264,18 @@ _EMPTY_MARKUP_SKELETON = re.compile(
     r"<(html|svg)\b[^>]*>\s*</\1>",
     re.IGNORECASE,
 )
+_DOCTYPE_PREFIX = re.compile(
+    r"^<!doctype\b[\s\S]{0,200}?>",
+    re.IGNORECASE,
+)
+
+
+def _is_empty_markup_skeleton(matched: str) -> bool:
+    """True if ``matched`` is just an empty <html></html> / <svg></svg>
+    (optionally with a `<!doctype>` prefix and surrounding whitespace).
+    These read as plan-only mentions, not substantive answers."""
+    candidate = _DOCTYPE_PREFIX.sub("", matched.strip(), count=1).strip()
+    return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
 
 # A numbered list whose item lines start with a strong work / tool
@@ -283,16 +305,34 @@ _STRONG_INTENT_BEFORE_LIST = re.compile(
     re.IGNORECASE,
 )
 
+# Bare first-person intent immediately followed by ``:`` and a numbered
+# list whose first item begins with a work verb. Catches
+# ``I'll:\n1. Open the URL`` and ``Let me:\n1. Parse the JSON`` where
+# no work verb appears between the intent phrase and the list. The
+# verb set here is broader than _LOCAL_ACTION_VERBS because the
+# tight ``intent + : + newline + numbered`` shape is itself the strong
+# signal that this is a tool stall.
+_BARE_INTENT_NUMBERED_PLAN = re.compile(
+    r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
+    r"i will|i shall|let me|allow me|now i|next i)\s*:[ \t]*"
+    r"(?:\r?\n)[ \t]*\d+\.[ \t]+"
+    r"(?:open|read|search|look up|check|verify|create|build|add|set up|"
+    r"load|inspect|parse|calculate|compute|analy[sz]e|extract|run|execute|"
+    r"fetch|download|query|summari[sz]e|implement|generate|draft|write)\b",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_real_artifact(text: str) -> bool:
-    """Match _HAS_ANSWER_ARTIFACT but reject empty markup skeletons."""
-    m = _HAS_ANSWER_ARTIFACT.search(text)
-    if not m:
-        return False
-    matched = m.group(0).strip()
-    if _EMPTY_MARKUP_SKELETON.fullmatch(matched):
-        return False
-    return True
+    """Match _HAS_ANSWER_ARTIFACT but reject empty markup skeletons.
+
+    Iterates every artifact match in ``text`` so an empty <html></html>
+    skeleton followed by a real complete page still classifies as a
+    real artifact (the second match wins)."""
+    for m in _HAS_ANSWER_ARTIFACT.finditer(text):
+        if not _is_empty_markup_skeleton(m.group(0)):
+            return True
+    return False
 
 
 def _has_answer_artifact(text: str) -> bool:
@@ -310,9 +350,16 @@ def _has_answer_artifact(text: str) -> bool:
     answer, even when an earlier complete artifact is also present.
     Empty `<html></html>` / `<svg></svg>` skeletons do not count.
     """
-    if _has_unclosed_code_fence(text):
+    # Cross-strip closed artifacts before the unclosed-state checks so
+    # delimiter-like content INSIDE a complete code fence (e.g.
+    # `html = '<html>'` literal in a Python snippet) or INSIDE complete
+    # HTML (e.g. a JS string containing backticks) does not falsely
+    # disqualify the artifact path.
+    text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
+    text_without_closed_markup = _CLOSED_MARKUP_ARTIFACT.sub("", text)
+    if _has_unclosed_code_fence(text_without_closed_markup):
         return False
-    if _has_unclosed_markup_block(text):
+    if _has_unclosed_markup_block(text_without_closed_fences):
         return False
     if _looks_like_real_artifact(text):
         return True
@@ -320,6 +367,8 @@ def _has_answer_artifact(text: str) -> bool:
         if _EXPLICIT_PLAN_HEADER.search(text):
             return False
         if _DIRECT_NUMBERED_PLAN_FRAMING.search(text):
+            return False
+        if _BARE_INTENT_NUMBERED_PLAN.search(text):
             return False
         # First-person pronoun intent + numbered list where the items
         # themselves start with a strong work verb ("First, I'll:\n
