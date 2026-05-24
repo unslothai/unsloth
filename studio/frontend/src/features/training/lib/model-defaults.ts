@@ -131,10 +131,18 @@ export function mapBackendModelConfigToTrainingPatch(
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
-    const visionImageSize = training?.vision_image_size == null
-      ? null
-      : toNumber(training.vision_image_size);
-    if (visionImageSize !== undefined) patch.visionImageSize = visionImageSize;
+    const raw = training?.vision_image_size;
+    if (raw == null) {
+      patch.visionImageSize = null;
+    } else {
+      // Mirror the backend validator at studio/backend/models/training.py:169.
+      // Anything not an integer in [256, 2048] is dropped so the store and UI
+      // never show a value the backend would reject.
+      const n = toNumber(raw);
+      if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
+        patch.visionImageSize = n;
+      }
+    }
   }
 
   const packing = toBoolean(training?.packing);
