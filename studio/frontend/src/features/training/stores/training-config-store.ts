@@ -390,6 +390,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
+              // Defaults load failed, so we cannot map the new model's
+              // vision_image_size. Reset to the global default so a stale
+              // value from a prior model never silently applies.
+              visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
             // Fallback vision check if config endpoint fails.
