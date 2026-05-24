@@ -784,6 +784,7 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     # Env is scrubbed to the codex safe-list (see codex_availability) so a
     # shimmed `codex` on PATH does not inherit other provider secrets.
     from core.inference.codex_availability import _codex_subprocess_env
+
     spawn_kwargs: dict[str, Any] = {
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.STDOUT,

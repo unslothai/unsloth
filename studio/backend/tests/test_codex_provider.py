@@ -735,9 +735,9 @@ class TestCodexHardenedRegressions:
 
         async def _collect():
             async for c in stream_codex(
-                messages=[{"role": "user", "content": "hi"}],
-                model="gpt-5.5",
-                parallel_calls=1,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                parallel_calls = 1,
             ):
                 chunks.append(c)
 
