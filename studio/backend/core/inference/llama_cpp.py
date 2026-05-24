@@ -325,9 +325,8 @@ def _has_answer_artifact(text: str) -> bool:
         # themselves start with a strong work verb ("First, I'll:\n
         # 1. Load...\n2. Run...") is a plan stall, even when no work
         # verb appears before the list.
-        if (
-            _STRONG_INTENT_BEFORE_LIST.search(text)
-            and _NUMBERED_ACTION_ITEM.search(text)
+        if _STRONG_INTENT_BEFORE_LIST.search(text) and _NUMBERED_ACTION_ITEM.search(
+            text
         ):
             return False
         return _PLAN_LIST_FRAMING.search(text) is None
