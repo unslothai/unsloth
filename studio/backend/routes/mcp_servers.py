@@ -107,7 +107,9 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "display_name" in sent:
         name = (payload.display_name or "").strip()
         if not name:
-            raise HTTPException(status_code = 400, detail = "display_name must not be empty")
+            raise HTTPException(
+                status_code = 400, detail = "display_name must not be empty"
+            )
         changes["display_name"] = name
     if "url" in sent:
         changes["url"] = _validate_url(payload.url or "")
@@ -159,7 +161,9 @@ async def refresh_mcp_server_tools(
         tools = await list_tools_async(
             url = server["url"],
             headers = parse_server_headers(server),
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS if use_oauth else _PROBE_TIMEOUT_SECONDS,
+            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
+            if use_oauth
+            else _PROBE_TIMEOUT_SECONDS,
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
@@ -178,7 +182,9 @@ async def test_mcp_server(
         tools = await list_tools_async(
             url = _validate_url(payload.url),
             headers = _normalize_headers(payload.headers),
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS if payload.use_oauth else _PROBE_TIMEOUT_SECONDS,
+            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
+            if payload.use_oauth
+            else _PROBE_TIMEOUT_SECONDS,
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001

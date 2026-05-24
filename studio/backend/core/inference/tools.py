@@ -513,6 +513,7 @@ TERMINAL_TOOL = {
 
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
@@ -523,17 +524,21 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if len(name) > 64:
             logger.warning(
                 "Skipping MCP tool '%s' on '%s': composed name exceeds 64 chars.",
-                tool.get("name"), display,
+                tool.get("name"),
+                display,
             )
             continue
-        specs.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
-            },
-        })
+        specs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                    "parameters": tool.get("inputSchema")
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
     return specs
 
 
@@ -560,7 +565,8 @@ async def get_enabled_mcp_tools() -> list[dict]:
             logger.warning(
                 "MCP server '%s' (%s) discovery failed: %s",
                 server.get("display_name") or server["id"],
-                server.get("url"), payload,
+                server.get("url"),
+                payload,
             )
             continue
         specs.extend(_mcp_specs_for_server(server, payload))

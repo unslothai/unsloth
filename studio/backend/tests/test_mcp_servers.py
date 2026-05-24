@@ -72,6 +72,7 @@ def test_delete_server_roundtrip(tmp_path, monkeypatch):
 
 def test_validate_url_accepts_http_and_https():
     from routes.mcp_servers import _validate_url
+
     assert _validate_url("http://example.com/mcp") == "http://example.com/mcp"
     assert _validate_url("https://example.com/mcp") == "https://example.com/mcp"
     assert _validate_url("  https://example.com/mcp  ") == "https://example.com/mcp"
@@ -80,6 +81,7 @@ def test_validate_url_accepts_http_and_https():
 @pytest.mark.parametrize("bad", ["", "   ", "ftp://x", "http://", "noscheme.com"])
 def test_validate_url_rejects_bad(bad):
     from routes.mcp_servers import _validate_url
+
     with pytest.raises(HTTPException) as exc:
         _validate_url(bad)
     assert exc.value.status_code == 400
@@ -87,7 +89,10 @@ def test_validate_url_rejects_bad(bad):
 
 def test_normalize_headers():
     from routes.mcp_servers import _normalize_headers
-    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {"Auth": "Bearer x"}
+
+    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {
+        "Auth": "Bearer x"
+    }
     assert _normalize_headers({"X": 42}) == {"X": "42"}
     assert _normalize_headers({}) is None
     assert _normalize_headers(None) is None
@@ -116,6 +121,7 @@ def test_changes_from_payload_tristate_headers():
 
 def test_mcp_specs_skip_oversized_names():
     from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "s" * 30, "display_name": "S"}
     tools = [
         {"name": "ok", "description": "fine"},
@@ -129,6 +135,7 @@ def test_mcp_specs_skip_oversized_names():
 
 def test_execute_tool_malformed_mcp_name():
     from core.inference.tools import execute_tool
+
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
@@ -136,8 +143,11 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-    assert execute_tool("mcp__missing__do_thing", {}) == \
-        "Error: MCP server 'missing' not found"
+
+    assert (
+        execute_tool("mcp__missing__do_thing", {})
+        == "Error: MCP server 'missing' not found"
+    )
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -149,5 +159,8 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
         is_enabled = False,
     )
     from core.inference.tools import execute_tool
-    assert execute_tool("mcp__srv1__do_thing", {}) == \
-        "Error: MCP server 'srv1' is disabled"
+
+    assert (
+        execute_tool("mcp__srv1__do_thing", {})
+        == "Error: MCP server 'srv1' is disabled"
+    )

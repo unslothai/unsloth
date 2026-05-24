@@ -29,9 +29,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     # use_oauth was added after the first release; backfill for pre-existing DBs.
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
+    cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()
+    }
     if "use_oauth" not in cols:
-        conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -71,8 +75,14 @@ def create_server(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                id, display_name, url, headers_json,
-                int(is_enabled), int(use_oauth), now, now,
+                id,
+                display_name,
+                url,
+                headers_json,
+                int(is_enabled),
+                int(use_oauth),
+                now,
+                now,
             ),
         )
         conn.commit()
@@ -117,9 +127,7 @@ def delete_server(id: str) -> bool:
 def get_server(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM mcp_servers WHERE id = ?", (id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -128,9 +136,7 @@ def get_server(id: str) -> Optional[dict]:
 def list_servers() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM mcp_servers ORDER BY created_at"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
