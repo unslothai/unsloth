@@ -50,7 +50,9 @@ def check_torch() -> tuple[int, int]:
     if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
         sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
-        print(f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback.")
+        print(
+            f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback."
+        )
     return cap
 
 

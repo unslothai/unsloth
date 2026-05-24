@@ -166,6 +166,7 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
     try:
         from unsloth_zoo.temporary_patches import common as _zoo_common
+
         _zoo_common.determine_compile_threads = lambda: 1
     except Exception:
         pass
