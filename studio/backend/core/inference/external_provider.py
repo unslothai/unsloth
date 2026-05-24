@@ -3555,8 +3555,7 @@ class ExternalProviderClient:
         # opted out of tool use still triggers grounded search / code
         # execution with their privacy + billing implications.
         _tool_choice_disabled = (
-            isinstance(tool_choice, str)
-            and tool_choice.strip().lower() == "none"
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
         tools_array: list[dict[str, Any]] = []
         if (
@@ -3651,8 +3650,7 @@ class ExternalProviderClient:
                         # keep the slim anyOf and mark the field
                         # nullable.
                         _saw_null = any(
-                            isinstance(_entry, dict)
-                            and _entry.get("type") == "null"
+                            isinstance(_entry, dict) and _entry.get("type") == "null"
                             for _entry in _v
                         )
                         _non_null_entries = [
@@ -4860,9 +4858,7 @@ class ExternalProviderClient:
             if _tc_lc in ("auto", "none", "required"):
                 _responses_tc_string = _tc_lc
         responses_tool_choice: Optional[Any] = None
-        _has_responses_tools = bool(
-            enabled_tools or responses_user_function_tools
-        )
+        _has_responses_tools = bool(enabled_tools or responses_user_function_tools)
         if _responses_tc_string is not None and _has_responses_tools:
             responses_tool_choice = _responses_tc_string
         elif (
@@ -4879,9 +4875,8 @@ class ExternalProviderClient:
         _responses_tool_choice_none = _responses_tc_string == "none"
 
         if (
-            (enabled_tools or responses_user_function_tools)
-            and not _responses_tool_choice_none
-        ):
+            enabled_tools or responses_user_function_tools
+        ) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
             if enabled_tools and "web_search" in enabled_tools:
                 tools_array.append({"type": "web_search"})
@@ -4927,9 +4922,8 @@ class ExternalProviderClient:
             """
             attempt_body = dict(body)
             if (
-                (enabled_tools or responses_user_function_tools)
-                and not _responses_tool_choice_none
-            ):
+                enabled_tools or responses_user_function_tools
+            ) and not _responses_tool_choice_none:
                 tools_array_attempt: list[dict[str, Any]] = list(
                     responses_user_function_tools
                 )

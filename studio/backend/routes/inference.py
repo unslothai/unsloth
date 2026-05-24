@@ -1756,9 +1756,7 @@ def _build_external_messages(
             return False
         raw_args = fn.get("arguments") or ""
         try:
-            args = (
-                json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            )
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         except Exception:
             return False
         return isinstance(args, dict) and args.get("_server_tool") is True

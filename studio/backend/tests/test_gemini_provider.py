@@ -3161,7 +3161,7 @@ def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     class _StubOpener:
-        def open(self, req, timeout=None):
+        def open(self, req, timeout = None):
             raise urllib.error.HTTPError(
                 req.full_url,
                 302,
@@ -3227,11 +3227,11 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self, _n=None):
+        def read(self, _n = None):
             return b"PNG"
 
     class _StubOpener:
-        def open(self, req, timeout=None):
+        def open(self, req, timeout = None):
             return _StubResp()
 
     monkeypatch.setattr(
@@ -3416,10 +3416,10 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
             base_url = base_url,
         )
         # Empty assistant turn with only synthetic tool_call dropped.
-        assert result == [] or all(
-            not (m.get("tool_calls") or [])
-            for m in result
-        ), (provider_type, result)
+        assert result == [] or all(not (m.get("tool_calls") or []) for m in result), (
+            provider_type,
+            result,
+        )
 
     # Native Gemini preserves it (round-trips via extra_content).
     result_native = _build_external_messages(
@@ -3429,10 +3429,7 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
         base_url = "https://generativelanguage.googleapis.com/v1beta",
     )
     assert len(result_native) == 1
-    assert (
-        result_native[0]["tool_calls"][0]["function"]["name"]
-        == "image_generation"
-    )
+    assert result_native[0]["tool_calls"][0]["function"]["name"] == "image_generation"
 
 
 def test_openai_responses_tool_choice_none_drops_hosted_tools(monkeypatch):
