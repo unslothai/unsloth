@@ -2483,6 +2483,11 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    tool_context = (
+                        {"rag_scope": payload.rag_scope}
+                        if payload.rag_scope
+                        else None
+                    ),
                 )
 
             _tool_sentinel = object()
@@ -2950,6 +2955,11 @@ async def openai_chat_completions(
 
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
+                tool_context = (
+                    {"rag_scope": payload.rag_scope}
+                    if payload.rag_scope
+                    else None
+                ),
                 messages = _sf_chat_messages,
                 tools = _sf_tools_to_use,
                 system_prompt = _sf_system_prompt or "",

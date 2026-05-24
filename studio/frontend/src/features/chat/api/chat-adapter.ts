@@ -993,8 +993,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // prepend it as a system-role block. Failures are logged but
       // don't break the chat — better to answer without context than
       // to drop a message the user just sent.
+      //
+      // Phase 4: pre-fetch only fires when the new RAG button is on AND
+      // we can't register `search_knowledge_base` as a real tool —
+      // i.e., external providers or local models that don't expose
+      // tool-use. Local models with tool support take the tool-call
+      // path further down (see `enabled_tools` assembly), and the LLM
+      // decides per turn whether to invoke retrieval.
       const ragSource = runtime.ragSource;
-      if (ragSource.kind !== "off") {
+      const ragToolEnabled = runtime.ragToolEnabled;
+      const ragToolPathTaken =
+        ragToolEnabled && supportsTools && !isExternalRequest;
+      if (
+        ragToolEnabled
+        && ragSource.kind !== "off"
+        && !ragToolPathTaken
+      ) {
         const lastUser = [...outboundMessages]
           .reverse()
           .find((m) => m.role === "user");
@@ -1617,13 +1631,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools && (toolsEnabled || codeToolsEnabled)
+            ...(supportsTools
+              && (toolsEnabled || codeToolsEnabled || ragToolPathTaken)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(ragToolPathTaken ? ["search_knowledge_base"] : []),
                   ],
+                  // Phase 4: per-request RAG context the backend's
+                  // `search_knowledge_base` handler reads when the LLM
+                  // invokes the tool. Only sent when the tool path
+                  // is taken — external providers fall through to the
+                  // pre-fetch block above.
+                  ...(ragToolPathTaken
+                    ? {
+                        rag_scope: {
+                          kb_id:
+                            ragSource.kind === "kb"
+                              ? ragSource.kbId
+                              : null,
+                          thread_id:
+                            ragSource.kind === "thread"
+                              ? (resolvedThreadId ?? null)
+                              : null,
+                          enable_rerank: runtime.enableRerank,
+                          default_top_k: runtime.ragTopK,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

@@ -21,7 +21,7 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, FileTextIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, BookOpenIcon, FileTextIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { toast } from "@/lib/toast";
@@ -368,6 +368,8 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
+  const setRagToolEnabled = useChatRuntimeStore((s) => s.setRagToolEnabled);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -1275,6 +1277,34 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
+          {/* RAG: master switch for retrieval. On local models with
+              tool-use support, registers `search_knowledge_base` as a
+              tool the LLM can call. On external providers, falls back
+              to the pre-fetch path. The sidebar Retrieval section
+              configures the source / top-K / reranker; the button is
+              the only on/off control. */}
+          <button
+            type="button"
+            disabled={!modelLoaded}
+            onClick={() => {
+              const next = !ragToolEnabled;
+              setRagToolEnabled(next);
+              if (next && ragSource.kind === "off") {
+                setRagSource({ kind: "thread" });
+              }
+            }}
+            className="composer-pill-btn"
+            data-active={ragToolEnabled && modelLoaded ? "true" : "false"}
+            aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
+            title={
+              ragToolEnabled
+                ? "RAG on — the model can search your attached documents"
+                : "Enable RAG — let the model search your documents"
+            }
+          >
+            <BookOpenIcon className="size-3.5" />
+            <span>RAG</span>
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (

@@ -441,6 +441,7 @@ export function ChatSettingsPanel({
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
   const enableRerank = useChatRuntimeStore((s) => s.enableRerank);
   const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
@@ -1246,7 +1247,8 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
         ) : null}
 
-        <CollapsibleSection label="Retrieval" defaultOpen={false}>
+        {ragToolEnabled ? (
+        <CollapsibleSection label="Retrieval" defaultOpen={true}>
           <div className="flex flex-col gap-3 pt-1">
             <div className="flex flex-col gap-1.5">
               <label className="text-[12px] font-medium text-muted-foreground">
@@ -1265,11 +1267,6 @@ export function ChatSettingsPanel({
                   align="start"
                   className="w-[var(--radix-dropdown-menu-trigger-width)]"
                 >
-                  <DropdownMenuItem
-                    onSelect={() => setRagSource({ kind: "off" })}
-                  >
-                    Off
-                  </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => setRagSource({ kind: "thread" })}
                   >
@@ -1527,6 +1524,7 @@ export function ChatSettingsPanel({
             </div>
           </div>
         </CollapsibleSection>
+        ) : null}
 
         <CollapsibleSection label="System Prompt" defaultOpen={true}>
           <button

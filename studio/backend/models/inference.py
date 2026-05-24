@@ -686,6 +686,16 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Per-request context the `search_knowledge_base` tool "
+            "consumes when the LLM invokes it. Shape: "
+            "{kb_id?: str, thread_id?: str, enable_rerank?: bool, "
+            "default_top_k?: int, reranker_model?: str}. Ignored unless "
+            "'search_knowledge_base' is in enabled_tools."
+        ),
+    )
     cancel_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",

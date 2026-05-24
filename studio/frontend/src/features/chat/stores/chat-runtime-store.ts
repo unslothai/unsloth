@@ -26,6 +26,7 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_RAG_TOOL_ENABLED_KEY = "unsloth_chat_rag_tool_enabled";
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -264,6 +265,7 @@ type ChatRuntimeStore = {
    */
   supportsBuiltinImageGeneration: boolean;
   toolsEnabled: boolean;
+  ragToolEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   toolStatus: string | null;
@@ -344,6 +346,7 @@ type ChatRuntimeStore = {
   setRagSource: (source: RagSource) => void;
   setEnableRerank: (value: boolean) => void;
   setRagTopK: (value: number) => void;
+  setRagToolEnabled: (value: boolean) => void;
 };
 
 type PersistedChatSettings = Awaited<
@@ -578,6 +581,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  // Phase 4: RAG button defaults off. Migration nudge happens after
+  // settings hydration, when the persisted ragSource becomes visible —
+  // see hydratePersistedSettings.
+  ragToolEnabled: loadBool(CHAT_RAG_TOOL_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
@@ -630,6 +637,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             ),
             ...getHydratedSettingsState(settings, state, hydrationVersions),
           };
+          // Phase 4 migration: pre-existing users with ragSource set
+          // before the RAG button shipped should keep getting RAG —
+          // auto-flip ragToolEnabled so the button starts ON for them.
+          // The CHAT_RAG_TOOL_ENABLED_KEY localStorage write makes the
+          // migration stick across reloads.
+          const hydratedRagSource =
+            (nextState.ragSource as RagSource | undefined) ?? state.ragSource;
+          if (
+            hydratedRagSource &&
+            hydratedRagSource.kind !== "off" &&
+            !state.ragToolEnabled
+          ) {
+            nextState.ragToolEnabled = true;
+            saveBool(CHAT_RAG_TOOL_ENABLED_KEY, true);
+          }
           return nextState;
         });
       } catch {
@@ -830,6 +852,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
       return { toolsEnabled };
+    }),
+  setRagToolEnabled: (ragToolEnabled) =>
+    set(() => {
+      saveBool(CHAT_RAG_TOOL_ENABLED_KEY, ragToolEnabled);
+      return { ragToolEnabled };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set(() => {

@@ -502,7 +502,20 @@ TERMINAL_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+# Lazy import — keeps studio.db init lazy so tools.py doesn't pull in
+# the whole rag stack on inference paths that never see RAG.
+def _get_rag_tool_spec():
+    from core.rag.tool import SEARCH_KNOWLEDGE_BASE_TOOL
+
+    return SEARCH_KNOWLEDGE_BASE_TOOL
+
+
+# RAG_SEARCH_TOOL is included in ALL_TOOLS; routes/inference.py filters
+# the list against payload.enabled_tools so each request only sees the
+# tools the frontend explicitly enabled. When the RAG button is off
+# the tool name won't be in enabled_tools and the LLM will never see
+# the spec.
+ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, _get_rag_tool_spec()]
 
 
 _TIMEOUT_UNSET = object()
@@ -514,12 +527,17 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    tool_context: dict | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
+    ``tool_context``: optional per-request extras the LLM does not see (RAG scope,
+    future per-tool overrides). Keys consumed:
+      - ``rag_scope``: ``{kb_id?, thread_id?, enable_rerank?, default_top_k?,
+        reranker_model?}`` — consumed by ``search_knowledge_base``.
     """
     logger.info(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
@@ -538,6 +556,19 @@ def execute_tool(
     if name == "terminal":
         return _bash_exec(
             arguments.get("command", ""), cancel_event, effective_timeout, session_id
+        )
+    if name == "search_knowledge_base":
+        from core.rag.tool import search_knowledge_base
+
+        scope = (tool_context or {}).get("rag_scope") or {}
+        return search_knowledge_base(
+            query = arguments.get("query", ""),
+            top_k = arguments.get("top_k"),
+            scope_kb_id = scope.get("kb_id"),
+            scope_thread_id = scope.get("thread_id"),
+            enable_rerank = bool(scope.get("enable_rerank")),
+            reranker_model = scope.get("reranker_model"),
+            default_top_k = int(scope.get("default_top_k") or 5),
         )
     return f"Unknown tool: {name}"
 
