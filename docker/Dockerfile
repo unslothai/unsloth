@@ -59,11 +59,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
     && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
-    && curl -fsSL https://bootstrap.pypa.io/get-pip.py | python \
-    && python -m pip install -U pip uv \
     && rm -rf /var/lib/apt/lists/*
 
-# Build into an isolated prefix that we copy into the runtime stage.
+# Build into an isolated prefix. NOTE: we do NOT install pip or uv into the
+# system Python -- on Ubuntu 24.04 the system interpreter is marked
+# externally-managed (PEP 668) and `pip install` is refused. Instead, the new
+# venv bootstraps its own pip via ensurepip (provided by the python3.12-venv
+# apt package), and we install uv into the venv a few lines below.
 ENV VENV=/opt/unsloth-venv
 RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 
