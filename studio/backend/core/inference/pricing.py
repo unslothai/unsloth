@@ -156,9 +156,7 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
     # date / variant suffixes, never on a longer numeric or alpha
     # continuation of the same component.
     for key in sorted(table, key = len, reverse = True):
-        if model.startswith(key) and (
-            len(model) == len(key) or model[len(key)] == "-"
-        ):
+        if model.startswith(key) and (len(model) == len(key) or model[len(key)] == "-"):
             return table[key]
     return None
 

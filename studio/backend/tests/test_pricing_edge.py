@@ -85,9 +85,9 @@ def test_prefix_match_requires_dash_boundary_pro_lookalike():
     # lands on the canonical ``gpt-5.5`` row instead.
     prices = _lookup("openai", "gpt-5.5-prod")
     assert prices is not None
-    assert prices["input_per_mtok"] == OPENAI_PRICING["gpt-5.5"]["input_per_mtok"], (
-        "expected fallback to gpt-5.5 base ($5), not gpt-5.5-pro ($30)"
-    )
+    assert (
+        prices["input_per_mtok"] == OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
+    ), "expected fallback to gpt-5.5 base ($5), not gpt-5.5-pro ($30)"
     out = calculate_cost(
         "openai",
         "gpt-5.5-prod",
@@ -324,7 +324,8 @@ def test_cache_creation_as_int_does_not_crash():
     )
     # Falls back to the 5m default for the whole cache_creation bucket.
     assert _isclose(
-        out["cache_write_usd"], 1_000_000 / 1_000_000.0 * base * ANTHROPIC_CACHE_5M_WRITE_MULT
+        out["cache_write_usd"],
+        1_000_000 / 1_000_000.0 * base * ANTHROPIC_CACHE_5M_WRITE_MULT,
     )
 
 
