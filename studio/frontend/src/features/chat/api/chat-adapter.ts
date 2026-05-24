@@ -163,9 +163,17 @@ function documentCitationToSource(
     "";
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // Use the search-result source URL when present; otherwise fall back
-  // to a stable doc anchor.
-  const url = source || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  // Only treat ``source`` as a navigable URL when it is a real
+  // http(s) address. Anthropic search_result_location ``source`` can
+  // be a free-form identifier (e.g. ``kb-doc-42``); a hostile model
+  // can also return ``javascript:`` / ``data:`` / ``vbscript:``
+  // strings that would execute when rendered as an <a href>. Fall
+  // back to a stable doc anchor for anything else.
+  const isNavigable =
+    /^https?:\/\//i.test(source) && !/[\r\n]/.test(source);
+  const url = isNavigable
+    ? source
+    : `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited =
     typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
@@ -176,8 +184,12 @@ function documentCitationToSource(
   // source URL: two distinct citations from the same document (or
   // two search_result_locations with the same source but different
   // search_result_index) must keep distinct entries. Fold the
-  // position-bearing fields into the id so the Sources panel
-  // preserves the 1:1 mapping with the inline footnotes.
+  // citation type plus position-bearing fields into the id so the
+  // Sources panel preserves the 1:1 mapping with the inline
+  // footnotes (otherwise char_location(0,5) and page_location(0,5)
+  // for the same source would collapse).
+  const citationType =
+    typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
     cit.start_char_index,
@@ -190,7 +202,10 @@ function documentCitationToSource(
     .filter((v) => typeof v === "number")
     .map((v) => String(v))
     .join(":");
-  const id = positionParts ? `${url}#${positionParts}` : `${url}#${fallbackIdx}`;
+  const idAnchor = positionParts
+    ? `${citationType}:${positionParts}`
+    : `${citationType}:${fallbackIdx}`;
+  const id = `${url}#${idAnchor}`;
   return {
     type: "source" as const,
     sourceType: "url" as const,

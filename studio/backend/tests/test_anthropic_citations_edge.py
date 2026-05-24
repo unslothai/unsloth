@@ -662,3 +662,46 @@ def test_input_document_translation_enables_citations(monkeypatch):
     doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")
     assert doc_block["source"]["type"] == "url", doc_block
     assert doc_block.get("citations") == {"enabled": True}, doc_block
+
+
+# ── cited_text truncation + safe-url citation conversion ────────
+
+
+def test_cited_text_truncated_in_synthetic_event(monkeypatch):
+    """``cited_text`` is bounded server-side so a multi-KB span does
+    not balloon the SSE payload. The frontend trims to 240 chars
+    anyway; truncating at the source keeps bytes bounded.
+    """
+    from core.inference.external_provider import _CITED_TEXT_MAX_LEN
+
+    long_quote = "x" * (_CITED_TEXT_MAX_LEN + 4000)
+    events = [
+        {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 1, "output_tokens": 0}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "claim "}},
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "citations_delta",
+                "citation": {
+                    "type": "char_location",
+                    "document_index": 0,
+                    "document_title": "doc",
+                    "start_char_index": 0,
+                    "end_char_index": 5,
+                    "cited_text": long_quote,
+                },
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+        {"type": "message_stop"},
+    ]
+    chunks = _capture(monkeypatch, events)
+    tool_events = [c for c in chunks if "_toolEvent" in c and "document_citations" in c]
+    assert tool_events, "no document_citations tool event"
+    payload = json.loads(tool_events[0].split("data: ", 1)[1])
+    cited = payload["_toolEvent"]["citations"][0]["cited_text"]
+    assert len(cited) <= _CITED_TEXT_MAX_LEN + 1, len(cited)
+    assert cited.endswith("…")

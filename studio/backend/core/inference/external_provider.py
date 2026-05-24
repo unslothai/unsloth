@@ -177,6 +177,13 @@ def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
+# Server-side cap on ``cited_text`` forwarded inside the synthetic
+# ``document_citations`` tool_event. The frontend Sources panel trims
+# to 240 chars anyway; truncating here keeps SSE bytes bounded when
+# a long RAG / search-result block returns a multi-KB cited span.
+_CITED_TEXT_MAX_LEN = 512
+
+
 def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     """Stable dedup key for an Anthropic ``citations_delta.citation``.
 
@@ -2534,11 +2541,25 @@ class ExternalProviderClient:
                             # Sources panel can render the footnotes the
                             # inline [N] markers point at. No-op when
                             # the stream carried no citations_delta.
+                            # ``cited_text`` is truncated server-side
+                            # (frontend trims to 240 chars in the
+                            # Sources panel anyway) so SSE bytes stay
+                            # bounded on long RAG / search-result spans.
                             if document_citations:
-                                clean_cits = [
-                                    {k: v for k, v in c.items() if k != "_key"}
-                                    for c in document_citations
-                                ]
+                                clean_cits = []
+                                for c in document_citations:
+                                    entry = {
+                                        k: v for k, v in c.items() if k != "_key"
+                                    }
+                                    cited = entry.get("cited_text")
+                                    if (
+                                        isinstance(cited, str)
+                                        and len(cited) > _CITED_TEXT_MAX_LEN
+                                    ):
+                                        entry["cited_text"] = (
+                                            cited[:_CITED_TEXT_MAX_LEN] + "…"
+                                        )
+                                    clean_cits.append(entry)
                                 yield _emit_tool_event(
                                     {
                                         "type": "document_citations",
