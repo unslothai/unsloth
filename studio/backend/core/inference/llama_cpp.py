@@ -114,12 +114,14 @@ _NUMBERED_LIST_ARTIFACT = re.compile(
 # Markers that a numbered list is a plan (still re-promptable), not a
 # final answer. Explicit "plan:" / "approach:" / "Here's my plan", OR
 # intent phrasing followed shortly by a plan / tool-action verb. The
-# verb set is intentionally conservative: ambiguous verbs like "write",
-# "create", "make", "build" are omitted because real answer lists use
-# them ("1. Write a poem", "1. Create directory").
+# apostrophe in ``i['’]ll`` is required (no ``?``) so the regex does not
+# accidentally match the word "ill". The verb set is intentionally
+# conservative: ambiguous verbs like "write", "create", "make", "build"
+# are omitted because real answer lists use them ("1. Write a poem",
+# "1. Create directory").
 _PLAN_LIST_FRAMING = re.compile(
     r"\b(?:here['’]?s (?:my |the |a )?(?:plan|approach)|step \d+|"
-    r"i['’]?ll|i will|i am going to|let me|now i|next i)\b"
+    r"i['’]ll|i will|i am going to|let me|now i|next i)\b"
     r"[\s\S]{0,80}"
     r"\b(?:search|look up|call|use|fetch|browse|run|execute|"
     r"check|find|open|verify|compare|summari[sz]e|think|respond|"

@@ -361,6 +361,21 @@ def test_reprompts_on_plan_with_extended_action_verbs():
         assert _would_reprompt(s), s
 
 
+def test_plan_framing_requires_apostrophe_in_ill():
+    """The ``i['’]ll`` plan-framing alternative requires an apostrophe so
+    the regex does not match the word "ill" (sick). Without this, a
+    numbered list near "ill" plus an unrelated action verb would be
+    misclassified as a plan and trigger a spurious re-prompt."""
+    samples = [
+        ("She is ill. Here is the list:\n1. Apple\n2. Orange\n3. Banana", False),
+        ("I'll search the docs:\n1. step\n2. step", True),
+        ("I will search:\n1. step\n2. step", True),
+    ]
+    for content, expected in samples:
+        got = _would_reprompt(content)
+        assert got == expected, f"{content!r} expected reprompt={expected} got {got}"
+
+
 # ── Cross-platform line endings ────────────────────────────────────
 
 
