@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import json
+import uuid
+from urllib.parse import urlparse
+
+import structlog
+from fastapi import APIRouter, Depends, HTTPException
+
+from auth.authentication import get_current_subject
+from core.inference.mcp_client import list_tools_async, parse_server_headers
+from models.mcp_servers import (
+    McpServerCreate,
+    McpServerProbeResult,
+    McpServerResponse,
+    McpServerTestRequest,
+    McpServerUpdate,
+)
+from storage import mcp_servers_db
+
+logger = structlog.get_logger(__name__)
+
+router = APIRouter()
+
+
+_PROBE_TIMEOUT_SECONDS = 8.0
+# When OAuth probes need to open a browser, wait long enough for the user to
+# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
+_OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
+
+
+def _validate_url(url: str) -> str:
+    trimmed = (url or "").strip()
+    if not trimmed:
+        raise HTTPException(status_code = 400, detail = "url must not be empty")
+    parsed = urlparse(trimmed)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code = 400,
+            detail = "url must start with http:// or https://",
+        )
+    if not parsed.netloc:
+        raise HTTPException(status_code = 400, detail = "url is missing a host")
+    return trimmed
+
+
+def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
+    """Trim header names, drop empties, coerce values to str. None if nothing left."""
+    if not headers:
+        return None
+    out: dict[str, str] = {}
+    for raw_key, value in headers.items():
+        key = str(raw_key).strip()
+        if key:
+            out[key] = str(value)
+    return out or None
+
+
+def _row_to_response(row: dict) -> McpServerResponse:
+    return McpServerResponse(
+        id = row["id"],
+        display_name = row["display_name"],
+        url = row["url"],
+        headers = parse_server_headers(row) or {},
+        is_enabled = bool(row["is_enabled"]),
+        use_oauth = bool(row.get("use_oauth")),
+        created_at = row["created_at"],
+        updated_at = row["updated_at"],
+    )
+
+
+@router.get("/", response_model = list[McpServerResponse])
+async def list_mcp_servers(
+    current_subject: str = Depends(get_current_subject),
+):
+    return [_row_to_response(row) for row in mcp_servers_db.list_servers()]
+
+
+@router.post("/", response_model = McpServerResponse, status_code = 201)
+async def create_mcp_server(
+    payload: McpServerCreate,
+    current_subject: str = Depends(get_current_subject),
+):
+    display_name = (payload.display_name or "").strip()
+    if not display_name:
+        raise HTTPException(status_code = 400, detail = "display_name must not be empty")
+    url = _validate_url(payload.url)
+    headers = _normalize_headers(payload.headers)
+
+    server_id = uuid.uuid4().hex[:16]
+    mcp_servers_db.create_server(
+        id = server_id,
+        display_name = display_name,
+        url = url,
+        headers_json = json.dumps(headers) if headers else None,
+        is_enabled = payload.is_enabled,
+        use_oauth = payload.use_oauth,
+    )
+    return _row_to_response(mcp_servers_db.get_server(server_id))
+
+
+def _changes_from_payload(payload: McpServerUpdate) -> dict:
+    """Translate a PATCH-style payload into column updates.
+
+    Only fields the client explicitly sent become updates -- ``headers: None``
+    is a clear-headers instruction, while an omitted ``headers`` leaves the
+    existing value alone.
+    """
+    sent = payload.model_fields_set
+    changes: dict = {}
+
+    if "display_name" in sent:
+        name = (payload.display_name or "").strip()
+        if not name:
+            raise HTTPException(status_code = 400, detail = "display_name must not be empty")
+        changes["display_name"] = name
+    if "url" in sent:
+        changes["url"] = _validate_url(payload.url or "")
+    if "headers" in sent:
+        headers = _normalize_headers(payload.headers)
+        changes["headers_json"] = json.dumps(headers) if headers else None
+    if "is_enabled" in sent:
+        changes["is_enabled"] = payload.is_enabled
+    if "use_oauth" in sent:
+        changes["use_oauth"] = payload.use_oauth
+    return changes
+
+
+@router.put("/{server_id}", response_model = McpServerResponse)
+async def update_mcp_server(
+    server_id: str,
+    payload: McpServerUpdate,
+    current_subject: str = Depends(get_current_subject),
+):
+    if not mcp_servers_db.get_server(server_id):
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    changes = _changes_from_payload(payload)
+    if not changes:
+        raise HTTPException(status_code = 400, detail = "No fields to update")
+    mcp_servers_db.update_server(server_id, changes)
+    return _row_to_response(mcp_servers_db.get_server(server_id))
+
+
+@router.delete("/{server_id}", status_code = 204)
+async def delete_mcp_server(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    if not mcp_servers_db.delete_server(server_id):
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+
+
+@router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
+async def refresh_mcp_server_tools(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+
+    use_oauth = bool(server.get("use_oauth"))
+    try:
+        tools = await list_tools_async(
+            url = server["url"],
+            headers = parse_server_headers(server),
+            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS if use_oauth else _PROBE_TIMEOUT_SECONDS,
+            use_oauth = use_oauth,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
+        logger.warning("MCP refresh failed", server_id = server_id, error = str(exc))
+        return McpServerProbeResult(ok = False, error = str(exc))
+
+    return McpServerProbeResult(ok = True, tool_count = len(tools))
+
+
+@router.post("/test", response_model = McpServerProbeResult)
+async def test_mcp_server(
+    payload: McpServerTestRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        tools = await list_tools_async(
+            url = _validate_url(payload.url),
+            headers = _normalize_headers(payload.headers),
+            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS if payload.use_oauth else _PROBE_TIMEOUT_SECONDS,
+            use_oauth = payload.use_oauth,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return McpServerProbeResult(ok = False, error = str(exc))
+
+    return McpServerProbeResult(ok = True, tool_count = len(tools))

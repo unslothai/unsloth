@@ -2376,7 +2376,7 @@ async def openai_chat_completions(
         )
 
         if use_tools:
-            from core.inference.tools import ALL_TOOLS
+            from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
             if payload.enabled_tools is not None:
                 tools_to_use = [
@@ -2386,6 +2386,9 @@ async def openai_chat_completions(
                 ]
             else:
                 tools_to_use = ALL_TOOLS
+
+            if payload.mcp_enabled:
+                tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
             # ── Tool-use system prompt nudge ──────────────────────
             _tool_names = {t["function"]["name"] for t in tools_to_use}
@@ -2871,7 +2874,7 @@ async def openai_chat_completions(
     )
 
     if _sf_use_tools:
-        from core.inference.tools import ALL_TOOLS
+        from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
         if payload.enabled_tools is not None:
             _sf_tools_to_use = [
@@ -2879,6 +2882,9 @@ async def openai_chat_completions(
             ]
         else:
             _sf_tools_to_use = ALL_TOOLS
+
+        if payload.mcp_enabled:
+            _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
         _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
         _sf_has_web = "web_search" in _sf_tool_names

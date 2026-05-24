@@ -668,6 +668,10 @@ class ChatCompletionRequest(BaseModel):
             "all local tools are enabled and no server-side tools are forwarded."
         ),
     )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",

@@ -14,6 +14,7 @@ import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+import asyncio
 import random
 import re
 import shlex
@@ -23,6 +24,14 @@ import sys
 import tempfile
 import threading
 import urllib.request
+
+from core.inference.mcp_client import (
+    MCP_TOOL_PREFIX,
+    call_tool_sync,
+    list_tools_async,
+    parse_server_headers,
+)
+from storage import mcp_servers_db
 
 from loggers import get_logger
 
@@ -504,6 +513,59 @@ TERMINAL_TOOL = {
 
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
 
+def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
+    """Convert an MCP server's tool list into OpenAI function specs."""
+    display = server.get("display_name") or server["id"]
+    specs: list[dict] = []
+    for tool in mcp_tools:
+        name = f"{MCP_TOOL_PREFIX}{server['id']}__{tool.get('name') or ''}"
+        # OpenAI rejects function.name > 64 chars before streaming starts.
+        if len(name) > 64:
+            logger.warning(
+                "Skipping MCP tool '%s' on '%s': composed name exceeds 64 chars.",
+                tool.get("name"), display,
+            )
+            continue
+        specs.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+            },
+        })
+    return specs
+
+
+async def get_enabled_mcp_tools() -> list[dict]:
+    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    if not servers:
+        return []
+
+    results = await asyncio.gather(
+        *(
+            list_tools_async(
+                url = s["url"],
+                headers = parse_server_headers(s),
+                use_oauth = bool(s.get("use_oauth")),
+            )
+            for s in servers
+        ),
+        return_exceptions = True,
+    )
+
+    specs: list[dict] = []
+    for server, payload in zip(servers, results):
+        if isinstance(payload, BaseException):
+            logger.warning(
+                "MCP server '%s' (%s) discovery failed: %s",
+                server.get("display_name") or server["id"],
+                server.get("url"), payload,
+            )
+            continue
+        specs.extend(_mcp_specs_for_server(server, payload))
+    return specs
+
 
 _TIMEOUT_UNSET = object()
 
@@ -525,6 +587,24 @@ def execute_tool(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name.startswith(MCP_TOOL_PREFIX):
+        try:
+            _, server_id, tool_name = name.split("__", 2)
+        except ValueError:
+            return f"Error: malformed MCP tool name '{name}'"
+        server = mcp_servers_db.get_server(server_id)
+        if not server:
+            return f"Error: MCP server '{server_id}' not found"
+        if not server.get("is_enabled"):
+            return f"Error: MCP server '{server_id}' is disabled"
+        return call_tool_sync(
+            url = server["url"],
+            headers = parse_server_headers(server),
+            name = tool_name,
+            args = arguments,
+            timeout = effective_timeout,
+            use_oauth = bool(server.get("use_oauth")),
+        )
     if name == "web_search":
         return _web_search(
             arguments.get("query", ""),
