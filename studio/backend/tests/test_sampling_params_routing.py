@@ -461,9 +461,7 @@ def test_openai_responses_forwards_service_tier(monkeypatch):
     assert body.get("service_tier") == "priority", body
 
 
-@pytest.mark.parametrize(
-    "value", ["auto", "default", "flex", "scale", "priority"]
-)
+@pytest.mark.parametrize("value", ["auto", "default", "flex", "scale", "priority"])
 def test_openai_responses_forwards_documented_service_tiers(monkeypatch, value):
     """openai-python ships service_tier as
     `Literal["auto","default","flex","scale","priority"]` for
