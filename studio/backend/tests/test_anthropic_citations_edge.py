@@ -676,9 +676,23 @@ def test_cited_text_truncated_in_synthetic_event(monkeypatch):
 
     long_quote = "x" * (_CITED_TEXT_MAX_LEN + 4000)
     events = [
-        {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 1, "output_tokens": 0}}},
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "claim "}},
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "claim "},
+        },
         {
             "type": "content_block_delta",
             "index": 0,
@@ -695,7 +709,11 @@ def test_cited_text_truncated_in_synthetic_event(monkeypatch):
             },
         },
         {"type": "content_block_stop", "index": 0},
-        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 1},
+        },
         {"type": "message_stop"},
     ]
     chunks = _capture(monkeypatch, events)

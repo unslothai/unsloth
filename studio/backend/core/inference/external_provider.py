@@ -2548,9 +2548,7 @@ class ExternalProviderClient:
                             if document_citations:
                                 clean_cits = []
                                 for c in document_citations:
-                                    entry = {
-                                        k: v for k, v in c.items() if k != "_key"
-                                    }
+                                    entry = {k: v for k, v in c.items() if k != "_key"}
                                     cited = entry.get("cited_text")
                                     if (
                                         isinstance(cited, str)
