@@ -312,6 +312,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         },
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
+        # OpenRouter normalises to OpenAI's chat schema and inherits
+        # the 4-entry stop cap.
+        "stop_max": 4,
     },
 }
 

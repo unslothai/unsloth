@@ -5202,6 +5202,14 @@ class LlamaCppBackend:
         stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
+        # Match the per-iteration tool loop above so sampling behavior
+        # stays consistent when the cap-exhausted final-answer pass runs.
+        if frequency_penalty is not None:
+            stream_payload["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            stream_payload["seed"] = seed
+        if parallel_tool_calls is not None:
+            stream_payload["parallel_tool_calls"] = parallel_tool_calls
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""

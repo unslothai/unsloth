@@ -607,6 +607,34 @@ def test_kimi_web_search_uses_kimi_stop_cap_5(monkeypatch):
     assert body["stop"] == ["S0", "S1", "S2", "S3", "S4"], body
 
 
+def test_openrouter_stop_cap_is_4(monkeypatch):
+    """OpenRouter normalises to OpenAI's chat schema and inherits the
+    4-entry stop cap; the default 16-cap is too permissive for it."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "or-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-4o",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            stop = [f"S{i}" for i in range(10)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert len(body.get("stop", [])) == 4, body
+    assert body["stop"] == ["S0", "S1", "S2", "S3"], body
+
+
 def test_kimi_drops_stop_strings_over_32_bytes(monkeypatch):
     """Kimi limits each stop string to <= 32 bytes per
     https://platform.kimi.ai/docs/api/chat. Drop overlong entries
