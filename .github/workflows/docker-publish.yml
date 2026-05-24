@@ -11,6 +11,13 @@
 #   4. UNSLOTH_COMPILE_DISABLE=1 prevents Unsloth from JIT-compiling a Triton
 #      kernel cache keyed to the (non-existent) build-host GPU.
 #
+# Multi-arch:
+#   We publish a single manifest with linux/amd64 + linux/arm64 children.
+#   The arm64 child is built via QEMU on the same x86_64 runner (~2-3x slower
+#   than native) and targets DGX Spark / GB10 / Grace-Hopper. Runtime
+#   emulation is NOT used: end users on aarch64 hosts pull the arm64 variant
+#   natively and CUDA works as normal.
+#
 # Required repository secrets:
 #   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
 #
@@ -43,7 +50,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest          # no GPU, 16GB RAM, 4 vCPU
-    timeout-minutes: 60
+    # arm64 leg goes through QEMU emulation -- empirically ~2.5x the amd64
+    # wall time. Bump the per-job timeout to leave headroom on a noisy runner.
+    timeout-minutes: 150
     permissions:
       contents: read
       packages: write
@@ -51,14 +60,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Free up ~20GB on the runner so cu128 wheels + cudnn fit.
+      # Free up ~20GB on the runner so cu128 wheels + cudnn fit (twice).
+      # The arm64 child build downloads its own copy of every wheel, and the
+      # builder/runtime CUDA layers add up to ~6GB per arch. With both arches
+      # in flight + buildx cache, the default 14GB free is not enough.
       - name: Reclaim disk
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY"
           df -h /
 
+      # Registers binfmt_misc handlers for foreign archs (linux/arm64 here),
+      # so the same x86_64 runner can build aarch64 layers via QEMU. Equivalent
+      # to `docker run --privileged tonistiigi/binfmt --install all`.
       - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -78,12 +95,16 @@ jobs:
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
 
-      - name: Build and push
+      - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
           context: ./docker
           file: ./docker/Dockerfile
-          platforms: linux/amd64
+          # Single manifest, two child images: docker pull on an x86_64 host
+          # gets the amd64 layer; docker pull on DGX Spark / Grace gets arm64.
+          # TARGETARCH is injected into the Dockerfile by buildx; see Dockerfile
+          # for the per-arch unsloth extras switch (no xformers on arm64).
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

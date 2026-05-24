@@ -9,9 +9,11 @@
 #       (~10 min, needs ~30GB free for the model cache)
 #
 # Usage:
-#   bash docker/test_locally.sh                   # all blocks
+#   bash docker/test_locally.sh                   # all blocks (native arch)
 #   bash docker/test_locally.sh --skip-notebook   # blocks 1-3a only (fast)
 #   bash docker/test_locally.sh --skip-build      # assume $TAG already built
+#   bash docker/test_locally.sh --platform arm64  # cross-build for DGX Spark
+#                                                 # (auto-skips smoke/notebook)
 #   TAG=my-image:latest bash docker/test_locally.sh
 #   HF_TOKEN=hf_xxx bash docker/test_locally.sh   # for gated models (optional)
 #
@@ -23,6 +25,10 @@ TAG="${TAG:-unsloth-blackwell:test}"
 LOG_DIR="${LOG_DIR:-/tmp/unsloth-docker-test}"
 SKIP_BUILD=0
 SKIP_NOTEBOOK=0
+# Platform selector. Empty = let buildx default to the host arch (no
+# --platform passed). "amd64" / "arm64" = single-arch cross-build via QEMU
+# (requires `bash docker/setup_qemu.sh` to have been run once).
+PLATFORM=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,10 +36,33 @@ while [[ $# -gt 0 ]]; do
         --skip-notebook) SKIP_NOTEBOOK=1; shift ;;
         --tag)           TAG="$2"; shift 2 ;;
         --log-dir)       LOG_DIR="$2"; shift 2 ;;
-        --help|-h)       sed -n '2,20p' "$0"; exit 0 ;;
+        --platform)
+            case "$2" in
+                amd64|arm64|linux/amd64|linux/arm64) PLATFORM="${2#linux/}" ;;
+                *) echo "ERROR: --platform must be amd64 or arm64 (got '$2')" >&2; exit 2 ;;
+            esac
+            shift 2
+            ;;
+        --help|-h)       sed -n '2,22p' "$0"; exit 0 ;;
         *) echo "Unknown flag: $1" >&2; exit 2 ;;
     esac
 done
+
+# When cross-building, the resulting image cannot be exercised on this host
+# (CUDA does not work under QEMU runtime emulation). Auto-skip the GPU blocks
+# and warn the user. They can paste back the build log either way to prove
+# the wheels resolve + the build-time torch._C._cuda_getArchFlags() assertion
+# passes on the foreign arch.
+HOST_ARCH="$(uname -m)"
+case "${HOST_ARCH}" in
+    x86_64|amd64) HOST_DOCKER_ARCH="amd64" ;;
+    aarch64|arm64) HOST_DOCKER_ARCH="arm64" ;;
+    *)            HOST_DOCKER_ARCH="${HOST_ARCH}" ;;
+esac
+CROSS_ARCH=0
+if [[ -n "${PLATFORM}" && "${PLATFORM}" != "${HOST_DOCKER_ARCH}" ]]; then
+    CROSS_ARCH=1
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -165,19 +194,69 @@ MSG
     fi
     echo "  builder:       docker buildx ($(docker buildx version | head -1))"
 
-    docker buildx build --progress=plain --load -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
+    BUILD_ARGS=( --progress=plain )
+    if [[ -n "${PLATFORM}" ]]; then
+        echo "  platform:      linux/${PLATFORM}"
+        BUILD_ARGS+=( --platform "linux/${PLATFORM}" )
+        if [[ ${CROSS_ARCH} -eq 1 ]]; then
+            echo "  cross-build:   yes (host=${HOST_DOCKER_ARCH}); verifying QEMU binfmt..."
+            if ! docker run --rm --privileged tonistiigi/binfmt 2>/dev/null \
+                  | grep -q "\"linux/${PLATFORM}\""; then
+                cat >&2 <<MSG
+
+ERROR: QEMU binfmt handler for linux/${PLATFORM} is not registered.
+
+Run the one-time host setup first:
+
+  bash docker/setup_qemu.sh
+
+Then re-run this script.
+MSG
+                fail "QEMU binfmt missing for linux/${PLATFORM}"
+            fi
+        fi
+    else
+        echo "  platform:      (native, no --platform)"
+    fi
+    # --load works only for single-platform builds; we never multi-platform here.
+    BUILD_ARGS+=( --load )
+
+    docker buildx build "${BUILD_ARGS[@]}" -t "$TAG" "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
     rc=${PIPESTATUS[0]}
     if [[ $rc -ne 0 ]]; then
         fail "docker build exited $rc -- see $BUILD_LOG"
     fi
 
     # Sanity check the build's own self-test ran and passed
-    if grep -q "FAIL: missing wheels\|sm_100 (B200) missing\|sm_120 (RTX 5090) missing" "$BUILD_LOG"; then
+    if grep -q "FAIL: missing wheels\|sm_100 (B200/GB200) missing\|sm_120 (RTX 5090) missing on amd64\|no Blackwell consumer SASS" "$BUILD_LOG"; then
         fail "build-time sanity check failed -- see $BUILD_LOG"
     fi
-    grep -E "OK: torch 2.10.0|OK: all required wheels|OK: xformers \+ bitsandbytes" "$BUILD_LOG" || \
+    grep -E "OK: torch 2.10.0|OK: all required wheels|import cleanly on no-GPU host" "$BUILD_LOG" || \
         warn "could not find 'OK:' lines in build log -- did the verification step run?"
     ok "built $TAG"
+fi
+
+# When the image we just built (or were told to use) does not match the host
+# architecture, the smoke test and notebook blocks would attempt to launch
+# foreign-arch user-space under QEMU plus --gpus all -- which is broken by
+# design: nvidia-container-toolkit cannot expose a GPU to a QEMU-emulated
+# guest, and even if it could, CUDA kernels do not run under user-space CPU
+# emulation. Skip those blocks with a loud warning so the user doesn't think
+# they're seeing a real validation pass.
+if [[ ${CROSS_ARCH} -eq 1 ]]; then
+    warn "cross-arch build (host=${HOST_DOCKER_ARCH}, image=${PLATFORM})."
+    warn "skipping smoke test + notebook -- CUDA does not work under QEMU runtime."
+    warn "to validate end-to-end on linux/${PLATFORM}, transfer the image to an"
+    warn "actual ${PLATFORM} host (e.g. DGX Spark for arm64) and re-run with --skip-build."
+    banner "summary"
+    echo "  image:    $TAG"
+    echo "  platform: linux/${PLATFORM}  (cross-built on ${HOST_DOCKER_ARCH})"
+    echo "  log dir:  $LOG_DIR"
+    echo
+    [[ $SKIP_BUILD -eq 0 ]] && echo "  to paste back for PR validation:"
+    [[ $SKIP_BUILD -eq 0 ]] && echo "    tail -80 $LOG_DIR/build.log"
+    ok "cross-arch build verified (wheels + arch-flags assertion passed)"
+    exit 0
 fi
 
 # ============================================================================

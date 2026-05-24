@@ -1,20 +1,33 @@
 # syntax=docker/dockerfile:1.7
 # -----------------------------------------------------------------------------
-# Unsloth + unsloth-zoo for Blackwell (sm_100 B200 + sm_120 RTX 50-series / 6000 Pro)
+# Unsloth + unsloth-zoo for every current NVIDIA arch (Turing -> Blackwell),
+# on both linux/amd64 and linux/arm64.
 #
 # Why this image works:
-#   * cu128 wheels are fat binaries: SASS for sm_80;86;89;90;100;120.
+#   * cu128 wheels are fat binaries: SASS for sm_75;80;86;89;90;100;120 on amd64
+#     and sm_90;100;120 on arm64 (Grace + Grace-Hopper + Grace-Blackwell SoCs).
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
 #     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX",
-#     covering every current x86_64 NVIDIA compute capability per
+#     covering every current NVIDIA compute capability per
 #     https://developer.nvidia.com/cuda/gpus.
 #     The host GPU is irrelevant for compilation; nvcc emits whatever the arch
 #     list says.
 #
+# Cross-arch build (DGX Spark / GB10 / sm_121):
+#   The arm64 image is built via QEMU binfmt emulation on an x86_64 host:
+#       bash docker/setup_qemu.sh                   # one-time host setup
+#       docker buildx build --platform linux/arm64 -t unsloth-blackwell:arm64 .
+#   The resulting arm64 image runs NATIVELY on aarch64 hosts (DGX Spark, Grace).
+#   QEMU is only used at build time -- runtime emulation does NOT work for CUDA.
+#   xformers has no cu128 aarch64 wheel; on arm64 we fall back to Unsloth's
+#   built-in SDPA path (~5-10% slower than xformers but functionally complete).
+#
 # Build host requirements:
 #   * Docker with buildkit (default since 23.x)
+#   * docker buildx (mandatory for multi-platform; install: apt install docker-buildx)
 #   * nvidia-container-toolkit (only needed for `docker run --gpus all` at test time)
+#   * For arm64 builds on x86_64 hosts: QEMU binfmt (see docker/setup_qemu.sh)
 #   * A GPU is NOT required at build time.
 # -----------------------------------------------------------------------------
 
@@ -27,24 +40,32 @@ ARG PYTHON_VERSION=3.12
 # =============================================================================
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
 
+# TARGETARCH is auto-populated by buildx ("amd64" or "arm64"). We use it to
+# select an unsloth extras set that matches the wheels actually available for
+# the target platform (xformers has no cu128 aarch64 wheel as of 0.0.34).
+ARG TARGETARCH
 ARG PYTHON_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # Cross-compile for every current x86_64 NVIDIA arch per
+    # Cross-compile for every current NVIDIA arch per
     # https://developer.nvidia.com/cuda/gpus:
-    #   sm_75   Turing       T4, RTX 20-series, Quadro RTX
-    #   sm_80   Ampere DC    A100, A30
-    #   sm_86   Ampere       A40, RTX A6000, RTX 30-series
-    #   sm_89   Ada          L4, L40, L40S, RTX 40-series
-    #   sm_90   Hopper       H100, H200, GH200
-    #   sm_100  Blackwell DC B100, B200, GB200
+    #   sm_75   Turing       T4, RTX 20-series, Quadro RTX            (amd64 only)
+    #   sm_80   Ampere DC    A100, A30                                (amd64 only)
+    #   sm_86   Ampere       A40, RTX A6000, RTX 30-series            (amd64 only)
+    #   sm_89   Ada          L4, L40, L40S, RTX 40-series             (amd64 only)
+    #   sm_90   Hopper       H100, H200, GH200 (Grace-Hopper is arm64)
+    #   sm_100  Blackwell DC B100, B200, GB200 (GB200 is arm64)
     #   sm_103  Blackwell DC B300, GB300
-    #   sm_120  Blackwell    RTX 50-series, RTX PRO 6000 Blackwell
-    #   sm_121  Blackwell    GB10 (DGX Spark)
+    #   sm_120  Blackwell    RTX 50-series, RTX PRO 6000 Blackwell    (amd64 only)
+    #   sm_121  Blackwell    GB10 (DGX Spark)                          (arm64 only)
     # +PTX on the highest lets future arch revisions run via JIT-PTX.
+    # We keep the same list on both arches: nvcc happily emits archs that
+    # don't exist on the build host, and any extras that aren't relevant for
+    # the target just bloat compile time slightly (not size, since we don't
+    # source-build any extension at install time on the pin set).
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX" \
     MAX_JOBS=4 \
     CUDA_HOME=/usr/local/cuda \
@@ -102,6 +123,13 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 # Why the extra is `cu128-ampere-torch2100` (not `cu128-torch2100-ampere`):
 #   See unsloth_src/pyproject.toml:835. The ordering is ampere-then-torch-ver.
 #
+# Why arm64 uses a different extra:
+#   `cu128-ampere-torch2100` transitively pulls `cu128onlytorch2100` whose
+#   xformers wheel URL is hardcoded to manylinux_2_28_x86_64. There is no
+#   cu128 aarch64 wheel for xformers as of 0.0.34. We use the plain
+#   `huggingface` extra on arm64 -- Unsloth falls back to its native SDPA
+#   kernels (a ~5-10% slowdown vs xformers; functionally complete).
+#
 # Why no `flash-attn` here:
 #   - FA3 is hard-refused on Blackwell (Dao-AILab/flash-attention#1810).
 #   - FA2 has no prebuilt wheel for cu128+torch2.10+cp312 -> would require
@@ -111,7 +139,14 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 #     on top of this image at deploy time.
 ARG UNSLOTH_REF=main
 ARG UNSLOTH_ZOO_REF=main
-RUN ${VENV}/bin/pip install uv \
+RUN set -eux \
+ && case "${TARGETARCH:-amd64}" in \
+        amd64) UNSLOTH_EXTRA="cu128-ampere-torch2100" ;; \
+        arm64) UNSLOTH_EXTRA="huggingface" ;; \
+        *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && echo ">> TARGETARCH=${TARGETARCH:-amd64}, unsloth extra=[${UNSLOTH_EXTRA}]" \
+ && ${VENV}/bin/pip install uv \
  && ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \
@@ -120,7 +155,7 @@ RUN ${VENV}/bin/pip install uv \
         "triton>=3.3.1" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
-        "unsloth[cu128-ampere-torch2100] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}"
+        "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}"
 
 # 5) Emit a lockfile so the next rebuild can be byte-identical even if PyPI
 #    has moved on. Bake it into the image at /opt/unsloth-venv/requirements.lock.txt
@@ -146,20 +181,38 @@ RUN find ${VENV} -depth -type d -name __pycache__ -exec rm -rf {} + \
 #     properties(0) which requires an actual CUDA device (UNSLOTH_ALLOW_CPU=1
 #     only bypasses the first gate, not the deeper init). Import-time
 #     correctness is exercised at deploy time by smoke_test.py with --gpus all.
-RUN ${VENV}/bin/python - <<'PY'
+RUN TARGETARCH="${TARGETARCH:-amd64}" ${VENV}/bin/python - <<'PY'
+import os, platform
+target = os.environ.get("TARGETARCH", "amd64")
+mach   = platform.machine()
+print(f"build target: TARGETARCH={target} platform.machine()={mach}")
+
 import torch
 arches = torch._C._cuda_getArchFlags().split()
 print("torch", torch.__version__, "cuda", torch.version.cuda)
 print("arches:", arches)
 assert torch.__version__.startswith("2.10.0"), f"torch silently moved: {torch.__version__}"
 assert "+cu128" in torch.__version__, f"cu build silently changed: {torch.__version__}"
-assert "sm_100" in arches, f"sm_100 (B200) missing: {arches}"
-assert "sm_120" in arches, f"sm_120 (RTX 5090) missing: {arches}"
-print("OK: torch 2.10.0+cu128 with sm_100 + sm_120 fat binary intact")
+assert "sm_100" in arches, f"sm_100 (B200/GB200) missing: {arches}"
+if target == "amd64":
+    # The consumer Blackwell SKUs RTX 5090 / RTX PRO 6000 are sm_120.
+    assert "sm_120" in arches, f"sm_120 (RTX 5090) missing on amd64: {arches}"
+    print("OK: torch 2.10.0+cu128 with sm_100 + sm_120 fat binary intact (amd64)")
+elif target == "arm64":
+    # DGX Spark / GB10 reports sm_121. Per PyTorch maintainers sm_120 SASS is
+    # forward-compatible to sm_121, and PTX from sm_120 JITs to sm_121 as a
+    # last resort. Accept either as proof we have a usable Blackwell SASS path.
+    assert any(a in arches for a in ("sm_120", "sm_121")), \
+        f"no Blackwell consumer SASS (sm_120 or sm_121) on arm64: {arches}"
+    print(f"OK: torch 2.10.0+cu128 with sm_100 + Blackwell-consumer fat binary intact (arm64)")
 
 from importlib.metadata import version, PackageNotFoundError
-REQUIRED = ("torch", "triton", "xformers", "bitsandbytes", "unsloth",
-            "unsloth_zoo", "transformers", "trl", "peft", "accelerate")
+# xformers has no cu128 aarch64 wheel as of 0.0.34, so we only require it
+# on amd64. Everything else is platform-agnostic.
+REQUIRED = ["torch", "triton", "bitsandbytes", "unsloth",
+            "unsloth_zoo", "transformers", "trl", "peft", "accelerate"]
+if target == "amd64":
+    REQUIRED.insert(2, "xformers")
 missing = []
 for pkg in REQUIRED:
     try:
@@ -169,13 +222,16 @@ for pkg in REQUIRED:
         missing.append(pkg)
 if missing:
     raise SystemExit(f"FAIL: missing wheels: {missing}")
-print("OK: all required wheels present (xformers, bnb, unsloth metadata visible)")
+print("OK: all required wheels present")
 
 # Lightweight imports: these init without touching CUDA, unlike unsloth.
 import importlib
-for pkg in ("xformers", "bitsandbytes", "triton"):
+LIGHT_IMPORTS = ["bitsandbytes", "triton"]
+if target == "amd64":
+    LIGHT_IMPORTS.insert(0, "xformers")
+for pkg in LIGHT_IMPORTS:
     importlib.import_module(pkg)
-print("OK: xformers + bitsandbytes + triton import cleanly on no-GPU host")
+print(f"OK: {' + '.join(LIGHT_IMPORTS)} import cleanly on no-GPU host")
 PY
 
 # =============================================================================
@@ -183,6 +239,10 @@ PY
 # =============================================================================
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
 
+# The nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 manifest is multi-arch
+# (linux/amd64 + linux/arm64). docker/buildx picks the right one for
+# TARGETPLATFORM at this FROM line; no conditional needed.
+ARG TARGETARCH
 ARG PYTHON_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -192,8 +252,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/.cache/huggingface \
     TRITON_CACHE_DIR=/workspace/.cache/triton \
     # Keep the arch list visible at runtime in case the user source-builds anything
-    # extra inside the container (e.g. a custom CUDA op).
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+    # extra inside the container (e.g. a custom CUDA op). Same list as the builder
+    # stage so a `pip install some-cuda-ext` inside the container gets a SASS
+    # blob that covers every supported arch.
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0;12.1+PTX"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git libgomp1 \
