@@ -195,17 +195,22 @@ class SlidingWindowCompact(CompactStrategy):
                 group_id[ti] = g
 
         # The "recent window" is the last ``keep_recent`` distinct
-        # groups encountered scanning from the end.
+        # groups encountered scanning from the end. ``keep_recent == 0``
+        # must collect ZERO groups so the caller can drop everything
+        # outside the anchor set (system + first user + multimodal).
+        # The pre-fix loop tested the limit AFTER appending and so
+        # always preserved at least one group even when keep_recent
+        # was 0; flip the check to BEFORE appending so the bound holds.
         recent_groups: list[int] = []
         seen_groups: set[int] = set()
         for i in range(len(messages) - 1, -1, -1):
+            if len(recent_groups) >= self.keep_recent:
+                break
             g = group_id[i]
             if g in seen_groups:
                 continue
             seen_groups.add(g)
             recent_groups.append(g)
-            if len(recent_groups) >= self.keep_recent:
-                break
         recent_groups_set = set(recent_groups)
 
         # Decide drop set: every index whose group is NOT in the recent
@@ -230,13 +235,23 @@ class SlidingWindowCompact(CompactStrategy):
         # When dropping an assistant-with-tool-calls message we must
         # also drop the matching tool-role messages (and vice versa)
         # so the chat template stays valid. Iterate pair_map once.
+        # Anchor indices stay regardless: dragging an anchored
+        # multimodal assistant or first-user message into the drop
+        # set just because its tool-pair partner was dropped would
+        # violate the structural invariant the anchor set exists to
+        # enforce, and llama-server would 400 on the resulting
+        # template (a tool message whose tool_call_id has no
+        # surviving assistant tool_calls entry).
         for asst_idx, tool_idxs in pair_map.items():
             if asst_idx in dropped:
-                dropped.update(tool_idxs)
+                dropped.update(t for t in tool_idxs if t not in anchor_idx)
             elif tool_idxs and tool_idxs <= dropped:
                 # All matching tool messages were dropped: drop the
-                # assistant tool-call message too.
-                dropped.add(asst_idx)
+                # assistant tool-call message too -- unless it's
+                # anchored, in which case we'd rather leak an
+                # orphan tool_call shape than violate the invariant.
+                if asst_idx not in anchor_idx:
+                    dropped.add(asst_idx)
 
         return [m for i, m in enumerate(messages) if i not in dropped]
 

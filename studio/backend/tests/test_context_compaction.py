@@ -277,6 +277,88 @@ class TestStrategyRegistry:
         assert isinstance(get_strategy("totally-made-up"), NoCompact)
 
 
+class TestKeepRecentZero:
+    """Regression: keep_recent=0 must collect ZERO recent groups, not 1.
+
+    Pre-fix, the loop tested the limit AFTER appending, so the first
+    iteration always added one group and broke. Trim with keep_recent=0
+    should drop everything outside the anchor set (system + first-user
+    + multimodal). This matters when a caller intentionally wants only
+    the anchors to survive (extreme-pressure regime).
+    """
+
+    def test_keep_recent_zero_keeps_only_anchors(self):
+        msgs = [
+            _msg("system", "sys"),
+            _msg("user", "task"),
+            _long("assistant", 4000),
+            _long("user", 4000),
+            _long("assistant", 4000),
+            _long("user", 4000),
+        ]
+        out = SlidingWindowCompact(keep_recent = 0).compact(
+            msgs, budget_tokens = 50
+        )
+        roles = [m["role"] for m in out]
+        # System + first-user only.
+        assert roles == ["system", "user"]
+        assert out[1]["content"].startswith("task")
+
+
+class TestAnchoredMultimodalPairCleanup:
+    """Regression: an anchored multimodal assistant whose paired tool
+    messages all get dropped must survive pair-cleanup. Without this
+    guard the pair_map's "all tool messages dropped -> drop the
+    assistant too" rule would yank a multimodal anchor out from under
+    the structural invariant that says multimodal turns are never
+    dropped, and llama-server would 400 the resulting template.
+    """
+
+    def test_anchored_multimodal_assistant_survives_pair_cleanup(self):
+        # Multimodal assistant carrying tool_calls (rare but valid:
+        # vision models can call tools while emitting image parts).
+        multimodal_asst = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "describe and call tool"},
+                {"type": "image_url", "image_url": {"url": "x"}},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_mm",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q":"y"}',
+                    },
+                }
+            ],
+        }
+        msgs = [
+            _msg("system", "sys"),
+            _msg("user", "task"),
+            multimodal_asst,
+            _msg(
+                "tool",
+                content = "result for y" * 200,
+                tool_call_id = "call_mm",
+                name = "web_search",
+            ),
+            _long("assistant", 4000),
+            _long("user", 4000),
+            _long("assistant", 4000),
+            _long("user", 4000),
+        ]
+        out = SlidingWindowCompact(keep_recent = 1).compact(
+            msgs, budget_tokens = 50
+        )
+        # Anchored multimodal assistant must still be there.
+        assert any(
+            m.get("role") == "assistant" and isinstance(m.get("content"), list)
+            for m in out
+        ), "multimodal assistant got dropped by pair_map cleanup"
+
+
 class TestConstructorValidation:
     def test_negative_keep_recent_raises(self):
         import pytest
