@@ -2769,15 +2769,13 @@ class ExternalProviderClient:
             # extra_content.google.thought_signature on the assistant
             # message and we pin it onto the last text part here.
             if role == "assistant" and parts:
-                _msg_extra = (
-                    msg.get("extra_content") if isinstance(msg, dict) else None
-                )
+                _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
-                        _msg_sig = _msg_g.get(
-                            "thought_signature"
-                        ) or _msg_g.get("thoughtSignature")
+                        _msg_sig = _msg_g.get("thought_signature") or _msg_g.get(
+                            "thoughtSignature"
+                        )
                         if isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
@@ -3095,29 +3093,31 @@ class ExternalProviderClient:
         # `$schema`, `$defs`, `strict`, `examples`, and similar keys
         # which 400 the request as INVALID_ARGUMENT. Strip them
         # recursively before forwarding.
-        _GEMINI_ALLOWED_SCHEMA_KEYS = frozenset({
-            "type",
-            "format",
-            "title",
-            "description",
-            "nullable",
-            "enum",
-            "maxItems",
-            "minItems",
-            "properties",
-            "required",
-            "minProperties",
-            "maxProperties",
-            "items",
-            "minimum",
-            "maximum",
-            "minLength",
-            "maxLength",
-            "pattern",
-            "default",
-            "anyOf",
-            "propertyOrdering",
-        })
+        _GEMINI_ALLOWED_SCHEMA_KEYS = frozenset(
+            {
+                "type",
+                "format",
+                "title",
+                "description",
+                "nullable",
+                "enum",
+                "maxItems",
+                "minItems",
+                "properties",
+                "required",
+                "minProperties",
+                "maxProperties",
+                "items",
+                "minimum",
+                "maximum",
+                "minLength",
+                "maxLength",
+                "pattern",
+                "default",
+                "anyOf",
+                "propertyOrdering",
+            }
+        )
 
         def _sanitize_gemini_schema(node: Any) -> Any:
             # Recursively filter to Gemini's OpenAPI 3.0 subset. At a
@@ -3138,9 +3138,7 @@ class ExternalProviderClient:
                     elif _k == "items":
                         cleaned[_k] = _sanitize_gemini_schema(_v)
                     elif _k == "anyOf" and isinstance(_v, list):
-                        cleaned[_k] = [
-                            _sanitize_gemini_schema(_entry) for _entry in _v
-                        ]
+                        cleaned[_k] = [_sanitize_gemini_schema(_entry) for _entry in _v]
                     elif _k in ("required", "enum", "propertyOrdering"):
                         # Lists of plain strings; copy verbatim.
                         cleaned[_k] = _v

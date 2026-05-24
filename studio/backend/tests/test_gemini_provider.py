@@ -2193,7 +2193,11 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
     )
     tools_arr = captured["body"].get("tools") or []
     decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
         None,
     )
     assert decls is not None, captured["body"]
