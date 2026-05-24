@@ -45,15 +45,12 @@ const NUMERIC_INFERENCE_FIELDS = [
   "maxTokens",
 ] as const satisfies readonly (keyof PersistedInferenceParams)[];
 
-// `seed` is numeric but nullable (null = "no seed field on the wire") so
-// it can't go through the NUMERIC_INFERENCE_FIELDS Finite-number filter.
-// Keep this set in sync with `ServiceTier` in ../types/runtime.ts and with
-// `getServiceTierOptions` in ../provider-capabilities.ts. `standard_only`
-// is Anthropic-only and was missing here — dropping it on save erased the
-// user's Anthropic tier choice on reload. `scale` was removed from the UI
-// (Codex review feedback) but accepting it on load is harmless for stale
-// persisted state, so it stays in the allowlist; the resolver no longer
-// surfaces it.
+// `seed` is numeric but nullable (null = no seed on the wire) so it
+// can't go through the NUMERIC_INFERENCE_FIELDS finite-number filter.
+// Keep this set in sync with `ServiceTier` in ../types/runtime.ts and
+// `getServiceTierOptions` in ../provider-capabilities.ts. `scale` is
+// kept in the allowlist for forward-compat with legacy persisted data
+// even though the resolver no longer surfaces it for OpenAI Responses.
 const VALID_SERVICE_TIERS = new Set([
   "auto",
   "default",
@@ -165,16 +162,10 @@ function sanitizeInferenceParams(
   } else if (typeof value.seed === "number" && Number.isInteger(value.seed)) {
     params.seed = value.seed;
   }
-  // stop: capped string array. Use Anthropic's 16-entry max so the
-  // sanitizer never silently discards entries the user actually typed
-  // for an Anthropic session. The backend's per-provider stream helper
-  // re-truncates to the wire cap (4 for OpenAI Chat, 16 for Anthropic,
-  // dropped entirely for OpenAI Responses) before the request hits the
-  // network. Capping to 4 here would defeat Anthropic's UI cap of 16
-  // for users who switch providers between sessions. An EMPTY array
-  // must persist as an empty array (not be sanitized away) so the user
-  // can clear the last chip and have the change saved — otherwise the
-  // previously stored stops come back on reload.
+  // stop: cap at 16 (Anthropic's widest supported). The backend's
+  // per-provider stream helper re-truncates to the wire cap. An EMPTY
+  // array must persist (not be sanitized away) so clearing the last
+  // chip actually saves; otherwise the old stops come back on reload.
   if (Array.isArray(value.stop)) {
     const stops = value.stop.filter((s): s is string => typeof s === "string");
     params.stop = stops.slice(0, 16);

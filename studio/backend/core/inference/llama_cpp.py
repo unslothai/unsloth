@@ -4245,6 +4245,9 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -4286,6 +4289,14 @@ class LlamaCppBackend:
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
+        # Optional sampling extensions, gated on `is not None` so 0,
+        # 0.0, and False all reach the wire.
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            payload["seed"] = seed
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4428,6 +4439,9 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4512,6 +4526,13 @@ class LlamaCppBackend:
             payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
+            # Optional sampling extensions; gated on `is not None`.
+            if frequency_penalty is not None:
+                payload["frequency_penalty"] = frequency_penalty
+            if seed is not None:
+                payload["seed"] = seed
+            if parallel_tool_calls is not None:
+                payload["parallel_tool_calls"] = parallel_tool_calls
 
             try:
                 _auth_headers = (

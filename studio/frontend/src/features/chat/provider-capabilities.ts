@@ -69,15 +69,13 @@ export type ServiceTierOption =
   | "standard_only";
 
 /**
- * Legal `service_tier` values per provider, sourced from each upstream's
- * docs. Anthropic exposes only `auto` and `standard_only`. OpenAI in
- * Studio is routed through `/v1/responses` (not Chat Completions). The
- * live OpenAI Responses API reference and the PR contract both list
- * only `auto|default|flex|priority` for /v1/responses, so `scale` is
- * deliberately excluded here even though the openai-python SDK type
- * is wider — sending an undocumented Responses value is a 400 risk.
- * Other providers fall through to a permissive `auto` / `default`
- * pair so the picker stays usable for OpenAI-compat backends.
+ * Legal `service_tier` values per provider. Anthropic exposes only
+ * `auto` and `standard_only`. OpenAI in Studio is routed through
+ * `/v1/responses`, which the live docs list as
+ * `auto|default|flex|priority`; `scale` is excluded here even though
+ * the openai-python SDK type happens to include it. Other providers
+ * fall through to a permissive `auto` / `default` pair so the picker
+ * stays usable for OpenAI-compat backends.
  */
 export function getServiceTierOptions(
   providerType: string | null | undefined,

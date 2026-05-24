@@ -2474,6 +2474,9 @@ async def openai_chat_completions(
                     max_tokens = payload.max_tokens,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
+                    stop = payload.stop if isinstance(payload.stop, list) else (
+                        [payload.stop] if isinstance(payload.stop, str) and payload.stop else None
+                    ),
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
@@ -2488,6 +2491,9 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    frequency_penalty = payload.frequency_penalty,
+                    seed = payload.seed,
+                    parallel_tool_calls = payload.parallel_tool_calls,
                 )
 
             _tool_sentinel = object()
@@ -2653,10 +2659,16 @@ async def openai_chat_completions(
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
+                stop = payload.stop if isinstance(payload.stop, list) else (
+                    [payload.stop] if isinstance(payload.stop, str) and payload.stop else None
+                ),
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                frequency_penalty = payload.frequency_penalty,
+                seed = payload.seed,
+                parallel_tool_calls = payload.parallel_tool_calls,
             )
 
         _gguf_sentinel = object()
@@ -3780,12 +3792,9 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
-    # `parallel_tool_calls` is now a first-class field on
-    # ChatCompletionRequest (PR #5711) and the OpenAI-compat
-    # passthrough builder forwards it. Translate it here so a Responses
-    # API caller (e.g. OpenAI Codex SDK) that sets
-    # `parallel_tool_calls=false` actually sees the preference reach
-    # llama-server instead of getting silently dropped at the bridge.
+    # parallel_tool_calls is first-class on ChatCompletionRequest and
+    # the OpenAI-compat passthrough builder forwards it. Translate it
+    # so a Responses API caller's preference reaches llama-server.
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
@@ -4934,12 +4943,9 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
-    # New per-provider sampling extensions (PR #5711). llama-server's
-    # /v1/chat/completions endpoint accepts the standard OpenAI fields,
-    # so forward them straight through. parallel_tool_calls is a no-op
-    # on llama-server today (the upstream always dispatches sequentially)
-    # but forward it anyway so a future llama-server release that
-    # implements it picks up the user's preference automatically.
+    # llama-server's /v1/chat/completions accepts the standard OpenAI
+    # fields. parallel_tool_calls is a no-op on llama-server today but
+    # is forwarded so a future release picks it up automatically.
     if frequency_penalty is not None:
         body["frequency_penalty"] = frequency_penalty
     if seed is not None:

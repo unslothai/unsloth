@@ -131,6 +131,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"mistral-(?:large|medium|small|tiny)-latest|"
             r"mistral-vibe-cli-latest)$"
         ),
+        # Mistral renames OpenAI's `seed` to `random_seed` on
+        # /v1/chat/completions. https://docs.mistral.ai/api/endpoint/chat
+        "seed_field": "random_seed",
     },
     "kimi": {
         "display_name": "Kimi",

@@ -171,11 +171,10 @@ def test_anthropic_disable_parallel_tool_use_nested_under_tool_choice(monkeypatc
     """
     captured = _install_mock(monkeypatch)
     body = _drive_anthropic_with_tools(captured, parallel_tool_calls = False)
-    # Top-level fields must not carry the flag — Anthropic 400s otherwise.
+    # Top-level placement is rejected with 400.
     assert "disable_parallel_tool_use" not in body, body
     assert "parallel_tool_calls" not in body, body
-    # The flag is set on tool_choice. Default type is "auto" when the
-    # user didn't pick one explicitly.
+    # Flag lives on tool_choice; default type is "auto".
     tc = body.get("tool_choice")
     assert isinstance(tc, dict), body
     assert tc.get("disable_parallel_tool_use") is True, body
@@ -183,9 +182,8 @@ def test_anthropic_disable_parallel_tool_use_nested_under_tool_choice(monkeypatc
 
 
 def test_anthropic_disable_parallel_tool_use_skipped_without_tools(monkeypatch):
-    """Without any tools defined, `disable_parallel_tool_use` is a
-    no-op upstream — skip it so the request body stays minimal and the
-    flag never lands at top level either.
+    """Without tools the flag is a no-op upstream; keep the body
+    minimal and never emit it at top level either.
     """
     captured = _install_mock(monkeypatch)
     body = _drive_anthropic(captured, parallel_tool_calls = False)
@@ -271,7 +269,64 @@ def test_openai_compat_forwards_frequency_penalty(monkeypatch):
 def test_openai_compat_forwards_seed(monkeypatch):
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
     body = _drive_openai_compat(captured, seed = 12345)
-    assert body.get("seed") == 12345, body
+    # Default OAI-compat provider (mistral here) renames seed to
+    # random_seed via provider registry's seed_field.
+    assert body.get("random_seed") == 12345, body
+    assert "seed" not in body, body
+
+
+def test_openai_compat_seed_field_default_is_seed(monkeypatch):
+    """Providers without a seed_field override get the OpenAI default."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "deepseek",
+            base_url = "https://api.deepseek.com/v1",
+            api_key = "ds-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "deepseek-chat",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            seed = 7,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("seed") == 7, body
+    assert "random_seed" not in body, body
+
+
+def test_openai_compat_deepseek_stop_cap_is_16(monkeypatch):
+    """DeepSeek docs allow up to 16 stop sequences; the previous
+    4-cap silently truncated valid configs."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "deepseek",
+            base_url = "https://api.deepseek.com/v1",
+            api_key = "ds-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "deepseek-chat",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            stop = [f"S{i}" for i in range(20)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert len(body.get("stop", [])) == 16, body
 
 
 def test_openai_compat_forwards_stop_array(monkeypatch):
@@ -282,14 +337,18 @@ def test_openai_compat_forwards_stop_array(monkeypatch):
     assert "stop_sequences" not in body, body
 
 
-def test_openai_compat_truncates_stop_to_four(monkeypatch):
+def test_openai_compat_truncates_stop_to_default_cap(monkeypatch):
+    """Default OAI-compat cap is 16 (DeepSeek and Mistral both accept
+    that many); only OpenAI Chat has a tighter 4-entry hard limit."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
-    body = _drive_openai_compat(captured, stop = ["a", "b", "c", "d", "e", "f"])
-    assert body.get("stop") == ["a", "b", "c", "d"], body
+    body = _drive_openai_compat(captured, stop = [f"s{i}" for i in range(20)])
+    assert len(body.get("stop", [])) == 16, body
+    assert body["stop"][0] == "s0"
+    assert body["stop"][-1] == "s15"
 
 
 def test_openai_compat_stop_dedup_and_drop_empties(monkeypatch):
-    """Duplicates and empties shouldn't eat into the 4-entry cap."""
+    """Duplicates and empties shouldn't eat into the cap."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
     body = _drive_openai_compat(captured, stop = ["END", "", "END", "DONE", "FIN", "END"])
     assert body.get("stop") == ["END", "DONE", "FIN"], body
@@ -398,10 +457,8 @@ def test_openai_responses_forwards_documented_service_tiers(monkeypatch, value):
 @pytest.mark.parametrize("bogus", ["scale", "standard_only", "bogus", ""])
 def test_openai_responses_drops_undocumented_service_tier(monkeypatch, bogus):
     """`scale` and `standard_only` are not in the documented Responses
-    request enum. Drop them client-side so a stale frontend cannot 400
-    the request. Round 4 consensus (~9/20 reviewers) flagged the
-    earlier permissive list as a 400 risk; this test pins the
-    restricted form."""
+    request enum; drop them client-side so a stale frontend never
+    sends an upstream-rejected value."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
     body = _drive_openai_responses(captured, service_tier = bogus)
     assert "service_tier" not in body, body
@@ -526,10 +583,8 @@ def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
 
 
 def test_local_openai_passthrough_forwards_new_sampling_fields():
-    """Round 1 reviewers (10/20) flagged that
-    `_build_openai_passthrough_body` dropped frequency_penalty / seed /
-    parallel_tool_calls when forwarding to llama-server. Pin the
-    extended contract."""
+    """`_build_openai_passthrough_body` forwards frequency_penalty,
+    seed, stop, and parallel_tool_calls to llama-server."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_openai_passthrough_body
 
@@ -554,11 +609,9 @@ def test_local_openai_passthrough_forwards_new_sampling_fields():
 
 
 def test_responses_to_chat_bridge_preserves_parallel_tool_calls():
-    """Round 3 reviewers flagged that `_build_chat_request` (the
-    /v1/responses → /v1/chat/completions translator) dropped
-    `parallel_tool_calls`, so a Responses-API caller that set
-    `parallel_tool_calls=false` never saw the flag reach llama-server.
-    Pin the translation."""
+    """`_build_chat_request` (the /v1/responses to /v1/chat/completions
+    translator) must forward parallel_tool_calls so a Responses-API
+    caller's preference reaches llama-server."""
     from models.inference import ChatMessage, ResponsesRequest
     from routes.inference import _build_chat_request, _build_openai_passthrough_body
 
@@ -578,9 +631,9 @@ def test_responses_to_chat_bridge_preserves_parallel_tool_calls():
 
 
 def test_responses_to_chat_bridge_omits_unset_parallel_tool_calls():
-    """Unset `parallel_tool_calls` (None) must not appear on the
-    translated body — the upstream default is `true` everywhere, so
-    forwarding `parallel_tool_calls=None` would over-specify."""
+    """Unset parallel_tool_calls (None) must not appear on the
+    translated body; the upstream default is true everywhere so
+    forwarding None would over-specify."""
     from models.inference import ChatMessage, ResponsesRequest
     from routes.inference import _build_chat_request, _build_openai_passthrough_body
 
@@ -599,9 +652,9 @@ def test_responses_to_chat_bridge_omits_unset_parallel_tool_calls():
 
 
 def test_chat_settings_payload_accepts_new_sampling_keys():
-    """Round 1 reviewers flagged that `ChatSettingsPayload.extra="forbid"`
-    with the old field list 422'd every settings save that contained
-    any of the new keys. Pin that the new keys round-trip."""
+    """ChatSettingsPayload has extra="forbid" so the new keys must be
+    listed explicitly; otherwise every settings save with any of them
+    422s. Pin the round-trip."""
     from routes.chat_history import ChatSettingsPayload
 
     parsed = ChatSettingsPayload.model_validate(

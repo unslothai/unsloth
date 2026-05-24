@@ -14,13 +14,10 @@ export interface Preset {
 }
 
 // Fields that belong to a preset. Sampling knobs are included so a
-// user can save a preset that fixes their preferred decoding style and
-// re-apply it on any model. Operational knobs (`serviceTier`, which is
-// account-level and per-provider, and `parallelToolCalls`, which is
-// tool-level state) are intentionally excluded so switching presets
-// does not silently change request routing for the active provider.
-// `seed` is also excluded — it is per-request determinism state, not a
-// reusable preset value.
+// user can save a preset that fixes their preferred decoding style.
+// Operational knobs (serviceTier, parallelToolCalls) and per-request
+// determinism state (seed) are intentionally excluded so switching
+// presets does not silently change request routing.
 export type PresetOwnedParams = Pick<
   InferenceParams,
   | "temperature"

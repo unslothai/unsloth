@@ -427,14 +427,10 @@ export function ChatSettingsPanel({
     isExternalModel && Boolean(providerCapabilities?.serviceTier);
   const showParallelToolCalls =
     !isExternalModel || Boolean(providerCapabilities?.parallelToolCalls);
-  // OpenAI Chat docs cap `stop` at 4 entries; Anthropic accepts more.
-  // Pick the right ceiling per active connection so the chips editor's
-  // placeholder doesn't lie. Local backends (llama.cpp / vLLM / ollama
-  // / generic OpenAI-compat connections) accept many more — match the
-  // Anthropic cap there so we do not block users from using stop
-  // sequences the backend would happily accept. The wire-side
-  // truncation in `_stream_openai_compat` will still trim to OpenAI's
-  // 4-entry hard cap when a cloud OpenAI endpoint receives the body.
+  // OpenAI Chat caps `stop` at 4; Anthropic, DeepSeek, Mistral, and
+  // local llama.cpp / vLLM / ollama backends accept more. Use 16 as
+  // the UI ceiling for everything that is not OpenAI cloud Chat; the
+  // backend re-trims per provider on the wire.
   const stopMaxEntries =
     !isExternalModel || externalProviderType === "anthropic" ? 16 : 4;
   const serviceTierOptions = getServiceTierOptions(externalProviderType);
