@@ -1581,81 +1581,109 @@ def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
     """Round 14: arbitrary public HTTPS image URLs cannot be sent as
     Gemini fileData (that path is reserved for Files API URIs and
     YouTube). The translator must fetch the bytes server-side and
-    inline them as base64 inlineData, mirroring the pre-PR
-    OpenAI-compat behaviour. MIME is preferred from the response
-    Content-Type, with the URL extension as fallback."""
-    captured: dict = {}
+    inline them as base64 inlineData."""
     image_bytes = b"FAKEPNGBYTES"
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if "generativelanguage.googleapis.com" in url:
-            captured["body"] = json.loads(request.content.decode("utf-8"))
-            return httpx.Response(
-                200,
-                content = _gemini_sse(
-                    [
-                        {
-                            "candidates": [
-                                {
-                                    "content": {
-                                        "role": "model",
-                                        "parts": [{"text": "ok"}],
-                                    },
-                                    "finishReason": "STOP",
-                                }
-                            ],
-                            "usageMetadata": {
-                                "promptTokenCount": 1,
-                                "candidatesTokenCount": 1,
-                            },
-                        }
-                    ]
-                ),
-                headers = {"content-type": "text/event-stream"},
-            )
-        # Image fetch for cdn.example.com — return the fake bytes.
-        return httpx.Response(
-            200,
-            content = image_bytes,
-            headers = {"content-type": "image/png"},
-        )
+    async def fake_fetch(url, fallback_mime):
+        assert url == "https://cdn.example.com/diagram.png"
+        return ("image/png", base64.b64encode(image_bytes).decode("ascii"))
 
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = _make_gemini_client()
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "what is this?"},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": "https://cdn.example.com/diagram.png",
-                            },
+    monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch)
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://cdn.example.com/diagram.png",
                         },
-                    ],
-                }
-            ],
-            model = "gemini-2.5-flash",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
+                    },
+                ],
+            }
+        ],
+    )
     parts = captured["body"]["contents"][-1]["parts"]
     inline = next((p for p in parts if "inlineData" in p), None)
     assert inline is not None, parts
     assert inline["inlineData"]["mimeType"] == "image/png"
     assert inline["inlineData"]["data"] == base64.b64encode(image_bytes).decode()
-    # No fileData should be emitted for the public URL.
     assert not any("fileData" in p for p in parts), parts
+
+
+def test_remote_image_url_dropped_when_fetch_returns_none(monkeypatch):
+    """Round 15: if the SSRF guard rejects the URL (private host,
+    non-https, oversize, non-image), the helper returns None and the
+    image part is silently dropped instead of forwarding raw bytes
+    or a fileData fallback."""
+
+    async def fake_fetch_reject(url, fallback_mime):
+        return None
+
+    monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch_reject)
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "http://10.0.0.5/private.png"},
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["contents"][-1]["parts"]
+    assert not any("inlineData" in p for p in parts), parts
+    assert not any("fileData" in p for p in parts), parts
+
+
+def test_safe_fetch_image_rejects_non_https():
+    """SSRF guard: only https URLs may be fetched."""
+    res = asyncio.new_event_loop().run_until_complete(
+        ep_mod._safe_fetch_image_for_gemini(
+            "http://cdn.example.com/x.png", "image/png"
+        )
+    )
+    assert res is None
+
+
+def test_safe_fetch_image_rejects_loopback_ip_literal():
+    """SSRF guard: refuse loopback / private IP literals before any
+    network call."""
+    for url in (
+        "https://127.0.0.1/x.png",
+        "https://[::1]/x.png",
+        "https://169.254.169.254/latest/meta-data",
+        "https://10.0.0.5/x.png",
+        "https://192.168.1.1/x.png",
+    ):
+        res = asyncio.new_event_loop().run_until_complete(
+            ep_mod._safe_fetch_image_for_gemini(url, "image/png")
+        )
+        assert res is None, url
+
+
+def test_safe_fetch_image_rejects_resolved_private_host(monkeypatch):
+    """SSRF guard: if a hostname resolves to a private IP, refuse."""
+    import socket
+
+    def fake_getaddrinfo(host, *_args, **_kwargs):
+        return [(socket.AF_INET, None, None, "", ("10.0.0.5", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    res = asyncio.new_event_loop().run_until_complete(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://internal.example/x.png", "image/png"
+        )
+    )
+    assert res is None
 
 
 def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):

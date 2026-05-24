@@ -257,6 +257,145 @@ def _apply_mistral_reasoning_controls(
 _http_client = httpx.AsyncClient()
 
 
+# Cap on the bytes we'll inline from a user-controlled image URL.
+# Gemini's documented inline limit is ~20 MB total request size, so
+# keep individual fetched parts well below that and out of "huge
+# download" territory.
+_GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+
+
+def _is_disallowed_target_ip(host: str) -> bool:
+    """SSRF guard: refuse any host that resolves to a private,
+    loopback, link-local, multicast, reserved, or unspecified IP.
+    Also refuses IP literals that are private. Resolves the hostname
+    once at validation time; subsequent redirects are blocked via
+    follow_redirects=False on the fetch.
+    """
+    import ipaddress
+    import socket
+
+    if not host:
+        return True
+    # IP literal in URL.
+    try:
+        _ip = ipaddress.ip_address(host.strip("[]"))
+        return bool(
+            _ip.is_private
+            or _ip.is_loopback
+            or _ip.is_link_local
+            or _ip.is_multicast
+            or _ip.is_reserved
+            or _ip.is_unspecified
+        )
+    except ValueError:
+        pass
+    # Hostname: resolve and check every address record.
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Treat resolution failure as "do not fetch" -- safer to drop
+        # the image than to leak DNS attempts for invalid hosts.
+        return True
+    for fam, _stype, _proto, _canon, sockaddr in infos:
+        _addr = sockaddr[0]
+        try:
+            _ip = ipaddress.ip_address(_addr)
+        except ValueError:
+            continue
+        if (
+            _ip.is_private
+            or _ip.is_loopback
+            or _ip.is_link_local
+            or _ip.is_multicast
+            or _ip.is_reserved
+            or _ip.is_unspecified
+        ):
+            return True
+    return False
+
+
+async def _safe_fetch_image_for_gemini(
+    url: str, fallback_mime: str
+) -> Optional[tuple[str, str]]:
+    """Fetch a user-supplied public image URL for inlining into a
+    Gemini `inlineData` part. Applies SSRF guards (https only, no
+    private/loopback/link-local/metadata hosts), caps the response
+    body, refuses non-image Content-Type, and disables redirects so a
+    302 to a private host cannot bypass the address check.
+    Returns (mime, base64) on success, or None on any failure.
+    """
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme != "https":
+        # http:// allows downgrade + cleartext leak; data:/file:/ftp:
+        # are nonsense here. Reject anything that isn't https.
+        logger.info(
+            "Gemini image fetch: refusing non-https scheme=%s host=%s",
+            scheme,
+            parsed.hostname or "",
+        )
+        return None
+    host = (parsed.hostname or "").lower()
+    if _is_disallowed_target_ip(host):
+        logger.warning(
+            "Gemini image fetch: refusing private/internal host=%s", host
+        )
+        return None
+    try:
+        async with httpx.AsyncClient(
+            timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S,
+            follow_redirects = False,
+            limits = httpx.Limits(max_connections = 4, max_keepalive_connections = 1),
+        ) as _client:
+            async with _client.stream("GET", url) as _resp:
+                if _resp.status_code != 200:
+                    logger.info(
+                        "Gemini image fetch: status=%d host=%s",
+                        _resp.status_code,
+                        host,
+                    )
+                    return None
+                _hdr_mime = (
+                    _resp.headers.get("content-type") or ""
+                ).split(";")[0].strip().lower()
+                if not _hdr_mime.startswith("image/"):
+                    logger.info(
+                        "Gemini image fetch: non-image content-type=%s host=%s",
+                        _hdr_mime or "<none>",
+                        host,
+                    )
+                    return None
+                _hdr_len = _resp.headers.get("content-length")
+                if (
+                    _hdr_len
+                    and _hdr_len.isdigit()
+                    and int(_hdr_len) > _GEMINI_REMOTE_IMAGE_MAX_BYTES
+                ):
+                    logger.info(
+                        "Gemini image fetch: declared %s bytes exceeds cap host=%s",
+                        _hdr_len,
+                        host,
+                    )
+                    return None
+                _buf = bytearray()
+                async for _chunk in _resp.aiter_bytes(chunk_size = 64 * 1024):
+                    _buf.extend(_chunk)
+                    if len(_buf) > _GEMINI_REMOTE_IMAGE_MAX_BYTES:
+                        logger.info(
+                            "Gemini image fetch: streamed bytes exceed cap host=%s",
+                            host,
+                        )
+                        return None
+                _final_mime = _hdr_mime if _hdr_mime else fallback_mime
+                return _final_mime, base64.b64encode(bytes(_buf)).decode("ascii")
+    except (httpx.HTTPError, OSError) as _err:
+        logger.warning(
+            "Gemini image fetch failed host=%s err=%s", host, type(_err).__name__
+        )
+        return None
+
+
 # Server-side builtin tool names that external providers emit
 # synthetic tool events for. Used by `_stamp_server_tool_marker` to
 # tag the outbound `_toolEvent.arguments` so the frontend serializer
@@ -2818,22 +2957,11 @@ class ExternalProviderClient:
                                     }
                                 )
                             else:
-                                try:
-                                    _resp = await _http_client.get(url, timeout = 20.0)
-                                    _resp.raise_for_status()
-                                    _hdr_mime = (
-                                        (_resp.headers.get("content-type") or "")
-                                        .split(";")[0]
-                                        .strip()
-                                    )
-                                    _final_mime = (
-                                        _hdr_mime
-                                        if _hdr_mime.startswith("image/")
-                                        else _media_type
-                                    )
-                                    _b64 = base64.b64encode(_resp.content).decode(
-                                        "ascii"
-                                    )
+                                _fetched = await _safe_fetch_image_for_gemini(
+                                    url, _media_type
+                                )
+                                if _fetched is not None:
+                                    _final_mime, _b64 = _fetched
                                     parts.append(
                                         {
                                             "inlineData": {
@@ -2841,12 +2969,6 @@ class ExternalProviderClient:
                                                 "data": _b64,
                                             }
                                         }
-                                    )
-                                except Exception as _fetch_err:
-                                    logger.warning(
-                                        "Gemini image fetch failed url=%s err=%s -- skipping part",
-                                        url,
-                                        _fetch_err,
                                     )
             # Gemini 3 strict function-calling requires text-part
             # thoughtSignatures to be replayed on history; the frontend
