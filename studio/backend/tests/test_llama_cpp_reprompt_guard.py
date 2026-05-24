@@ -672,7 +672,9 @@ def test_reasoning_only_visible_artifact_suppresses_reprompt():
     visible = content_accum.strip()
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
-    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
+    artifact_text = (
+        visible if visible else (reasoning if not has_content_tokens else "")
+    )
     would_reprompt = bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)
@@ -689,17 +691,16 @@ def test_hidden_reasoning_artifact_still_reprompts():
 
     content_accum = ""
     reasoning_accum = (
-        "First, let me draft it.\n"
-        "```python\n"
-        "print('hidden answer')\n"
-        "```"
+        "First, let me draft it.\n" "```python\n" "print('hidden answer')\n" "```"
     )
     has_content_tokens = True  # content existed but was stripped
 
     visible = content_accum.strip()
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
-    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
+    artifact_text = (
+        visible if visible else (reasoning if not has_content_tokens else "")
+    )
     would_reprompt = bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)

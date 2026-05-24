@@ -4917,12 +4917,14 @@ class LlamaCppBackend:
                         _visible = content_accum.strip()
                         _reasoning = reasoning_accum.strip()
                         _stripped = _visible if _visible else _reasoning
-                        _artifact_text = _visible if _visible else (
-                            _reasoning if not has_content_tokens else ""
+                        _artifact_text = (
+                            _visible
+                            if _visible
+                            else (_reasoning if not has_content_tokens else "")
                         )
-                        _visible_has_artifact = bool(_artifact_text) and _has_answer_artifact(
+                        _visible_has_artifact = bool(
                             _artifact_text
-                        )
+                        ) and _has_answer_artifact(_artifact_text)
                         if (
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
