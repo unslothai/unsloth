@@ -15,7 +15,8 @@
 #   bash docker/hf_push.sh <image:tag> <hf_repo>
 #   bash docker/hf_push.sh unsloth-blackwell:test danielhanchen/unsloth-blackwell-docker
 #
-# Requires: docker, pigz (or gzip), huggingface-cli logged in with a write token.
+# Requires: docker, pigz (or gzip), hf (or huggingface-cli) authenticated
+# with a WRITE-scoped token: `hf auth login`.
 set -euo pipefail
 
 IMAGE="${1:?usage: hf_push.sh <image:tag> <hf_repo>}"
@@ -26,8 +27,19 @@ NAME="${NAME##*/}"
 BLOB="${NAME}-${TAG}.tar.gz"
 WORK="${HF_PUSH_TMP:-/tmp}"
 
-command -v docker >/dev/null              || { echo "ERROR: docker not on PATH"; exit 1; }
-command -v huggingface-cli >/dev/null     || { echo "ERROR: huggingface-cli not on PATH (pip install -U huggingface_hub)"; exit 1; }
+command -v docker >/dev/null || { echo "ERROR: docker not on PATH"; exit 1; }
+
+# Prefer the new `hf` CLI. The old `huggingface-cli` was deprecated in
+# huggingface_hub >= 0.27 and silently exits with a deprecation notice
+# instead of doing the upload.
+if command -v hf >/dev/null 2>&1; then
+    HF_CMD=(hf upload)
+elif command -v huggingface-cli >/dev/null 2>&1; then
+    echo "WARN: 'hf' not found, falling back to 'huggingface-cli' (deprecated)" >&2
+    HF_CMD=(huggingface-cli upload)
+else
+    echo "ERROR: need 'hf' (pip install -U huggingface_hub) or 'huggingface-cli'"; exit 1
+fi
 COMPRESSOR=$(command -v pigz || command -v gzip) || { echo "ERROR: need pigz or gzip"; exit 1; }
 
 OUT="${WORK}/${BLOB}"
@@ -35,8 +47,8 @@ echo ">> saving ${IMAGE} -> ${OUT} (using ${COMPRESSOR##*/})"
 docker save "${IMAGE}" | "${COMPRESSOR}" > "${OUT}"
 ls -lh "${OUT}"
 
-echo ">> uploading to https://huggingface.co/${REPO}/blob/main/${BLOB}"
-huggingface-cli upload "${REPO}" "${OUT}" "${BLOB}" \
+echo ">> uploading to https://huggingface.co/${REPO}/blob/main/${BLOB}  (via: ${HF_CMD[*]})"
+"${HF_CMD[@]}" "${REPO}" "${OUT}" "${BLOB}" \
     --repo-type=model \
     --commit-message="push ${IMAGE} ($(docker inspect --format '{{.Id}}' "${IMAGE}" | cut -c8-19))"
 
