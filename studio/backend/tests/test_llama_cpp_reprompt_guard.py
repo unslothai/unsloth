@@ -744,12 +744,7 @@ def test_open_fence_with_inner_numbered_list_still_reprompts():
             "1. Install dependencies\n"
             "2. Run the app"
         ),
-        (
-            "Let me draft a checklist.\n"
-            "````markdown\n"
-            "1. step one\n"
-            "2. step two"
-        ),
+        ("Let me draft a checklist.\n" "````markdown\n" "1. step one\n" "2. step two"),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
