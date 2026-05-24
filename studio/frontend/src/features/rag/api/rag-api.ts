@@ -61,6 +61,8 @@ export interface SearchRequest {
   document_ids?: string[];
   enable_rerank?: boolean;
   reranker_model?: string;
+  /** Cosine-similarity floor (0..1). Hits below are dropped server-side. */
+  min_score?: number;
 }
 
 export type JobEvent =

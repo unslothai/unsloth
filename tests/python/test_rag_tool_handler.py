@@ -138,13 +138,15 @@ def test_execute_tool_dispatches_to_search_knowledge_base():
     called = {}
 
     def _stub(*, query, top_k = None, scope_kb_id = None, scope_thread_id = None,
-              enable_rerank = False, reranker_model = None, default_top_k = 5):
+              enable_rerank = False, reranker_model = None, default_top_k = 5,
+              min_score = 0.0):
         called["query"] = query
         called["top_k"] = top_k
         called["scope_kb_id"] = scope_kb_id
         called["scope_thread_id"] = scope_thread_id
         called["enable_rerank"] = enable_rerank
         called["default_top_k"] = default_top_k
+        called["min_score"] = min_score
         return "stub-result"
 
     with patch("core.rag.tool.search_knowledge_base", _stub):
@@ -156,6 +158,7 @@ def test_execute_tool_dispatches_to_search_knowledge_base():
                     "kb_id": "kb-1",
                     "enable_rerank": True,
                     "default_top_k": 3,
+                    "min_score": 0.35,
                 }
             },
         )
@@ -166,6 +169,7 @@ def test_execute_tool_dispatches_to_search_knowledge_base():
     assert called["scope_thread_id"] is None
     assert called["enable_rerank"] is True
     assert called["default_top_k"] == 3
+    assert called["min_score"] == 0.35
 
 
 def test_execute_tool_handles_missing_tool_context():

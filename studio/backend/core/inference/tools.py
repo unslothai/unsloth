@@ -569,6 +569,7 @@ def execute_tool(
             enable_rerank = bool(scope.get("enable_rerank")),
             reranker_model = scope.get("reranker_model"),
             default_top_k = int(scope.get("default_top_k") or 5),
+            min_score = float(scope.get("min_score") or 0.0),
         )
     return f"Unknown tool: {name}"
 

@@ -135,6 +135,10 @@ class SearchRequest(BaseModel):
     document_ids: list[str] | None = None
     enable_rerank: bool = False
     reranker_model: str | None = None
+    # Cosine-similarity floor on the dense retrieval score. Hits whose
+    # dense_score is below this (or absent — BM25-only hits) are
+    # dropped before the response is sent. 0.0 disables the filter.
+    min_score: float = Field(default = 0.0, ge = 0.0, le = 1.0)
 
 
 class SearchHit(BaseModel):
@@ -1048,6 +1052,16 @@ def search(
     else:
         scope = thread_scope(payload.thread_id)
 
+    logger.info(
+        "RAG search: scope=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        scope,
+        payload.mode,
+        payload.top_k,
+        payload.min_score,
+        payload.enable_rerank,
+        payload.query[:120],
+    )
+
     # When reranking is opt-in, pull a wider candidate pool so the
     # CrossEncoder has more to choose from before truncating to top_k.
     candidate_k = (
@@ -1072,6 +1086,18 @@ def search(
             k = candidate_k,
             document_ids = payload.document_ids,
         )
+
+    retrieved_count = len(hits)
+    if payload.min_score > 0.0:
+        hits = retrieval.filter_by_min_score(hits, payload.min_score)
+        logger.info(
+            "RAG search: retrieved=%d met_threshold=%d (min_score=%.3f)",
+            retrieved_count,
+            len(hits),
+            payload.min_score,
+        )
+    else:
+        logger.info("RAG search: retrieved=%d (no threshold)", retrieved_count)
 
     chunk_ids = [h.chunk_id for h in hits]
     chunk_lookup: dict[str, dict] = {}
@@ -1132,4 +1158,5 @@ def search(
                 image_url = image_url,
             )
         )
+    logger.info("RAG search: returning %d hits", len(out))
     return SearchResponse(hits = out)

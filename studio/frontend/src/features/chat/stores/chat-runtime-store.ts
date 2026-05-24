@@ -300,6 +300,11 @@ type ChatRuntimeStore = {
   ragSource: RagSource;
   enableRerank: boolean;
   ragTopK: number;
+  // Cosine-similarity floor for RAG hits. Off (0) by default — set
+  // > 0 to drop chunks below the threshold so unrelated docs don't
+  // get injected into the prompt (e.g., asking about the weather
+  // when the indexed docs are about economics).
+  ragMinScore: number;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -346,6 +351,7 @@ type ChatRuntimeStore = {
   setRagSource: (source: RagSource) => void;
   setEnableRerank: (value: boolean) => void;
   setRagTopK: (value: number) => void;
+  setRagMinScore: (value: number) => void;
   setRagToolEnabled: (value: boolean) => void;
 };
 
@@ -365,7 +371,8 @@ type ScalarSettingKey =
   | "toolCallTimeout"
   | "ragSource"
   | "enableRerank"
-  | "ragTopK";
+  | "ragTopK"
+  | "ragMinScore";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -402,6 +409,7 @@ const SCALAR_SETTING_KEYS = [
   "ragSource",
   "enableRerank",
   "ragTopK",
+  "ragMinScore",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -613,6 +621,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragSource: { kind: "off" },
   enableRerank: false,
   ragTopK: 5,
+  ragMinScore: 0,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -845,6 +854,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("ragTopK", ragTopK, state.ragTopK);
       return { ragTopK };
+    }),
+  setRagMinScore: (ragMinScore) =>
+    set((state) => {
+      setScalarSettingVersion("ragMinScore", ragMinScore, state.ragMinScore);
+      return { ragMinScore };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
     set(() => {

@@ -91,12 +91,14 @@ def search_knowledge_base(
     enable_rerank: bool = False,
     reranker_model: str | None = None,
     default_top_k: int = 5,
+    min_score: float = 0.0,
 ) -> str:
     """Execute the RAG search and return a tool-result string.
 
     `kb_id` takes precedence over `thread_id` when both are set —
     matches the create/upload contract that a document belongs to one
-    or the other, never both.
+    or the other, never both. ``min_score`` is a cosine-similarity
+    floor on dense hits; chunks below it are dropped.
     """
     if not query or not query.strip():
         return "Error: empty query."
@@ -124,11 +126,34 @@ def search_knowledge_base(
     else:
         candidate_k = k
 
+    logger.info(
+        "search_knowledge_base: scope=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        scope,
+        k,
+        min_score,
+        enable_rerank,
+        query[:120],
+    )
+
     try:
         hits = retrieval.retrieve_hybrid(scope, query.strip(), k = candidate_k)
     except Exception as exc:  # noqa: BLE001
         logger.exception("search_knowledge_base retrieval failed")
         return f"Error: retrieval failed ({type(exc).__name__})."
+
+    retrieved_count = len(hits)
+    if min_score > 0.0:
+        hits = retrieval.filter_by_min_score(hits, min_score)
+        logger.info(
+            "search_knowledge_base: retrieved=%d met_threshold=%d (min_score=%.3f)",
+            retrieved_count,
+            len(hits),
+            min_score,
+        )
+    else:
+        logger.info(
+            "search_knowledge_base: retrieved=%d (no threshold)", retrieved_count
+        )
 
     chunk_ids = [h.chunk_id for h in hits]
     lookup: dict[str, dict] = {}

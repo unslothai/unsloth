@@ -7,6 +7,10 @@ Reciprocal Rank Fusion is parameter-light: each candidate's fused score
 is the sum of ``1 / (rrf_k + rank)`` across rankers. It avoids the
 need to calibrate score scales between BM25 (raw, unbounded) and cosine
 similarity (-1..1).
+
+Hits also carry the raw dense cosine score when available so callers
+can apply a meaningful similarity threshold (e.g., "drop hits below
+0.3 cosine") — the fused RRF score isn't on a comparable scale.
 """
 
 from __future__ import annotations
@@ -30,6 +34,11 @@ class Hit:
     document_id: str | None = None
     chunk_index: int | None = None
     kind: str = "text"
+    # Raw cosine similarity from the dense retriever (0..1 for
+    # normalized embeddings). None when this chunk wasn't returned by
+    # the dense pass (BM25-only hit) — callers applying a similarity
+    # floor should treat None as "no signal" and exclude it.
+    dense_score: float | None = None
 
 
 def retrieve_bm25(scope: str, query: str, k: int | None = None) -> list[Hit]:
@@ -62,6 +71,7 @@ def retrieve_dense(
                 document_id = payload.get("document_id"),
                 chunk_index = payload.get("chunk_index"),
                 kind = payload.get("kind", "text"),
+                dense_score = r["score"],
             )
         )
     return out
@@ -75,11 +85,16 @@ def _rrf_fuse(
 ) -> list[Hit]:
     fused: dict[str, float] = {}
     seen: dict[str, Hit] = {}
+    # Track the dense cosine score per chunk so it survives fusion —
+    # callers downstream filter on this, not the RRF score.
+    dense_scores: dict[str, float] = {}
     for ranking in rankings:
         for rank, hit in enumerate(ranking):
             fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (rrf_k + rank + 1)
             if hit.chunk_id not in seen:
                 seen[hit.chunk_id] = hit
+            if hit.dense_score is not None:
+                dense_scores[hit.chunk_id] = hit.dense_score
     ordered = sorted(fused.items(), key = lambda kv: kv[1], reverse = True)[:top_k]
     return [
         Hit(
@@ -88,6 +103,7 @@ def _rrf_fuse(
             document_id = seen[cid].document_id,
             chunk_index = seen[cid].chunk_index,
             kind = seen[cid].kind,
+            dense_score = dense_scores.get(cid),
         )
         for cid, score in ordered
     ]
@@ -114,3 +130,15 @@ def retrieve_hybrid(
         rrf_k = RAG_RRF_K,
         top_k = k or RAG_TOP_K_HYBRID,
     )
+
+
+def filter_by_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
+    """Drop hits whose dense cosine score is below ``min_score``.
+
+    Hits without a dense score (BM25-only) are dropped too — there's
+    no comparable signal to evaluate them against the similarity floor.
+    Use ``min_score = 0.0`` (or negative) to disable the filter.
+    """
+    if min_score <= 0.0:
+        return hits
+    return [h for h in hits if h.dense_score is not None and h.dense_score >= min_score]

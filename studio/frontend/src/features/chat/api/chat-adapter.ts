@@ -94,12 +94,14 @@ function buildRagRequest(
   resolvedThreadId: string | undefined,
   enableRerank: boolean,
   topK: number,
+  minScore: number,
 ): SearchRequest | null {
   const base: SearchRequest = {
     query,
     top_k: topK,
     mode: "hybrid",
     enable_rerank: enableRerank,
+    min_score: minScore,
   };
   if (source.kind === "thread") {
     if (!resolvedThreadId) return null;
@@ -994,21 +996,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // don't break the chat — better to answer without context than
       // to drop a message the user just sent.
       //
-      // Phase 4: pre-fetch only fires when the new RAG button is on AND
-      // we can't register `search_knowledge_base` as a real tool —
-      // i.e., external providers or local models that don't expose
-      // tool-use. Local models with tool support take the tool-call
-      // path further down (see `enabled_tools` assembly), and the LLM
-      // decides per turn whether to invoke retrieval.
+      // Pre-fetch RAG context unconditionally when the RAG button is
+      // on and a source is selected. This runs for every provider —
+      // local-tool, local-no-tool, and external — so users don't have
+      // to phrase their query as "the document I attached" for
+      // retrieval to fire. On local tool-capable models the
+      // `search_knowledge_base` tool is *also* registered below as an
+      // optional refinement path (the LLM can run a second, narrower
+      // query if the pre-fetched chunks weren't enough).
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
       const ragToolPathTaken =
         ragToolEnabled && supportsTools && !isExternalRequest;
-      if (
-        ragToolEnabled
-        && ragSource.kind !== "off"
-        && !ragToolPathTaken
-      ) {
+      if (ragToolEnabled && ragSource.kind !== "off") {
         const lastUser = [...outboundMessages]
           .reverse()
           .find((m) => m.role === "user");
@@ -1022,12 +1022,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             resolvedThreadId,
             runtime.enableRerank,
             runtime.ragTopK,
+            runtime.ragMinScore,
           );
           if (ragReq) {
             try {
               const hits = await ragSearch(ragReq);
               if (hits.length > 0) {
-                const block = formatRagContext(hits);
+                const nudge =
+                  "The following context was retrieved from the user's " +
+                  "attached documents. Use it to answer; cite sources as " +
+                  "[1], [2], etc. by source filename.";
+                const block = `${nudge}\n\n${formatRagContext(hits)}`;
                 if (
                   outboundMessages[0]?.role === "system" &&
                   typeof outboundMessages[0].content === "string"
@@ -1658,6 +1663,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                               : null,
                           enable_rerank: runtime.enableRerank,
                           default_top_k: runtime.ragTopK,
+                          min_score: runtime.ragMinScore,
                         },
                       }
                     : {}),
