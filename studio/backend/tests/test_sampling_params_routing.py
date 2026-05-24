@@ -385,22 +385,25 @@ def test_openai_responses_forwards_service_tier(monkeypatch):
     assert body.get("service_tier") == "priority", body
 
 
-@pytest.mark.parametrize("value", ["auto", "default", "flex", "scale", "priority"])
-def test_openai_responses_accepts_full_service_tier_enum(monkeypatch, value):
-    """`openai-python`'s ResponseCreateParams declares
-    `Optional[Literal["auto", "default", "flex", "scale", "priority"]]`
-    so every value in that set forwards untouched."""
+@pytest.mark.parametrize("value", ["auto", "default", "flex", "priority"])
+def test_openai_responses_forwards_documented_service_tiers(monkeypatch, value):
+    """The live OpenAI Responses API reference lists `service_tier` as
+    `auto|default|flex|priority` for /v1/responses. Pin that every value
+    in the documented enum forwards untouched."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
     body = _drive_openai_responses(captured, service_tier = value)
     assert body.get("service_tier") == value, body
 
 
-def test_openai_responses_drops_anthropic_only_service_tier(monkeypatch):
-    """`standard_only` is Anthropic-only and Responses has never accepted
-    it. Drop it client-side so a stale frontend cannot 400 the request.
-    """
+@pytest.mark.parametrize("bogus", ["scale", "standard_only", "bogus", ""])
+def test_openai_responses_drops_undocumented_service_tier(monkeypatch, bogus):
+    """`scale` and `standard_only` are not in the documented Responses
+    request enum. Drop them client-side so a stale frontend cannot 400
+    the request. Round 4 consensus (~9/20 reviewers) flagged the
+    earlier permissive list as a 400 risk; this test pins the
+    restricted form."""
     captured = _install_mock(monkeypatch, sse_payload = _responses_done_payload())
-    body = _drive_openai_responses(captured, service_tier = "standard_only")
+    body = _drive_openai_responses(captured, service_tier = bogus)
     assert "service_tier" not in body, body
 
 

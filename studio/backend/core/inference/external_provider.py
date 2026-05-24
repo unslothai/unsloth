@@ -2831,18 +2831,18 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
-        # Responses accepts the same service_tier enum set as Chat
-        # Completions (auto|default|flex|scale|priority) per the live
-        # `openai-python` SDK
-        # (`src/openai/types/responses/response_create_params.py`
-        # declares `Optional[Literal["auto", "default", "flex",
-        # "scale", "priority"]]`). parallel_tool_calls follows the same
-        # shape (default true). The frontend capability gate
-        # (provider-capabilities.ts) already filters per-provider, so
-        # we just forward whatever value the dispatcher hands us, with
-        # `standard_only` (Anthropic-only) being the one value Responses
-        # has never accepted.
-        if service_tier in ("auto", "default", "flex", "scale", "priority"):
+        # Responses accepts service_tier on the Chat Completions enum
+        # MINUS `scale`. The `openai-python` SDK type
+        # (`src/openai/types/responses/response_create_params.py`)
+        # technically includes `scale`, but the live OpenAI Responses
+        # API reference and the PR's own provider matrix only list
+        # `auto|default|flex|priority` for /v1/responses, and an
+        # independent round of 20 codex reviewers reached the same
+        # conclusion. Drop `scale` here to prevent the 400 risk —
+        # users who want Scale Tier can still pick it on a Chat
+        # Completions-compat provider where the SDK enum is honored.
+        # parallel_tool_calls follows the same shape (default true).
+        if service_tier in ("auto", "default", "flex", "priority"):
             body["service_tier"] = service_tier
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = bool(parallel_tool_calls)
