@@ -2980,7 +2980,8 @@ class LlamaCppBackend:
                 # On Windows with full GPU offload (ngl -1), limit CPU threads to 2 so
                 # OpenMP's spin-wait pool doesn't burn 100% of logical cores polling
                 # for GPU completion — #5692.
-                if sys.platform == "win32" and _fully_gpu_offloaded:
+                import sys as _sys
+                if _sys.platform == "win32" and _fully_gpu_offloaded:
                     _t = 2
                 else:
                     _t = n_threads if n_threads is not None else -1
@@ -3123,7 +3124,7 @@ class LlamaCppBackend:
                 # PCI-E bus.  This adds substantial overhead even when the model
                 # is fully GPU-offloaded.  Disable all checkpoint machinery to
                 # keep the cache entirely in VRAM.  #5692.
-                if sys.platform == "win32":
+                if _sys.platform == "win32":
                     cmd.extend(
                         [
                             "--cache-ram",
