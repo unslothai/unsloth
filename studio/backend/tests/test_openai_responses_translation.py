@@ -232,7 +232,7 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
                     "id": "fc_abc",
                     "call_id": "call_xyz",
                     "name": "get_weather",
-                    "arguments": "{\"city\":\"SF\"}",
+                    "arguments": '{"city":"SF"}',
                 },
             },
             {"type": "response.completed", "response": {}},
@@ -290,7 +290,7 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     tc = tool_call_deltas[0]["choices"][0]["delta"]["tool_calls"][0]
     assert tc["id"] == "call_xyz"
     assert tc["function"]["name"] == "get_weather"
-    assert tc["function"]["arguments"] == "{\"city\":\"SF\"}"
+    assert tc["function"]["arguments"] == '{"city":"SF"}'
     # Final chunk reports tool_calls instead of stop.
     terminal = next(
         p
