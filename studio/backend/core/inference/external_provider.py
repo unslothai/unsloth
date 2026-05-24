@@ -71,35 +71,35 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # OpenAI's Responses stream emits inline citation markers shaped like
 # `citeSOURCE_ID` (private-use codepoints, see
 # https://developers.openai.com/api/docs/guides/citation-formatting).
-# Most fonts render the codepoints as garbled "E202" glyphs or empty
-# boxes, and markdown layers tend to strip them, leaving run-on text
-# like "citeturn1view0turn1view1...". We rewrite each marker into a
-# markdown link `[N](URL)` when the matching url_citation has arrived
-# on this stream, or drop it silently when the source_id is unknown.
-# Group 1 is the source id; an optional `<locator>` suffix is
-# discarded (we link the whole source rather than per-line locators).
-_OPENAI_CITATION_MARKER = re.compile("cite([^]+)(?:[^]*)?")
+# Multi-source markers reuse the same delimiter: `citeid1id2`.
+# An optional `<locator>` suffix (e.g. `L8-L13` or a page number)
+# may follow the source id list. Most fonts render the codepoints
+# as garbled "E202" glyphs or empty boxes, and markdown layers
+# tend to strip them, leaving run-on text like
+# "citeturn1view0turn1view1...". We rewrite each marker into a
+# markdown link `[[N]](URL)` per resolvable source id, or drop the
+# marker silently when none of its ids are known. Group 1 captures
+# everything between the cite-open and stop bytes; we then split
+# on the delimiter and try every token against the annotation
+# table. Tokens that don't resolve (locators, unknown ids) are
+# dropped silently so no garbled glyph ever reaches the renderer.
+_OPENAI_CITE_OPEN = "cite"
+_OPENAI_CITE_STOP = ""
+_OPENAI_CITE_DELIM = ""
+_OPENAI_CITATION_MARKER = re.compile(
+    f"{_OPENAI_CITE_OPEN}([^{_OPENAI_CITE_STOP}]+){_OPENAI_CITE_STOP}"
+)
 
 
-def _replace_openai_citation_markers(
-    text: str,
+def _build_citation_lookup(
     url_citations: list[dict[str, Any]],
-) -> str:
-    """Rewrite `\\ue200cite\\ue202SOURCE_ID\\ue201` markers in ``text``.
+) -> dict[str, tuple[int, str]]:
+    """Map every known ``source_id`` alias to ``(citation_index, url)``.
 
-    For each marker, look up the source_id against the running
-    ``url_citations`` list and replace with `[[N]](URL)` where N is the
-    1-based index of that citation. Unknown source_ids strip the marker
-    silently so garbled glyphs never reach the renderer. Idempotent on
-    text that contains no private-use codepoints.
+    Accepts both the singular ``source_id`` and plural ``source_ids``
+    citation shapes. First-seen wins on alias collision so an earlier
+    citation keeps its number.
     """
-    if not text or "" not in text:
-        return text
-    # Each citation may carry several source_id aliases (the upstream
-    # stream emits multiple inline markers for the same URL when the
-    # model cites different spans/locators). Accept both the singular
-    # ``source_id`` and plural ``source_ids`` shapes. First-seen wins
-    # on collision so an earlier citation keeps its number.
     by_source: dict[str, tuple[int, str]] = {}
     for idx, cit in enumerate(url_citations, start = 1):
         url = cit.get("url")
@@ -114,16 +114,79 @@ def _replace_openai_citation_markers(
             aliases.extend(s for s in sids if isinstance(s, str) and s)
         for alias in aliases:
             by_source.setdefault(alias, (idx, url))
+    return by_source
+
+
+def _replace_openai_citation_markers(
+    text: str,
+    url_citations: list[dict[str, Any]],
+) -> str:
+    """Rewrite `\\ue200cite\\ue202SOURCE_ID[\\ue202LOCATOR]\\ue201` markers.
+
+    For each marker, look up the source_id against the running
+    ``url_citations`` list and replace with `[[N]](URL)` where N is
+    the 1-based index of that citation. Multi-source markers expand
+    into one `[[N]](URL)` per resolvable id. Unknown source_ids and
+    locator suffixes are dropped silently so garbled glyphs never
+    reach the renderer. Idempotent on text that contains no private-
+    use codepoints.
+    """
+    if not text or _OPENAI_CITE_STOP not in text:
+        return text
+    by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
-        sid = match.group(1)
-        hit = by_source.get(sid)
-        if hit is None:
-            return ""
-        idx, url = hit
-        return f"[[{idx}]]({url})"
+        # The capture group contains either a single source id, a
+        # delim-separated list of source ids (multi-source markers),
+        # or a source id followed by a locator. We try every
+        # delim-split token against the lookup; unresolved tokens
+        # are dropped silently. That handles multi-source (every
+        # token resolves, every token expands) AND source+locator
+        # (only the first token resolves, the locator is dropped).
+        # When no tokens resolve, the whole marker is stripped so
+        # the user-facing text stays clean.
+        rendered: list[str] = []
+        for tok in match.group(1).split(_OPENAI_CITE_DELIM):
+            if not tok:
+                continue
+            hit = by_source.get(tok)
+            if hit is None:
+                continue
+            idx, url = hit
+            rendered.append(f"[[{idx}]]({url})")
+        return "".join(rendered)
 
     return _OPENAI_CITATION_MARKER.sub(_sub, text)
+
+
+def _split_pending_citation_tail(text: str) -> tuple[str, str]:
+    """Split ``text`` into ``(head, pending_tail)`` for streamed deltas.
+
+    OpenAI's Responses stream chunks text on byte-buffer boundaries
+    that have no awareness of the inline citation marker grammar,
+    so a marker can straddle two ``response.output_text.delta``
+    events (e.g. delta-1 ends with ``\\ue200citetu`` and delta-2
+    starts with ``rn0view0\\ue201``). Processing each delta in
+    isolation would leak the half-marker to the user. We hold the
+    unterminated tail and prepend it onto the next delta so the
+    rewriter sees a complete marker.
+
+    ``pending_tail`` is the longest suffix that begins with
+    ``\\ue200`` and contains NO stop byte ``\\ue201``. ``head`` is
+    the part that's safe to emit immediately. When ``text`` ends
+    with a fully closed marker (or no marker at all) the tail is
+    empty.
+    """
+    if not text:
+        return text, ""
+    last_open = text.rfind("")
+    if last_open == -1:
+        return text, ""
+    # If a stop byte appears after the last open byte, the marker
+    # closed inside this delta and nothing needs to be buffered.
+    if _OPENAI_CITE_STOP in text[last_open:]:
+        return text, ""
+    return text[:last_open], text[last_open:]
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -3000,6 +3063,46 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    # Buffer for an unterminated citation marker that
+                    # straddles two ``response.output_text.delta``
+                    # events. See ``_split_pending_citation_tail`` for
+                    # why this is necessary. Always concatenated onto
+                    # the front of the next delta so the rewriter sees
+                    # a complete ``cite...`` marker
+                    # rather than half of one.
+                    pending_marker_tail: str = ""
+
+                    def _flush_pending_marker_tail(tail: str) -> str:
+                        """Render any leftover citation tail for emission.
+
+                        Runs the held-over text through the rewriter
+                        one more time (in case a late annotation
+                        resolved it), then strips any leftover private-
+                        use codepoints so a never-closed marker
+                        (truncated stream, upstream error, annotation
+                        never arrived) never leaks garbled glyphs into
+                        the rendered prose. The sources panel is
+                        unaffected -- url_citations are aggregated
+                        separately and applied to the last web_search
+                        call's tool_end.
+                        """
+                        if not tail:
+                            return ""
+                        rendered = _replace_openai_citation_markers(
+                            tail, all_url_citations
+                        )
+                        # Strip every cite open/stop/delim codepoint
+                        # so partial junk like "citetu" doesn't
+                        # render as garbled "E200E202tu" glyphs.
+                        for ch in ("", "", ""):
+                            rendered = rendered.replace(ch, "")
+                        # If the tail was a pure unterminated marker
+                        # with no surrounding text, the literal "cite"
+                        # prefix leaks through after we strip the
+                        # private-use bytes. Suppress that exact case.
+                        if rendered == "cite":
+                            return ""
+                        return rendered
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
                         chunk = {
@@ -3151,6 +3254,21 @@ class ExternalProviderClient:
                             if not data_str:
                                 continue
                             if data_str == "[DONE]":
+                                # Flush any held-over partial citation
+                                # marker that never got its closing
+                                # `` -- strip the private-use
+                                # bytes so garbled glyphs don't reach
+                                # the renderer.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
                                 if not done_emitted:
                                     yield "data: [DONE]"
                                     done_emitted = True
@@ -3176,15 +3294,24 @@ class ExternalProviderClient:
                                 for ann in event.get("annotations") or []:
                                     if isinstance(ann, dict):
                                         _record_url_citation(ann)
-                                if delta_text:
-                                    if reasoning_open:
-                                        yield _chunk_with_text("</think>")
-                                        reasoning_open = False
-                                    delta_text = _replace_openai_citation_markers(
-                                        delta_text, all_url_citations
+                                if delta_text or pending_marker_tail:
+                                    # Concatenate any unterminated marker
+                                    # tail held over from the previous
+                                    # delta so a marker that straddles
+                                    # two SSE events resolves cleanly.
+                                    combined = pending_marker_tail + delta_text
+                                    head, pending_marker_tail = (
+                                        _split_pending_citation_tail(combined)
                                     )
-                                    if delta_text:
-                                        yield _chunk_with_text(delta_text)
+                                    if head:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        head = _replace_openai_citation_markers(
+                                            head, all_url_citations
+                                        )
+                                        if head:
+                                            yield _chunk_with_text(head)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
@@ -3428,6 +3555,24 @@ class ExternalProviderClient:
                                 )
                                 if isinstance(completed_usage, dict):
                                     last_usage = completed_usage
+                                # Flush any unterminated citation tail
+                                # held over from the last delta. By
+                                # the time we get here every annotation
+                                # has been recorded so a late-arriving
+                                # source_id may resolve cleanly; if it
+                                # still doesn't, the helper strips the
+                                # private-use bytes so no garbled
+                                # glyph reaches the user.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
@@ -3520,6 +3665,19 @@ class ExternalProviderClient:
                                 )
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
+                                # Same flush as response.completed --
+                                # truncated streams can leave a half-
+                                # marker in the buffer.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
