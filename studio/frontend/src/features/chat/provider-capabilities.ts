@@ -436,12 +436,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
-  // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and
-  // top_p to fixed defaults and 400s on any other value:
+  // Kimi k2.5/k2.6 are reasoning-class; the API locks temperature
+  // and top_p to fixed defaults and 400s on any other value:
   //   "invalid temperature: only 1 is allowed for this model".
   // Hide both sliders so the user is not offered knobs the model
   // silently overrides. Backend additionally strips these fields via
-  // PROVIDER_REGISTRY['kimi']['body_omit'].
+  // PROVIDER_REGISTRY['kimi']['body_omit']. seed and parallel_tool_
+  // calls are not in Kimi's documented Chat Completion schema
+  // (https://platform.kimi.ai/docs/api/chat); hide them so users are
+  // not offered controls that the upstream may silently drop or 400.
   kimi: {
     temperature: false,
     topP: false,
@@ -450,10 +453,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: true,
     frequencyPenalty: true,
-    seed: true,
+    seed: false,
     stop: true,
     serviceTier: false,
-    parallelToolCalls: true,
+    parallelToolCalls: false,
   },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
   deepseek: {
