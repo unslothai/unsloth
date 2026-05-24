@@ -1735,14 +1735,50 @@ def _build_external_messages(
             _native_gemini = False
     emit_extra_content = _native_gemini
 
-    def _filter_tool_calls(tool_calls: Any) -> Optional[list]:
-        """Strip per-tool-call `extra_content` for non-native-Gemini providers.
+    _SERVER_BUILTIN_TOOL_NAMES = frozenset(
+        {"web_search", "web_fetch", "code_execution", "image_generation"}
+    )
 
-        `msg.extra_content` is already gated above, but `tool_calls[i]`
-        can carry its own `extra_content.google.thought_signature` from
-        a prior Gemini turn. Forwarding that to OpenAI / Anthropic /
-        custom Gemini OAI-compat proxies sends an unknown key into
-        /chat/completions that some gateways reject.
+    def _is_marked_server_builtin_tool_call(tc: Any) -> bool:
+        """Return True iff `tc` is a synthetic provider-side tool card
+        the backend stamped with `args._server_tool` and one of the
+        canonical builtin names. Such cards must not be forwarded to
+        non-native providers because they are not real user functions
+        and the receiving API will reject the orphan tool history.
+        """
+        if not isinstance(tc, dict):
+            return False
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return False
+        name = (fn.get("name") or "").lower()
+        if name not in _SERVER_BUILTIN_TOOL_NAMES:
+            return False
+        raw_args = fn.get("arguments") or ""
+        try:
+            args = (
+                json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            )
+        except Exception:
+            return False
+        return isinstance(args, dict) and args.get("_server_tool") is True
+
+    def _filter_tool_calls(tool_calls: Any) -> Optional[list]:
+        """Sanitize assistant `tool_calls` for non-native-Gemini providers.
+
+        Two concerns:
+          1. `tool_calls[i].extra_content` carries Gemini-only
+             thoughtSignature metadata; strip it for providers that
+             cannot parse the unknown key.
+          2. Marked server-side builtin cards (`_server_tool: true` on
+             a canonical builtin name) are provider-internal Studio
+             tool cards from a prior native Gemini turn; forwarding
+             them to OpenAI / Anthropic / custom OAI-compat gateways
+             sends an orphan `tool_calls` entry (no matching tool
+             declaration, often no matching `role="tool"` reply) that
+             can be rejected.
+        Native Gemini keeps both untouched so the native translator can
+        replay them via `native_part`.
         """
         if not tool_calls:
             return None
@@ -1752,6 +1788,8 @@ def _build_external_messages(
             return tool_calls
         cleaned: list = []
         for _tc in tool_calls:
+            if _is_marked_server_builtin_tool_call(_tc):
+                continue
             if not isinstance(_tc, dict):
                 cleaned.append(_tc)
                 continue
@@ -1793,10 +1831,16 @@ def _build_external_messages(
         # are valid (post-tool-call assistant turn). Forward them so the
         # provider helper can rebuild the functionCall part.
         if msg.content is None and msg.role == "assistant" and msg.tool_calls:
+            _filtered_tcs = _filter_tool_calls(msg.tool_calls)
+            if not _filtered_tcs:
+                # Every tool_call on this turn was provider-side
+                # synthetic and dropped; skipping the whole message
+                # avoids forwarding an empty assistant turn.
+                continue
             _assistant_only: dict[str, Any] = {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": _filter_tool_calls(msg.tool_calls) or msg.tool_calls,
+                "tool_calls": _filtered_tcs,
             }
             if emit_extra_content and msg.extra_content:
                 _assistant_only["extra_content"] = msg.extra_content

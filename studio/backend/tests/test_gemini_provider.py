@@ -3061,3 +3061,414 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     # Builtin server-side tool call must be filtered out.
     assert all(c.get("name") != "web_search" for c in fn_calls), items
+
+
+def test_gemini_tool_choice_none_disables_hosted_builtins(monkeypatch):
+    """Round 18: `tool_choice="none"` must drop hosted Google Search /
+    code execution from the outbound Gemini body, not just user
+    function declarations. Otherwise an API client that opted out of
+    tool use still triggers grounded search (privacy + billing)."""
+    captured = _capture_body(
+        monkeypatch,
+        enabled_tools = ["web_search", "code_execution"],
+        tool_choice = "none",
+    )
+    assert captured["body"].get("tools") is None, captured["body"]
+
+
+def test_gemini_tool_choice_none_disables_function_declarations(monkeypatch):
+    """Round 18: `tool_choice="none"` must drop user function
+    declarations as well as hosted builtins from the Gemini body."""
+    captured = _capture_body(
+        monkeypatch,
+        tool_choice = "none",
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    assert captured["body"].get("tools") is None, captured["body"]
+
+
+def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(
+    monkeypatch,
+):
+    """Round 18: multi-branch unions with null (e.g.
+    `Union[str, int, None]`) must keep the slim anyOf without the null
+    branch and add `nullable: true`; Gemini rejects
+    `{"type":"null"}` inside anyOf."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "either": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "integer"},
+                                    {"type": "null"},
+                                ]
+                            },
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    decls = next(
+        t["functionDeclarations"]
+        for t in captured["body"].get("tools") or []
+        if "functionDeclarations" in t
+    )
+    either = decls[0]["parameters"]["properties"]["either"]
+    assert either.get("nullable") is True
+    inner = either.get("anyOf")
+    assert isinstance(inner, list) and len(inner) == 2, either
+    assert all(
+        not (isinstance(b, dict) and b.get("type") == "null") for b in inner
+    ), inner
+
+
+def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
+    """Round 18: when the upstream 302 Location is a malformed
+    bracketed-IPv6 URL, the helper must return None instead of letting
+    a urlparse ValueError abort the chat stream."""
+    import socket
+    import urllib.error
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("1.1.1.1", 0),
+                )
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _StubOpener:
+        def open(self, req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                {"Location": "https://[bad/x.png"},
+                None,
+            )
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
+
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/x.png", "image/png"
+        )
+    )
+    assert res is None
+
+
+def test_safe_fetch_image_malformed_port_no_crash():
+    """Round 18: a URL with a non-numeric port (`https://h:bad/x.png`)
+    must not raise; urlparse's port property lazily ValueErrors."""
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://example.com:bad/x.png", "image/png"
+        )
+    )
+    assert res is None
+
+
+def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
+    """Round 18: when the server returns image bytes but no
+    Content-Type header, the helper must use the caller-provided
+    fallback MIME (guessed from URL extension) instead of dropping the
+    image as `non-image content-type=<none>`."""
+    import socket
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("1.1.1.1", 0),
+                )
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _StubResp:
+        status = 200
+        headers = {"content-length": "3"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n=None):
+            return b"PNG"
+
+    class _StubOpener:
+        def open(self, req, timeout=None):
+            return _StubResp()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
+
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/cat.png", "image/png"
+        )
+    )
+    assert res is not None
+    assert res[0] == "image/png"
+
+
+def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch):
+    """Round 18: an assistant turn with OpenAI-style top-level
+    `tool_calls` must be translated into Anthropic native
+    `{type:"tool_use", id, name, input}` content blocks before being
+    forwarded. The OpenAI `role="tool"` follow-up must become a
+    `role:"user"` message with a `tool_result` content block."""
+    captured: dict = {"messages": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["messages"] = body.get("messages")
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "look up X"},
+                {
+                    "role": "assistant",
+                    "content": "let me check",
+                    "tool_calls": [
+                        {
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"q":"x"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "result_text",
+                    "tool_call_id": "call_a",
+                    "name": "lookup",
+                },
+                {"role": "user", "content": "summarise"},
+            ],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    msgs = captured["messages"] or []
+    # No top-level tool_calls should remain.
+    assert all("tool_calls" not in m for m in msgs), msgs
+    # The assistant turn must now have content blocks including a
+    # tool_use block.
+    asst = [m for m in msgs if m.get("role") == "assistant"]
+    assert asst and isinstance(asst[0]["content"], list), asst
+    tool_uses = [b for b in asst[0]["content"] if b.get("type") == "tool_use"]
+    assert len(tool_uses) == 1, asst[0]
+    assert tool_uses[0]["name"] == "lookup"
+    assert tool_uses[0]["input"] == {"q": "x"}
+    # The role="tool" message must become a user/tool_result message.
+    tool_results: list[dict] = []
+    for m in msgs:
+        if m.get("role") == "user" and isinstance(m.get("content"), list):
+            tool_results.extend(
+                b for b in m["content"] if b.get("type") == "tool_result"
+            )
+    assert any(
+        tr.get("tool_use_id") == "call_a" and tr.get("content") == "result_text"
+        for tr in tool_results
+    ), msgs
+
+
+def test_unmarked_user_web_search_function_survives_serialization():
+    """Round 18: a user-defined function literally named `web_search`
+    with NO `_server_tool` marker must survive `_build_external_messages`
+    when forwarded to a non-native provider; only marked synthetic
+    builtin cards may be dropped."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_user",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query": "x"}',
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    result = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+        base_url = None,
+    )
+    assert len(result) == 1, result
+    tcs = result[0].get("tool_calls") or []
+    assert len(tcs) == 1, result
+    assert tcs[0]["function"]["name"] == "web_search"
+
+
+def test_marked_server_builtin_dropped_from_build_external_messages():
+    """Round 18: when a Gemini-native turn carrying a marked
+    `image_generation` server-tool card is forwarded to OpenAI / a
+    custom Gemini OAI-compat proxy, the tool_call must be dropped, not
+    just have its extra_content stripped. Forwarding an orphan
+    `image_generation` tool_call would 400 the receiving API."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    marked_args = json.dumps({"_server_tool": True, "kind": "image"})
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {
+                            "name": "image_generation",
+                            "arguments": marked_args,
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    # Non-native providers: marked builtin tool_call must be dropped
+    # AND if it was the only payload, the whole message disappears.
+    for provider_type, base_url in [
+        ("openai", None),
+        ("gemini", "https://litellm.example/v1"),
+    ]:
+        result = _build_external_messages(
+            req.messages,
+            supports_vision = True,
+            provider_type = provider_type,
+            base_url = base_url,
+        )
+        # Empty assistant turn with only synthetic tool_call dropped.
+        assert result == [] or all(
+            not (m.get("tool_calls") or [])
+            for m in result
+        ), (provider_type, result)
+
+    # Native Gemini preserves it (round-trips via extra_content).
+    result_native = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert len(result_native) == 1
+    assert (
+        result_native[0]["tool_calls"][0]["function"]["name"]
+        == "image_generation"
+    )
+
+
+def test_openai_responses_tool_choice_none_drops_hosted_tools(monkeypatch):
+    """Round 18: `tool_choice="none"` must also drop hosted OpenAI
+    Responses builtins (web_search, code execution shell, image
+    generation), not just user function tools."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+            enabled_tools = ["web_search", "code_execution", "image_generation"],
+            tool_choice = "none",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    assert body.get("tools") in (None, []), body

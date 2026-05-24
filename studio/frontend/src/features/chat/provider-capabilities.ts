@@ -690,11 +690,24 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite has no native thinking knob; check it BEFORE
-  // the broader `gemini-2.5-flash` prefix so it does not fall into the
-  // Flash branch.
+  // Gemini 2.5 Flash-Lite supports `thinkingBudget` with `0` = off and
+  // a positive range starting at 512 (the backend maps "minimal" to
+  // that floor at external_provider._stream_gemini). Check this branch
+  // BEFORE the broader `gemini-2.5-flash` prefix.
+  // https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
-    return withEnableThinkingStyle();
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ] as const,
+    });
   }
   if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
     // Gemini 3.x Pro: thinkingLevel supports low/medium/high per

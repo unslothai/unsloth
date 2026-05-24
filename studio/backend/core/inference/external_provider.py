@@ -287,29 +287,39 @@ def _safe_fetch_image_for_gemini_sync(
         _validate_and_resolve_host,
     )
 
-    # urlparse can raise ValueError on bracketed IPv6 garbage like
-    # "https://[bad/x.png"; treat any parse failure as "drop the image".
-    try:
-        parsed = urlparse(url)
-    except (ValueError, UnicodeError) as _err:
-        logger.info(
-            "Gemini image fetch: refusing malformed url err=%s",
-            type(_err).__name__,
-        )
-        return None
-    scheme = (parsed.scheme or "").lower()
-    if scheme != "https":
-        logger.info(
-            "Gemini image fetch: refusing non-https scheme=%s",
-            scheme,
-        )
-        return None
-    if not parsed.hostname:
-        logger.info("Gemini image fetch: refusing url with no hostname")
-        return None
+    def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
+        """Parse a candidate URL and validate the https + hostname + port
+        invariants. Returns (parsed, hostname, port) or None on any failure
+        including malformed-port (`https://host:bad/x.png`) and
+        malformed-bracketed-IPv6 (`https://[bad/x.png`) cases that would
+        otherwise raise ValueError mid-build.
+        """
+        try:
+            parsed_url = urlparse(raw_url)
+            host_value = parsed_url.hostname
+            port_value = parsed_url.port or 443
+        except (ValueError, UnicodeError) as _err:
+            logger.info(
+                "Gemini image fetch: refusing malformed url err=%s",
+                type(_err).__name__,
+            )
+            return None
+        scheme_value = (parsed_url.scheme or "").lower()
+        if scheme_value != "https":
+            logger.info(
+                "Gemini image fetch: refusing non-https scheme=%s",
+                scheme_value,
+            )
+            return None
+        if not host_value:
+            logger.info("Gemini image fetch: refusing url with no hostname")
+            return None
+        return parsed_url, host_value, port_value
 
-    current_host = parsed.hostname
-    current_port = parsed.port or 443
+    parsed_info = _safe_parse_https(url)
+    if parsed_info is None:
+        return None
+    parsed, current_host, current_port = parsed_info
     current_url = url
     ok, reason, pinned_ip = _validate_and_resolve_host(current_host, current_port)
     if not ok:
@@ -324,7 +334,10 @@ def _safe_fetch_image_for_gemini_sync(
         # Pin to the validated IP so a hostile DNS cannot rebind between
         # the address check and the TCP connect. SNI + cert verification
         # still use the original hostname via _SNIHTTPSHandler.
-        cp = urlparse(current_url)
+        cp_info = _safe_parse_https(current_url)
+        if cp_info is None:
+            return None
+        cp, _cp_host, _cp_port = cp_info
         ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
         ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
         pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
@@ -352,16 +365,18 @@ def _safe_fetch_image_for_gemini_sync(
             location = e.headers.get("Location")
             if not location:
                 return None
-            current_url = urljoin(current_url, location)
-            rp = urlparse(current_url)
-            if rp.scheme.lower() != "https" or not rp.hostname:
+            try:
+                current_url = urljoin(current_url, location)
+            except (ValueError, UnicodeError) as _err:
                 logger.info(
-                    "Gemini image fetch: redirect not https host=%s",
-                    rp.hostname or "",
+                    "Gemini image fetch: refusing malformed redirect err=%s",
+                    type(_err).__name__,
                 )
                 return None
-            current_host = rp.hostname
-            current_port = rp.port or 443
+            rp_info = _safe_parse_https(current_url)
+            if rp_info is None:
+                return None
+            _rp, current_host, current_port = rp_info
             ok2, reason2, pinned_ip = _validate_and_resolve_host(
                 current_host, current_port
             )
@@ -391,10 +406,23 @@ def _safe_fetch_image_for_gemini_sync(
             _hdr_mime = (
                 (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
             )
-            if not _hdr_mime.startswith("image/"):
+            # When the server omits Content-Type, fall back to the
+            # caller-provided MIME (guessed from URL extension). A
+            # non-image declared MIME, on the other hand, is a refusal:
+            # don't try to claim a JSON / HTML response is an image.
+            if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
                     "Gemini image fetch: non-image content-type=%s host=%s",
-                    _hdr_mime or "<none>",
+                    _hdr_mime,
+                    current_host,
+                )
+                return None
+            _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
+            if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith(
+                "image/"
+            ):
+                logger.info(
+                    "Gemini image fetch: missing content-type and no image fallback host=%s",
                     current_host,
                 )
                 return None
@@ -419,8 +447,7 @@ def _safe_fetch_image_for_gemini_sync(
                     current_host,
                 )
                 return None
-            _final_mime = _hdr_mime if _hdr_mime else fallback_mime
-            return _final_mime, base64.b64encode(raw).decode("ascii")
+            return _final_mime_pre, base64.b64encode(raw).decode("ascii")
 
     logger.info("Gemini image fetch: too many redirects host=%s", current_host)
     return None
@@ -1621,6 +1648,37 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
+                # Assistant tool_calls -> Anthropic tool_use blocks
+                # appended to the same message. Anthropic native
+                # Messages API does not accept OpenAI's top-level
+                # `tool_calls` field; the call lives inside a content
+                # block with `{type:"tool_use", id, name, input}`.
+                if msg.get("role") == "assistant" and isinstance(
+                    msg.get("tool_calls"), list
+                ):
+                    for _tc in msg["tool_calls"]:
+                        if not isinstance(_tc, dict):
+                            continue
+                        _fn = _tc.get("function") or {}
+                        if not isinstance(_fn, dict) or not _fn.get("name"):
+                            continue
+                        _raw = _fn.get("arguments") or "{}"
+                        try:
+                            _input = (
+                                _json.loads(_raw) if isinstance(_raw, str) else _raw
+                            )
+                        except Exception:
+                            _input = {"_raw": _raw}
+                        if not isinstance(_input, dict):
+                            _input = {"value": _input}
+                        anthropic_parts.append(
+                            {
+                                "type": "tool_use",
+                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
+                                "name": _fn["name"],
+                                "input": _input,
+                            }
+                        )
                 # Skip whole-message append when nothing usable survived.
                 # An empty content array (e.g. user dropped only an unparseable
                 # `input_document`) would 400 the Anthropic API with
@@ -1628,6 +1686,72 @@ class ExternalProviderClient:
                 if anthropic_parts:
                     filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
+                # role="tool" follow-up -> Anthropic native tool_result
+                # block on a `user` message. The OpenAI shape
+                # (role=tool, content=string, tool_call_id) is not a
+                # valid Anthropic role.
+                if msg.get("role") == "tool":
+                    _tr_id = msg.get("tool_call_id") or ""
+                    _tr_content = msg.get("content")
+                    if _tr_content is None:
+                        _tr_content = ""
+                    filtered.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": _tr_id,
+                                    "content": (
+                                        _tr_content
+                                        if isinstance(_tr_content, str)
+                                        else _json.dumps(_tr_content)
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                # Assistant turn whose content is a plain string but
+                # also carries OpenAI `tool_calls`: convert into a
+                # content-array message with a text block + tool_use
+                # blocks. Without this, the top-level tool_calls leaks
+                # through unchanged.
+                if (
+                    msg.get("role") == "assistant"
+                    and isinstance(msg.get("tool_calls"), list)
+                    and msg["tool_calls"]
+                ):
+                    _text_content = msg.get("content")
+                    _blocks: list[dict[str, Any]] = []
+                    if isinstance(_text_content, str) and _text_content:
+                        _blocks.append({"type": "text", "text": _text_content})
+                    for _tc in msg["tool_calls"]:
+                        if not isinstance(_tc, dict):
+                            continue
+                        _fn = _tc.get("function") or {}
+                        if not isinstance(_fn, dict) or not _fn.get("name"):
+                            continue
+                        _raw = _fn.get("arguments") or "{}"
+                        try:
+                            _input = (
+                                _json.loads(_raw) if isinstance(_raw, str) else _raw
+                            )
+                        except Exception:
+                            _input = {"_raw": _raw}
+                        if not isinstance(_input, dict):
+                            _input = {"value": _input}
+                        _blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
+                                "name": _fn["name"],
+                                "input": _input,
+                            }
+                        )
+                    if _blocks:
+                        filtered.append({"role": "assistant", "content": _blocks})
+                    continue
                 filtered.append(msg)
 
         # Claude 4.7 family removed temperature / top_p / top_k entirely.
@@ -2918,6 +3042,17 @@ class ExternalProviderClient:
         # can recover its name (Gemini rejects an empty functionResponse
         # name with HTTP 400).
         tool_call_names: dict[str, str] = {}
+        # Per-request aggregate caps for remote image inlining. A
+        # single chat request can include many image_url parts; each
+        # is independently capped at 10MB but without a request-level
+        # cap a request with 50 URLs can force ~500MB of backend
+        # downloads. Caps below match the per-image cap and a small
+        # count cap so a single chat message stays within Gemini's
+        # ~20MB request size limit while not blocking realistic use.
+        _GEMINI_REMOTE_IMAGE_MAX_COUNT = 8
+        _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+        _remote_image_count = 0
+        _remote_image_total_bytes = 0
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -3020,20 +3155,40 @@ class ExternalProviderClient:
                                         }
                                     }
                                 )
+                            elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                                logger.info(
+                                    "Gemini image fetch: per-request count cap %d reached, dropping image",
+                                    _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                                )
                             else:
                                 _fetched = await _safe_fetch_image_for_gemini(
                                     url, _media_type
                                 )
                                 if _fetched is not None:
                                     _final_mime, _b64 = _fetched
-                                    parts.append(
-                                        {
-                                            "inlineData": {
-                                                "mimeType": _final_mime,
-                                                "data": _b64,
+                                    # base64 expands bytes ~4/3; cap on
+                                    # decoded length by counting the
+                                    # base64 chars (within ~25% of
+                                    # exact decoded size).
+                                    _approx_bytes = (len(_b64) * 3) // 4
+                                    if (
+                                        _remote_image_total_bytes + _approx_bytes
+                                        > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                    ):
+                                        logger.info(
+                                            "Gemini image fetch: per-request byte cap reached, dropping image",
+                                        )
+                                    else:
+                                        _remote_image_count += 1
+                                        _remote_image_total_bytes += _approx_bytes
+                                        parts.append(
+                                            {
+                                                "inlineData": {
+                                                    "mimeType": _final_mime,
+                                                    "data": _b64,
+                                                }
                                             }
-                                        }
-                                    )
+                                        )
             # Gemini 3 strict function-calling requires text-part
             # thoughtSignatures to be replayed on history; the frontend
             # stows the latest one as
@@ -3395,11 +3550,25 @@ class ExternalProviderClient:
         )
         code_execution_allowed = not is_image_model_strict
         text_tools_allowed = not is_image_model_strict
+        # tool_choice="none" must disable hosted builtins as well as
+        # user function declarations; otherwise an API client that
+        # opted out of tool use still triggers grounded search / code
+        # execution with their privacy + billing implications.
+        _tool_choice_disabled = (
+            isinstance(tool_choice, str)
+            and tool_choice.strip().lower() == "none"
+        )
         tools_array: list[dict[str, Any]] = []
-        if enabled_tools and "web_search" in enabled_tools and google_search_allowed:
+        if (
+            not _tool_choice_disabled
+            and enabled_tools
+            and "web_search" in enabled_tools
+            and google_search_allowed
+        ):
             tools_array.append({"googleSearch": {}})
         if (
-            enabled_tools
+            not _tool_choice_disabled
+            and enabled_tools
             and "code_execution" in enabled_tools
             and code_execution_allowed
         ):
@@ -3473,11 +3642,19 @@ class ExternalProviderClient:
                     elif _k == "items":
                         cleaned[_k] = _sanitize_gemini_schema(_v)
                     elif _k == "anyOf" and isinstance(_v, list):
-                        # OpenAI/Pydantic emit `anyOf: [{X}, {"type":"null"}]`
-                        # for Optional[X]. Gemini's OpenAPI subset rejects
-                        # `"type": "null"` inside anyOf, so collapse a
-                        # singleton-plus-null union back to the non-null
-                        # branch with `nullable: true`.
+                        # Optional[X] / Union[A, B, None]: Pydantic emits
+                        # `anyOf: [..., {"type":"null"}]`. Gemini's
+                        # OpenAPI subset rejects `"type": "null"` inside
+                        # anyOf, so drop the null variant and surface it
+                        # via `nullable: true`. If exactly one non-null
+                        # branch remains, collapse it inline; otherwise
+                        # keep the slim anyOf and mark the field
+                        # nullable.
+                        _saw_null = any(
+                            isinstance(_entry, dict)
+                            and _entry.get("type") == "null"
+                            for _entry in _v
+                        )
                         _non_null_entries = [
                             _entry
                             for _entry in _v
@@ -3486,9 +3663,7 @@ class ExternalProviderClient:
                                 and _entry.get("type") == "null"
                             )
                         ]
-                        if len(_non_null_entries) == 1 and len(
-                            _non_null_entries
-                        ) != len(_v):
+                        if len(_non_null_entries) == 1 and _saw_null:
                             _inner = _sanitize_gemini_schema(_non_null_entries[0])
                             if isinstance(_inner, dict):
                                 for _ik, _iv in _inner.items():
@@ -3496,8 +3671,11 @@ class ExternalProviderClient:
                                 cleaned.setdefault("nullable", True)
                         else:
                             cleaned[_k] = [
-                                _sanitize_gemini_schema(_entry) for _entry in _v
+                                _sanitize_gemini_schema(_entry)
+                                for _entry in _non_null_entries
                             ]
+                            if _saw_null:
+                                cleaned.setdefault("nullable", True)
                     elif _k in ("required", "enum", "propertyOrdering"):
                         # Lists of plain strings; copy verbatim.
                         cleaned[_k] = _v
@@ -3511,7 +3689,7 @@ class ExternalProviderClient:
             return node
 
         function_declarations: list[dict[str, Any]] = []
-        if tools and text_tools_allowed:
+        if tools and text_tools_allowed and not _tool_choice_disabled:
             for _tool in tools:
                 if not isinstance(_tool, dict) or _tool.get("type") != "function":
                     continue
@@ -4672,23 +4850,38 @@ class ExternalProviderClient:
 
         # Map OpenAI Chat Completions tool_choice to the Responses
         # tool_choice value. Strings ("auto"/"none"/"required") pass
-        # through unchanged; the function pick uses the Responses
-        # shape `{type:"function", name:"..."}`.
+        # through unchanged whenever the request has ANY tool to gate;
+        # the function pick uses the Responses shape
+        # `{type:"function", name:"..."}` and only when user function
+        # tools exist to target.
+        _responses_tc_string: Optional[str] = None
+        if isinstance(tool_choice, str):
+            _tc_lc = tool_choice.strip().lower()
+            if _tc_lc in ("auto", "none", "required"):
+                _responses_tc_string = _tc_lc
         responses_tool_choice: Optional[Any] = None
-        if tool_choice is not None and responses_user_function_tools:
-            if isinstance(tool_choice, str):
-                _tc_lc = tool_choice.strip().lower()
-                if _tc_lc in ("auto", "none", "required"):
-                    responses_tool_choice = _tc_lc
-            elif (
-                isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
-            ):
-                _fn_pick = tool_choice.get("function") or {}
-                _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
-                if isinstance(_name, str) and _name:
-                    responses_tool_choice = {"type": "function", "name": _name}
+        _has_responses_tools = bool(
+            enabled_tools or responses_user_function_tools
+        )
+        if _responses_tc_string is not None and _has_responses_tools:
+            responses_tool_choice = _responses_tc_string
+        elif (
+            tool_choice is not None
+            and responses_user_function_tools
+            and isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+        ):
+            _fn_pick = tool_choice.get("function") or {}
+            _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
+            if isinstance(_name, str) and _name:
+                responses_tool_choice = {"type": "function", "name": _name}
 
-        if enabled_tools or responses_user_function_tools:
+        _responses_tool_choice_none = _responses_tc_string == "none"
+
+        if (
+            (enabled_tools or responses_user_function_tools)
+            and not _responses_tool_choice_none
+        ):
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
             if enabled_tools and "web_search" in enabled_tools:
                 tools_array.append({"type": "web_search"})
@@ -4733,7 +4926,10 @@ class ExternalProviderClient:
             first attempt.
             """
             attempt_body = dict(body)
-            if enabled_tools or responses_user_function_tools:
+            if (
+                (enabled_tools or responses_user_function_tools)
+                and not _responses_tool_choice_none
+            ):
                 tools_array_attempt: list[dict[str, Any]] = list(
                     responses_user_function_tools
                 )

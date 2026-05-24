@@ -106,6 +106,64 @@ const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
 ]);
 
 /**
+ * Decide whether a persisted tool-call part is a provider-side
+ * synthetic card (Gemini grounding, Anthropic / OpenAI hosted tools)
+ * that should be stripped from outbound history rather than replayed
+ * as a real user function call.
+ *
+ * Rules in priority order:
+ *   1. Marker present (`args._server_tool === true`) → server-side.
+ *      The backend always stamps new synthetic events with this.
+ *   2. Gemini `native_part` payload present in `args.google` →
+ *      server-side. Gemini code_execution / image_generation always
+ *      stow `executableCode` / `codeExecutionResult` / `inlineData`
+ *      here so the native translator can replay them, so this is the
+ *      only durable way to distinguish them from a user function
+ *      with the same name when the marker is absent.
+ *   3. For canonical builtin names with NO marker and NO native_part,
+ *      use a shape heuristic for the two provider-specific shapes that
+ *      pre-PR Studio used to persist:
+ *        - `code_execution`: `args.kind` in {bash, code_execution,
+ *          text_editor} or `args.command`/`args.code` string.
+ *        - `image_generation`: `args.kind === "image"` or
+ *          `args.prompt` string.
+ *      `web_search` / `web_fetch` are NOT name-only dropped: the
+ *      marker is required, because a real user function named
+ *      `web_search` is a realistic OpenAI / Gemini function-calling
+ *      input and we must not silently delete its history.
+ */
+function isServerSideBuiltinToolPart(
+  toolNameLower: string,
+  argsObj: Record<string, unknown> | null,
+  hasServerToolMarker: boolean,
+  hasNativePart: boolean,
+): boolean {
+  if (hasServerToolMarker && SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
+    return true;
+  }
+  if (!SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) return false;
+  if (hasNativePart) return true;
+  if (!argsObj) return false;
+  if (toolNameLower === "code_execution") {
+    const kind =
+      typeof argsObj.kind === "string" ? argsObj.kind.toLowerCase() : "";
+    return (
+      kind === "bash" ||
+      kind === "code_execution" ||
+      kind === "text_editor" ||
+      typeof argsObj.command === "string" ||
+      typeof argsObj.code === "string"
+    );
+  }
+  if (toolNameLower === "image_generation") {
+    const kind =
+      typeof argsObj.kind === "string" ? argsObj.kind.toLowerCase() : "";
+    return kind === "image" || typeof argsObj.prompt === "string";
+  }
+  return false;
+}
+
+/**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
  * ``Context Length`` setting.
@@ -388,35 +446,18 @@ function collectAssistantToolCalls(
         typeof argsGoogle.native_part === "object" &&
         argsGoogle.native_part !== null,
     );
-    // Server-side provider builtins (Gemini grounding, Anthropic /
-    // OpenAI hosted tools) are tagged with args._server_tool by the
-    // backend so we can tell them apart from real user-declared
-    // functions or local llama.cpp tools that happen to share the
-    // name. We also scope on the canonical builtin tool names so a
-    // user function with an _server_tool argument is not dropped.
-    // Pre-PR persisted cards have no marker; fall back to argsGoogle
-    // native_part (Gemini code_execution / image_generation always
-    // stow it) or kind/code/command shape heuristics so reopening an
-    // older chat does not serialise the card as a real user function
-    // call and reject downstream.
-    const isKnownServerToolName = SERVER_SIDE_BUILTIN_TOOL_NAMES.has(
-      toolNameLower,
-    );
     const hasServerToolMarker = Boolean(
       argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
     );
-    let isServerSideBuiltin = isKnownServerToolName && hasServerToolMarker;
-    if (!isServerSideBuiltin && isKnownServerToolName && !hasServerToolMarker) {
-      // Backward-compat for cards persisted before _server_tool stamp.
-      if (hasNativePart) {
-        isServerSideBuiltin = true;
-      } else if (
-        toolNameLower === "web_search" || toolNameLower === "web_fetch"
-      ) {
-        isServerSideBuiltin = true;
-      }
-    }
+    const isServerSideBuiltin = isServerSideBuiltinToolPart(
+      toolNameLower,
+      argsObj,
+      hasServerToolMarker,
+      hasNativePart,
+    );
     if (isServerSideBuiltin) {
+      // Gemini code_execution / image_generation still need to round-
+      // trip the native_part payload for native replay; drop the rest.
       if (!hasNativePart) continue;
     }
     const argumentsStr =
@@ -467,14 +508,11 @@ function collectToolResultMessages(
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
     const result = (tc as { result?: unknown }).result;
-    // Skip provider-side builtins (tagged with args._server_tool by
-    // the backend, scoped on the canonical builtin names so a user
-    // function called e.g. `web_search` with `_server_tool` in its
-    // schema isn't dropped). User-declared functions and local
-    // llama.cpp tools have no marker so they round-trip their result
-    // normally. Pre-PR persisted cards lack the marker too; for the
-    // canonical builtin names we still treat them as server-side so
-    // reopening an older chat does not forward unsupported tool roles.
+    // Skip provider-side builtins (marker, native_part, or legacy
+    // shape heuristic). See `isServerSideBuiltinToolPart` for the
+    // exact rules; in particular, unmarked `web_search` / `web_fetch`
+    // are NOT dropped because a user function may legitimately share
+    // the name.
     const argsObj =
       tc.args && typeof tc.args === "object"
         ? (tc.args as Record<string, unknown>)
@@ -484,9 +522,6 @@ function collectToolResultMessages(
         ? (argsObj.google as Record<string, unknown>)
         : null;
     const toolNameLower = (tc.toolName ?? "").toLowerCase();
-    const isKnownServerToolName = SERVER_SIDE_BUILTIN_TOOL_NAMES.has(
-      toolNameLower,
-    );
     const hasServerToolMarker = Boolean(
       argsObj && argsObj._server_tool === true,
     );
@@ -495,15 +530,13 @@ function collectToolResultMessages(
         typeof argsGoogle.native_part === "object" &&
         argsGoogle.native_part !== null,
     );
-    const looksLegacyServerTool =
-      isKnownServerToolName &&
-      !hasServerToolMarker &&
-      (hasNativePart ||
-        toolNameLower === "web_search" ||
-        toolNameLower === "web_fetch");
     if (
-      (isKnownServerToolName && hasServerToolMarker) ||
-      looksLegacyServerTool
+      isServerSideBuiltinToolPart(
+        toolNameLower,
+        argsObj,
+        hasServerToolMarker,
+        hasNativePart,
+      )
     ) {
       continue;
     }
