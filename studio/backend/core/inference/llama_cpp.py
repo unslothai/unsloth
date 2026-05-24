@@ -180,9 +180,11 @@ _EXPLICIT_PLAN_HEADER = re.compile(
 # poem" is not misclassified as a stall.
 _DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
     r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
-    r"i will|i shall|let me|allow me|now i|next i)\b"
+    r"i will|i shall|let me|allow me|now i|next i|"
+    r"first|step \d+:?)\b"
     r"[^\r\n]{0,160}"
     r"\b(?:do (?:this|these|the following|it)|"
+    r"look (?:this |that |it |them )?up|"
     r"proceed|start|begin|"
     r"create|build|implement|set up|add|"
     r"calculate|compute|analy[sz]e|parse|load|run|execute|test)\b"
@@ -192,7 +194,9 @@ _DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
 )
 
 
-_FENCE_LINE_RE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<trailing>[^\r\n]*)$")
+_FENCE_RUN_RE = re.compile(
+    r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)"
+)
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -201,16 +205,19 @@ def _has_unclosed_code_fence(text: str) -> bool:
     A complete fence answer is already caught by _HAS_ANSWER_ARTIFACT.
     This helper exists so that an OPEN fence (model still streaming
     code, or stream cut short) does not let an embedded numbered list
-    inside the fence body masquerade as a final answer.
+    inside the fence body masquerade as a final answer. The scan is
+    done per line and uses ``search`` (not ``match``) so an inline
+    opener such as ``First, let me write it. \\`\\`\\`python`` is also
+    tracked.
     """
     active_char: Optional[str] = None
     active_len = 0
     for line in text.splitlines():
-        m = _FENCE_LINE_RE.match(line)
+        m = _FENCE_RUN_RE.search(line)
         if not m:
             continue
-        fence = m.group("fence")
-        trailing = m.group("trailing").strip()
+        fence = m.group("backticks") or m.group("tildes")
+        trailing = line[m.end():].strip()
         ch = fence[0]
         if active_char is None:
             active_char = ch

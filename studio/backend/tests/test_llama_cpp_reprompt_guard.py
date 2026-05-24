@@ -869,6 +869,69 @@ def test_no_reprompt_on_let_me_explain_numbered_answer():
         assert not _would_reprompt(content), content
 
 
+def test_same_line_open_fence_with_numbered_body_still_reprompts():
+    """An OPEN code fence on the same line as preceding prose ("First,
+    let me write it. ``\\u00e0``text\\n...") still gates the numbered-list
+    fallback. The unclosed-fence helper now uses ``search`` so inline
+    openers are tracked, not just openers at column 0."""
+    content = (
+        "First, let me write it. ```text\n"
+        "1. Install dependencies\n"
+        "2. Run the app"
+    )
+    assert not _has_answer_artifact(content)
+    assert _would_reprompt(content)
+
+
+def test_reprompts_on_first_step_numbered_compute_plan():
+    """Bare ``First, [verb]`` / ``Step N: [verb]`` followed by a numbered
+    list is a plan stall when the verb implies compute / tool work
+    (analyze, parse, calculate, create, etc.). Distinct from
+    ``First, use binary search:`` (verb ``use`` not in whitelist)."""
+    samples = [
+        (
+            "First, analyze the uploaded CSV:\n"
+            "1. Load the rows.\n"
+            "2. Compute the average revenue."
+        ),
+        (
+            "First, parse the pasted JSON:\n"
+            "1. Load the object.\n"
+            "2. Calculate the total."
+        ),
+        (
+            "First, create the Python game:\n"
+            "1. Set up pygame.\n"
+            "2. Add the game loop."
+        ),
+        (
+            "Step 1: analyze the uploaded CSV:\n"
+            "1. Load rows.\n"
+            "2. Compute the total."
+        ),
+        (
+            "I'll look that up:\n"
+            "1. Search the docs.\n"
+            "2. Summarize the result."
+        ),
+    ]
+    for content in samples:
+        assert _would_reprompt(content), content
+
+
+def test_no_reprompt_on_first_use_binary_search_answer():
+    """``First, use binary search:`` is an ordinary algorithm answer.
+    ``use`` is not in the direct-numbered-plan verb whitelist so the
+    following list stays an answer."""
+    content = (
+        "First, use binary search:\n"
+        "1. Search the left half.\n"
+        "2. Search the right half."
+    )
+    assert _has_answer_artifact(content)
+    assert not _would_reprompt(content)
+
+
 def test_reprompts_when_later_fence_is_open_after_closed_fence():
     """A response with a complete code fence followed by a SECOND,
     unclosed fence is still mid-stream and must re-prompt. The
