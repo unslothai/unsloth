@@ -38,10 +38,13 @@ export function StopSequencesInput({
   const atCap = value.length >= maxEntries;
 
   function commitDraft() {
-    // Reject empty / whitespace-only chips but preserve significant
-    // leading/trailing whitespace (stop matching is exact). Backend
-    // re-validates per provider.
-    if (!draft || !draft.trim()) return;
+    // Reject only the empty draft; preserve whitespace exactly (stop
+    // matching is byte-exact). OpenAI-compat / llama-server backends
+    // accept whitespace-only stops like "\n\n" for blank-line halts;
+    // pasting such a value into the input should round-trip rather
+    // than be silently dropped. Anthropic's helper strips whitespace
+    // entries on the wire so a chip that's invalid there cannot 400.
+    if (!draft) return;
     if (atCap) return;
     if (value.includes(draft)) {
       setDraft("");
