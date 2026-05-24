@@ -1096,20 +1096,27 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Extract base-ref lockfile (PR triggers only)
+      - name: Extract base-ref lockfile and install-script allowlist (PR triggers only)
         if: github.event_name == 'pull_request'
         run: |
           set -e
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           git show "$BASE_SHA:studio/frontend/package-lock.json" \
             > /tmp/base-package-lock.json
+          # Pull the TRUSTED allowlist from the base ref so a PR cannot
+          # allowlist its own new postinstall dependency in the same diff
+          # the checker scans. Missing file is OK (empty allowlist).
+          git show "$BASE_SHA:studio/frontend/.install-script-allowlist" \
+            > /tmp/base-install-script-allowlist 2>/dev/null \
+            || : > /tmp/base-install-script-allowlist
 
       - name: Diff for newly-added install-script deps
         if: github.event_name == 'pull_request'
         run: |
           python3 scripts/check_new_install_scripts.py \
             --base /tmp/base-package-lock.json \
-            --head studio/frontend/package-lock.json
+            --head studio/frontend/package-lock.json \
+            --base-allowlist /tmp/base-install-script-allowlist
 
       - name: Skip install-script diff (non-PR trigger)
         if: github.event_name != 'pull_request'
