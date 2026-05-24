@@ -324,7 +324,7 @@ _SENSITIVE_ROOT_WITH_EXPANSION_RE = re.compile(
     + r"|/root/"
     + r"|/Users/[^/\s'\"]+/"
     + r"|/etc/"
-    + r"|/proc/(?:self|\d+)/"
+    + r"|/proc/(?:self|thread-self|\d+)/"
     + r"|/var/spool/"
     + r")"
     + r"[^\s'\";&|`$]*"
@@ -374,17 +374,27 @@ def _expand_token_normalisations(token: str) -> set[str]:
     return out
 
 
-def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
+def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
     """Return the set of strings reachable from *text* by applying bash
     brace expansion ``{a,b}`` and bounded ``[abc]`` glob character
-    classes. Bounded to ``limit`` to keep adversarial inputs from
-    fanning out unboundedly."""
+    classes. Bounded to ``limit`` total projections (raised from 64
+    after a 64-alternative brace bomb -- ``cat ~/.aws/{x0,...,x62,
+    credentials}`` -- evaded the per-alternative inner break, since the
+    bypass adds 63 dummies plus the sensitive name in one brace group).
+
+    Now expands ALL alternatives of the current brace in one inner
+    pass so partially-applied state never blocks a sensitive name from
+    being projected. The outer ``limit`` only stops the queue between
+    brace groups, keeping the DOS bound while removing the off-by-one
+    that capped the first brace at ``limit - 1`` alternatives."""
     out = {text}
     if "{" not in text and "[" not in text:
         return out
     queue = [text]
     glob_re = re.compile(r"\[([^\]/\\!^]{1,8})\]")
-    while queue and len(out) < limit:
+    while queue:
+        if len(out) >= limit:
+            break
         cur = queue.pop()
         brace = _BRACE_EXPANSION_RE.search(cur)
         if brace:
@@ -393,8 +403,6 @@ def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
                 if nxt not in out:
                     out.add(nxt)
                     queue.append(nxt)
-                    if len(out) >= limit:
-                        break
             continue
         klass = glob_re.search(cur)
         if klass:
@@ -405,8 +413,6 @@ def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
                 if nxt not in out:
                     out.add(nxt)
                     queue.append(nxt)
-                    if len(out) >= limit:
-                        break
     return out
 
 
@@ -1256,8 +1262,161 @@ def _check_signal_escape_patterns(code: str):
     # below and stored here so ``_extract_string_from_node`` can fold
     # them as if they were inline string constants. Same surface for
     # function aliases (``e = eval``) populates ``eval_exec_aliases``.
+    #
+    # ``string_bindings`` returns a single representative string per
+    # name (used by callers via ``_extract_string_from_node``).
+    # ``string_bindings_all`` keeps EVERY literal value ever bound to
+    # a name; the representative is picked to favour sensitive-shaped
+    # paths so an adversarial ``p = '/tmp/safe'; p = '/etc/shadow';
+    # open(p)`` (Python last-wins at runtime) does not slip through
+    # the gate just because the AST walk picked the safe binding first.
     string_bindings: dict[str, str] = {}
+    string_bindings_all: dict[str, list[str]] = {}
     eval_exec_aliases: dict[str, str] = {}
+
+    # ``os.path.join`` alias tracking. Recognised forms:
+    #
+    #   import os                       -> "os.path.join"
+    #   import os as o                  -> "o.path.join"
+    #   from os import path             -> "path.join"
+    #   from os import path as op       -> "op.join"
+    #   import posixpath / ntpath / as pp -> "pp.join"
+    #   from os.path import join        -> bare "join(...)"
+    #   from os.path import join as j   -> bare "j(...)"
+    #   from posixpath import join      -> bare "join(...)"
+    #
+    # ``os_path_module_aliases`` holds the dotted prefix used for an
+    # attribute call (``o``, ``op``, ``pp``, ...) such that
+    # ``<alias>.join(...)`` is treated as ``os.path.join``.
+    # ``bare_path_join_aliases`` holds bare-name callables that
+    # behave like ``os.path.join`` when called directly.
+    os_path_module_aliases: set[str] = {"os.path", "posixpath", "ntpath"}
+    bare_path_join_aliases: set[str] = set()
+    bare_path_expanduser_aliases: set[str] = set()
+
+    # ``shutil`` alias tracking. Recognised forms:
+    #
+    #   import shutil                       -> "shutil"
+    #   import shutil as sh                 -> "sh"
+    #   from shutil import copyfile         -> bare "copyfile(...)"
+    #   from shutil import copy as cp       -> bare "cp(...)"
+    shutil_module_aliases: set[str] = {"shutil"}
+    bare_shutil_copy_aliases: dict[str, str] = {}
+
+    _SHUTIL_COPY_NAMES = (
+        "copyfile",
+        "copy",
+        "copy2",
+        "copytree",
+        "move",
+    )
+
+    # ``pathlib`` alias tracking for the pre-pass pathlib resolver.
+    # Visitor-level state extends these later, but the pre-pass needs
+    # them now so ``import pathlib as pl; p = pl.Path('/etc/shadow')``
+    # is folded into ``string_bindings``. Mirror of ``_PATHLIB_PATH_CLASSES``
+    # below; kept literal here to avoid a forward-reference dance.
+    _PATHLIB_PATH_CLASSES_PREPASS = (
+        "Path",
+        "PurePath",
+        "PosixPath",
+        "WindowsPath",
+        "PurePosixPath",
+        "PureWindowsPath",
+    )
+    pathlib_module_aliases_prepass: set[str] = {"pathlib"}
+    path_class_aliases_prepass: set[str] = set(_PATHLIB_PATH_CLASSES_PREPASS)
+
+    for _node in ast.walk(tree):
+        if isinstance(_node, ast.Import):
+            for alias in _node.names:
+                _local = alias.asname or alias.name
+                if alias.name == "os":
+                    os_path_module_aliases.add(f"{_local}.path")
+                elif alias.name in ("posixpath", "ntpath"):
+                    os_path_module_aliases.add(_local)
+                elif alias.name == "shutil":
+                    shutil_module_aliases.add(_local)
+                elif alias.name == "pathlib":
+                    pathlib_module_aliases_prepass.add(_local)
+        elif isinstance(_node, ast.ImportFrom):
+            if _node.module == "os":
+                for alias in _node.names:
+                    if alias.name == "path":
+                        os_path_module_aliases.add(alias.asname or "path")
+            elif _node.module == "os.path" or _node.module in (
+                "posixpath",
+                "ntpath",
+            ):
+                for alias in _node.names:
+                    if alias.name == "join":
+                        bare_path_join_aliases.add(alias.asname or "join")
+                    elif alias.name == "expanduser":
+                        bare_path_expanduser_aliases.add(
+                            alias.asname or "expanduser"
+                        )
+            elif _node.module == "shutil":
+                for alias in _node.names:
+                    if alias.name in _SHUTIL_COPY_NAMES:
+                        bare_shutil_copy_aliases[alias.asname or alias.name] = (
+                            f"shutil.{alias.name}"
+                        )
+            elif _node.module == "pathlib":
+                for alias in _node.names:
+                    if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
+                        path_class_aliases_prepass.add(
+                            alias.asname or alias.name
+                        )
+
+    # Cheap hint set used to bias ``string_bindings`` toward the most
+    # sensitive value of a name when multiple literals are assigned.
+    # Substring match against the full set of credential / process-state
+    # root tokens (kept intentionally loose; the real per-spec match
+    # still runs downstream in the file-read / shutil / bash gates).
+    _SENSITIVE_HINTS = (
+        "/etc/",
+        "/proc/",
+        "/var/spool/",
+        "/root/",
+        ".ssh/",
+        ".aws/",
+        ".gnupg",
+        ".kube",
+        ".docker",
+        ".config/gcloud",
+        ".pypirc",
+        ".npmrc",
+        ".netrc",
+        ".cargo/credentials",
+        ".password-store",
+        "credentials",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "shadow",
+        "sudoers",
+    )
+
+    def _looks_sensitive(value: str) -> bool:
+        if not value:
+            return False
+        low = value.lower()
+        return any(hint in low for hint in _SENSITIVE_HINTS)
+
+    def _record_string_binding(name: str, value: str) -> None:
+        """Append ``value`` to ``string_bindings_all[name]`` and update
+        ``string_bindings[name]`` to favour a sensitive-shaped value
+        when one exists. Resists the second-assignment bypass."""
+        bucket = string_bindings_all.setdefault(name, [])
+        if value not in bucket:
+            bucket.append(value)
+        cur = string_bindings.get(name)
+        if cur is None:
+            string_bindings[name] = value
+            return
+        if _looks_sensitive(value) and not _looks_sensitive(cur):
+            string_bindings[name] = value
 
     def _extract_string_literal(node, _depth = 0):
         """Strict literal-string extraction: no name binding lookup,
@@ -1389,7 +1548,22 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(cur, ast.Name):
                 fq_chain.insert(0, cur.id)
             fq = ".".join(fq_chain) if fq_chain else ""
-            if fq in ("os.path.join", "posixpath.join", "ntpath.join") and node.args:
+            # Match ``X.join(...)`` where X is any tracked alias of
+            # ``os.path`` / ``posixpath`` / ``ntpath`` (handles
+            # ``import os as o; o.path.join``, ``from os import path``,
+            # ``from os import path as op``, ``import posixpath as pp``).
+            is_path_join = (
+                fq in ("os.path.join", "posixpath.join", "ntpath.join")
+                or (
+                    fq.endswith(".join")
+                    and fq[: -len(".join")] in os_path_module_aliases
+                )
+                or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in bare_path_join_aliases
+                )
+            )
+            if is_path_join and node.args:
                 parts = []
                 for arg in node.args:
                     s = _extract_string_from_node(arg, _depth + 1)
@@ -1407,45 +1581,101 @@ def _check_signal_escape_patterns(code: str):
                     else:
                         joined = joined + "/" + p
                 return joined
-            if fq == "os.path.expanduser" and len(node.args) == 1:
+            is_path_expanduser = (
+                fq == "os.path.expanduser"
+                or (
+                    fq.endswith(".expanduser")
+                    and fq[: -len(".expanduser")] in os_path_module_aliases
+                )
+                or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in bare_path_expanduser_aliases
+                )
+            )
+            if is_path_expanduser and len(node.args) == 1:
                 return _extract_string_from_node(node.args[0], _depth + 1)
         return None
 
-    # Pre-pass: collect simple ``name = 'literal'`` string assignments
-    # and ``name = eval`` / ``name = exec`` function aliases so the
-    # visitors and ``_extract_string_from_node`` can resolve later uses.
-    # Also handles tuple / list unpacking (``a, b = '/etc', 'shadow';
-    # open(a + '/' + b)`` and ``p, = ['/etc/shadow']; open(p)``) so that
-    # statically resolvable destructuring isn't a free bypass channel.
-    # Walks the AST in one pass; first assignment wins (mirrors actual
-    # execution order well enough for the static gate).
-    for _assign in ast.walk(tree):
-        if not isinstance(_assign, ast.Assign):
-            continue
-        if len(_assign.targets) == 1:
-            _target = _assign.targets[0]
-            if isinstance(_target, ast.Name) and _target.id not in string_bindings:
-                _val = _extract_string_from_node(_assign.value)
-                if _val is not None:
-                    string_bindings[_target.id] = _val
-                elif isinstance(_assign.value, ast.Name) and _assign.value.id in (
-                    "eval",
-                    "exec",
-                ):
-                    eval_exec_aliases[_target.id] = _assign.value.id
-            elif isinstance(_target, (ast.Tuple, ast.List)) and isinstance(
-                _assign.value, (ast.Tuple, ast.List)
+    def _run_string_binding_prepass(subtree: ast.AST) -> None:
+        """Collect simple ``name = 'literal'`` string assignments and
+        ``name = eval`` / ``name = exec`` function aliases from
+        ``subtree``. Idempotent and additive: callable on the outer
+        module AST and again on each eval / exec literal payload so
+        ``exec("p='/etc/shadow'\\nopen(p)")`` is not a free bypass.
+
+        Records every literal so multiple-assignment bypasses (``p =
+        '/tmp/safe'; p = '/etc/shadow'; open(p)``) cannot dodge the
+        gate by ordering -- the sensitive-shape preference in
+        ``_record_string_binding`` picks the dangerous value.
+
+        Also resolves:
+
+        * Tuple / list unpacking destructuring (``(a, b) = ('/etc',
+          'shadow')`` and ``p, = ['/etc/shadow']``) element-wise.
+        * Pathlib constructor assignments (``p = Path('/etc/shadow');
+          p.read_text()``) so the bound name resolves to the path
+          string when later referenced by the file-read or shutil gate.
+        """
+        for _assign in ast.walk(subtree):
+            # Walrus (``p := '/etc/shadow'``) is an expression that
+            # binds, not an Assign. Handle it here so a walrus inside
+            # an eval / exec payload (or any expression context) is
+            # surfaced by the pre-pass too.
+            if isinstance(_assign, ast.NamedExpr) and isinstance(
+                _assign.target, ast.Name
             ):
-                # ``(a, b) = ('/etc', 'shadow')`` / ``p, = ['/etc/shadow']``.
-                if len(_target.elts) == len(_assign.value.elts):
-                    for _tgt_e, _val_e in zip(_target.elts, _assign.value.elts):
-                        if (
-                            isinstance(_tgt_e, ast.Name)
-                            and _tgt_e.id not in string_bindings
-                        ):
-                            _v = _extract_string_from_node(_val_e)
-                            if _v is not None:
-                                string_bindings[_tgt_e.id] = _v
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    _record_string_binding(_assign.target.id, _val)
+                continue
+            if not isinstance(_assign, ast.Assign):
+                continue
+            if len(_assign.targets) == 1:
+                _target = _assign.targets[0]
+                if isinstance(_target, ast.Name):
+                    _val = _extract_string_from_node(_assign.value)
+                    if _val is None:
+                        # Pathlib fallback: ``p = Path('/etc/shadow')`` /
+                        # ``p = pathlib.PosixPath('/proc/self/environ')`` /
+                        # ``import pathlib as pl; p = pl.Path('/...')``.
+                        # Uses the per-tree alias sets built earlier so
+                        # ``import pathlib as pl`` and ``from pathlib
+                        # import Path as P`` both resolve.
+                        _val = _extract_pathlib_target(
+                            _assign.value,
+                            path_class_aliases_prepass,
+                            pathlib_module_aliases_prepass,
+                        )
+                    if _val is not None:
+                        _record_string_binding(_target.id, _val)
+                    elif isinstance(_assign.value, ast.Name) and _assign.value.id in (
+                        "eval",
+                        "exec",
+                    ):
+                        eval_exec_aliases.setdefault(
+                            _target.id, _assign.value.id
+                        )
+                elif isinstance(_target, (ast.Tuple, ast.List)) and isinstance(
+                    _assign.value, (ast.Tuple, ast.List)
+                ):
+                    if len(_target.elts) == len(_assign.value.elts):
+                        for _tgt_e, _val_e in zip(_target.elts, _assign.value.elts):
+                            if isinstance(_tgt_e, ast.Name):
+                                _v = _extract_string_from_node(_val_e)
+                                if _v is not None:
+                                    _record_string_binding(_tgt_e.id, _v)
+
+    # The initial pre-pass call moves to AFTER ``_extract_pathlib_target``
+    # is defined so the pathlib fallback resolves (Python closure cell
+    # binding rule: ``_run_string_binding_prepass`` looks up the name
+    # in the enclosing scope at CALL time, which must be after the
+    # ``def`` site runs).
 
     def _extract_strings_from_list(node):
         """Extract string elements from an AST List or Tuple node."""
@@ -1592,6 +1822,10 @@ def _check_signal_escape_patterns(code: str):
         return _extract_string_from_node(node)
 
     _PATH_RECEIVER_READ_METHODS = frozenset({"open", "read_text", "read_bytes"})
+
+    # ``_extract_pathlib_target`` is now defined; run the string-binding
+    # pre-pass so the pathlib fallback inside it resolves.
+    _run_string_binding_prepass(tree)
 
     def _eval_exec_call_name(func, builtins_aliases):
         """Match ``eval`` / ``exec`` invocations including:
@@ -1873,6 +2107,13 @@ def _check_signal_escape_patterns(code: str):
                         except SyntaxError:
                             inner_tree = None
                         if inner_tree is not None:
+                            # Re-run the string-binding pre-pass on the
+                            # payload so ``exec("p='/etc/shadow'\\nopen(p)")``
+                            # surfaces ``p``'s literal before the
+                            # ``open(p)`` visit. Without this the inner
+                            # ``Name('p')`` lookup misses and the read
+                            # is treated as dynamic-and-allowed.
+                            _run_string_binding_prepass(inner_tree)
                             self._eval_depth += 1
                             try:
                                 self.visit(inner_tree)
@@ -2953,6 +3194,11 @@ def _check_signal_escape_patterns(code: str):
             # ``open()`` does, and the copy gives the attacker a second
             # exfil channel (rename/print/upload the destination). Gate
             # the source argument with the same sensitive-path checks.
+            #
+            # Matches all three call shapes:
+            #   shutil.copy(...) / shutil.copytree(...) etc.
+            #   <alias>.copy(...) when ``import shutil as <alias>``
+            #   bare copy(...) when ``from shutil import copy [as ...]``
             _FILE_COPY_FUNCS = frozenset(
                 {
                     "shutil.copyfile",
@@ -2962,7 +3208,26 @@ def _check_signal_escape_patterns(code: str):
                     "shutil.move",
                 }
             )
+            file_copy_fq = None
             if fq in _FILE_COPY_FUNCS:
+                file_copy_fq = fq
+            elif fq.endswith(_SHUTIL_COPY_NAMES) and isinstance(
+                node.func, ast.Attribute
+            ):
+                # ``sh.copy(...)`` -- check the receiver is a tracked
+                # shutil alias. The suffix-match guards against random
+                # ``something.copy(...)`` calls on unrelated objects.
+                _attr = node.func.attr
+                _recv_chain = fq[: -(len(_attr) + 1)] if _attr in _SHUTIL_COPY_NAMES else ""
+                if _recv_chain in shutil_module_aliases and _attr in _SHUTIL_COPY_NAMES:
+                    file_copy_fq = f"shutil.{_attr}"
+            elif isinstance(node.func, ast.Name) and node.func.id in bare_shutil_copy_aliases:
+                file_copy_fq = bare_shutil_copy_aliases[node.func.id]
+            if file_copy_fq is not None:
+                # Use the canonical ``shutil.X`` name in the error
+                # description so aliased and from-import bypasses surface
+                # with the same identity as the literal form.
+                fq = file_copy_fq
                 src_lit = None
                 if node.args:
                     src_lit = _extract_pathlib_target(

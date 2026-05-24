@@ -1678,3 +1678,222 @@ class TestFollowup_DataframeReaders:
     )
     def test_dataframe_readers_legit_allowed(self, code):
         assert not _is_blocked(code), f"legit dataframe reader blocked: {code!r}"
+
+
+class TestR4_OsPathAliasing:
+    """``import os as o; o.path.join('/etc', 'shadow')`` and
+    ``from os.path import join as j; j('/etc', 'shadow')`` previously
+    slipped past the path-join resolver because the fq match was
+    literal-only. Now tracks imports + from-imports for
+    ``os`` / ``os.path`` / ``posixpath`` / ``ntpath``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os as o; open(o.path.join('/etc', 'shadow')).read()",
+            "from os.path import join; open(join('/etc', 'shadow')).read()",
+            "from os.path import join as j; open(j('/etc', 'shadow')).read()",
+            "from os import path; open(path.join('/etc', 'shadow'))",
+            "from os import path as op; open(op.join('/etc', 'shadow'))",
+            "import posixpath as pp; open(pp.join('/etc', 'shadow'))",
+            "import ntpath as np_; open(np_.join('/etc', 'shadow'))",
+            "from posixpath import join; open(join('/etc', 'shadow'))",
+            # expanduser surface
+            "import os as o; open(o.path.expanduser('~/.aws/credentials'))",
+            "from os.path import expanduser as e; open(e('~/.aws/credentials'))",
+        ],
+    )
+    def test_os_path_aliasing_blocked(self, code):
+        assert _is_blocked(code), f"os.path alias leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os as o; open(o.path.join('./logs', 'app.log'))",
+            "from os.path import join; open(join('./src', 'main.py'))",
+            "from os.path import join as j; print(j('a', 'b'))",
+        ],
+    )
+    def test_os_path_aliasing_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit os.path alias blocked: {code!r}"
+
+
+class TestR4_ShutilImportAliasing:
+    """``from shutil import copyfile; copyfile('/etc/shadow', '/tmp/x')``
+    and ``import shutil as sh; sh.copy(...)`` previously slipped past
+    the file-copy gate because the fq match required the literal
+    ``shutil.`` prefix. Now tracks shutil aliases and from-import
+    aliases for ``copyfile`` / ``copy`` / ``copy2`` / ``copytree`` /
+    ``move``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from shutil import copyfile; copyfile('/etc/shadow', '/tmp/x')",
+            "from shutil import copy as cp; cp('/home/u/.aws/credentials', '/tmp')",
+            "from shutil import move as mv; mv('/home/u/.ssh/id_rsa', '/tmp')",
+            "from shutil import copytree; copytree('/home/u/.ssh', '/tmp/out')",
+            "from shutil import copy2 as c2; c2('/etc/shadow', '/tmp/x')",
+            "import shutil as sh; sh.copy('/home/u/.aws/credentials', '/tmp')",
+            "import shutil as _s; _s.move('/home/u/.ssh/id_rsa', '/tmp')",
+            "import shutil as sh; sh.copytree('/proc/self', '/tmp/out')",
+        ],
+    )
+    def test_shutil_import_alias_blocked(self, code):
+        assert _is_blocked(code), f"shutil alias leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from shutil import copyfile; copyfile('a.txt', 'b.txt')",
+            "import shutil as sh; sh.copy('./input.txt', './output.txt')",
+            "from shutil import move as mv; mv('./old.log', './archive.log')",
+        ],
+    )
+    def test_shutil_import_alias_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit shutil alias blocked: {code!r}"
+
+
+class TestR4_FirstWinsBindingBypass:
+    """``p = '/tmp/safe'; p = '/etc/shadow'; open(p)`` previously
+    resolved ``p`` to ``/tmp/safe`` because the pre-pass was
+    first-assignment-wins and Python's last-wins execution semantics
+    win at runtime. The fix tracks every literal assignment and biases
+    the resolved value toward sensitive-shaped paths."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "p = '/tmp/safe'\np = '/etc/shadow'\nopen(p).read()",
+            "p = '/etc/shadow'\np = '/tmp/safe'\nopen(p).read()",
+            "p = 'a.txt'\np = '/proc/self/environ'\np = 'b.txt'\nopen(p)",
+            "p = '/home/u/.aws/credentials'\np = './safe.txt'\nopen(p)",
+            # Walrus reassignment same surface
+            "p = 'a'\nopen((p := '/etc/shadow'))",
+        ],
+    )
+    def test_reassignment_bypass_blocked(self, code):
+        assert _is_blocked(code), f"reassignment bypass leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "p = 'a.txt'\np = 'b.txt'\nopen(p).read()",
+            "p = './src'\np = './tests'\nopen(p + '/x.py')",
+        ],
+    )
+    def test_reassignment_safe_allowed(self, code):
+        assert not _is_blocked(code), f"legit reassignment blocked: {code!r}"
+
+
+class TestR4_BraceCapOffByOne:
+    """``cat ~/.aws/{x0,x1,...,x62,credentials}`` exploited an
+    off-by-one in the brace-expansion cap: ``out`` starts with 1
+    member and the cap of 64 left only 63 slots for new expansions,
+    so a 64-alternative brace where the sensitive name is at the end
+    was never projected. Now the cap is 1024 and the inner loop
+    expands all alternatives of one brace in a single pass."""
+
+    @pytest.mark.parametrize(
+        "n_dummies",
+        [63, 100, 250, 500],
+    )
+    def test_brace_with_n_dummies_blocked(self, n_dummies):
+        dummies = ",".join(f"x{i}" for i in range(n_dummies))
+        cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
+        assert _find_sensitive_paths(cmd), (
+            f"brace bomb with {n_dummies} dummies leaked: {cmd!r}"
+        )
+
+    def test_brace_bomb_within_limit_blocked(self):
+        # 100 alts x 100 dummy chars per alt = comfortably under cap;
+        # the projection that reaches the regex is the one alt whose
+        # value names a sensitive path.
+        dummies = ",".join(f"x{i}" for i in range(500))
+        cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
+        assert _find_sensitive_paths(cmd), (
+            f"brace bomb (501 alts) within cap leaked: {cmd!r}"
+        )
+
+
+class TestR4_ThreadSelfShellExpansion:
+    """``cat /proc/thread-self/$(echo environ)`` was a residual gap in
+    ``_SENSITIVE_ROOT_WITH_EXPANSION_RE`` -- ``thread-self`` was in
+    ``_ABSOLUTE_SENSITIVE`` but not in the shell-expansion variant.
+    Fixed by adding ``thread-self`` to the alternation."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /proc/thread-self/$(echo environ)",
+            "cat /proc/thread-self/`printf environ`",
+            "cat /proc/thread-self/task/$(echo 1)/environ",
+        ],
+    )
+    def test_thread_self_shell_expansion_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"thread-self shell expansion leaked: {cmd!r}"
+        )
+
+
+class TestR4_EvalExecPrepass:
+    """``exec("p='/etc/shadow'\\nopen(p).read()")`` previously slipped
+    because the inner AST visit ran without re-applying the
+    string-binding pre-pass. ``p`` was never bound in the gate so
+    ``open(p)`` looked dynamic. Pre-pass now runs on each literal
+    eval / exec payload tree before the inner visit."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "exec(\"p='/etc/shadow'\\nopen(p).read()\")",
+            "exec(\"q = '/home/u/.aws/credentials'\\nopen(q)\")",
+            "eval(\"(p := '/etc/shadow', open(p))\")",
+            "exec(\"a, b = '/etc', 'shadow'\\nopen(a + '/' + b)\")",
+        ],
+    )
+    def test_exec_prepass_blocked(self, code):
+        assert _is_blocked(code), f"exec pre-pass leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "exec(\"p = './safe.txt'\\nopen(p)\")",
+            "exec(\"print('hello world')\")",
+        ],
+    )
+    def test_exec_prepass_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit exec pre-pass blocked: {code!r}"
+
+
+class TestR4_PathlibNameBinding:
+    """``p = Path('/etc/shadow'); p.read_text()`` previously slipped
+    because the pre-pass only resolved string literals, not pathlib
+    constructor calls. The pre-pass now also runs the pathlib resolver
+    when the string extractor returns None."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\np = Path('/etc/shadow')\np.read_text()",
+            "from pathlib import Path\np = Path('/etc/shadow')\nopen(p).read()",
+            "from pathlib import PosixPath\np = PosixPath('/etc/shadow')\np.read_bytes()",
+            "import pathlib\np = pathlib.Path('/proc/self/environ')\np.read_text()",
+            "import pathlib as pl\np = pl.Path('/etc/shadow')\np.read_text()",
+            "from pathlib import Path as P\np = P('/home/u/.aws/credentials')\np.read_text()",
+            "from pathlib import Path\nbase = Path('/etc')\nopen(base / 'shadow').read()",
+        ],
+    )
+    def test_pathlib_name_binding_blocked(self, code):
+        assert _is_blocked(code), f"pathlib name binding leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\np = Path('data.txt')\np.read_text()",
+            "from pathlib import Path\np = Path('./logs/app.log')\nopen(p)",
+            "import pathlib as pl\np = pl.Path('./src/x.py')\np.read_text()",
+        ],
+    )
+    def test_pathlib_name_binding_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit pathlib name binding blocked: {code!r}"
