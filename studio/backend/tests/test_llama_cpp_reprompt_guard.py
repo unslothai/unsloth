@@ -989,21 +989,13 @@ def test_reprompts_on_i_need_to_numbered_plan():
     """``First, I need to:`` / ``I need to ...`` numbered plans are
     tool stalls and still re-prompt."""
     samples = [
-        (
-            "First, I need to:\n"
-            "1. Read the uploaded file.\n"
-            "2. Summarize it."
-        ),
+        ("First, I need to:\n" "1. Read the uploaded file.\n" "2. Summarize it."),
         (
             "I need to fetch the latest data:\n"
             "1. Query the price.\n"
             "2. Format the answer."
         ),
-        (
-            "I'll:\n"
-            "1. Gather the relevant files.\n"
-            "2. Identify the issue."
-        ),
+        ("I'll:\n" "1. Gather the relevant files.\n" "2. Identify the issue."),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
