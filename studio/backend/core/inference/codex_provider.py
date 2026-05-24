@@ -88,7 +88,8 @@ def _import_codex() -> Any:
             return importlib.import_module(name)
     raise CodexUnavailableError(
         "Codex Python SDK is not installed on this host. "
-        "Install `openai-codex` (or the legacy `codex_app_server`) "
+        "Install with `pip install openai-codex-app-server-sdk` "
+        "(import name `openai_codex`, legacy alias `codex_app_server`), "
         "or use a different provider."
     )
 
