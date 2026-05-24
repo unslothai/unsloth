@@ -985,6 +985,66 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
         assert not _would_reprompt(content), content
 
 
+def test_reprompts_on_i_need_to_numbered_plan():
+    """``First, I need to:`` / ``I need to ...`` numbered plans are
+    tool stalls and still re-prompt."""
+    samples = [
+        (
+            "First, I need to:\n"
+            "1. Read the uploaded file.\n"
+            "2. Summarize it."
+        ),
+        (
+            "I need to fetch the latest data:\n"
+            "1. Query the price.\n"
+            "2. Format the answer."
+        ),
+        (
+            "I'll:\n"
+            "1. Gather the relevant files.\n"
+            "2. Identify the issue."
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_reprompts_on_visit_or_access_numbered_plan():
+    """First-person + browser/navigation verbs (visit/access/navigate)
+    + numbered list is a tool stall."""
+    samples = [
+        (
+            "I'll visit the official site:\n"
+            "1. Open the homepage.\n"
+            "2. Read the release notes.\n"
+            "3. Summarize."
+        ),
+        (
+            "Let me access the GitHub repo:\n"
+            "1. Open the README.\n"
+            "2. Identify the install instructions."
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
+def test_no_reprompt_on_inline_backtick_python_prose_after_code():
+    """``Use ```python to start a Python fence.`` is prose after a
+    completed answer; it must NOT be treated as an unclosed fence."""
+    content = (
+        "Here is the snippet:\n"
+        "```python\n"
+        "print(1)\n"
+        "```\n"
+        "Use ```python to start a Python block in your reply."
+    )
+    assert _has_answer_artifact(content)
+    assert not _would_reprompt(content)
+
+
 def test_reprompts_on_take_or_follow_steps_numbered_plan():
     """``I'll take these steps:`` / ``I will follow these steps:`` +
     numbered list of work items is a plan stall."""

@@ -88,7 +88,7 @@ _INTENT_SIGNAL = re.compile(
     # Handles both straight and curly apostrophes.
     # Excludes "I can", "I should", "I want to", "let's" which
     # appear frequently in direct answers / explanations.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|i need to|let me|allow me)\b"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan".
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -194,10 +194,11 @@ _EXPLICIT_PLAN_HEADER = re.compile(
 _DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
     r"(?:"
     r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
-    r"i will|i shall|let me|allow me|now i|next i)\b"
+    r"i will|i shall|i need to|let me|allow me|now i|next i)\b"
     r"[^\r\n]{0,160}"
     r"\b(?:open|read|search|look (?:this |that |it |them )?up|browse|"
     r"google|find|check|verify|compare|review|inspect|examine|"
+    r"visit|access|navigate|gather|collect|"
     r"do (?:this|these|the following|it)|"
     r"take (?:these|the following) steps|"
     r"follow (?:these|the following) steps|"
@@ -228,12 +229,13 @@ _FENCE_RUN_RE = re.compile(
 def _has_unclosed_code_fence(text: str) -> bool:
     """True if ``text`` contains a code fence whose closer is missing.
 
-    Each line is scanned so inline openers like ``First. \\`\\`\\`python``
-    are tracked. Prose mentions such as ``Use \\`\\`\\` to start a
-    fence.`` are filtered out by requiring the trailing characters
-    after the fence run to look like a CommonMark info string: empty,
-    or starting with a non-space character (so prose with a leading
-    space disqualifies the run).
+    Each line is scanned with ``search`` so inline openers like
+    ``First. \\`\\`\\`python`` are tracked. To avoid reading prose
+    mentions of triple backticks as openers, an INLINE fence (fence
+    not at line start) is only accepted when its trailing characters
+    look like a clean CommonMark info-string token with no internal
+    whitespace. Column-0 fences always count, so multi-token info
+    strings like ``\\`\\`\\`python linenums=1`` still work.
     """
     active_char: Optional[str] = None
     active_len = 0
@@ -245,10 +247,14 @@ def _has_unclosed_code_fence(text: str) -> bool:
         raw_trailing = line[m.end() :]
         trailing = raw_trailing.strip()
         ch = fence[0]
-        # Prose mention guard: a real fence line never has a space
-        # immediately after the delimiters followed by sentence text.
-        if raw_trailing and raw_trailing[0] == " " and trailing:
-            continue
+        is_inline = bool(line[: m.start()].strip())
+        # Inline + multi-word trailing or leading-space trailing both
+        # read as prose ("Use ``` to start", "Use ```python to open").
+        if is_inline:
+            if raw_trailing and raw_trailing[0] == " " and trailing:
+                continue
+            if trailing and (" " in trailing or "\t" in trailing):
+                continue
         if active_char is None:
             active_char = ch
             active_len = len(fence)
@@ -308,7 +314,8 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
 _LOCAL_ACTION_VERBS = (
     r"load|inspect|parse|"
     r"calculate|compute|analy[sz]e|extract|"
-    r"run|execute|fetch|download|query"
+    r"run|execute|fetch|download|query|"
+    r"gather|collect|identify"
 )
 _NUMBERED_ACTION_ITEM = re.compile(
     rf"(?:^|\r?\n)[ \t]*\d+\.[ \t]+(?:{_LOCAL_ACTION_VERBS})\b",
@@ -320,7 +327,7 @@ _NUMBERED_ACTION_ITEM = re.compile(
 # numbered-list cross-check.
 _STRONG_INTENT_BEFORE_LIST = re.compile(
     r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
-    r"i will|i shall|let me|allow me|now i|next i)\b",
+    r"i will|i shall|i need to|let me|allow me|now i|next i)\b",
     re.IGNORECASE,
 )
 
@@ -333,11 +340,12 @@ _STRONG_INTENT_BEFORE_LIST = re.compile(
 # signal that this is a tool stall.
 _BARE_INTENT_NUMBERED_PLAN = re.compile(
     r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
-    r"i will|i shall|let me|allow me|now i|next i)\s*:[ \t]*"
+    r"i will|i shall|i need to|let me|allow me|now i|next i)\s*:[ \t]*"
     r"(?:\r?\n)[ \t]*\d+\.[ \t]+"
     r"(?:open|read|search|look up|check|verify|create|build|add|set up|"
     r"load|inspect|parse|calculate|compute|analy[sz]e|extract|run|execute|"
-    r"fetch|download|query|summari[sz]e|implement|generate|draft|write)\b",
+    r"fetch|download|query|summari[sz]e|implement|generate|draft|write|"
+    r"visit|access|navigate|gather|collect|identify|update|edit)\b",
     re.IGNORECASE,
 )
 
