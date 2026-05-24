@@ -1577,36 +1577,159 @@ def test_legacy_google_openai_base_url_is_rewritten():
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
 
 
-def test_remote_image_url_mime_inferred_from_extension(monkeypatch):
-    """Non-data image_url parts must guess MIME from the path so PNG /
-    WebP / GIF inputs are not silently mislabeled as JPEG."""
-    cases = {
-        "https://cdn.example.com/diagram.png": "image/png",
-        "https://cdn.example.com/diagram.webp": "image/webp",
-        "https://cdn.example.com/diagram.gif": "image/gif",
-        "https://cdn.example.com/diagram.jpg": "image/jpeg",
-        "https://cdn.example.com/path/no-ext": "image/jpeg",
-    }
-    for url, expected in cases.items():
-        captured = _capture_body(
-            monkeypatch,
+def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
+    """Round 14: arbitrary public HTTPS image URLs cannot be sent as
+    Gemini fileData (that path is reserved for Files API URIs and
+    YouTube). The translator must fetch the bytes server-side and
+    inline them as base64 inlineData, mirroring the pre-PR
+    OpenAI-compat behaviour. MIME is preferred from the response
+    Content-Type, with the URL extension as fallback."""
+    captured: dict = {}
+    image_bytes = b"FAKEPNGBYTES"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "generativelanguage.googleapis.com" in url:
+            captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                content = _gemini_sse(
+                    [
+                        {
+                            "candidates": [
+                                {
+                                    "content": {
+                                        "role": "model",
+                                        "parts": [{"text": "ok"}],
+                                    },
+                                    "finishReason": "STOP",
+                                }
+                            ],
+                            "usageMetadata": {
+                                "promptTokenCount": 1,
+                                "candidatesTokenCount": 1,
+                            },
+                        }
+                    ]
+                ),
+                headers = {"content-type": "text/event-stream"},
+            )
+        # Image fetch for cdn.example.com — return the fake bytes.
+        return httpx.Response(
+            200,
+            content = image_bytes,
+            headers = {"content-type": "image/png"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = _make_gemini_client()
+        async for _ in client.stream_chat_completion(
             messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "what is this?"},
-                        {"type": "image_url", "image_url": {"url": url}},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://cdn.example.com/diagram.png",
+                            },
+                        },
                     ],
                 }
             ],
+            model = "gemini-2.5-flash",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    parts = captured["body"]["contents"][-1]["parts"]
+    inline = next((p for p in parts if "inlineData" in p), None)
+    assert inline is not None, parts
+    assert inline["inlineData"]["mimeType"] == "image/png"
+    assert inline["inlineData"]["data"] == base64.b64encode(image_bytes).decode()
+    # No fileData should be emitted for the public URL.
+    assert not any("fileData" in p for p in parts), parts
+
+
+def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
+    """Round 14: YouTube URLs and generativelanguage.googleapis.com
+    Files API URIs are the documented `fileData.fileUri` paths and
+    must NOT be downloaded; arbitrary public URLs do get fetched."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _gemini_sse(
+                [
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [{"text": "ok"}],
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 1,
+                            "candidatesTokenCount": 1,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
         )
-        parts = captured["body"]["contents"][-1]["parts"]
-        file_parts = [p for p in parts if "fileData" in p]
-        assert file_parts, (url, parts)
-        assert file_parts[0]["fileData"]["mimeType"] == expected, (
-            url,
-            file_parts,
-        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = _make_gemini_client()
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "explain"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://www.youtube.com/watch?v=abc123",
+                            },
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://generativelanguage.googleapis.com/v1beta/files/abc",
+                            },
+                        },
+                    ],
+                }
+            ],
+            model = "gemini-2.5-flash",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    parts = captured["body"]["contents"][-1]["parts"]
+    file_uris = [p["fileData"]["fileUri"] for p in parts if "fileData" in p]
+    assert "https://www.youtube.com/watch?v=abc123" in file_uris, parts
+    assert (
+        "https://generativelanguage.googleapis.com/v1beta/files/abc" in file_uris
+    ), parts
 
 
 def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
@@ -2291,6 +2414,101 @@ def test_chat_message_extra_content_round_trips_through_validation():
         base_url = "https://litellm.example/v1",
     )
     assert "extra_content" not in built_custom[1], built_custom[1]
+
+
+def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
+    """Round 14: Gemini docs show parallel functionResponses grouped
+    in a single subsequent user content with multiple
+    functionResponse parts. Consecutive OpenAI role="tool" messages
+    must merge into one Gemini user block, not split into separate
+    user turns."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "compute"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "add", "arguments": "{\"x\":1}"},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "mul", "arguments": "{\"x\":2}"},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_a",
+                "name": "add",
+                "content": "2",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_b",
+                "name": "mul",
+                "content": "4",
+            },
+        ],
+    )
+    contents = captured["body"]["contents"]
+    # Initial user, model with two functionCalls, ONE user with two
+    # functionResponses.
+    tool_result_users = [
+        c
+        for c in contents
+        if c.get("role") == "user"
+        and all(
+            isinstance(p, dict) and "functionResponse" in p
+            for p in (c.get("parts") or [])
+        )
+    ]
+    assert len(tool_result_users) == 1, contents
+    fr_parts = tool_result_users[0]["parts"]
+    assert len(fr_parts) == 2, fr_parts
+    names = [p["functionResponse"]["name"] for p in fr_parts]
+    assert names == ["add", "mul"], names
+
+
+def test_function_schema_nullable_type_array_flattens(monkeypatch):
+    """Round 14: OpenAI strict tools commonly use
+    `"type": ["string", "null"]` for optional fields. Gemini's
+    OpenAPI-style Schema rejects union types and expects
+    `"type": "string"` with `"nullable": true`. The sanitizer must
+    translate the union form."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": ["string", "null"]},
+                            "score": {"type": ["number", "null"]},
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    decls = next(
+        t["functionDeclarations"]
+        for t in captured["body"].get("tools") or []
+        if "functionDeclarations" in t
+    )
+    params = decls[0]["parameters"]["properties"]
+    assert params["city"]["type"] == "string"
+    assert params["city"]["nullable"] is True
+    assert params["score"]["type"] == "number"
+    assert params["score"]["nullable"] is True
 
 
 def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):

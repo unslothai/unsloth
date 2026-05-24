@@ -8,6 +8,7 @@ Most registry providers expose OpenAI-compatible /v1/chat/completions endpoints;
 Anthropic uses native Messages API with translation in this client.
 """
 
+import base64
 import json as _json
 import mimetypes
 import re
@@ -2781,11 +2782,25 @@ class ExternalProviderClient:
                                     }
                                 )
                         elif url:
-                            # Remote image. Gemini's `fileData` part takes
-                            # a `fileUri` for both Files-API uploads and
-                            # public https URLs. Guess MIME from the URL
-                            # path so PNG/WebP/GIF inputs are not mislabeled
-                            # as JPEG (Gemini rejects mismatched mime).
+                            # Gemini's `fileData.fileUri` part only
+                            # accepts a) URIs returned by the Files API
+                            # (https://generativelanguage.googleapis.com/v1beta/files/*)
+                            # and b) YouTube URLs. Arbitrary public
+                            # HTTPS image URLs must be downloaded and
+                            # inlined as base64 inlineData, otherwise
+                            # native Gemini rejects the part. The
+                            # pre-PR OpenAI-compat endpoint did the
+                            # download server-side, so preserve that
+                            # behaviour on the native path too.
+                            _url_lc = url.lower()
+                            _is_native_uri = (
+                                "generativelanguage.googleapis.com/" in _url_lc
+                                and "/files/" in _url_lc
+                            )
+                            _is_youtube = (
+                                "youtube.com/" in _url_lc
+                                or "youtu.be/" in _url_lc
+                            )
                             _path = urlparse(url).path
                             _guessed, _ = mimetypes.guess_type(_path)
                             _media_type = (
@@ -2794,14 +2809,47 @@ class ExternalProviderClient:
                                 and _guessed.startswith("image/")
                                 else "image/jpeg"
                             )
-                            parts.append(
-                                {
-                                    "fileData": {
-                                        "fileUri": url,
-                                        "mimeType": _media_type,
+                            if _is_native_uri or _is_youtube:
+                                parts.append(
+                                    {
+                                        "fileData": {
+                                            "fileUri": url,
+                                            "mimeType": _media_type,
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            else:
+                                try:
+                                    _resp = await _http_client.get(
+                                        url, timeout = 20.0
+                                    )
+                                    _resp.raise_for_status()
+                                    _hdr_mime = (
+                                        _resp.headers.get("content-type")
+                                        or ""
+                                    ).split(";")[0].strip()
+                                    _final_mime = (
+                                        _hdr_mime
+                                        if _hdr_mime.startswith("image/")
+                                        else _media_type
+                                    )
+                                    _b64 = base64.b64encode(_resp.content).decode(
+                                        "ascii"
+                                    )
+                                    parts.append(
+                                        {
+                                            "inlineData": {
+                                                "mimeType": _final_mime,
+                                                "data": _b64,
+                                            }
+                                        }
+                                    )
+                                except Exception as _fetch_err:
+                                    logger.warning(
+                                        "Gemini image fetch failed url=%s err=%s -- skipping part",
+                                        url,
+                                        _fetch_err,
+                                    )
             # Gemini 3 strict function-calling requires text-part
             # thoughtSignatures to be replayed on history; the frontend
             # stows the latest one as
@@ -2953,7 +3001,25 @@ class ExternalProviderClient:
                 parts = [{"functionResponse": function_response_part}]
                 gemini_role = "user"
             if parts:
-                contents.append({"role": gemini_role, "parts": parts})
+                # Gemini expects parallel functionResponses (multiple
+                # OpenAI role="tool" messages in a row) to ride on a
+                # single user content with multiple functionResponse
+                # parts -- the docs show parallel responses grouped
+                # together in the next turn. Merge consecutive
+                # functionResponse-only user blocks so realistic
+                # parallel tool loops round-trip correctly.
+                if (
+                    role == "tool"
+                    and contents
+                    and contents[-1].get("role") == "user"
+                    and all(
+                        isinstance(p, dict) and "functionResponse" in p
+                        for p in (contents[-1].get("parts") or [])
+                    )
+                ):
+                    contents[-1]["parts"].extend(parts)
+                else:
+                    contents.append({"role": gemini_role, "parts": parts})
 
         body: dict[str, Any] = {"contents": contents}
         if system_text_parts:
@@ -3184,9 +3250,25 @@ class ExternalProviderClient:
             # allowlist; under `properties` the keys are user-defined
             # field names and the values are themselves Schemas; under
             # `items` / `anyOf` the values are also Schemas.
+            # OpenAI strict tools commonly use JSON Schema's
+            # `"type": ["string", "null"]` form for nullable fields;
+            # Gemini's OpenAPI Schema uses `"type": "string"` plus
+            # `"nullable": true`. Translate that here.
             if isinstance(node, dict):
                 cleaned: dict[str, Any] = {}
+                _nullable_from_union = False
+                _flattened_type: Optional[str] = None
+                _raw_type = node.get("type")
+                if isinstance(_raw_type, list):
+                    _non_null = [t for t in _raw_type if t != "null"]
+                    if len(_non_null) < len(_raw_type):
+                        _nullable_from_union = True
+                    if _non_null:
+                        _flattened_type = _non_null[0]
                 for _k, _v in node.items():
+                    if _k == "type" and isinstance(_v, list):
+                        # Handled below via _flattened_type.
+                        continue
                     if _k not in _GEMINI_ALLOWED_SCHEMA_KEYS:
                         continue
                     if _k == "properties" and isinstance(_v, dict):
@@ -3203,6 +3285,10 @@ class ExternalProviderClient:
                         cleaned[_k] = _v
                     else:
                         cleaned[_k] = _v
+                if _flattened_type is not None:
+                    cleaned["type"] = _flattened_type
+                if _nullable_from_union and "nullable" not in cleaned:
+                    cleaned["nullable"] = True
                 return cleaned
             return node
 
