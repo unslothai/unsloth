@@ -1364,16 +1364,38 @@ def _check_signal_escape_patterns(code: str):
                     if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
                         path_class_aliases_prepass.add(alias.asname or alias.name)
 
+    # ``_SENSITIVE_FILE_PREFIXES`` and ``_SENSITIVE_FILE_RE`` are also
+    # defined inside ``NetworkAndIoVisitor`` for the open-call gate,
+    # but ``_looks_sensitive`` needs them in the binding pre-pass which
+    # runs much earlier. Duplicate the literal here so the bias check
+    # covers ``/etc/passwd`` (not in ``_ABSOLUTE_SENSITIVE``, only in
+    # this prefix list) too.
+    _PREPASS_SENSITIVE_PREFIXES = (
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+    )
+    _PREPASS_SENSITIVE_RE = re.compile(
+        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
+    )
+
     def _looks_sensitive(value: str) -> bool:
         """True if *value* matches any host-credential / process-state
         path that the bash / file gates already flag. Uses the
-        authoritative ``_find_sensitive_paths`` so the bias distinguishes
-        ``/etc/shadow`` (sensitive) from ``/etc/hosts`` (allow-listed) --
-        a substring hint set conflates them and admits a chained-
-        reassignment bypass ``p='/etc/hosts'; p='/etc/shadow'``."""
+        authoritative ``_find_sensitive_paths`` (covers /etc/shadow,
+        /proc/<pid>/environ, ~/.ssh/id_rsa, ~/.aws/credentials, etc.)
+        plus the open-call ``_SENSITIVE_FILE_PREFIXES`` / ``_SENSITIVE_FILE_RE``
+        so /etc/passwd and similar prefix-only entries are caught too."""
         if not value:
             return False
-        return bool(_find_sensitive_paths(value))
+        if _find_sensitive_paths(value):
+            return True
+        if any(value.startswith(p) for p in _PREPASS_SENSITIVE_PREFIXES):
+            return True
+        if _PREPASS_SENSITIVE_RE.match(value):
+            return True
+        return False
 
     def _record_string_binding(name: str, value: str) -> None:
         """Append ``value`` to ``string_bindings_all[name]`` and update
