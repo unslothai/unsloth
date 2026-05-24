@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { IngestionToastStack } from "@/features/rag/components/ingestion-toast-stack";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -114,6 +115,7 @@ function RootLayout() {
   return (
     <AppProvider>
       <SettingsDialog />
+      <IngestionToastStack />
       {hideNavbar ? (
         <main className="flex-1">
           <Suspense fallback={RouteFallback}>
