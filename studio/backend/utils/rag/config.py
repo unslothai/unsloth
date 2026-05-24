@@ -40,12 +40,12 @@ RAG_EMBEDDING_MODEL: str = (
 RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
     ("text", "standard"): "BAAI/bge-small-en-v1.5",
     ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",
-    # BGE-VL-base is loaded via the canonical `transformers.AutoModel`
-    # path (with trust_remote_code) — see `_BGEVLAdapter` in
-    # core/rag/embeddings.py. This bypasses BGE-VL's sentence-transformers
-    # shim entirely, sidestepping the ST-version coupling in the repo's
-    # custom Transformer subclass. 512-d shared text+image space.
-    ("multimodal", "standard"): "BAAI/BGE-VL-base",
+    # Qwen3-VL-Embedding-2B: 2B-param multimodal embedder built on
+    # Qwen3 (not CLIP), so no 77-token text cap — long chunks embed
+    # losslessly. Loads through vanilla SentenceTransformer with
+    # trust_remote_code, no shim. 2048-d shared text/image space.
+    # Trade-off: ~4 GB download / VRAM vs BGE-VL-base's ~600 MB.
+    ("multimodal", "standard"): "Qwen/Qwen3-VL-Embedding-2B",
 }
 
 

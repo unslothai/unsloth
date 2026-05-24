@@ -10,6 +10,10 @@
 qdrant-client>=1.12
 bm25s>=0.2
 
+# Image preprocessing helpers required by Qwen3-VL-Embedding-2B (the
+# multimodal embedder). Not used in text-only mode.
+qwen-vl-utils>=0.0.14
+
 # Layout-aware Markdown extraction (Phase 3A) so the chunker can split
 # on real headings instead of running paragraphs together. pymupdf4llm
 # preserves headings + pipe-tables; mammoth handles DOCX Heading styles;
