@@ -1877,7 +1877,7 @@ case "$TORCH_INDEX_URL" in
                 esac
             fi
             _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
-                NF { vals[n++] = $0 }
+                NF && !seen[$0]++ { vals[n++] = $0 }
                 END {
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
