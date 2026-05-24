@@ -498,8 +498,6 @@ def test_consume_helper_rejects_flag_as_value():
 def test_consume_helper_allows_bare_dash_as_value():
     """A lone `-` is a valid stdin/path sentinel, not a flag."""
     helper = _studio_mod()._consume_legacy_short_aliases
-    value, remaining = helper(
-        ["-m", "-", "--top-k", "20"], ("-m",), None, "--model"
-    )
+    value, remaining = helper(["-m", "-", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-"
     assert remaining == ["--top-k", "20"]
