@@ -14,7 +14,7 @@ User-supplied args are appended to ``cmd`` after Studio's auto-set
 flags, so llama.cpp's last-wins CLI parsing makes the user's value
 override the auto-set one. That covers tunable knobs the user might
 reasonably want to override -- ``-c``/``--ctx-size``,
-``-np``/``--parallel``, ``-fa``/``--flash-attn``,
+``-fa``/``--flash-attn``,
 ``-ngl``/``--gpu-layers``, ``-t``/``--threads``, ``-fit``/``--fit*``,
 ``--cache-type-k/v``, ``--chat-template-file/-kwargs``,
 ``--spec-*``, ``--jinja``/``--no-jinja``,

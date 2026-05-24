@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os.path as _osp
+import sys as _sys
+
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
 
@@ -8,7 +11,21 @@ from importlib.metadata import version as package_version, PackageNotFoundError
 from unsloth_cli.commands.train import train
 from unsloth_cli.commands.inference import inference
 from unsloth_cli.commands.export import export, list_checkpoints
-from unsloth_cli.commands.studio import run as studio_run, studio_app
+from unsloth_cli.commands.studio import (
+    run as studio_run,
+    studio_app,
+    _expand_attached_np_short,
+)
+
+
+# Apply the studio `-np<N>` argv canonicalisation only when invoked through
+# the installed `unsloth` console script or the workspace `cli.py`;
+# importing this module from a notebook or pytest run must not mutate the
+# caller's argv.
+_entry_base = _osp.basename(_sys.argv[0]).lower() if _sys.argv else ""
+if _entry_base in {"unsloth", "unsloth.exe"} or _entry_base.endswith("cli.py"):
+    _expand_attached_np_short()
+del _entry_base
 
 
 def show_version(value: bool):
