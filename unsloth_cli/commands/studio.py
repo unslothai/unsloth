@@ -639,13 +639,10 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
 
 
 def _expand_attached_np_short() -> None:
-    # Click registers `-p` for `--port` and `-np` for `--parallel`. The
-    # attached form `-np8` mis-tokenizes as `-n -p 8` (port=8 plus a stray
-    # `-n`), silently losing the parallel value. Space/equals forms
-    # (`-np 8`, `-np=8`) are unaffected. Sits next to
-    # `_consume_legacy_short_aliases` since both work around Click's
-    # short-option clustering for this command's `-np` / `-m` / `-f` /
-    # `-hfr` parsing.
+    # Click clusters `-np8` as `-n -p 8` (because `-p` is the typer short
+    # for `--port`), silently dropping the parallel value. Rewrite to
+    # separated `-np <N>` so the typer alias matches. Space/equals forms
+    # (`-np 8`, `-np=8`) already parse correctly.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]

@@ -18,10 +18,9 @@ from unsloth_cli.commands.studio import (
 )
 
 
-# Apply the studio `-np<N>` argv canonicalisation only when invoked through
-# the installed `unsloth` console script or the workspace `cli.py`;
-# importing this module from a notebook or pytest run must not mutate the
-# caller's argv.
+# Run the studio `-np<N>` argv canonicalisation only when invoked through
+# the unsloth console-script / cli.py entry; tests and notebooks that
+# import this module must not have their argv mutated.
 _entry_base = _osp.basename(_sys.argv[0]).lower() if _sys.argv else ""
 if _entry_base in {"unsloth", "unsloth.exe"} or _entry_base.endswith("cli.py"):
     _expand_attached_np_short()
