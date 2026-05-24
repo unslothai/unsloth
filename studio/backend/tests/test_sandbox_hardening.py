@@ -1409,3 +1409,272 @@ class TestFollowup_ProcSelfSymlinkTraversal:
     )
     def test_proc_legit_introspection_allowed(self, code):
         assert not _is_blocked(code), f"legit /proc read blocked: {code!r}"
+
+
+class TestFollowup_BareAndMethodAliases:
+    """Module-rebinding bypass class:
+
+      * ``m = os; m.system('sudo whoami')`` (bare module alias)
+      * ``p = os.popen; p('sudo whoami')`` (method alias)
+      * Same shape for ``subprocess`` and its dangerous attrs.
+
+    Previously the alias tracker only handled ``m = __import__('os')``
+    / ``m = importlib.import_module('os')`` and ``from os import system``
+    -- the simple ``m = os`` and ``p = os.popen`` chains slipped through
+    because the static gate never propagated the source alias to ``m``
+    or registered ``p`` as a shell-exec callable.
+    """
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # bare module rebinding
+            "import os\nm = os\nm.system('s' + 'udo whoami')",
+            "import os\nx = os\nx.popen('s' + 'udo whoami')",
+            "import subprocess\nr = subprocess\nr.run(['s'+'udo','whoami'], shell=True)",
+            "import subprocess\nsp = subprocess\nsp.Popen('s'+'udo whoami', shell=True)",
+            # chained rebinding
+            "import os\nm = os\nn = m\nn.system('s' + 'udo whoami')",
+            # method (callable) aliasing
+            "import os\np = os.popen\np('s'+'udo whoami')",
+            "import os\nss = os.system\nss('s'+'udo whoami')",
+            "import subprocess\nr = subprocess.run\nr(['s'+'udo','whoami'], shell=True)",
+            "import subprocess\np = subprocess.Popen\np('s'+'udo whoami', shell=True)",
+        ],
+    )
+    def test_bare_and_method_alias_blocked(self, code):
+        assert _is_blocked(code), f"alias bypass leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Same shapes but with safe targets must keep working.
+            "import os\nm = os\nm.listdir('.')",
+            "import os\nm = os\nm.getcwd()",
+            "import os\nj = os.path.join\nj('a', 'b')",
+            "import subprocess\nr = subprocess\nr.list2cmdline(['ls'])",
+            # Aliasing a non-dangerous module is unrelated to the gate.
+            "import json\nj = json\nj.dumps({})",
+            # Aliasing a function we never tracked is fine.
+            "import os\nl = os.listdir\nl('.')",
+        ],
+    )
+    def test_legit_aliases_allowed(self, code):
+        assert not _is_blocked(code), f"legit alias blocked: {code!r}"
+
+
+class TestFollowup_ImportlibFromImportAlias:
+    """``from importlib import import_module as IM; IM('os').system(...)``
+    and ``m = IM('os'); m.system(...)``. Previously the alias was
+    untracked, so ``IM('os')`` was not recognised as a dynamic os import."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from importlib import import_module as IM\nIM('os').system('s'+'udo whoami')",
+            "from importlib import import_module as IM\nm = IM('os')\nm.system('s'+'udo whoami')",
+            "from importlib import import_module as IM\nIM('subprocess').run(['s'+'udo','whoami'], shell=True)",
+            "from importlib import import_module as load_it\nload_it('os').popen('cat ~/.ssh/id_rsa')",
+            "from importlib import import_module as IM\nm = IM('os')\nm.popen('cat /etc/shadow')",
+        ],
+    )
+    def test_importlib_from_import_alias_blocked(self, code):
+        assert _is_blocked(code), f"importlib alias leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from importlib import import_module as IM\nIM('json').dumps({})",
+            "from importlib import import_module as IM\np = IM('pathlib')\np.Path('/tmp/x').exists()",
+        ],
+    )
+    def test_importlib_from_import_alias_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit importlib alias blocked: {code!r}"
+
+
+class TestFollowup_ShutilDirectoryExfil:
+    """``shutil.copytree('/home/u/.ssh', '/tmp/out')`` and
+    ``shutil.copy('/etc', '/tmp/out')`` drag every file out of a
+    sensitive directory in one call. Previously the gate only matched
+    per-file sensitive paths so the bare directory slipped through."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil; shutil.copytree('/home/u/.ssh', '/tmp/out')",
+            "import shutil; shutil.copytree('/root/.ssh', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.aws', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.config/gcloud', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.gnupg', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.docker', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.kube', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.password-store', '/tmp/out')",
+            "import shutil; shutil.copytree('/etc', '/tmp/out')",
+            "import shutil; shutil.copytree('/etc/ssh', '/tmp/out')",
+            "import shutil; shutil.copytree('/proc/self', '/tmp/out')",
+            "import shutil; shutil.copytree('/proc/1', '/tmp/out')",
+            "import shutil; shutil.move('/home/u/.aws', '/tmp/out')",
+            "import shutil; shutil.copy('/home/u/.aws', '/tmp/out')",
+            # trailing slash
+            "import shutil; shutil.copytree('/home/u/.ssh/', '/tmp/out')",
+            # tilde + home prefix
+            "import shutil; shutil.copytree('~/.ssh', '/tmp/out')",
+        ],
+    )
+    def test_shutil_dir_exfil_blocked(self, code):
+        assert _is_blocked(code), f"shutil dir exfil leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Single-file legit reads under a sensitive directory --
+            # the per-file allow-list governs these, NOT the dir gate.
+            "import shutil; shutil.copy('/home/u/.ssh/known_hosts', './b.txt')",
+            "import shutil; shutil.copy('/home/u/.ssh/id_rsa.pub', './b.txt')",
+            "import shutil; shutil.copy('/home/u/.ssh/config', './b.txt')",
+            # Lookalike directory names (different dir, similar prefix)
+            "import shutil; shutil.copytree('/home/u/.ssh_backup', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.sshconfig', '/tmp/out')",
+            "import shutil; shutil.copytree('/home/u/.awsd', '/tmp/out')",
+            # Project-local lookalikes
+            "import shutil; shutil.copytree('./workspace/home/u/.ssh', '/tmp/out')",
+            "import shutil; shutil.copytree('./project/.aws', '/tmp/out')",
+            # Safe directories with sensitive-looking suffix in path
+            "import shutil; shutil.copytree('./src', '/tmp/out')",
+            "import shutil; shutil.copy('./data.txt', './backup.txt')",
+        ],
+    )
+    def test_shutil_dir_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit shutil dir blocked: {code!r}"
+
+
+class TestFollowup_ExplicitFileReaders:
+    """``io.FileIO`` and ``codecs.open`` are file-reader call shapes
+    that do not match ``open()`` / ``.open`` but read arbitrary paths.
+    Treat them the same as ``open()``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io; io.FileIO('/etc/shadow').read()",
+            "import io; io.FileIO('/etc/shadow', 'r')",
+            "from io import FileIO; FileIO('/etc/shadow')",
+            "import codecs; codecs.open('/etc/shadow').read()",
+            "import codecs; codecs.open('/home/u/.aws/credentials', 'r').read()",
+            "import io; io.FileIO('/proc/self/environ')",
+        ],
+    )
+    def test_explicit_readers_blocked(self, code):
+        assert _is_blocked(code), f"explicit reader leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io; io.FileIO('./data.bin').read()",
+            "import codecs; codecs.open('./input.txt', encoding='utf-8').read()",
+            "import io; io.FileIO('/etc/hosts').read()",  # allow-listed
+        ],
+    )
+    def test_explicit_readers_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit reader blocked: {code!r}"
+
+
+class TestFollowup_BytesAndWalrus:
+    """``open(b'/etc/shadow')`` (bytes path) and
+    ``open((p := '/etc/shadow'))`` (walrus). Bytes are valid PathLike;
+    walrus must resolve to the RHS literal."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(b'/etc/shadow')",
+            "open(b'/etc/' + b'shadow')",
+            "import io; io.FileIO(b'/etc/shadow')",
+            "open((p := '/etc/shadow'))",
+            "p = (q := '/etc/shadow')\nopen(p)",
+            "open((p := '/etc/' + 'shadow'))",
+        ],
+    )
+    def test_bytes_and_walrus_blocked(self, code):
+        assert _is_blocked(code), f"bytes/walrus path leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(b'data.bin')",
+            "open((p := 'data.txt'))",
+            "x = (y := 5)\nprint(x)",
+        ],
+    )
+    def test_bytes_and_walrus_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit bytes/walrus blocked: {code!r}"
+
+
+class TestFollowup_TupleAndListUnpack:
+    """Statically-resolvable tuple / list unpacking destructuring:
+    ``(a, b) = ('/etc', 'shadow'); open(a + '/' + b)`` and
+    ``p, = ['/etc/shadow']; open(p)``. The pre-pass that backs
+    ``_extract_string_from_node`` now folds these into ``string_bindings``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "(a, b) = ('/etc', 'shadow')\nopen(a + '/' + b)",
+            "a, b = '/etc', 'shadow'\nopen(a + '/' + b)",
+            "p, = ['/etc/shadow']\nopen(p)",
+            "[p] = ['/etc/shadow']\nopen(p)",
+            "(a, b, c) = ('/', 'etc/', 'shadow')\nopen(a + b + c)",
+            "(a, b) = ('/home/u/.aws', '/credentials')\nopen(a + b)",
+        ],
+    )
+    def test_tuple_unpack_blocked(self, code):
+        assert _is_blocked(code), f"tuple-unpack path leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "(a, b) = ('hello', 'world')\nprint(a + b)",
+            "a, b = 1, 2\nprint(a + b)",
+            "(a, b) = ('./input', '.txt')\nopen(a + b)",
+        ],
+    )
+    def test_tuple_unpack_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit tuple-unpack blocked: {code!r}"
+
+
+class TestFollowup_DataframeReaders:
+    """``pd.read_csv('/etc/shadow')`` and friends are file-reader calls
+    that bypass the ``open()`` gate. Match the common pandas / numpy
+    reader method names by suffix so any alias of the module is caught."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pandas as pd; pd.read_csv('/etc/shadow')",
+            "import pandas as pd; pd.read_csv('/proc/self/environ')",
+            "import pandas; pandas.read_csv('/home/u/.aws/credentials')",
+            "import pandas as pd; pd.read_excel('/proc/1/environ')",
+            "import pandas as pd; pd.read_json('/etc/shadow')",
+            "import pandas as pd; pd.read_parquet('/etc/shadow')",
+            "import pandas as pd; pd.read_table('/etc/shadow')",
+            "import pandas as pd; pd.read_pickle('/home/u/.ssh/id_rsa')",
+            "import numpy as np; np.fromfile('/etc/shadow')",
+            "import numpy as np; np.loadtxt('/etc/shadow')",
+            "import numpy as np; np.genfromtxt('/proc/self/environ')",
+        ],
+    )
+    def test_dataframe_readers_blocked(self, code):
+        assert _is_blocked(code), f"dataframe reader leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pandas as pd; pd.read_csv('./data.csv')",
+            "import pandas as pd; pd.read_excel('input.xlsx')",
+            "import pandas as pd; pd.read_csv('/etc/hosts')",  # allow-listed
+            "import numpy as np; np.fromfile('./weights.bin')",
+            "import numpy as np; np.loadtxt('train.txt')",
+        ],
+    )
+    def test_dataframe_readers_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit dataframe reader blocked: {code!r}"

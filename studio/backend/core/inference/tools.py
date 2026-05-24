@@ -251,6 +251,65 @@ _ABSOLUTE_SENSITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Whole-directory variants of the credential roots above. Only used by
+# the shutil / file-copy gate -- ``ls ~/.ssh`` and ``find ~/.aws -type f``
+# are legitimate, but ``shutil.copytree('~/.ssh', dst)`` and
+# ``cp -r ~/.aws /tmp/out`` exfil every file in those dirs in one call.
+#
+# The end anchor matches the path AS the directory (``~/.ssh`` or
+# ``~/.ssh/``) and not a file inside it (``~/.ssh/known_hosts`` —
+# the per-file allow-list already governs whether that single read
+# is OK). It also rejects similar-name prefixes (``~/.ssh_backup``).
+_DIR_END = r"(?=/?$|/?[\s'\";&|)<>])"
+_HOME_RELATIVE_SENSITIVE_DIRS = (
+    rf"\.ssh{_DIR_END}",
+    rf"\.aws{_DIR_END}",
+    rf"\.config/gcloud{_DIR_END}",
+    rf"\.gnupg{_DIR_END}",
+    rf"\.docker{_DIR_END}",
+    rf"\.kube{_DIR_END}",
+    rf"\.password-store{_DIR_END}",
+)
+_ABSOLUTE_SENSITIVE_DIRS = (
+    rf"/etc{_DIR_END}",
+    rf"/etc/ssh{_DIR_END}",
+    rf"/var/spool/cron{_DIR_END}",
+    # Same Linux process-state roots as the per-file regex — copying
+    # ``/proc/self/`` or ``/proc/<pid>/`` recursively drags the entire
+    # process state (environ, mem, maps, cmdline) out.
+    rf"/proc/(?:self|thread-self|\d+){_DIR_END}",
+)
+_HOME_SENSITIVE_DIR_RE = re.compile(
+    _PATH_TOKEN_START
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_HOME_RELATIVE_SENSITIVE_DIRS)
+    + r")",
+    re.IGNORECASE,
+)
+_ABSOLUTE_SENSITIVE_DIR_RE = re.compile(
+    _PATH_TOKEN_START + r"(?:" + "|".join(_ABSOLUTE_SENSITIVE_DIRS) + r")",
+    re.IGNORECASE,
+)
+
+
+def _matches_sensitive_dir(path: str) -> bool:
+    """Return True if *path* names a sensitive credential / key directory
+    (rather than a single file). Used by the shutil-copy gate so
+    ``shutil.copytree('~/.ssh', dst)`` and ``shutil.copy('~/.aws', dst)``
+    are caught even though ``~/.ssh`` itself isn't a single sensitive
+    file in ``_HOME_RELATIVE_SENSITIVE``."""
+    if not path:
+        return False
+    for cand in {path, path.replace("\\", "/")}:
+        norm = _normalize_path_separators(cand)
+        for projection in {cand, norm}:
+            if _HOME_SENSITIVE_DIR_RE.search(projection):
+                return True
+            if _ABSOLUTE_SENSITIVE_DIR_RE.search(projection):
+                return True
+    return False
+
 # Sensitive root prefix immediately followed by a shell substitution
 # (``$(...)`` or backticks). Catches dynamic-path constructions like
 # ``cat /etc/$(printf shadow)`` or ``cat /proc/1/$(echo environ)`` that
@@ -1211,9 +1270,21 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(node, ast.Constant):
             if isinstance(node.value, str):
                 return node.value
+            if isinstance(node.value, bytes):
+                # ``open(b'/etc/shadow')`` — bytes are valid path-like
+                # objects to ``open()`` so the literal must reach the
+                # sensitive-path gate too. Strict UTF-8 to avoid
+                # masking junk.
+                try:
+                    return node.value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
             if isinstance(node.value, (int, float)):
                 return str(node.value)
             return None
+        if isinstance(node, ast.NamedExpr):
+            # Walrus (``open((p := '/etc/shadow'))``): resolve the RHS.
+            return _extract_string_literal(node.value, _depth + 1)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _extract_string_literal(node.left, _depth + 1)
             right = _extract_string_literal(node.right, _depth + 1)
@@ -1265,11 +1336,26 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(node, ast.Constant):
             if isinstance(node.value, str):
                 return node.value
+            if isinstance(node.value, bytes):
+                # ``open(b'/etc/shadow')`` -- bytes paths are valid
+                # PathLike for ``open()``. Decode strictly so non-UTF-8
+                # junk does not mask the gate.
+                try:
+                    return node.value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
             if isinstance(node.value, (int, float)):
                 return str(node.value)
             return None
         if isinstance(node, ast.Name):
             return string_bindings.get(node.id)
+        if isinstance(node, ast.NamedExpr):
+            # Walrus ``(p := '/etc/shadow')``: resolve and record the
+            # binding so later uses of ``p`` also resolve.
+            val = _extract_string_from_node(node.value, _depth + 1)
+            if val is not None and isinstance(node.target, ast.Name):
+                string_bindings.setdefault(node.target.id, val)
+            return val
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _extract_string_from_node(node.left, _depth + 1)
             right = _extract_string_from_node(node.right, _depth + 1)
@@ -1327,10 +1413,15 @@ def _check_signal_escape_patterns(code: str):
     # Pre-pass: collect simple ``name = 'literal'`` string assignments
     # and ``name = eval`` / ``name = exec`` function aliases so the
     # visitors and ``_extract_string_from_node`` can resolve later uses.
+    # Also handles tuple / list unpacking (``a, b = '/etc', 'shadow';
+    # open(a + '/' + b)`` and ``p, = ['/etc/shadow']; open(p)``) so that
+    # statically resolvable destructuring isn't a free bypass channel.
     # Walks the AST in one pass; first assignment wins (mirrors actual
     # execution order well enough for the static gate).
     for _assign in ast.walk(tree):
-        if isinstance(_assign, ast.Assign) and len(_assign.targets) == 1:
+        if not isinstance(_assign, ast.Assign):
+            continue
+        if len(_assign.targets) == 1:
             _target = _assign.targets[0]
             if isinstance(_target, ast.Name) and _target.id not in string_bindings:
                 _val = _extract_string_from_node(_assign.value)
@@ -1341,6 +1432,19 @@ def _check_signal_escape_patterns(code: str):
                     "exec",
                 ):
                     eval_exec_aliases[_target.id] = _assign.value.id
+            elif isinstance(_target, (ast.Tuple, ast.List)) and isinstance(
+                _assign.value, (ast.Tuple, ast.List)
+            ):
+                # ``(a, b) = ('/etc', 'shadow')`` / ``p, = ['/etc/shadow']``.
+                if len(_target.elts) == len(_assign.value.elts):
+                    for _tgt_e, _val_e in zip(_target.elts, _assign.value.elts):
+                        if (
+                            isinstance(_tgt_e, ast.Name)
+                            and _tgt_e.id not in string_bindings
+                        ):
+                            _v = _extract_string_from_node(_val_e)
+                            if _v is not None:
+                                string_bindings[_tgt_e.id] = _v
 
     def _extract_strings_from_list(node):
         """Extract string elements from an AST List or Tuple node."""
@@ -1577,6 +1681,11 @@ def _check_signal_escape_patterns(code: str):
             # and ``import builtins as b; b.exec(...)`` flow through the
             # same recursion guard as the bare-name forms.
             self.builtins_aliases = {"builtins", "__builtins__"}
+            # Names that resolve to ``importlib.import_module`` so
+            # ``from importlib import import_module as IM; IM('os')...``
+            # flows through ``_resolve_dynamic_module`` the same as
+            # ``import importlib; importlib.import_module('os')...``.
+            self.import_module_aliases = {"import_module"}
             self.loop_depth = 0
             # Cap recursion into nested eval/exec literals; an adversarial
             # ``eval("eval('eval(...)')")`` should not blow the stack.
@@ -1629,6 +1738,13 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in ("eval", "exec"):
                         eval_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module == "importlib":
+                # ``from importlib import import_module as IM`` so a
+                # later ``IM('os').system(...)`` flows through the same
+                # dynamic-import gate as ``importlib.import_module('os')``.
+                for alias in node.names:
+                    if alias.name == "import_module":
+                        self.import_module_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -1646,7 +1762,7 @@ def _check_signal_escape_patterns(code: str):
             # ``m = importlib.import_module('os')`` so a subsequent
             # ``m.system(...)`` / ``m.popen(...)`` flows through the
             # os/subprocess alias detection unchanged.
-            dyn = _resolve_dynamic_module_name(node.value)
+            dyn = self._resolve_dynamic_module(node.value)
             if dyn == "os":
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
@@ -1655,7 +1771,61 @@ def _check_signal_escape_patterns(code: str):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         self.subprocess_aliases.add(tgt.id)
+
+            # Bare module rebinding (``m = os`` / ``r = subprocess``):
+            # propagate the source alias set so a later ``m.system(...)``
+            # is caught by the same os/subprocess gate as the direct call.
+            if isinstance(node.value, ast.Name):
+                src = node.value.id
+                if src in self.os_aliases:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.os_aliases.add(tgt.id)
+                elif src in self.subprocess_aliases:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.subprocess_aliases.add(tgt.id)
+
+            # Method rebinding (``p = os.popen`` / ``r = subprocess.run``):
+            # the bound name now points at a shell-exec function so a
+            # later ``p('sudo whoami')`` must flow through the
+            # shell-escape gate. Track it under ``shell_exec_aliases``
+            # alongside the existing from-import path.
+            elif (
+                isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+            ):
+                recv = node.value.value.id
+                attr = node.value.attr
+                fq = None
+                if recv in self.os_aliases:
+                    fq = f"os.{attr}"
+                elif recv in self.subprocess_aliases:
+                    fq = f"subprocess.{attr}"
+                if fq and fq in _SHELL_EXEC_FUNCS:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.shell_exec_aliases[tgt.id] = fq
+
             self.generic_visit(node)
+
+        def _resolve_dynamic_module(self, node):
+            """Visitor-aware dynamic-import detection: recognises
+            everything :func:`_resolve_dynamic_module_name` does plus
+            tracked ``from importlib import import_module as IM``
+            aliases stored on ``self.import_module_aliases``."""
+            mod = _resolve_dynamic_module_name(node)
+            if mod is not None:
+                return mod
+            if isinstance(node, ast.Call) and node.args:
+                arg0 = node.args[0]
+                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                    if (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id in self.import_module_aliases
+                    ):
+                        return arg0.value
+            return None
 
         def visit_Call(self, node):
             func = node.func
@@ -1773,9 +1943,10 @@ def _check_signal_escape_patterns(code: str):
                     # Inline dynamic import:
                     #   __import__('os').system(...)
                     #   importlib.import_module('os').popen(...)
+                    #   IM('os').system(...)  (IM is a from-import alias)
                     # No intermediate name binding so the Name branch
                     # above misses it; resolve the receiver here.
-                    dyn = _resolve_dynamic_module_name(func.value)
+                    dyn = self._resolve_dynamic_module(func.value)
                     if dyn == "os":
                         shell_func = f"os.{func.attr}"
                     elif dyn == "subprocess":
@@ -2396,6 +2567,10 @@ def _check_signal_escape_patterns(code: str):
             self.builtins_aliases = {"builtins", "__builtins__"}
             self.path_aliases = set(_PATHLIB_PATH_CLASSES)
             self.pathlib_aliases = {"pathlib"}
+            # ``from io import FileIO as X`` and ``from codecs import open
+            # as X``: a later bare ``X('/etc/shadow')`` flows through the
+            # same file-read gate as the qualified call.
+            self.file_reader_aliases: set[str] = set()
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -2414,6 +2589,17 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in ("eval", "exec"):
                         eval_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module in ("io", "codecs"):
+                # ``from io import FileIO`` / ``from codecs import open``
+                # bind a bare name that is otherwise indistinguishable
+                # from any other ``FileIO(...)`` / ``open(...)`` call.
+                # The reader's gate uses this set to recognise the
+                # alias as a file-read.
+                for alias in node.names:
+                    if (
+                        node.module == "io" and alias.name in ("FileIO", "open")
+                    ) or (node.module == "codecs" and alias.name == "open"):
+                        self.file_reader_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_Call(self, node):
@@ -2639,10 +2825,51 @@ def _check_signal_escape_patterns(code: str):
             ):
                 receiver_read_method = node.func.attr
 
+            # ``io.FileIO`` and ``codecs.open`` are the two stdlib
+            # file-reader call shapes that don't end in ``.open`` /
+            # ``open()`` but still read an arbitrary path. Treat them
+            # as the same gate so ``io.FileIO('/etc/shadow').read()`` is
+            # blocked alongside ``open('/etc/shadow')``.
+            _EXPLICIT_FILE_READERS = ("io.FileIO", "codecs.open")
+            # Third-party file-reader method names that any reasonable
+            # ``pandas``/``numpy`` alias exposes (``pd.read_csv`` /
+            # ``pandas.read_csv`` / ``np.fromfile`` / ``numpy.loadtxt``).
+            # Matched by suffix so the receiver alias does not need to
+            # be tracked separately.
+            _DATAFRAME_READERS = (
+                ".read_csv",
+                ".read_table",
+                ".read_excel",
+                ".read_json",
+                ".read_parquet",
+                ".read_pickle",
+                ".read_feather",
+                ".read_orc",
+                ".read_hdf",
+                ".read_sas",
+                ".read_stata",
+                ".read_xml",
+                ".read_fwf",
+                ".read_sql",
+                ".fromfile",
+                ".loadtxt",
+                ".genfromtxt",
+            )
+            looks_like_dataframe_reader = isinstance(
+                node.func, ast.Attribute
+            ) and any(fq.endswith(s) for s in _DATAFRAME_READERS)
             is_open_call = (
-                (isinstance(node.func, ast.Name) and node.func.id == "open")
+                (
+                    isinstance(node.func, ast.Name)
+                    and (
+                        node.func.id == "open"
+                        or node.func.id in self.file_reader_aliases
+                    )
+                )
                 or fq in ("io.open", "pathlib.Path.open")
+                or fq in _EXPLICIT_FILE_READERS
                 or fq.endswith(".open")
+                or looks_like_dataframe_reader
                 or receiver_read_method is not None
             )
             if is_open_call:
@@ -2769,6 +2996,15 @@ def _check_signal_escape_patterns(code: str):
                             flagged = True
                             break
                         if _find_sensitive_paths(cand):
+                            flagged = True
+                            break
+                        # Whole-directory exfil: shutil.copytree('~/.ssh',
+                        # dst) drags every key out in one call. Reusing
+                        # `_find_sensitive_paths` would miss it because
+                        # `~/.ssh` (no filename) isn't in the per-file
+                        # list. The dir matcher is shutil-specific so
+                        # `ls ~/.ssh` (legit) stays allowed.
+                        if _matches_sensitive_dir(cand):
                             flagged = True
                             break
                     if flagged:
