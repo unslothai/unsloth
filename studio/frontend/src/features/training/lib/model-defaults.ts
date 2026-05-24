@@ -130,6 +130,11 @@ export function mapBackendModelConfigToTrainingPatch(
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
+  // Switching models must reset image size to the model default. Sibling
+  // training fields would also be reset by their respective branches above,
+  // but vision_image_size is special: model-default YAMLs in-tree currently
+  // omit the key, so without an explicit reset a stale 2048 from a previous
+  // model would silently apply to the new one.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
     const raw = training?.vision_image_size;
     if (raw == null) {
@@ -141,8 +146,12 @@ export function mapBackendModelConfigToTrainingPatch(
       const n = toNumber(raw);
       if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
         patch.visionImageSize = n;
+      } else {
+        patch.visionImageSize = null;
       }
     }
+  } else {
+    patch.visionImageSize = null;
   }
 
   const packing = toBoolean(training?.packing);

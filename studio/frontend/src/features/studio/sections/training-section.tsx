@@ -80,10 +80,13 @@ export function TrainingSection() {
   };
 
   const handleSaveConfig = () => {
-    // Match the API mapper gate so exported YAML never carries
-    // vision_image_size for non-image datasets.
+    // Save vision fields for any vision-capable model unless we have positive
+    // confirmation the dataset is text-only. isDatasetImage is undetermined
+    // (null) before a dataset check completes, after dataset edits, and on
+    // import; treating that as "don't save" would silently drop the user's
+    // vision_image_size choice in those windows.
     const includeVisionFields =
-      store.isVisionModel && store.isDatasetImage === true;
+      store.isVisionModel && store.isDatasetImage !== false;
     const yamlStr = serializeConfigToYaml(store, includeVisionFields);
     const blob = new Blob([yamlStr], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);

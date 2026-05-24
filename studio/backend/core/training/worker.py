@@ -965,8 +965,13 @@ def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int
     largest_side = max(width, height)
     if largest_side <= target:
         return width, height
-    scale = float(target) / float(largest_side)
-    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+    # Mirror UnslothVisionDataCollator's integer formula at
+    # unsloth_zoo/vision_utils.py so MLX and Torch produce the same pixels.
+    # Python's round() uses banker's rounding which can disagree by 1px on
+    # half-pixel cases (e.g. 333x1000 with target 500).
+    new_w = max(1, (width * target + largest_side // 2) // largest_side)
+    new_h = max(1, (height * target + largest_side // 2) // largest_side)
+    return new_w, new_h
 
 
 def _resize_mlx_vlm_image(image, resize):
