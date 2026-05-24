@@ -185,20 +185,31 @@ _EXPLICIT_PLAN_HEADER = re.compile(
 # to perform + a numbered list. Catches stalls like
 # ``First, I'll do this:\n1. Search ...`` or ``Let me do this:\n1. Parse
 # the file ...`` where each list item is an action the model promised
-# to take without actually invoking a tool. The follow-up verb list
-# stays narrow to "do/proceed/build/run" style words so common
-# answer prose like "Let me explain", "Let me show", "Let me draft a
-# poem" is not misclassified as a stall.
+# to take without actually invoking a tool. The first-person intent
+# branch tolerates a broad set of work verbs (open/read/search/check/
+# review/inspect/etc.) because direct first-person announcements are
+# strongly plan-like; the "First, ..." / "Step N:" branch stays
+# narrow so algorithmic answers ("First, use binary search:") are
+# preserved.
 _DIRECT_NUMBERED_PLAN_FRAMING = re.compile(
+    r"(?:"
     r"\b(?:i['’](?:ll|m going to|m gonna)|i am (?:going to|gonna)|"
-    r"i will|i shall|let me|allow me|now i|next i|"
-    r"first|step \d+:?)\b"
+    r"i will|i shall|let me|allow me|now i|next i)\b"
+    r"[^\r\n]{0,160}"
+    r"\b(?:open|read|search|look (?:this |that |it |them )?up|browse|"
+    r"google|find|check|verify|compare|review|inspect|examine|"
+    r"do (?:this|these|the following|it)|proceed|start|begin|"
+    r"create|build|implement|set up|add|calculate|compute|analy[sz]e|"
+    r"parse|load|run|execute|test)\b"
+    r"|"
+    r"\b(?:first|step \d+:?)\b"
     r"[^\r\n]{0,160}"
     r"\b(?:do (?:this|these|the following|it)|"
     r"look (?:this |that |it |them )?up|"
     r"proceed|start|begin|"
     r"create|build|implement|set up|add|"
     r"calculate|compute|analy[sz]e|parse|load|run|execute|test)\b"
+    r")"
     r"[\s\S]{0,500}?"
     r"(?:^|\r?\n)[ \t]*\d+\.",
     re.IGNORECASE,
@@ -5136,7 +5147,17 @@ class LlamaCppBackend:
                         # case); otherwise reasoning stays hidden and
                         # an artifact inside it must NOT suppress the
                         # re-prompt.
-                        _visible = content_accum.strip()
+                        # Strip orphan tool-call XML before measuring
+                        # the visible answer. An ``<tool_call>...</tool_call>``
+                        # block that the route layer would scrub from the
+                        # final visible message must not satisfy the
+                        # artifact check.
+                        _visible_raw = content_accum.strip()
+                        _visible = (
+                            _strip_tool_markup(content_accum, final=True).strip()
+                            if _visible_raw
+                            else ""
+                        )
                         _reasoning = reasoning_accum.strip()
                         _stripped = _visible if _visible else _reasoning
                         # Cheap gates first so long final answers never

@@ -985,6 +985,40 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
         assert not _would_reprompt(content), content
 
 
+def test_reprompts_on_direct_first_person_read_check_open_plan():
+    """Direct first-person intent + open/read/check/review/inspect verbs
+    + numbered list is a tool stall. The broader verb set applies to
+    first-person intent only; bare ``First, ...`` and ``Step N: ...``
+    keep their narrower verb whitelist."""
+    samples = [
+        (
+            "Let me read the uploaded file:\n"
+            "1. Identify the columns.\n"
+            "2. Return the total."
+        ),
+        (
+            "I will check the docs:\n"
+            "1. Gather relevant sections.\n"
+            "2. Answer."
+        ),
+        (
+            "First, I'll review the repository:\n"
+            "1. Open the relevant file.\n"
+            "2. Read the implementation.\n"
+            "3. Suggest a fix."
+        ),
+        (
+            "Let me examine the log file:\n"
+            "1. Open the log.\n"
+            "2. Read the errors.\n"
+            "3. Summarize."
+        ),
+    ]
+    for content in samples:
+        assert not _has_answer_artifact(content), content
+        assert _would_reprompt(content), content
+
+
 def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
     """Complete <html> answers that contain nested SVG / self-closing
     tags are still complete pages. The unbalanced-count cross-check is
