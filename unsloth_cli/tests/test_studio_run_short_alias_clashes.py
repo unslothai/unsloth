@@ -287,9 +287,9 @@ def test_missing_model_after_preprocessor_errors(monkeypatch):
     captured = _invoke(monkeypatch, ["--parallel", "8"])
     # No execvp because the missing-model check raises typer.Exit(2)
     # before reaching the re-exec branch.
-    assert len(captured) == 0, (
-        f"expected exit before re-exec, got launch with argv = {captured}"
-    )
+    assert (
+        len(captured) == 0
+    ), f"expected exit before re-exec, got launch with argv = {captured}"
 
 
 def test_legacy_m_inline_value_form(monkeypatch):
