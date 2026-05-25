@@ -205,6 +205,39 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS eval_runs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'running',
+            model_identifier TEXT NOT NULL,
+            dataset_ref TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            num_examples INTEGER,
+            avg_score REAL,
+            error_message TEXT,
+            display_name TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS eval_results (
+            run_id TEXT NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+            idx INTEGER NOT NULL,
+            input_text TEXT,
+            prediction_text TEXT,
+            reference_text TEXT,
+            score REAL,
+            breakdown_json TEXT,
+            error TEXT,
+            PRIMARY KEY (run_id, idx)
+        )
+        """
+    )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -562,6 +595,106 @@ def delete_run(id: str) -> None:
         conn.close()
 
 
+def create_eval_run(
+    id: str, model_identifier: str, dataset_ref: str, metric_name: str,
+    config_json: str, started_at: str, num_examples: Optional[int],
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO eval_runs
+               (id, status, model_identifier, dataset_ref, metric_name,
+                config_json, started_at, num_examples)
+               VALUES (?, 'running', ?, ?, ?, ?, ?, ?)""",
+            (id, model_identifier, dataset_ref, metric_name, config_json,
+             started_at, num_examples),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_eval_result(
+    run_id: str, idx: int, input_text: str, prediction_text: str,
+    reference_text: str, score: Optional[float], breakdown_json: Optional[str],
+    error: Optional[str],
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO eval_results
+               (run_id, idx, input_text, prediction_text, reference_text,
+                score, breakdown_json, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id, idx) DO UPDATE SET
+                 input_text=excluded.input_text,
+                 prediction_text=excluded.prediction_text,
+                 reference_text=excluded.reference_text,
+                 score=excluded.score,
+                 breakdown_json=excluded.breakdown_json,
+                 error=excluded.error""",
+            (run_id, idx, input_text, prediction_text, reference_text,
+             score, breakdown_json, error),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def finish_eval_run(
+    id: str, status: str, ended_at: str, avg_score: Optional[float],
+    error_message: Optional[str],
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE eval_runs
+               SET status=?, ended_at=?, avg_score=?, error_message=?
+               WHERE id=?""",
+            (status, ended_at, avg_score, error_message, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_eval_run(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM eval_runs WHERE id=?", (id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_eval_runs(limit: int = 50, offset: int = 0) -> dict:
+    conn = get_connection()
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM eval_runs").fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM eval_runs ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return {"runs": [dict(r) for r in rows], "total": total}
+    finally:
+        conn.close()
+
+
+def get_eval_results(run_id: str, limit: int = 100, offset: int = 0) -> dict:
+    conn = get_connection()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM eval_results WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM eval_results WHERE run_id=? ORDER BY idx ASC LIMIT ? OFFSET ?",
+            (run_id, limit, offset),
+        ).fetchall()
+        return {"results": [dict(r) for r in rows], "total": total}
+    finally:
+        conn.close()
+
+
 def cleanup_orphaned_runs() -> None:
     """Mark any 'running' rows as errored on startup (server restarted mid-training)."""
     conn = get_connection()
@@ -574,6 +707,14 @@ def cleanup_orphaned_runs() -> None:
                 ended_at = ?
             WHERE status = 'running'
             """,
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.execute(
+            """UPDATE eval_runs
+               SET status='interrupted',
+                   error_message='Server restarted during eval',
+                   ended_at=?
+               WHERE status='running'""",
             (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
