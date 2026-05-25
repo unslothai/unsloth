@@ -70,10 +70,6 @@ from .data_recipe import (
     ValidateResponse,
     JobCreateResponse,
 )
-from .scoring import (
-    ScoreRequest,
-    ScoreResponse,
-)
 from .eval import (
     EvalDatasetRef,
     EvalStartRequest,
@@ -144,9 +140,6 @@ __all__ = [
     "ValidateError",
     "ValidateResponse",
     "JobCreateResponse",
-    # Document scoring
-    "ScoreRequest",
-    "ScoreResponse",
     # Eval schemas
     "EvalDatasetRef",
     "EvalStartRequest",

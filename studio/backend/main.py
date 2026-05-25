@@ -117,12 +117,12 @@ from routes import (
     chat_history_router,
     data_recipe_router,
     datasets_router,
+    eval_router,
     export_router,
     inference_router,
     inference_studio_router,
     models_router,
     providers_router,
-    scoring_router,
     training_history_router,
     training_router,
 )
@@ -529,7 +529,7 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
-app.include_router(scoring_router, prefix = "/api/scoring", tags = ["scoring"])
+app.include_router(eval_router, prefix = "/api/eval", tags = ["eval"])
 
 
 # ============ Health and System Endpoints ============

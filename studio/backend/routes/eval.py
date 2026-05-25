@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from loggers import get_logger
+
+from auth.authentication import get_current_subject
+from eval.jobs import EvalBusyError, EvalJobManager, build_eval_run_fn
+from eval.metrics.registry import list_metrics
+from models import (EvalProgress, EvalResultRow, EvalRunDetail, EvalRunSummary,
+                    EvalStartRequest, MetricInfo)
+from storage import studio_db
+
+logger = get_logger(__name__)
+router = APIRouter()
+
+_MANAGER: EvalJobManager | None = None
+
+
+def get_eval_manager() -> EvalJobManager:
+    global _MANAGER
+    if _MANAGER is None:
+        _MANAGER = EvalJobManager(run_fn=build_eval_run_fn())
+    return _MANAGER
+
+
+@router.get("/metrics")
+async def get_metrics(current_subject: str = Depends(get_current_subject)):
+    return {"metrics": [MetricInfo(**m).model_dump() for m in list_metrics()]}
+
+
+@router.post("/start")
+async def start_eval(payload: EvalStartRequest,
+                     current_subject: str = Depends(get_current_subject)):
+    mgr = get_eval_manager()
+    try:
+        run_id = mgr.start(payload)
+    except EvalBusyError:
+        raise HTTPException(status_code=409, detail="An eval is already running.")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"run_id": run_id}
+
+
+@router.post("/cancel/{run_id}")
+async def cancel_eval(run_id: str, current_subject: str = Depends(get_current_subject)):
+    ok = get_eval_manager().cancel(run_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No active eval with that id.")
+    return {"cancelled": True}
+
+
+@router.get("/runs")
+async def list_runs(limit: int = 50, offset: int = 0,
+                    current_subject: str = Depends(get_current_subject)):
+    data = studio_db.list_eval_runs(limit=limit, offset=offset)
+    return {"runs": [EvalRunSummary(**r).model_dump() for r in data["runs"]],
+            "total": data["total"]}
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str, limit: int = 100, offset: int = 0,
+                  current_subject: str = Depends(get_current_subject)):
+    run = studio_db.get_eval_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Eval run not found.")
+    res = studio_db.get_eval_results(run_id, limit=limit, offset=offset)
+    rows = []
+    for r in res["results"]:
+        rows.append(EvalResultRow(
+            idx=r["idx"], input_text=r["input_text"],
+            prediction_text=r["prediction_text"], reference_text=r["reference_text"],
+            score=r["score"],
+            breakdown=json.loads(r["breakdown_json"]) if r["breakdown_json"] else None,
+            error=r["error"],
+        ))
+    return EvalRunDetail(run=EvalRunSummary(**run), results=rows,
+                         total_results=res["total"]).model_dump()
+
+
+@router.get("/progress/{run_id}")
+async def stream_progress(run_id: str, request: Request,
+                          current_subject: str = Depends(get_current_subject)):
+    mgr = get_eval_manager()
+
+    async def gen():
+        yield "retry: 3000\n\n"
+        last_done = -1
+        while True:
+            if await request.is_disconnected():
+                break
+            prog = mgr.get(run_id)
+            if prog is None:
+                break
+            if prog["done"] != last_done or prog["status"] != "running":
+                payload = EvalProgress(**{
+                    "run_id": run_id, "status": prog["status"],
+                    "done": prog.get("done", 0), "total": prog.get("total", 0),
+                    "avg_score": prog.get("avg_score", 0.0),
+                    "last_result": prog.get("last_result"),
+                }).model_dump_json()
+                event = "complete" if prog["status"] != "running" else "progress"
+                yield f"id: {prog.get('done', 0)}\nevent: {event}\ndata: {payload}\n\n"
+                last_done = prog["done"]
+                if prog["status"] != "running":
+                    break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
