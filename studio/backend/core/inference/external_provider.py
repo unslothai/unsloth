@@ -925,8 +925,13 @@ class ExternalProviderClient:
                 # message objects. Mirror the OpenAI/Anthropic UX by yielding
                 # a synthetic tool_start at stream open and tool_end at
                 # stream close with the collected citation list.
+                # `tool_choice="none"` opts out of all hosted tool
+                # use; without the same gate here the UI gets a fake
+                # web_search tool_start / tool_end card even though
+                # the request never enabled the plugin upstream.
                 web_search_active = (
                     self.provider_type == "openrouter"
+                    and not tool_choice_disabled
                     and bool(enabled_tools)
                     and "web_search" in (enabled_tools or [])
                 )
@@ -1559,6 +1564,42 @@ class ExternalProviderClient:
                 continue
 
             content = msg.get("content")
+            # OpenAI role="tool" with list content -> Anthropic native
+            # tool_result block on a user message. Translating in the
+            # string-content branch only (below) leaves the list-content
+            # form forwarded as an invalid `role:"tool"` message that
+            # Anthropic rejects. Handle both upfront.
+            if msg.get("role") == "tool":
+                _tr_id = msg.get("tool_call_id") or ""
+                if isinstance(content, list):
+                    _flat_parts: list[str] = []
+                    for part in content:
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "text"
+                            and part.get("text")
+                        ):
+                            _flat_parts.append(str(part["text"]))
+                    _flat_result = "".join(_flat_parts)
+                elif content is None:
+                    _flat_result = ""
+                elif isinstance(content, str):
+                    _flat_result = content
+                else:
+                    _flat_result = _json.dumps(content)
+                filtered.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": _tr_id,
+                                "content": _flat_result,
+                            }
+                        ],
+                    }
+                )
+                continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
@@ -3140,10 +3181,24 @@ class ExternalProviderClient:
                         if url.startswith("data:"):
                             header, _, b64data = url.partition(",")
                             media_type = (
-                                header.split(";")[0].replace("data:", "")
+                                header.split(";")[0]
+                                .replace("data:", "")
+                                .strip()
+                                .lower()
                                 or "image/jpeg"
                             )
-                            if b64data:
+                            # Symmetry with the fetched remote image
+                            # path, which already rejects non-image
+                            # Content-Type. A `data:text/html;base64,...`
+                            # URL otherwise lands as Gemini inlineData
+                            # with mimeType="text/html" and 400s the
+                            # whole request.
+                            if not media_type.startswith("image/"):
+                                logger.info(
+                                    "Gemini inlineData: refusing non-image data URL media_type=%s",
+                                    media_type,
+                                )
+                            elif b64data:
                                 # Both data: URLs and fetched remote
                                 # URLs end up in Gemini's `inlineData`,
                                 # so they share the per-request count +
@@ -3223,7 +3278,22 @@ class ExternalProviderClient:
                                 and _guessed.startswith("image/")
                                 else "image/jpeg"
                             )
-                            if _is_native_uri or _is_youtube:
+                            if _is_youtube:
+                                # YouTube fileData is the documented
+                                # video-input path; defaulting to
+                                # `image/jpeg` (the path-guessed value
+                                # for an `image_url` input) is wrong
+                                # and Gemini rejects the malformed
+                                # video part.
+                                parts.append(
+                                    {
+                                        "fileData": {
+                                            "fileUri": url,
+                                            "mimeType": "video/mp4",
+                                        }
+                                    }
+                                )
+                            elif _is_native_uri:
                                 parts.append(
                                     {
                                         "fileData": {
@@ -4695,6 +4765,40 @@ class ExternalProviderClient:
             # in its argument schema is not dropped.
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # Preserve the prior `response.output` ordering: the
+                # model's text precedes its function_call items, and
+                # the matching role=tool follow-up arrives AFTER the
+                # call. Without this guard, history replay puts
+                # function_call -> assistant text -> function_call_output,
+                # which can put the tool output after an unrelated
+                # assistant message and confuse multi-turn function
+                # calling.
+                if isinstance(content, str) and content:
+                    input_items.append({"role": "assistant", "content": content})
+                elif isinstance(content, list):
+                    _asst_parts: list[dict[str, Any]] = []
+                    for _part in content:
+                        if not isinstance(_part, dict):
+                            continue
+                        _pt = _part.get("type")
+                        if _pt == "text" and _part.get("text"):
+                            _asst_parts.append(
+                                {
+                                    "type": "input_text",
+                                    "text": _part.get("text", ""),
+                                }
+                            )
+                        elif _pt == "image_url":
+                            _u = _part.get("image_url", {}).get("url", "")
+                            if _u:
+                                _asst_parts.append(
+                                    {"type": "input_image", "image_url": _u}
+                                )
+                    if _asst_parts:
+                        input_items.append(
+                            {"role": "assistant", "content": _asst_parts}
+                        )
+
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
                         continue
@@ -4735,10 +4839,9 @@ class ExternalProviderClient:
                             "arguments": _args_raw,
                         }
                     )
-                # Skip the assistant text payload when content is empty
-                # (the model produced only tool calls on this turn).
-                if not content:
-                    continue
+                # Assistant text already emitted above (in order) so we
+                # don't fall through to the generic content branches.
+                continue
 
             if isinstance(content, str):
                 input_items.append({"role": role, "content": content})

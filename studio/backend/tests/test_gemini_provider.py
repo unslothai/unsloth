@@ -3918,3 +3918,362 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
 
     _drive(run())
     assert fetch_calls == [], fetch_calls
+
+
+def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
+    """Round 20: when `_filter_tool_calls` drops every synthetic
+    server-builtin tool_call on an empty-content assistant turn, the
+    whole message must be skipped. Forwarding
+    `{"role":"assistant","content":""}` is rejected by several
+    providers as an empty assistant turn."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    marked_args = json.dumps({"_server_tool": True, "kind": "image"})
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {
+                            "name": "image_generation",
+                            "arguments": marked_args,
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    for provider_type, base_url in [
+        ("openai", None),
+        ("gemini", "https://litellm.example/v1"),
+    ]:
+        result = _build_external_messages(
+            req.messages,
+            supports_vision = True,
+            provider_type = provider_type,
+            base_url = base_url,
+        )
+        # The empty assistant turn (only a synthetic builtin) must
+        # NOT appear in the output at all.
+        assert result == [], (provider_type, result)
+
+
+def test_role_tool_dropped_when_matching_synthetic_call_filtered():
+    """Round 20: `_build_external_messages` drops the matching role=
+    tool follow-up when its tool_call was a synthetic builtin that
+    `_filter_tool_calls` removed. Otherwise the receiving provider
+    sees an orphan tool_result with no tool_call."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    marked_args = json.dumps({"_server_tool": True, "query": "x"})
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": marked_args,
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "result_text",
+                "tool_call_id": "call_b",
+                "name": "web_search",
+            },
+            {"role": "user", "content": "continue"},
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    result = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+        base_url = None,
+    )
+    # Only the user "continue" message survives.
+    roles = [m.get("role") for m in result]
+    assert roles == ["user"], result
+
+
+def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
+    monkeypatch,
+):
+    """Round 20: OpenRouter dispatcher must not emit synthetic
+    web_search tool_start / tool_end events when tool_choice="none";
+    otherwise the chat UI shows a search card for a search that
+    never happened."""
+    captured_events: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "sk-or-test",
+        )
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = "none",
+        ):
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: "):].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                continue
+            choices = obj.get("choices") or []
+            for ch in choices:
+                delta = (ch.get("delta") or {})
+                evt = delta.get("_toolEvent")
+                if isinstance(evt, dict):
+                    captured_events.append(evt)
+        await client.close()
+
+    _drive(run())
+    # No synthetic web_search tool_start / tool_end emitted.
+    assert all(e.get("tool_name") != "web_search" for e in captured_events), (
+        captured_events
+    )
+
+
+def test_anthropic_role_tool_list_content_translates_to_tool_result(
+    monkeypatch,
+):
+    """Round 20: an OpenAI-shape role=tool message with list content
+    (`content=[{"type":"text","text":"result"}]`) must be translated
+    into Anthropic's native tool_result block, not forwarded as an
+    invalid role=tool message."""
+    captured: dict = {"messages": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["messages"] = body.get("messages")
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "look up X"},
+                {
+                    "role": "assistant",
+                    "content": "let me check",
+                    "tool_calls": [
+                        {
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"q":"x"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": [{"type": "text", "text": "result_text"}],
+                    "tool_call_id": "call_a",
+                    "name": "lookup",
+                },
+                {"role": "user", "content": "summarise"},
+            ],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    msgs = captured["messages"] or []
+    assert all(m.get("role") != "tool" for m in msgs), msgs
+    tool_results: list[dict] = []
+    for m in msgs:
+        if m.get("role") == "user" and isinstance(m.get("content"), list):
+            tool_results.extend(
+                b for b in m["content"] if b.get("type") == "tool_result"
+            )
+    assert any(
+        tr.get("tool_use_id") == "call_a" and tr.get("content") == "result_text"
+        for tr in tool_results
+    ), msgs
+
+
+def test_data_url_non_image_mime_dropped(monkeypatch):
+    """Round 20: a `data:text/html;base64,...` image_url must be
+    dropped from the outbound Gemini body, not forwarded as
+    `inlineData.mimeType="text/html"` which Gemini rejects."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:text/html;base64,PGgxPmhpPC9oMT4=",
+                        },
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["contents"][-1]["parts"]
+    assert not any("inlineData" in p for p in parts), parts
+
+
+def test_youtube_filedata_uses_video_mime(monkeypatch):
+    """Round 20: YouTube `fileData.fileUri` must declare a video
+    mimeType, not `image/jpeg` guessed from the URL path."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarise"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://www.youtube.com/watch?v=abc",
+                        },
+                    },
+                ],
+            }
+        ],
+    )
+    parts = captured["body"]["contents"][-1]["parts"]
+    yt = next((p for p in parts if "fileData" in p), None)
+    assert yt is not None, parts
+    assert yt["fileData"]["mimeType"].startswith("video/"), yt
+
+
+def test_openai_responses_assistant_text_serialized_before_function_call(
+    monkeypatch,
+):
+    """Round 20: in OpenAI Responses history, the assistant's
+    visible text for a turn that ALSO emitted a function_call must
+    serialize BEFORE the function_call item, matching the prior
+    response.output sequence. Otherwise function_call_output (the
+    role=tool follow-up) appears to follow an unrelated assistant
+    message."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "weather?"},
+                {
+                    "role": "assistant",
+                    "content": "Let me check that.",
+                    "tool_calls": [
+                        {
+                            "id": "call_w",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "sunny",
+                    "tool_call_id": "call_w",
+                    "name": "get_weather",
+                },
+                {"role": "user", "content": "thanks"},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    items = captured["input_items"] or []
+    types = [
+        i.get("type") or i.get("role") for i in items
+    ]
+    # Expected order:
+    #   user ("weather?")
+    #   assistant ("Let me check that.")
+    #   function_call (get_weather)
+    #   function_call_output (sunny)
+    #   user ("thanks")
+    assert types == [
+        "user",
+        "assistant",
+        "function_call",
+        "function_call_output",
+        "user",
+    ], items
