@@ -1698,10 +1698,7 @@ async def unload_model(
         )
         should_unload_llama = (
             llama_matches_request
-            and (
-                getattr(llama_backend, "is_active", False)
-                or loading_identifier
-            )
+            and (getattr(llama_backend, "is_active", False) or loading_identifier)
         ) or llama_is_starting_without_identifier
         if should_unload_llama:
             # Round 19 P1 #6: previously this called
