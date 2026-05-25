@@ -43,7 +43,13 @@ safetensors>=0.4.3
 datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0
 accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
-huggingface_hub>=0.34.0
+# Round 26 P1 #8: floor at 1.3.0 because transformers 5.x (allowed by
+# the range below) calls huggingface_hub.is_offline_mode, only present
+# in hub 1.x. Under --no-deps the resolver does not enforce this
+# transitively, so a pre-existing 0.36.2 used to be kept and the next
+# `from transformers import AutoConfig` raised ImportError. Upper bound
+# <2.0 keeps us off any future ABI break.
+huggingface_hub>=1.3.0,<2.0
 hf_transfer
 # Floor 0.37.0 introduces Flux2KleinPipeline + Flux2Pipeline which the
 # Studio Images page imports for the default curated picker.

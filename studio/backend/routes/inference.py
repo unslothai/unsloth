@@ -1683,9 +1683,27 @@ async def unload_model(
             or is_registered_native_path_label(loaded_identifier, request.model_path)
             or is_registered_native_path_label(loading_identifier, request.model_path)
         )
-        if (getattr(llama_backend, "is_active", False) or loading_identifier) and (
-            llama_matches_request or not getattr(llama_backend, "is_loaded", False)
-        ):
+        # Round 26 P1 #5: the previous ``or not is_loaded`` fallback
+        # let an unload of ``owner/B`` cancel a pending llama download
+        # of ``owner/A`` and silently leave safetensors ``owner/B``
+        # alive. Only enter the llama branch when the request actually
+        # matches the loaded/loading identifier, OR when llama-server
+        # is starting up without any identifier yet (the original
+        # narrow case we wanted to catch).
+        llama_is_starting_without_identifier = (
+            getattr(llama_backend, "is_active", False)
+            and not getattr(llama_backend, "is_loaded", False)
+            and not loaded_identifier
+            and not loading_identifier
+        )
+        should_unload_llama = (
+            llama_matches_request
+            and (
+                getattr(llama_backend, "is_active", False)
+                or loading_identifier
+            )
+        ) or llama_is_starting_without_identifier
+        if should_unload_llama:
             # Round 19 P1 #6: previously this called
             # ``llama_backend.unload_model()`` and unconditionally
             # returned ``status="unloaded"`` even when the subprocess
@@ -1694,6 +1712,16 @@ async def unload_model(
             # still resident. Treat ``False`` / leftover state as a
             # 503 so the user retries.
             ok = await asyncio.to_thread(llama_backend.unload_model)
+            # Round 26 P2 #15: explicit cancel of a pending GGUF load
+            # leaves loading_model_identifier set briefly until the
+            # load thread observes _cancel_event in its finally. Wait
+            # up to 5s so a legitimate cancel does not 503.
+            deadline = time.monotonic() + 5.0
+            while (
+                getattr(llama_backend, "loading_model_identifier", None)
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.1)
             if (
                 ok is False
                 or getattr(llama_backend, "is_loaded", False)

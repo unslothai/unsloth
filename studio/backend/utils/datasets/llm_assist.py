@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import textwrap
+import threading
 import time
 from itertools import islice
 from typing import Any, Optional
@@ -30,6 +31,41 @@ DEFAULT_HELPER_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
+
+# Round 26 P1 #13 / #14: helper/advisor run on PRIVATE LlamaCppBackend
+# instances (round 25 P1 #4 briefly used the global singleton, which
+# caused chat-evict races and finally-eviction bugs and still left
+# delete-cache blind because helper/advisor publish prefixed
+# identifiers the guard could not match). Expose loading repo ids
+# through a thread-safe set so DELETE /api/models/delete-cached can
+# block while a helper or advisor still owns the cache.
+_HELPER_ADVISOR_ACTIVE_REPOS: set[str] = set()
+_HELPER_ADVISOR_LOCK = threading.Lock()
+
+
+def helper_advisor_owns_repo(repo_id: str) -> bool:
+    """Return True if any helper/advisor load currently owns this
+    HF repo id. Comparison is case-insensitive to match the chat
+    backend's lowercased needle."""
+    if not repo_id:
+        return False
+    needle = repo_id.lower()
+    with _HELPER_ADVISOR_LOCK:
+        return needle in _HELPER_ADVISOR_ACTIVE_REPOS
+
+
+def _register_helper_advisor_repo(repo_id: str) -> None:
+    if not repo_id:
+        return
+    with _HELPER_ADVISOR_LOCK:
+        _HELPER_ADVISOR_ACTIVE_REPOS.add(repo_id.lower())
+
+
+def _unregister_helper_advisor_repo(repo_id: str) -> None:
+    if not repo_id:
+        return
+    with _HELPER_ADVISOR_LOCK:
+        _HELPER_ADVISOR_ACTIVE_REPOS.discard(repo_id.lower())
 
 
 def _strip_think_tags(text: str) -> str:
@@ -244,19 +280,17 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     )
 
     backend = None
+    _register_helper_advisor_repo(repo)
     try:
-        # Round 25 P1 #4: use the GLOBAL llama backend instead of a
-        # private ``LlamaCppBackend()`` instance. The private instance
-        # was invisible to ``DELETE /api/models/delete-cached`` and the
-        # other global delete guards because they inspect the singleton
-        # returned by ``get_llama_cpp_backend()``. A concurrent cache
-        # delete could rmtree the helper's mid-flight download or
-        # mmap'd snapshot. ``_gpu_workload_busy_for_helper`` above
-        # already ensures the global backend is idle before we reach
-        # here, so taking it over is safe.
-        from routes.inference import get_llama_cpp_backend
+        # Round 26 P1 #1 / #3 / #13 / #14: use a PRIVATE backend so the
+        # helper can never preempt or be preempted by the user's
+        # chat backend and cannot accidentally unload it in finally.
+        # The active repo is published via _register_helper_advisor_repo
+        # above so DELETE /api/models/delete-cached can still block the
+        # cache rmtree while the helper is downloading or mmap'ing.
+        from core.inference.llama_cpp import LlamaCppBackend
 
-        backend = get_llama_cpp_backend()
+        backend = LlamaCppBackend()
         logger.info(f"Loading helper model: {repo} ({variant})")
 
         ok = backend.load_model(
@@ -305,6 +339,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
                 logger.info("Helper model unloaded")
             except Exception:
                 pass
+        _unregister_helper_advisor_repo(repo)
 
 
 # ─── Public API ───────────────────────────────────────────────────────
@@ -649,16 +684,15 @@ def _run_multi_pass_advisor(
     )
 
     backend = None
+    _register_helper_advisor_repo(repo)
     try:
-        # Round 25 P1 #4: mirror ``_run_with_helper`` and acquire the
-        # GLOBAL llama backend so cache-delete and unload guards see
-        # this advisor load via the singleton's
-        # ``loading_model_identifier`` / ``model_identifier``. The
-        # round 23/24 ``_gpu_workload_busy_for_helper`` already
-        # blocks reach here unless the global llama backend is idle.
-        from routes.inference import get_llama_cpp_backend
+        # Round 26 P1 #2 / #4 / #13 / #14: mirror ``_run_with_helper``
+        # and use a PRIVATE backend. Round 25's global-backend swap
+        # introduced chat-evict races and finally-eviction bugs.
+        # The registry above keeps delete-cache safe.
+        from core.inference.llama_cpp import LlamaCppBackend
 
-        backend = get_llama_cpp_backend()
+        backend = LlamaCppBackend()
         logger.info(f"Loading advisor model: {repo} ({variant})")
         t0 = time.monotonic()
 
@@ -990,6 +1024,7 @@ def _run_multi_pass_advisor(
                 logger.info("Advisor model unloaded")
             except Exception:
                 pass
+        _unregister_helper_advisor_repo(repo)
 
 
 def llm_conversion_advisor(

@@ -81,7 +81,10 @@ huggingfacenotorch = [
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
-    "huggingface_hub>=0.34.0",
+    # Round 26 P1 #9: floor at 1.3.0 because the diffusion stack below
+    # pulls transformers 5.x which calls hub.is_offline_mode (hub 1.x).
+    # Keep <2.0 to avoid any future hub ABI break.
+    "huggingface_hub>=1.3.0,<2.0",
     "hf_transfer",
     # Studio Images page depends on Flux2KleinPipeline /
     # Flux2Pipeline, both shipped in diffusers>=0.37.0. Floor was

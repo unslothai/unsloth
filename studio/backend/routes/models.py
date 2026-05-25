@@ -2219,6 +2219,9 @@ async def get_lora_base_model(
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    # Round 26 P1 #12: lora_path is echoed back in 404 detail and logs;
+    # harden it the same way other reflected identifiers are.
+    lora_path = _validate_logged_identifier(lora_path, "lora_path")
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -2852,6 +2855,31 @@ async def delete_cached_model(
             except Exception:
                 continue
         return False
+
+    # Round 26 P1 #13 / #14: helper/advisor GGUF loads run on a
+    # PRIVATE LlamaCppBackend, so the global backend below cannot see
+    # them. utils/datasets/llm_assist.py publishes the active repo
+    # via helper_advisor_owns_repo() for exactly this guard. Fail
+    # closed on the variant question (block any variant of the repo)
+    # because helper/advisor flows do not pass a variant through.
+    try:
+        from utils.datasets.llm_assist import helper_advisor_owns_repo
+
+        if helper_advisor_owns_repo(repo_id):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while AI Assist is using it",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Could not check helper/advisor backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify AI Assist load status before deleting cache",
+        ) from e
 
     # Check if model is currently loaded OR loading. is_active and
     # not is_loaded means an llama-server download / startup is in
