@@ -1047,10 +1047,19 @@ class DiffusionBackend:
                 # repo / filename validation raises before
                 # ``effective_base`` is computed). ``locals().get``
                 # keeps the scrub a no-op in that case.
+                # Round 18 P2 #9: also scrub ``local_gguf_path``. The
+                # GGUF quant is loaded via
+                # ``transformer_cls.from_single_file(local_gguf_path)``,
+                # and diffusers / safetensors errors include the
+                # resolved absolute HF cache path
+                # (``/home/alice/.cache/huggingface/hub/.../flux.gguf``).
+                # Without this the cache path would leak into
+                # ``_last_error`` (and therefore status() / log lines).
                 _locals = locals()
                 exc_msg = _collapse_local(exc_msg, repo_id)
                 exc_msg = _collapse_local(exc_msg, _locals.get("effective_base"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("gguf_filename"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("local_gguf_path"))
                 with self._lock:
                     self._last_error = exc_msg
                 # ``logger.exception`` would emit the raw exception
@@ -1343,14 +1352,21 @@ def _release_chat_backend_for_diffusion() -> None:
                     "Could not unload the existing GGUF chat model before "
                     "loading a diffusion image model."
                 ) from exc
+            # Round 18 P1 #4: also reject when ``loading_model_identifier``
+            # is still set after the unload call. Without this, a GGUF
+            # download / startup that was already in flight before the
+            # diffusion handoff (and which never flipped is_active to
+            # True before the unload landed) keeps allocating into VRAM
+            # while diffusion proceeds, double-owning the GPU.
             if (
                 ok is False
                 or getattr(backend, "is_loaded", False)
                 or getattr(backend, "is_active", False)
+                or getattr(backend, "loading_model_identifier", None)
             ):
                 raise RuntimeError(
-                    "The existing GGUF chat model is still active after "
-                    "unload; retry before loading a diffusion image model."
+                    "The existing GGUF chat model is still active or loading "
+                    "after unload; retry before loading a diffusion image model."
                 )
 
     # 2. Safetensors / HF chat backend (the InferenceOrchestrator that
@@ -1447,11 +1463,19 @@ def _release_other_gpu_owners_for_diffusion() -> None:
         logger.debug("export module not importable: %s", exc)
         return
 
+    # Round 18 P1 #6: ``get_export_backend()`` raising used to be a
+    # silent ``return`` so direct ``DiffusionBackend.load_model``
+    # callers could proceed toward GPU allocation without being able
+    # to verify export ownership. Fail closed instead, matching the
+    # route-level helper which already maps "Could not verify" /
+    # "Could not access" failures to HTTP 503.
     try:
         exp = get_export_backend()
     except Exception as exc:
-        logger.debug("export backend not available: %s", exc)
-        return
+        raise RuntimeError(
+            "Could not verify export status before loading a "
+            "diffusion image model."
+        ) from exc
 
     is_export_active_fn = getattr(exp, "is_export_active", None)
     if is_export_active_fn is not None:
@@ -1480,14 +1504,23 @@ def _release_other_gpu_owners_for_diffusion() -> None:
             )
 
     if getattr(exp, "current_checkpoint", None):
+        # Round 18 P1 #2: a wedged ``_shutdown_subprocess`` used to log
+        # at debug level and continue, so direct backend callers could
+        # allocate diffusion VRAM on top of an export checkpoint that
+        # still owned the GPU. Mirror the route-level helper and raise
+        # so the surrounding ``load_model`` bails out with a clean
+        # RuntimeError that the route layer maps to HTTP 503.
         try:
             logger.info("Shutting down idle export subprocess before diffusion load")
             exp._shutdown_subprocess()
-            exp.current_checkpoint = None
-            exp.is_vision = False
-            exp.is_peft = False
         except Exception as exc:
-            logger.debug("idle export shutdown failed: %s", exc)
+            raise RuntimeError(
+                "Could not unload the idle export checkpoint before "
+                "loading a diffusion image model."
+            ) from exc
+        exp.current_checkpoint = None
+        exp.is_vision = False
+        exp.is_peft = False
 
     # Note: active training is *not* stopped here. The route layer
     # (`_raise_if_training_active` in routes/inference.py) refuses

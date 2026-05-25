@@ -392,7 +392,7 @@ async def _release_llama_for(workload: str) -> None:
         workload,
     )
     try:
-        await asyncio.to_thread(llama.unload_model)
+        ok = await asyncio.to_thread(llama.unload_model)
     except Exception as exc:
         logger.warning("Failed to unload GGUF chat before %s load: %s", workload, exc)
         raise HTTPException(
@@ -402,6 +402,28 @@ async def _release_llama_for(workload: str) -> None:
                 f"starting {workload}."
             ),
         ) from exc
+
+    # Round 18 P1 #1: previously only the raised-exception path was
+    # treated as failure. ``llama.unload_model()`` returning ``False``
+    # (subprocess refused to terminate, IPC timeout) or leaving
+    # ``is_loaded`` / ``is_active`` / ``loading_model_identifier``
+    # populated after the call meant the next workload could allocate
+    # while llama-server was still resident. Re-read the same three
+    # fields and fail closed if anything is still set so the caller
+    # retries instead of double-owning VRAM.
+    if (
+        ok is False
+        or bool(getattr(llama, "is_loaded", False))
+        or bool(getattr(llama, "is_active", False))
+        or bool(getattr(llama, "loading_model_identifier", None))
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "The existing GGUF chat model is still active or loading "
+                f"after unload; retry before starting {workload}."
+            ),
+        )
 
 
 async def _release_safetensors_chat_for(workload: str) -> None:
@@ -599,13 +621,27 @@ async def _release_diffusion_for(workload: str) -> None:
             ),
         ) from exc
 
-    after = {}
+    # Round 18 P1 #5: a successful pre-check status() and a
+    # success-shaped unload result used to mask a post-unload
+    # status() failure (after = {}) and let the caller proceed
+    # without proof that diffusion released VRAM. Fail closed
+    # instead so training / chat / export retry rather than
+    # double-owning the GPU.
     try:
         after = diff_backend.status()
-    except Exception:
-        # status() failure here is unusual but should not mask the
-        # primary outcome. Fall back to assuming the unload finished.
-        pass
+    except Exception as exc:
+        logger.warning(
+            "Could not verify diffusion status after unload before %s: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify diffusion unload before starting "
+                f"{workload}. Try again."
+            ),
+        ) from exc
     if result is False or after.get("is_loaded") or after.get("is_loading"):
         raise HTTPException(
             status_code = 503,
@@ -2022,14 +2058,18 @@ async def diffusion_load(
     # the request is refused with 409 instead of silently killing it.
     _raise_if_training_active("diffusion")
     _raise_if_export_active("diffusion")
-    # Round 17 P1 #3: drop the chat backends through the strict
-    # route-level helpers BEFORE the diffusion load. The backend's
-    # own ``_release_chat_backend_for_diffusion`` is now strict
-    # too (round 17 P1 #2), but doing it here keeps the public API
-    # path symmetric with training / export / chat handoffs that
-    # already use ``_release_chat_for``.
-    await _release_chat_for("diffusion")
-    await _release_export_for("diffusion")
+    # Round 18 P1 #3 + P1 #7: the route used to drop chat and idle
+    # export BEFORE ``backend.load_model`` ran its cheap validation
+    # (family inference, GGUF filename checks, gated-token failures,
+    # missing diffusers). A malformed image request would therefore
+    # unload the user's chat model and then return a 400 with nothing
+    # loaded; if export cleanup raised, chat had already been dropped.
+    # ``DiffusionBackend.load_model`` itself calls
+    # ``_release_other_gpu_owners_for_diffusion`` (strict idle-export
+    # shutdown after round 18 P1 #2) and
+    # ``_release_chat_backend_for_diffusion`` (strict GGUF + safetensors
+    # unload after round 17 P1 #2 + round 18 P1 #4), so the GPU is
+    # still freed before any allocation, just AFTER validation.
     backend = _get_diffusion_backend()
     try:
         status = await asyncio.get_event_loop().run_in_executor(

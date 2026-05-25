@@ -279,8 +279,13 @@ async def start_training(
         )
 
         _raise_if_export_active("training")
-        await _release_chat_for("training")
+        # Round 18 P1 #8: release settled export FIRST so an export
+        # cleanup failure preserves the user's currently loaded chat
+        # model. The previous order (chat -> export) would drop chat
+        # and then refuse training when a wedged idle export raised,
+        # leaving the user with nothing loaded.
         await _release_export_for("training")
+        await _release_chat_for("training")
 
         # Also unload any loaded diffusion pipeline (Images page); it
         # holds the same GPU and would survive the inference shutdown.
