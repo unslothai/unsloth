@@ -375,6 +375,7 @@ def _raise_if_helper_advisor_busy(workload: str) -> None:
             _HELPER_ADVISOR_START_LOCK,
             _publish_public_load_pending,
             helper_advisor_busy,
+            public_load_pending,
         )
     except Exception:
         return
@@ -400,6 +401,21 @@ def _raise_if_helper_advisor_busy(workload: str) -> None:
                 detail = (
                     f"AI Assist (helper / advisor GGUF) is still using the GPU. "
                     f"Wait for it to finish before starting {workload}."
+                ),
+            )
+        # Round 35 P1: also refuse when another public workload is
+        # already mid-handoff (passed its own helper-busy snapshot
+        # but has not yet flipped is_training_active /
+        # current_checkpoint / loading_model_identifier /
+        # diffusion is_loading). Without this two public loads can
+        # both pass their idle snapshots concurrently and race
+        # destructive owner teardown.
+        if public_load_pending():
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Another GPU workload is mid-handoff. Wait for it to "
+                    f"finish before starting {workload}."
                 ),
             )
         _publish_public_load_pending(workload)
