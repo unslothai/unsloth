@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { createApiKey } from "../api/api-keys";
@@ -21,6 +22,7 @@ export function CreateKeyForm({
   onCreated: (rawKey: string) => void;
   onError: (message: string) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -34,7 +36,9 @@ export function CreateKeyForm({
       onCreated(result.key);
       setName("");
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Couldn't create access token.");
+      onError(
+        err instanceof Error ? err.message : t("settings.apiKeys.createError"),
+      );
     } finally {
       setLoading(false);
     }
@@ -49,9 +53,9 @@ export function CreateKeyForm({
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Token name (e.g. production)"
+          placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
           className="h-8 min-w-[180px] flex-1 text-sm"
-          aria-label="New access token name"
+          aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
         <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
           {EXPIRY_PRESETS.map((p) => {
@@ -69,13 +73,15 @@ export function CreateKeyForm({
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {p.label}
+                {p.value === null ? t("settings.apiKeys.never") : p.label}
               </button>
             );
           })}
         </div>
         <Button type="submit" size="sm" disabled={loading || !name.trim()}>
-          {loading ? "Creating…" : "Create token"}
+          {loading
+            ? t("settings.apiKeys.creating")
+            : t("settings.apiKeys.createToken")}
         </Button>
       </div>
     </form>
