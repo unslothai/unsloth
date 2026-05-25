@@ -1077,10 +1077,8 @@ class DiffusionBackend:
                 # route's "diffusion" tag and this "diffusion-
                 # backend" tag refcount independently; both
                 # contribute to public_load_pending().
-                backend_pending_published = (
-                    _raise_if_helper_advisor_busy_for_diffusion(
-                        publish_pending = True,
-                    )
+                backend_pending_published = _raise_if_helper_advisor_busy_for_diffusion(
+                    publish_pending = True,
                 )
                 _release_other_gpu_owners_for_diffusion()
                 _release_chat_backend_for_diffusion(check_helper_advisor = False)
