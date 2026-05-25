@@ -6,6 +6,17 @@ from typing import Optional
 
 import typer
 
+from unsloth_cli.commands.studio import _reexec_cli_in_studio_venv
+
+
+def _build_messages(prompt: str, system_prompt: str) -> list[dict]:
+    """Build a simple chat-style message list for inference backends."""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
 
 def inference(
     model: str = typer.Argument(..., help = "HF model id or local path."),
@@ -27,35 +38,70 @@ def inference(
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):
     """Run a single inference using the specified model."""
+    _reexec_cli_in_studio_venv(sys.argv[1:])
+    from typer.models import OptionInfo
+
+    if isinstance(system_prompt, OptionInfo):
+        system_prompt = ""
+
     from studio.backend.core import ModelConfig, get_inference_backend
 
     inference_backend = get_inference_backend()
-    model_config = ModelConfig.from_ui_selection(
-        dropdown_value = model, search_value = None, hf_token = hf_token, is_lora = False
+    model_config = ModelConfig.from_identifier(
+        model_id = model,
+        hf_token = hf_token,
+        is_lora = False,
     )
     if not model_config:
         typer.echo("Could not resolve model config", err = True)
         raise typer.Exit(code = 1)
 
-    if not inference_backend.load_model(
-        config = model_config,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        hf_token = hf_token,
-    ):
-        typer.echo("Model load failed", err = True)
-        raise typer.Exit(code = 1)
+    messages = _build_messages(prompt, system_prompt)
 
-    messages = [{"role": "user", "content": prompt}]
-    stream = inference_backend.generate_chat_response(
-        messages = messages,
-        system_prompt = system_prompt,
-        temperature = temperature,
-        top_p = top_p,
-        top_k = top_k,
-        max_new_tokens = max_new_tokens,
-        repetition_penalty = repetition_penalty,
-    )
+    if model_config.is_gguf:
+        from studio.backend.core.inference.llama_cpp import LlamaCppBackend
+
+        gguf_backend = LlamaCppBackend()
+        loaded = gguf_backend.load_model(
+            gguf_path = model_config.gguf_file,
+            mmproj_path = model_config.gguf_mmproj_file,
+            hf_repo = model_config.gguf_hf_repo,
+            hf_variant = model_config.gguf_variant,
+            hf_token = hf_token,
+            model_identifier = model_config.identifier,
+            is_vision = model_config.is_vision,
+            n_ctx = max_seq_length,
+        )
+        if not loaded:
+            typer.echo("Model load failed", err = True)
+            raise typer.Exit(code = 1)
+        stream = gguf_backend.generate_chat_completion(
+            messages = messages,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            max_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+        )
+    else:
+        if not inference_backend.load_model(
+            config = model_config,
+            max_seq_length = max_seq_length,
+            load_in_4bit = load_in_4bit,
+            hf_token = hf_token,
+        ):
+            typer.echo("Model load failed", err = True)
+            raise typer.Exit(code = 1)
+
+        stream = inference_backend.generate_chat_response(
+            messages = messages,
+            system_prompt = system_prompt,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+        )
 
     typer.echo("Assistant:", nl = True)
     previous = ""
