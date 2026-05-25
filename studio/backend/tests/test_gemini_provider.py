@@ -2581,9 +2581,7 @@ def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": (
-                                    '{"_server_tool": true, "query": "x"}'
-                                ),
+                                "arguments": ('{"_server_tool": true, "query": "x"}'),
                             },
                         }
                     ],

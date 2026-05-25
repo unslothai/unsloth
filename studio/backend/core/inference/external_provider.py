@@ -3498,7 +3498,12 @@ class ExternalProviderClient:
                     _name_lc = fn_name.lower() if isinstance(fn_name, str) else ""
                     _is_synthetic_server_builtin = (
                         _name_lc
-                        in ("web_search", "web_fetch", "code_execution", "image_generation")
+                        in (
+                            "web_search",
+                            "web_fetch",
+                            "code_execution",
+                            "image_generation",
+                        )
                         and isinstance(args, dict)
                         and (
                             args.get("_server_tool") is True
@@ -4023,9 +4028,7 @@ class ExternalProviderClient:
                         continue
                     if _k == "properties" and isinstance(_v, dict):
                         cleaned[_k] = {
-                            _name: _sanitize_gemini_schema(
-                                _subschema, root, _seen_refs
-                            )
+                            _name: _sanitize_gemini_schema(_subschema, root, _seen_refs)
                             for _name, _subschema in _v.items()
                         }
                     elif _k == "items":
