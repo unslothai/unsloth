@@ -677,6 +677,24 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for accessing gated/private models
     """
+    # Local GGUF models are served by llama-server. Their multimodal
+    # capability comes from a companion mmproj, not a Transformers config.
+    # Do not cache this lookup: a projector may be added beside an existing
+    # weight file after it was first inspected.
+    if is_local_path(model_name):
+        local_path = normalize_path(model_name)
+        gguf_file = detect_gguf_model(local_path)
+        if gguf_file:
+            mmproj_file = detect_mmproj_file(gguf_file, search_root = local_path)
+            is_vision = mmproj_file is not None
+            logger.info(
+                "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
+                gguf_file,
+                mmproj_file,
+                is_vision,
+            )
+            return is_vision
+
     # Normalize model name for cache key to avoid duplicate entries for
     # different casings of the same HF repo (e.g. "Org/Model" vs "org/model").
     try:
@@ -2520,6 +2538,15 @@ class ModelConfig:
             if resolved_identifier != identifier:
                 identifier = resolved_identifier
                 path = resolved_identifier
+
+        # Keep existing local GGUF selections on the llama-server path. This
+        # constructor is still used by older inference helpers and must not
+        # describe a .gguf weight file as loadable by FastVisionModel.
+        if is_local and not is_lora and detect_gguf_model(path):
+            gguf_config = cls.from_identifier(path, hf_token = hf_token)
+            if gguf_config is not None:
+                gguf_config.display_name = display_name
+                return gguf_config
 
         # --- Logic for Base Model and Vision Detection ---
         base_model = None
