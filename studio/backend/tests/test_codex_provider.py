@@ -2047,9 +2047,7 @@ class TestDeviceLoginLogFilter:
         # caught when the production source is loaded.
         import importlib
 
-        mod = importlib.reload(
-            importlib.import_module("core.inference.codex_provider")
-        )
+        mod = importlib.reload(importlib.import_module("core.inference.codex_provider"))
         # Walk the source string to find the patterns; they live inside
         # the generator. Use a stable proxy: read the regex literals.
         import re
@@ -2059,8 +2057,10 @@ class TestDeviceLoginLogFilter:
         # phrases AND an unsafe-content blocklist.
         assert "safe_log_res" in src
         assert "unsafe_log_re" in src
-        assert "not\\s+(?:logged|signed)\\s+in" in src or \
-               "not\\\\s+(?:logged|signed)\\\\s+in" in src
+        assert (
+            "not\\s+(?:logged|signed)\\s+in" in src
+            or "not\\\\s+(?:logged|signed)\\\\s+in" in src
+        )
         return None
 
     def test_safe_log_source_has_anchored_patterns_and_blocklist(self):
@@ -2117,8 +2117,9 @@ class TestDeviceLoginLogFilter:
             "Browser opened",
             "Press Ctrl+C to cancel",
         ]:
-            assert any(pat.search(clean) for pat in safe_log_res), \
-                f"clean line should match safe: {clean!r}"
+            assert any(
+                pat.search(clean) for pat in safe_log_res
+            ), f"clean line should match safe: {clean!r}"
 
 
 # ── Round 8: stream replay protection on non-visible events ──────────
