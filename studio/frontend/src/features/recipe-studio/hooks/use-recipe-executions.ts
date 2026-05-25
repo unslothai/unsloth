@@ -190,18 +190,38 @@ function getLocalModelLoadPlan(
   return selection ? { selection, error: null } : null;
 }
 
+function isDirectGgufTarget(target: string): boolean {
+  return target.toLowerCase().endsWith(".gguf");
+}
+
+function localSelectionMatchesActive(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): boolean {
+  const { target, ggufVariant, activeModel, activeVariant } = input;
+  if (!activeModel || activeModel.toLowerCase() !== target.toLowerCase()) {
+    return false;
+  }
+  return (
+    activeVariant === ggufVariant ||
+    (isDirectGgufTarget(target) && !ggufVariant)
+  );
+}
+
 async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
   const { target, ggufVariant } = selection;
   try {
     const status = await getInferenceStatus();
-    const activeVariant = status.gguf_variant?.trim() ?? "";
-    return Boolean(
-      status.active_model &&
-        status.active_model.toLowerCase() === target.toLowerCase() &&
-        activeVariant === ggufVariant,
-    );
+    return localSelectionMatchesActive({
+      target,
+      ggufVariant,
+      activeModel: status.active_model,
+      activeVariant: status.gguf_variant?.trim() ?? "",
+    });
   } catch {
     // Fall through to load attempt; the backend will re-error if needed.
     return false;
@@ -264,7 +284,7 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
   try {
     const status = await getInferenceStatus();
     const target = status.active_model?.trim();
-    if (!target) {
+    if (!target || status.is_gguf === true) {
       return null;
     }
     return {

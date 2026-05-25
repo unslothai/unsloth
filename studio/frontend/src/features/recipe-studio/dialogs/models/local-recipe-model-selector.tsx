@@ -20,7 +20,9 @@ import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
 import {
+  type ComponentPropsWithoutRef,
   type ReactElement,
+  forwardRef,
   useCallback,
   useEffect,
   useMemo,
@@ -225,15 +227,7 @@ function LocalGgufVariantList({
   );
 }
 
-function SelectorTrigger({
-  value,
-  selectedModel,
-  ggufVariant,
-  inputId,
-  disabled,
-  compact,
-  className,
-}: {
+type SelectorTriggerProps = ComponentPropsWithoutRef<"button"> & {
   value: string;
   selectedModel: LocalModelInfo | null;
   ggufVariant?: string | null;
@@ -241,52 +235,73 @@ function SelectorTrigger({
   disabled: boolean;
   compact: boolean;
   className?: string;
-}): ReactElement {
-  const selected = getSelectedModelSummary(value, selectedModel, ggufVariant);
+};
 
-  return (
-    <button
-      id={inputId}
-      type="button"
-      disabled={disabled}
-      className={cn(
-        "nodrag flex w-full min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-background px-3 text-left transition-colors hover:bg-muted/40 disabled:pointer-events-none disabled:opacity-60",
-        compact ? "min-h-8 py-1.5 text-xs" : "min-h-10 py-2 text-sm",
-        className,
-      )}
-    >
-      <span className="min-w-0 flex-1">
-        <span
-          className={cn(
-            "block truncate font-medium",
-            !selected.label && "text-muted-foreground",
-          )}
-        >
-          {selected.label || "Choose a local model"}
-        </span>
-        {compact ? null : (
-          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className="truncate">
-              {selected.label
-                ? selected.source
-                : "Select from local and cached models"}
-            </span>
-            {selected.isGguf ? <span>GGUF</span> : null}
-            {ggufVariant ? (
-              <span className="truncate font-mono">{ggufVariant}</span>
-            ) : null}
-          </span>
+const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
+  function SelectorTrigger(
+    {
+      value,
+      selectedModel,
+      ggufVariant,
+      inputId,
+      disabled,
+      compact,
+      className,
+      ...triggerProps
+    },
+    ref,
+  ): ReactElement {
+    const selected = getSelectedModelSummary(value, selectedModel, ggufVariant);
+
+    return (
+      <button
+        {...triggerProps}
+        ref={ref}
+        id={inputId}
+        type="button"
+        disabled={disabled}
+        className={cn(
+          "nodrag flex w-full min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-background px-3 text-left transition-colors hover:bg-muted/40 disabled:pointer-events-none disabled:opacity-60",
+          compact ? "min-h-8 py-1.5 text-xs" : "min-h-10 py-2 text-sm",
+          className,
         )}
-      </span>
-      {compact && ggufVariant ? (
-        <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">
-          {ggufVariant}
-        </Badge>
-      ) : null}
-      <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
-    </button>
-  );
-}
+      >
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              "block truncate font-medium",
+              !selected.label && "text-muted-foreground",
+            )}
+          >
+            {selected.label || "Choose a local model"}
+          </span>
+          {compact ? null : (
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span className="truncate">
+                {selected.label
+                  ? selected.source
+                  : "Select from local and cached models"}
+              </span>
+              {selected.isGguf ? <span>GGUF</span> : null}
+              {ggufVariant ? (
+                <span className="truncate font-mono">{ggufVariant}</span>
+              ) : null}
+            </span>
+          )}
+        </span>
+        {compact && ggufVariant ? (
+          <Badge
+            variant="secondary"
+            className="h-4 px-1.5 font-mono text-[10px]"
+          >
+            {ggufVariant}
+          </Badge>
+        ) : null}
+        <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+      </button>
+    );
+  },
+);
 
 function LocalModelRow({
   model,
