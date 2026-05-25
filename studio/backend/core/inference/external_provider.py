@@ -753,9 +753,20 @@ class ExternalProviderClient:
         # disabling thinking while $web_search is active. Route to a
         # dedicated helper so the default OAI-compat path stays single-pass.
         #   https://platform.kimi.ai/docs/guide/use-web-search
+        # Forced-function tool_choice must also suppress Kimi's hosted
+        # $web_search the same way it does for Gemini/Anthropic/OpenRouter:
+        # an explicit user-function pin should not still trigger a
+        # provider-side search round-trip.
+        _kimi_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
         if (
             self.provider_type == "kimi"
             and not tool_choice_disabled
+            and not _kimi_tool_choice_forced_function
             and enabled_tools
             and "web_search" in enabled_tools
         ):
@@ -857,8 +868,20 @@ class ExternalProviderClient:
             # `plugins: [{id: "web"}]` works everywhere, no model id
             # rewrite needed, and idempotent if some future call site
             # adds the entry first.
+            # Forced-function tool_choice must also suppress the hosted
+            # web plugin: an explicit user-function pin like
+            # tool_choice={"type":"function","function":{"name":"lookup"}}
+            # should not still trigger OpenRouter's server-side web
+            # search, same as the Gemini and Anthropic gates above.
+            _or_tool_choice_forced_function = (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") == "function"
+                and isinstance(tool_choice.get("function"), dict)
+                and bool(tool_choice["function"].get("name"))
+            )
             if (
                 not tool_choice_disabled
+                and not _or_tool_choice_forced_function
                 and enabled_tools
                 and "web_search" in enabled_tools
             ):
@@ -947,6 +970,7 @@ class ExternalProviderClient:
                 web_search_active = (
                     self.provider_type == "openrouter"
                     and not tool_choice_disabled
+                    and not _or_tool_choice_forced_function
                     and bool(enabled_tools)
                     and "web_search" in (enabled_tools or [])
                 )
@@ -1993,6 +2017,22 @@ class ExternalProviderClient:
         _anthropic_tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
+        # Forced-function tool_choice (caller pinned a specific user
+        # function) must also suppress hosted server-side tools, same as
+        # the Gemini gate. Otherwise `tool_choice={"type":"function",
+        # "function":{"name":"lookup"}}` plus `enabled_tools=["web_search"]`
+        # still lets Anthropic run web_search server-side, billing the
+        # caller and violating the explicit function pin.
+        _anthropic_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _anthropic_hosted_builtins_allowed = (
+            not _anthropic_tool_choice_disabled
+            and not _anthropic_tool_choice_forced_function
+        )
 
         # Anthropic server-side web_search — see
         #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
@@ -2007,7 +2047,7 @@ class ExternalProviderClient:
         # that into our local _toolEvent shape so the chat UI renders
         # web_search exactly like OpenAI's path.
         if (
-            not _anthropic_tool_choice_disabled
+            _anthropic_hosted_builtins_allowed
             and enabled_tools
             and "web_search" in enabled_tools
         ):
@@ -2035,7 +2075,7 @@ class ExternalProviderClient:
         # because the frontend already paints source pills from the
         # generic tool_end payload.
         web_fetch_enabled = bool(
-            not _anthropic_tool_choice_disabled
+            _anthropic_hosted_builtins_allowed
             and enabled_tools
             and "web_fetch" in enabled_tools
         )
@@ -2068,7 +2108,7 @@ class ExternalProviderClient:
         # content blocks and generated-file retrieval via the Files
         # API) are a deliberate follow-up.
         code_execution_enabled = bool(
-            not _anthropic_tool_choice_disabled
+            _anthropic_hosted_builtins_allowed
             and enabled_tools
             and "code_execution" in enabled_tools
         )

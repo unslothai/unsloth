@@ -4608,3 +4608,205 @@ def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
     assert "tool_calls?: OpenAIToolCallPart[]" in src, src[:200]
     assert "extra_content?: Record<string, unknown>" in src, src[:200]
     assert "boolean | string | null" in src, src[:200]
+
+
+def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
+    """Round 22: forced-function tool_choice must suppress Anthropic
+    hosted builtins the same way it does for Gemini. Pinning a user
+    function (`tool_choice={"type":"function","function":{"name":...}}`)
+    while also passing `enabled_tools=["web_search","web_fetch",
+    "code_execution"]` should not still fire those server-side."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search", "web_fetch", "code_execution"],
+            tool_choice = {
+                "type": "function",
+                "function": {"name": "lookup_record"},
+            },
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    # No hosted tools should be in the body — only the caller's user-
+    # function declarations (which this test doesn't pass any of).
+    tools = body.get("tools") or []
+    hosted_tool_names = {"web_search", "web_fetch", "code_execution"}
+    for tool in tools:
+        assert tool.get("name") not in hosted_tool_names, body
+
+
+def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):
+    """Round 22: forced-function tool_choice must drop the OpenRouter
+    web plugin too — caller pinned a user function, OpenRouter must not
+    still attach the hosted web-search plugin."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "sk-or-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = {
+                "type": "function",
+                "function": {"name": "lookup_record"},
+            },
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    assert body.get("plugins") in (None, []), body
+
+
+def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
+    """Round 22: forced-function tool_choice plus enabled_tools=
+    ["web_search"] on Kimi must NOT route into `_stream_kimi_web_search`.
+    Caller pinned a user function; hosted $web_search should be
+    suppressed for the same privacy/billing reason."""
+    routed_to_helper = {"called": False}
+
+    async def fake_helper(self, *args, **kwargs):  # noqa: ARG001
+        routed_to_helper["called"] = True
+        if False:
+            yield ""  # pragma: no cover
+
+    monkeypatch.setattr(
+        ExternalProviderClient,
+        "_stream_kimi_web_search",
+        fake_helper,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "sk-kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = {
+                "type": "function",
+                "function": {"name": "lookup_record"},
+            },
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert not routed_to_helper["called"]
+
+
+def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice(
+    monkeypatch,
+):
+    """Round 22 sibling of the round-20 `tool_choice='none'` test: when
+    the caller forces a specific function via `tool_choice={"type":
+    "function", ...}` AND passes `enabled_tools=["web_search"]`, the
+    OpenRouter path must NOT synthesize a fake `web_search` tool card.
+    The plugin was not attached upstream so the UI must not see a
+    server-tool card."""
+    captured_events: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = (
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "sk-or-test",
+        )
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = {
+                "type": "function",
+                "function": {"name": "lookup_record"},
+            },
+        ):
+            payload = line.strip().removeprefix("data: ")
+            if payload and payload != "[DONE]":
+                try:
+                    captured_events.append(json.loads(payload))
+                except Exception:
+                    pass
+        await client.close()
+
+    _drive(run())
+    for evt in captured_events:
+        for choice in evt.get("choices") or []:
+            delta = choice.get("delta") or {}
+            extra = delta.get("extra_content") or {}
+            tool_event = extra.get("toolEvent") if isinstance(extra, dict) else None
+            if isinstance(tool_event, dict):
+                assert tool_event.get("tool_name") != "web_search", evt
