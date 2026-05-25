@@ -1795,7 +1795,15 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
     try:
         active = Path(active_model).expanduser().resolve()
         target = deleted_path.resolve()
-        return active == target or (target.is_dir() and active.is_relative_to(target))
+        # Round 27 P1 #8: match bidirectionally so deleting a child
+        # directory of a loaded local model (e.g. .../my-flux/text_encoder
+        # while .../my-flux is loaded) also trips the guard. Mirrors
+        # the diffusion delete-guard pattern.
+        return (
+            active == target
+            or (target.is_dir() and active.is_relative_to(target))
+            or (active.is_dir() and target.is_relative_to(active))
+        )
     except (OSError, RuntimeError, ValueError) as e:
         logger.debug(
             "Could not resolve loaded/deleted model paths; falling back to string comparison: %s",
@@ -1803,8 +1811,10 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
-        return active_lower == target_lower or active_lower.startswith(
-            f"{target_lower}{os.sep}"
+        return (
+            active_lower == target_lower
+            or active_lower.startswith(f"{target_lower}{os.sep}")
+            or target_lower.startswith(f"{active_lower}{os.sep}")
         )
 
 

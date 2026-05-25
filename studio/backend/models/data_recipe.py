@@ -92,12 +92,14 @@ class SeedInspectRequest(BaseModel):
 
     # Round 26 P1 #11: dataset_name reaches HF + log/echo paths, so
     # mirror the hardening other dataset request models already do.
-    @field_validator("dataset_name")
+    # Round 27 P1 #7: split and subset also flow into HF dataset
+    # APIs / errors and must be guarded the same way.
+    @field_validator("dataset_name", "subset", "split")
     @classmethod
     def _no_dataset_name_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("dataset_name")
+    @field_validator("dataset_name", "subset", "split")
     @classmethod
     def _no_dataset_name_embedded_hf_tokens(cls, v, info):
         return _reject_embedded_hf_token(v, info.field_name)

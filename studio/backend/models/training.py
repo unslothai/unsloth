@@ -67,7 +67,11 @@ class TrainingStartRequest(BaseModel):
     def _no_model_name_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("model_name", "hf_dataset")
+    # Round 27 P1 #2: subset / train_split / eval_split are reflected
+    # in status + error messages and persisted to job records, so the
+    # embedded-token guard must cover them too. Round 26 only added
+    # the control-char guard to those three.
+    @field_validator("model_name", "hf_dataset", "subset", "train_split", "eval_split")
     @classmethod
     def _no_model_name_embedded_hf_tokens(cls, v, info):
         return _reject_embedded_hf_token(v, info.field_name)

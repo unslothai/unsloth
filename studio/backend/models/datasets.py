@@ -32,12 +32,14 @@ class CheckFormatRequest(BaseModel):
             values.setdefault("train_split", values.pop("split"))
         return values
 
-    @field_validator("dataset_name")
+    # Round 27 P1 #6: subset / train_split also flow into HF dataset
+    # APIs and errors/responses, so they need the same hardening.
+    @field_validator("dataset_name", "subset", "train_split")
     @classmethod
     def _no_dataset_name_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("dataset_name")
+    @field_validator("dataset_name", "subset", "train_split")
     @classmethod
     def _no_dataset_name_embedded_hf_tokens(cls, v, info):
         return _reject_embedded_hf_token(v, info.field_name)

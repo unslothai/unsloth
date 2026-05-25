@@ -127,6 +127,11 @@ def precache_helper_gguf():
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
 
+    # Round 27 P1 #4: register the repo so DELETE /api/models/delete-cached
+    # cannot rmtree the cache directory while we are mid-download. Helper
+    # / advisor runtime calls already register, but the startup precache
+    # was the asymmetric gap that let cache delete race the first download.
+    _register_helper_advisor_repo(repo)
     try:
         from huggingface_hub import HfApi, hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
@@ -158,6 +163,7 @@ def precache_helper_gguf():
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
+        _unregister_helper_advisor_repo(repo)
         try:
             enable_progress_bars()
         except Exception as e:
