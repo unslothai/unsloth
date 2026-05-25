@@ -200,10 +200,28 @@ export function ImagesPage() {
     }
     setBusy("generating");
     try {
-      const parsedSeed = seed.trim() ? Number(seed.trim()) : undefined;
-      if (parsedSeed !== undefined && !Number.isFinite(parsedSeed)) {
-        toast.error("Seed must be a number");
-        return;
+      // Reject non-integer or out-of-safe-integer-range seeds rather
+      // than silently rounding via Number(). The backend takes an int
+      // and a precision loss here would yield a different image than
+      // the seed the user typed.
+      const seedStr = seed.trim();
+      let parsedSeed: number | undefined;
+      if (seedStr) {
+        if (!/^-?\d+$/.test(seedStr)) {
+          toast.error("Seed must be an integer");
+          return;
+        }
+        const candidate = Number(seedStr);
+        if (
+          !Number.isFinite(candidate) ||
+          !Number.isSafeInteger(candidate)
+        ) {
+          toast.error(
+            "Seed must fit in a JavaScript safe integer (<= 2^53 - 1)",
+          );
+          return;
+        }
+        parsedSeed = candidate;
       }
       const out = await generateDiffusionImage({
         prompt,

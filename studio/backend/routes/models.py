@@ -2632,6 +2632,29 @@ async def delete_cached_model(
     except Exception:
         pass
 
+    # Also refuse to delete the cache underlying a loaded diffusion
+    # pipeline. The diffusion backend mmap's the GGUF + base repo
+    # weights and continues to read from the cache long after load,
+    # so deleting them out from under it would corrupt generation.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+
+        diff_backend = get_diffusion_backend()
+        diff_status = diff_backend.status()
+        if diff_status.get("is_loaded"):
+            diff_repo = (diff_status.get("repo_id") or "").lower()
+            diff_base = (diff_status.get("base_repo") or "").lower()
+            needle = repo_id.lower()
+            if diff_repo.startswith(needle) or diff_base.startswith(needle):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the diffusion image model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     try:
         cache_scans = _all_hf_cache_scans()
 

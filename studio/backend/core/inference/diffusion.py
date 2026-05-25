@@ -273,24 +273,33 @@ class DiffusionBackend:
         return self._repo_id
 
     def status(self) -> dict[str, Any]:
+        # Take _lock so the snapshot cannot observe a torn state where
+        # _pipe was already swapped but _family/_repo_id haven't been
+        # updated yet (or vice versa). Frontend polling at 1 Hz would
+        # otherwise render impossible "loaded but no repo_id" states.
         # Only echo the GGUF basename; full absolute path leaks the
         # local HF cache layout (and the system username on default
         # POSIX layouts) to any authenticated Studio session.
-        gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
-        return {
-            "is_loaded": self.is_loaded,
-            "is_loading": self._loading,
-            "repo_id": self._repo_id,
-            "family": self._family.name if self._family else None,
-            "pipeline_class": self._family.pipeline_class if self._family else None,
-            "base_repo": self._base_repo,
-            "gguf_filename": gguf_basename,
-            "device": self._device,
-            "dtype": self._dtype,
-            "loaded_at": self._loaded_at,
-            "last_error": self._last_error,
-            "supported_families": supported_families(),
-        }
+        with self._lock:
+            gguf_basename = (
+                Path(self._gguf_path).name if self._gguf_path else None
+            )
+            return {
+                "is_loaded": self._pipe is not None,
+                "is_loading": self._loading,
+                "repo_id": self._repo_id,
+                "family": self._family.name if self._family else None,
+                "pipeline_class": (
+                    self._family.pipeline_class if self._family else None
+                ),
+                "base_repo": self._base_repo,
+                "gguf_filename": gguf_basename,
+                "device": self._device,
+                "dtype": self._dtype,
+                "loaded_at": self._loaded_at,
+                "last_error": self._last_error,
+                "supported_families": supported_families(),
+            }
 
     def _pick_device_and_dtype(self) -> tuple[str, "Any"]:
         """Pick (device, dtype) for the current host.
@@ -506,6 +515,14 @@ class DiffusionBackend:
 
                 return self.status()
             except Exception as exc:
+                # Scrub hf_token and pipe_kwargs from frame locals BEFORE
+                # logger.exception() captures them. Rich tracebacks and
+                # some structlog formatters render frame locals, which
+                # would otherwise echo the raw hf_... token into logs
+                # and any error reporting sink the user has wired up.
+                hf_token = None  # noqa: F841
+                pipe_kwargs = None  # noqa: F841
+                single_file_kwargs = None  # noqa: F841
                 with self._lock:
                     self._last_error = str(exc)
                 logger.exception("Diffusion load failed for %s", repo_id)
