@@ -35,10 +35,11 @@ export function CreateKeyForm({
       const result = await createApiKey(name.trim(), expiry);
       onCreated(result.key);
       setName("");
-    } catch (err) {
-      onError(
-        err instanceof Error ? err.message : t("settings.apiKeys.createError"),
-      );
+    } catch {
+      // API helpers in ../api/api-keys.ts throw generic English Error
+      // messages; always use the translated message so zh-CN users do not
+      // see English text bleed through from internal exceptions.
+      onError(t("settings.apiKeys.createError"));
     } finally {
       setLoading(false);
     }

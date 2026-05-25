@@ -32,17 +32,16 @@ export function ApiKeysTab() {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
+  // API helpers in ../api/api-keys.ts throw generic English Error messages
+  // ("Failed to load API access", etc.). Always use the translated message
+  // so zh-CN users do not see those English strings bleed through.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       setKeys(await fetchApiKeys());
-    } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : translate("settings.apiKeys.loadError"),
-      );
+    } catch {
+      setError(translate("settings.apiKeys.loadError"));
     } finally {
       setLoading(false);
     }
@@ -57,13 +56,9 @@ export function ApiKeysTab() {
         if (cancelled) return;
         setKeys(apiKeys);
         setError(null);
-      } catch (e) {
+      } catch {
         if (cancelled) return;
-        setError(
-          e instanceof Error
-            ? e.message
-            : translate("settings.apiKeys.loadError"),
-        );
+        setError(translate("settings.apiKeys.loadError"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -82,12 +77,8 @@ export function ApiKeysTab() {
       await revokeApiKey(revokeTarget.id);
       await load();
       setRevokeTarget(null);
-    } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : translate("settings.apiKeys.revokeError"),
-      );
+    } catch {
+      setError(translate("settings.apiKeys.revokeError"));
     } finally {
       setRevoking(false);
     }
