@@ -27,8 +27,28 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
+  // YAML import means "use this config as authoritative". An absent
+  // vision_image_size should reset the in-memory value to Default, not
+  // preserve a stale one. Same-model defaults reloads (which also flow
+  // through the model-config mapper) skip the reset via Object.hasOwn
+  // in model-defaults.ts; here we forge the key so import always wins.
+  const trainingObj =
+    raw.training != null &&
+    typeof raw.training === "object" &&
+    !Array.isArray(raw.training)
+      ? { ...(raw.training as Record<string, unknown>) }
+      : raw.training;
+  if (
+    trainingObj != null &&
+    typeof trainingObj === "object" &&
+    !Array.isArray(trainingObj) &&
+    !Object.hasOwn(trainingObj, "vision_image_size")
+  ) {
+    (trainingObj as Record<string, unknown>).vision_image_size = null;
+  }
+
   return {
-    training: (raw.training ?? undefined) as BackendModelConfig["training"],
+    training: trainingObj as BackendModelConfig["training"],
     lora: (raw.lora ?? undefined) as BackendModelConfig["lora"],
     logging: (raw.logging ?? undefined) as BackendModelConfig["logging"],
   };
@@ -41,6 +61,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
 export function serializeConfigToYaml(
   state: TrainingConfigState,
   includeVisionFields: boolean,
+  includeVisionImageSize: boolean = includeVisionFields,
 ): string {
   const lora: Record<string, unknown> = {
     lora_r: state.loraRank,
@@ -77,7 +98,7 @@ export function serializeConfigToYaml(
     lr_scheduler_type: state.lrSchedulerType,
   };
 
-  if (includeVisionFields) {
+  if (includeVisionImageSize) {
     training.vision_image_size = state.visionImageSize;
   }
 

@@ -87,7 +87,18 @@ export function TrainingSection() {
     // vision_image_size choice in those windows.
     const includeVisionFields =
       store.isVisionModel && store.isDatasetImage !== false;
-    const yamlStr = serializeConfigToYaml(store, includeVisionFields);
+    // DeepSeek OCR ignores vision_image_size at training time (mappers.ts
+    // sends null), so do not emit it to YAML either; otherwise a stale
+    // value could later apply to a non-DeepSeek vision model.
+    const selectedModelLower = (store.selectedModel ?? "").toLowerCase();
+    const isDeepseekOcr =
+      selectedModelLower.includes("deepseek") &&
+      selectedModelLower.includes("ocr");
+    const yamlStr = serializeConfigToYaml(
+      store,
+      includeVisionFields,
+      includeVisionFields && !isDeepseekOcr,
+    );
     const blob = new Blob([yamlStr], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
