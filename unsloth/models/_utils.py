@@ -1484,6 +1484,17 @@ UNSLOTH_COMPILE_MAXIMUM = os.environ.get("UNSLOTH_COMPILE_MAXIMUM", "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = (
     os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 )
+
+try:
+    import torch._dynamo.config as _dynamo_config
+
+    if hasattr(_dynamo_config, "capture_scalar_outputs"):
+        _dynamo_config.capture_scalar_outputs = True
+    if hasattr(_dynamo_config, "skip_fwd_side_effects_in_bwd_under_checkpoint"):
+        _dynamo_config.skip_fwd_side_effects_in_bwd_under_checkpoint = True
+except Exception:
+    pass
+
 # Just remove max_autotune_gemm warning
 from torch._inductor.runtime.hints import DeviceProperties
 
