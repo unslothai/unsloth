@@ -40,6 +40,7 @@ from backend.utils.wheel_utils import (
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
+IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
@@ -1279,6 +1280,29 @@ def install_python_stack() -> int:
             "mlx-vlm",
             floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
+        )
+
+    # 2a. macOS arm64: realign mlx-vlm + transformers after the base step.
+    #     The latest unsloth-zoo pulls mlx-vlm (latest: 0.5.0 requires
+    #     transformers>=5.5.0) but `--upgrade-package transformers` alone is
+    #     not enough on uv: when an older transformers is already installed
+    #     and still satisfies unsloth's own range, the resolver does not
+    #     upgrade it -- leaving mlx-vlm 0.5.0 paired with transformers 4.57.6
+    #     in the venv. Force a separate constraints-free install of both
+    #     packages so the resolver picks a mutually-consistent pair.
+    #     constrain=False because constraints.txt's old single-env pins
+    #     would otherwise pin transformers back to 4.57.6 (the darwin-arm64
+    #     marker carve-out makes most pins inert, but staying constraint-free
+    #     here keeps the contract simple).
+    if IS_MAC_ARM and not skip_base and package_name == "unsloth":
+        _progress("mlx-vlm/transformers realign")
+        pip_install(
+            "Realigning mlx-vlm + transformers (macOS arm64)",
+            "--no-cache-dir",
+            "--upgrade",
+            "mlx-vlm",
+            "transformers",
+            constrain = False,
         )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
