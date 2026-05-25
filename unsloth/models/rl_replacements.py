@@ -946,7 +946,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
         function = function.replace(_save_search, _save_replace)
 
-    if "tool_mask" in function and 'output["tool_mask"]' not in function:
+    if re.search(r"\btool_mask\b", function) and 'output["tool_mask"]' not in function:
         function = function.replace(
             "        return output",
             "        if tool_mask is not None:\n"
@@ -1700,6 +1700,9 @@ def grpo_trainer_compute_loss(function_name, function):
                         "unsloth_zoo."
                     )
                 self._unsloth_grpo_tool_mask_zoo_checked = True
+            _grpo_accumulated_loss_kwargs = {}
+            if tool_mask is not None:
+                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1741,7 +1744,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     sampling_per_token_logps = sampling_per_token_logps,
                     token_type_ids = token_type_ids,
                     mm_token_type_ids = mm_token_type_ids,
-                    tool_mask = tool_mask,
+                    **_grpo_accumulated_loss_kwargs,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -1767,7 +1770,7 @@ def grpo_trainer_compute_loss(function_name, function):
                         attention_mask = attention_mask,
                         token_type_ids = token_type_ids,
                         mm_token_type_ids = mm_token_type_ids,
-                        tool_mask = tool_mask,
+                        **_grpo_accumulated_loss_kwargs,
                     )
                 )
         if "train" in self._metrics:
