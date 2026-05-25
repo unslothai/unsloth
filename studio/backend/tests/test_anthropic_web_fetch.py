@@ -206,8 +206,7 @@ def test_no_web_fetch_tool_when_pill_off(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     assert all(
-        t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209")
-        for t in tools
+        t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209") for t in tools
     )
 
 
