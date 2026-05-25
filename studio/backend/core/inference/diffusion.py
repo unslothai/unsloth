@@ -341,9 +341,7 @@ class DiffusionBackend:
             # Null the family / pipeline_class while a swap is in
             # flight; the frontend can fall back to "unknown".
             ui_family = self._family.name if self._family else None
-            ui_pipeline_class = (
-                self._family.pipeline_class if self._family else None
-            )
+            ui_pipeline_class = self._family.pipeline_class if self._family else None
             if pending_repo and pending_repo != active_repo:
                 ui_family = None
                 ui_pipeline_class = None
