@@ -141,7 +141,16 @@ def _install_fake_codex_sdk(monkeypatch, async_codex_cls, *, with_safety_enums =
             workspace_write = "WORKSPACE_WRITE",
             danger_full_access = "DANGER_FULL_ACCESS",
         )
+    # Inject the fake under BOTH module names the production importer
+    # checks. ``openai_codex`` is the canonical upstream name and is
+    # preferred by the lazy-import gate; ``codex_app_server`` is the
+    # legacy / Rust-crate alias. Hosts that have ``openai_codex``
+    # actually installed (developer venvs, CI runners after the PR's
+    # `pip install openai-codex`) would otherwise bypass the fake and
+    # exercise the real SDK -- the same fake must be reachable under
+    # both names for the test to be deterministic.
     monkeypatch.setitem(sys.modules, "codex_app_server", fake_mod)
+    monkeypatch.setitem(sys.modules, "openai_codex", fake_mod)
     # importlib.util.find_spec walks finders, not sys.modules; patch
     # it directly so the lazy-import gate accepts the fake.
     import importlib.util as _iu
@@ -149,7 +158,7 @@ def _install_fake_codex_sdk(monkeypatch, async_codex_cls, *, with_safety_enums =
     real_find_spec = _iu.find_spec
 
     def _shim(name: str, *args, **kwargs):
-        if name == "codex_app_server":
+        if name in ("codex_app_server", "openai_codex"):
             return types.SimpleNamespace()
         return real_find_spec(name, *args, **kwargs)
 

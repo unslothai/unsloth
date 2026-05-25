@@ -40,6 +40,7 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import shutil
 import sys
 import time
 from typing import Any, AsyncGenerator, Optional
@@ -186,12 +187,52 @@ class _ScrubbedEnvAsyncCodex:
             self._restored_via_us.clear()
 
 
+def _resolve_codex_bin() -> Optional[str]:
+    """Best-effort PATH lookup for the codex CLI used as ``codex_bin``.
+
+    The upstream Python SDK normally locates its pinned codex binary
+    via the ``openai-codex-cli-bin`` runtime package, installed
+    automatically as a dependency of ``pip install openai-codex``.
+    Users who installed the SDK with ``--no-deps`` (lightweight
+    setups), users whose platform is not yet on the
+    ``openai-codex-cli-bin`` wheel matrix, and users whose codex CLI
+    was installed via ``npm i -g @openai/codex`` / Homebrew never
+    have the pinned runtime package on import path. Without an
+    explicit ``codex_bin`` the SDK then raises
+    ``FileNotFoundError("Unable to locate the pinned Codex runtime")``
+    even though a perfectly good ``codex`` is on PATH and was the
+    binary Studio's availability probe already verified.
+
+    Returning ``shutil.which("codex")`` here turns that hard failure
+    into a working session: Studio passes the resolved path through
+    ``AppServerConfig(codex_bin=...)`` and the SDK uses it directly.
+    Returning ``None`` keeps the pinned-runtime path intact when the
+    CLI is not on PATH (which only happens on hosts where the SDK is
+    importable but the CLI is missing -- ``codex_availability`` would
+    already report ``installed=false`` there, so callers never reach
+    this).
+    """
+    try:
+        return shutil.which("codex")
+    except Exception as exc:
+        logger.warning(
+            "codex_provider.codex_bin_lookup_failed",
+            exc_type = type(exc).__name__,
+            error = str(exc),
+        )
+        return None
+
+
 def _open_async_codex(async_codex_cls: Any) -> Any:
     """Construct an AsyncCodex whose spawned app-server cannot see
     Studio's secrets.
 
-    Preferred path: `AsyncCodex(config=AppServerConfig(env=...))`
-    which scopes the override to the spawned subprocess only.
+    Preferred path: `AsyncCodex(config=AppServerConfig(env=...,
+    codex_bin=...))` which scopes the env override to the spawned
+    subprocess only and explicitly pins the codex binary so the SDK
+    does not need its pinned ``openai-codex-cli-bin`` runtime to be
+    installed.
+
     Fail-closed fallback: `_ScrubbedEnvAsyncCodex` swaps `os.environ`
     for the lifetime of the session so the SDK's internal
     `os.environ.copy()` spawn never sees HF_TOKEN / GH_TOKEN /
@@ -203,8 +244,27 @@ def _open_async_codex(async_codex_cls: Any) -> Any:
         if sdk_mod is not None:
             app_server_config = getattr(sdk_mod, "AppServerConfig", None)
             if app_server_config is not None:
+                # Try the modern signature: AppServerConfig(env=..., codex_bin=...).
+                # codex_bin keeps PATH-installed codex working without the
+                # SDK's pinned openai-codex-cli-bin runtime package. We try
+                # the full signature first, then degrade gracefully if the
+                # installed SDK build does not accept codex_bin yet.
+                codex_bin = _resolve_codex_bin()
+                env_override = _codex_sdk_env_override()
+                if codex_bin is not None:
+                    try:
+                        return async_codex_cls(
+                            config = app_server_config(
+                                env = env_override,
+                                codex_bin = codex_bin,
+                            ),
+                        )
+                    except TypeError:
+                        # Older SDK build: codex_bin kwarg unknown. Fall
+                        # through to env-only construction below.
+                        pass
                 return async_codex_cls(
-                    config = app_server_config(env = _codex_sdk_env_override()),
+                    config = app_server_config(env = env_override),
                 )
     except TypeError:
         # Older SDK: AppServerConfig may not accept the env kwarg yet.
