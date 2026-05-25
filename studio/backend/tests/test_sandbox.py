@@ -449,6 +449,29 @@ def test_get_shell_cmd_resolves_absolute_bash_path(monkeypatch):
     assert "bash" in os.path.basename(cmd[0]), cmd
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap binds")
+def test_resolve_bash_prefers_sandbox_visible_paths_on_linux(monkeypatch):
+    """On Linux, _resolve_bash_path must prefer /bin/bash or
+    /usr/bin/bash over a PATH-resolved bash. bwrap binds /usr and /bin
+    but not Nix-style /run/current-system/sw/bin or ~/.nix-profile, so a
+    PATH-resolved bash on those hosts would not be visible inside the
+    sandbox and bash_exec would fail before the command runs."""
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "_RESOLVED_BASH_PATH", None)
+    monkeypatch.setattr(
+        tools.shutil,
+        "which",
+        lambda name: "/run/current-system/sw/bin/bash" if name == "bash" else None,
+    )
+    monkeypatch.setattr(
+        tools.os.path,
+        "exists",
+        lambda p: p in ("/bin/bash", "/usr/bin/bash"),
+    )
+    assert tools._resolve_bash_path() in ("/bin/bash", "/usr/bin/bash")
+
+
 # ---------------------------------------------------------------------------
 # macOS Seatbelt symmetry: workdir must appear in process-exec and
 # file-map-executable so tools can run / dlopen a freshly written file in

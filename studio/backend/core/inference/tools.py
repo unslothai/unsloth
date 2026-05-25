@@ -458,23 +458,35 @@ _RESOLVED_BASH_PATH: str | None = None
 def _resolve_bash_path() -> str:
     """Return the bash binary the tool subprocess should exec.
 
-    Order:
-      1. shutil.which("bash") in the parent PATH; this picks up Homebrew
-         bash (5.x) on Intel macs so scripts using bash 4+ features keep
-         working. Both /usr/local/bin and /opt/homebrew/bin are allowed
-         by the macOS Seatbelt profile so the sandbox is satisfied.
-      2. /bin/bash if present (covers stock macOS where shutil.which
-         returns nothing because PATH was stripped, and every Linux
-         layout we ship for).
-      3. Bare "bash" as a last resort so the child's PATH lookup still
-         runs (probably broken, but no worse than before).
+    macOS: prefer ``shutil.which("bash")`` so Homebrew bash 5.x on Intel
+    or Apple Silicon is picked up; the Seatbelt profile allows both
+    ``/usr/local/bin`` and ``/opt/homebrew/bin``. Fall back to
+    ``/bin/bash`` (stock macOS bash 3.2).
+
+    Linux and other Unix: prefer ``/bin/bash`` then ``/usr/bin/bash``.
+    These canonical paths are inside the ``/usr`` and ``/bin`` ro-binds
+    that ``_linux_bwrap_argv`` sets up, so the sandboxed child can exec
+    them. ``shutil.which("bash")`` on Nix/NixOS can resolve to
+    ``/run/current-system/sw/bin/bash`` or ``~/.nix-profile/bin/bash``,
+    which are not bind-mounted and would make ``bash_exec`` fail before
+    the command runs. Only fall back to PATH lookup if neither canonical
+    path exists.
     """
     global _RESOLVED_BASH_PATH
     if _RESOLVED_BASH_PATH is not None:
         return _RESOLVED_BASH_PATH
-    candidate = shutil.which("bash")
-    if not candidate and os.path.exists("/bin/bash"):
-        candidate = "/bin/bash"
+    if sys.platform == "darwin":
+        candidate = shutil.which("bash")
+        if not candidate and os.path.exists("/bin/bash"):
+            candidate = "/bin/bash"
+    else:
+        candidate = None
+        for path in ("/bin/bash", "/usr/bin/bash"):
+            if os.path.exists(path):
+                candidate = path
+                break
+        if not candidate:
+            candidate = shutil.which("bash")
     _RESOLVED_BASH_PATH = candidate or "bash"
     return _RESOLVED_BASH_PATH
 
