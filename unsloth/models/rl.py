@@ -374,21 +374,11 @@ if align_completion_tool_mask is None:
     ) -> torch.Tensor:
         if tool_mask is None:
             return completion_mask
-        if tool_mask.shape[0] != completion_mask.shape[0]:
-            raise ValueError(
-                "tool_mask batch size must match completion_mask batch size."
-            )
-
-        tool_mask = tool_mask.to(device = completion_mask.device)
-        if tool_mask.shape == completion_mask.shape:
-            aligned_tool_mask = tool_mask
-        else:
-            aligned_tool_mask = align_logprobs_with_mask(
-                tool_mask,
-                completion_mask,
-                pad_value = 0,
-            )
-        return completion_mask * aligned_tool_mask.to(dtype = completion_mask.dtype)
+        raise RuntimeError(
+            "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+            "grpo_accumulated_loss handles tool_mask. Please upgrade "
+            "unsloth_zoo."
+        )
 
 
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]

@@ -63,7 +63,7 @@ def test_rl_uses_optional_zoo_tool_mask_helper():
     assert 'RL_REPLACEMENTS["align_completion_tool_mask"]' not in src
 
 
-def test_local_tool_mask_alignment_fallback_matches_zoo_contract():
+def test_local_tool_mask_fallback_is_only_old_zoo_compat_shim():
     align_completion_tool_mask, calls = _load_local_align_completion_tool_mask()
     completion_mask = torch.tensor(
         [[1, 1, 0], [1, 1, 1]],
@@ -71,28 +71,11 @@ def test_local_tool_mask_alignment_fallback_matches_zoo_contract():
     )
 
     assert align_completion_tool_mask(None, completion_mask) is completion_mask
+    assert calls == []
 
     same_shape_tool_mask = torch.tensor([[1, 0, 1], [0, 1, 1]], dtype = torch.bool)
-    assert torch.equal(
-        align_completion_tool_mask(same_shape_tool_mask, completion_mask),
-        torch.tensor([[1, 0, 0], [0, 1, 1]], dtype = torch.float32),
-    )
-
-    packed_tool_mask = torch.ones((2, 2), dtype = torch.int64)
-    assert torch.equal(
-        align_completion_tool_mask(packed_tool_mask, completion_mask),
-        torch.tensor([[1, 0, 0], [0, 1, 1]], dtype = torch.float32),
-    )
-    assert calls and calls[-1][2] == 0
-
-
-def test_local_tool_mask_alignment_validates_batch_size():
-    align_completion_tool_mask, _calls = _load_local_align_completion_tool_mask()
-    with pytest.raises(ValueError, match = "batch size"):
-        align_completion_tool_mask(
-            torch.ones((1, 2)),
-            torch.ones((2, 2)),
-        )
+    with pytest.raises(RuntimeError, match = "Please upgrade unsloth_zoo"):
+        align_completion_tool_mask(same_shape_tool_mask, completion_mask)
 
 
 def test_grpo_accumulated_loss_omits_none_tool_mask_for_old_zoo():
