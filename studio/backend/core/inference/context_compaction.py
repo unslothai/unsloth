@@ -90,12 +90,25 @@ def estimate_tokens(messages: list[dict]) -> int:
     return -(-total_chars // _CHARS_PER_TOKEN)
 
 
+# Content-part types that carry no media payload and shouldn't anchor the
+# message. ``compaction`` is Studio's Anthropic round-trip state -- pinning
+# it would keep the very thing we're trying to compact away.
+_TEXT_ONLY_PART_TYPES = {"text", "compaction"}
+
+
 def _is_multimodal(msg: dict) -> bool:
-    return isinstance(msg.get("content"), list)
-
-
-def _is_tool_message(msg: dict) -> bool:
-    return msg.get("role") == "tool"
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        # Unknown shapes (raw strings, ints, None) keep the conservative
+        # "treat as multimodal" stance -- there's no test rendering for
+        # them either.
+        if not isinstance(part, dict):
+            return True
+        if part.get("type") not in _TEXT_ONLY_PART_TYPES:
+            return True
+    return False
 
 
 def _assistant_tool_call_ids(msg: dict) -> set[str]:
@@ -126,16 +139,17 @@ def _pair_linked_indices(messages: list[dict]) -> dict[int, set[int]]:
     # Walk in order so the next tool-role messages after an assistant
     # call are the natural matches. A tool message is matched to the
     # most recent prior assistant whose ``tool_calls`` contain that id.
-    # Any non-assistant / non-tool message (user, system) ends the
-    # pending window: per the OpenAI chat schema tool messages must
-    # follow their assistant directly, so a tool message arriving
-    # after an intervening user is malformed input. Clearing here
-    # prevents the compactor from treating a stale assistant + a
-    # later-turn tool as one group and dropping them together.
+    # ANY non-tool boundary (user, system, OR another assistant) ends
+    # the pending window: per the OpenAI chat schema tool messages
+    # must follow their assistant directly. A later assistant turn
+    # arriving before the matching tool means that tool is malformed
+    # input -- treating the late tool as still paired would let the
+    # compactor drop a stale assistant + a later-turn tool together.
     pending_ids: dict[str, int] = {}
     for i, m in enumerate(messages):
         role = m.get("role")
         if role == "assistant":
+            pending_ids.clear()
             ids = _assistant_tool_call_ids(m)
             out.setdefault(i, set())
             for tid in ids:
@@ -214,6 +228,18 @@ class SlidingWindowCompact(CompactStrategy):
         # message and its matching tool-role responses get the same
         # group id so we keep or drop them as a unit.
         pair_map = _pair_linked_indices(messages)
+        # If any member of a valid asst+tools group is anchored,
+        # anchor the whole group. Without this an anchored multimodal
+        # tool whose assistant is droppable (or an anchored multimodal
+        # assistant whose tools are droppable) would survive alone,
+        # leaving the chat template invalid (OpenAI 400s on dangling
+        # tool_calls / orphan tool messages).
+        for asst_idx, tool_idxs in pair_map.items():
+            if not tool_idxs:
+                continue
+            pair_idxs = {asst_idx, *tool_idxs}
+            if pair_idxs & anchor_idx:
+                anchor_idx |= pair_idxs
         group_id: list[int] = list(range(len(messages)))
         next_g = len(messages)
         for asst_idx, tool_idxs in pair_map.items():

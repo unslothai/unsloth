@@ -707,27 +707,34 @@ def test_compact_drops_orphan_tool_left_by_user_boundary():
             ), f"orphan tool {tcid!r} survived; seen={seen_ids}"
 
 
-def test_compact_does_not_drop_anchored_multimodal_tool():
-    """An anchored tool (multimodal content) still survives even when
-    its matching assistant gets dropped -- the existing
-    leak-rather-than-violate-anchor rule applies in this direction too.
+def test_compact_keeps_full_pair_when_tool_is_multimodal_anchor():
+    """An anchored multimodal tool implies the whole asst+tools pair
+    gets anchored. Earlier behavior leaked the orphan tool alone, which
+    OpenAI 400s on ("orphan tool message"). Anchor propagation across
+    paired indices keeps both halves so the chat template stays valid.
     """
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "task " * 20},
         {"role": "assistant", "content": "a", "tool_calls": [_tool_call("t1")]},
-        # Multimodal tool message -- anchored.
+        # Real multimodal tool message (image part) -- anchored.
         {
             "role": "tool",
             "tool_call_id": "t1",
-            "content": [{"type": "text", "text": "ok"}],
+            "content": [
+                {"type": "text", "text": "ok"},
+                {"type": "image_url", "image_url": {"url": "x"}},
+            ],
         },
         {"role": "user", "content": "more"},
         {"role": "user", "content": "even more"},
     ]
     out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 1)
-    # The anchored tool survives.
-    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "t1" for m in out)
+    # Both halves of the pair survive: anchored tool keeps its asst.
+    asst_ids, tool_ids = _surviving_tool_ids(out)
+    assert "t1" in asst_ids
+    assert "t1" in tool_ids
+    assert asst_ids == tool_ids
 
 
 def test_anchored_multimodal_asst_orphan_tool_calls_stripped():
@@ -762,6 +769,94 @@ def test_anchored_multimodal_asst_orphan_tool_calls_stripped():
     assert any(isinstance(m.get("content"), list) for m in out)
     # Original input unchanged (we copy on rewrite).
     assert multimodal_asst["tool_calls"] == [_tool_call("t1"), _tool_call("t2")]
+
+
+def test_intervening_assistant_breaks_pair_window():
+    """A later assistant turn arriving before the matching tool message
+    must end the pending pair window. Otherwise the compactor groups a
+    stale assistant + a malformed late tool together. Mirrors the
+    user/system boundary rule for the assistant boundary.
+    """
+    from core.inference.context_compaction import _pair_linked_indices
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "a", "function": {"name": "f", "arguments": "{}"}},
+            ],
+        },
+        {"role": "assistant", "content": "intervening"},
+        {"role": "tool", "tool_call_id": "a", "content": "stale"},
+    ]
+    pm = _pair_linked_indices(msgs)
+    # Asst at index 2 had its window closed by asst at index 3.
+    assert pm.get(2) == set(), pm
+    # The intervening assistant has no tool_calls and so an empty set.
+    assert pm.get(3) == set(), pm
+
+
+def test_compaction_content_part_is_not_multimodal_anchor():
+    """Studio's ``{"type":"compaction","content":"..."}`` parts are the
+    summary the compactor is supposed to compact away -- they must not
+    pin the carrier message as a multimodal anchor. A text-only list
+    (only text + compaction parts) collapses to "not multimodal" and
+    stays droppable.
+    """
+    from core.inference.context_compaction import _is_multimodal
+
+    # Pure compaction part.
+    msg = {
+        "role": "assistant",
+        "content": [{"type": "compaction", "content": "OLD " * 200}],
+    }
+    assert _is_multimodal(msg) is False
+
+    # Mixed text + compaction (still no media payload).
+    msg2 = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "intro"},
+            {"type": "compaction", "content": "OLD " * 200},
+        ],
+    }
+    assert _is_multimodal(msg2) is False
+
+    # Real multimodal part wins anchoring even alongside compaction.
+    msg3 = {
+        "role": "assistant",
+        "content": [
+            {"type": "compaction", "content": "OLD"},
+            {"type": "image_url", "image_url": {"url": "x"}},
+        ],
+    }
+    assert _is_multimodal(msg3) is True
+
+    # End-to-end: an old compaction-only message is droppable.
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "first task"),
+        {
+            "role": "assistant",
+            "content": [{"type": "compaction", "content": "x" * 8000}],
+        },
+        _long("assistant", 100),
+        _long("user", 100),
+    ]
+    out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 20)
+    # The old compaction-only assistant should have been dropped.
+    assert not any(
+        m.get("role") == "assistant"
+        and isinstance(m.get("content"), list)
+        and any(
+            isinstance(p, dict) and p.get("type") == "compaction"
+            for p in m["content"]
+        )
+        for m in out
+    )
 
 
 def test_partial_tool_drop_strips_orphan_tool_call_id():
