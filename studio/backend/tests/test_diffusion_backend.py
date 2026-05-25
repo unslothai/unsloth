@@ -111,6 +111,24 @@ def test_detect_family_unknown_returns_none():
     assert detect_family("") is None
 
 
+def test_detect_family_sd35_is_not_sd3():
+    """SD3.5 must NOT be matched as SD3 Medium. Pairing SD3.5 GGUFs
+    with the Medium base produces a misleading load."""
+    from core.inference.diffusion import detect_family
+
+    assert detect_family("unsloth/SD3.5-large-GGUF") is None
+    assert detect_family("unsloth/stable-diffusion-3.5-large-GGUF") is None
+
+
+def test_detect_family_qwen_image_edit_is_not_qwen_image():
+    """Qwen-Image-Edit must NOT be matched as Qwen-Image. The Edit
+    variant uses a different pipeline (image-to-image)."""
+    from core.inference.diffusion import detect_family
+
+    assert detect_family("unsloth/Qwen-Image-Edit-GGUF") is None
+    assert detect_family("unsloth/Qwen-Image-Edit-2509-GGUF") is None
+
+
 def test_supported_families_payload_shape():
     from core.inference.diffusion import supported_families
 
@@ -285,11 +303,14 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
 
     class _FakeTransformer:
         @classmethod
-        def from_single_file(cls, path, quantization_config = None, torch_dtype = None):
+        def from_single_file(cls, path, **kw):
             inst = cls()
             inst.path = path
-            inst.qc = quantization_config
-            inst.dtype = torch_dtype
+            inst.qc = kw.get("quantization_config")
+            inst.dtype = kw.get("torch_dtype")
+            inst.config = kw.get("config")
+            inst.subfolder = kw.get("subfolder")
+            inst.token = kw.get("token")
             return inst
 
     class _FakePipeline:
@@ -475,6 +496,33 @@ def test_smart_base_repo_picks_base_4b(monkeypatch):
         gguf_filename = "flux-2-klein-base-4b-Q4_K_S.gguf",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+
+
+def test_gguf_transformer_load_passes_config_subfolder_token(monkeypatch):
+    """Diffusers-format GGUFs require config=<base_repo>+subfolder=
+    transformer at from_single_file time; gated GGUFs also need the
+    token. Verify all three kwargs are forwarded."""
+    fake = _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    captured: dict = {}
+    original = fake.Flux2Transformer2DModel.from_single_file.__func__
+
+    def _capture(cls, path, **kw):
+        captured.update(kw)
+        return original(cls, path, **kw)
+
+    fake.Flux2Transformer2DModel.from_single_file = classmethod(_capture)
+
+    backend = get_diffusion_backend()
+    backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        hf_token = "hf_test_token",
+    )
+    assert captured.get("config") == "black-forest-labs/FLUX.2-klein-4B"
+    assert captured.get("subfolder") == "transformer"
+    assert captured.get("token") == "hf_test_token"
 
 
 def test_release_chat_backend_calls_unload_with_model_name(monkeypatch):

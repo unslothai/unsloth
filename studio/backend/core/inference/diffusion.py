@@ -172,16 +172,30 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     return "black-forest-labs/FLUX.2-klein-4B"
 
 
+# Negative substrings that disqualify a candidate family even when its
+# name appears as a substring of the repo id. Prevents
+# "stable-diffusion-3" matching SD3.5 and "qwen-image" matching
+# Qwen-Image-Edit. Each entry maps a family name to substrings that
+# must NOT appear anywhere in the repo id.
+_FAMILY_EXCLUDE: dict[str, tuple[str, ...]] = {
+    "stable-diffusion-3": ("3.5", "3-5", "stable-diffusion-3.5"),
+    "qwen-image": ("qwen-image-edit", "qwenimage-edit"),
+}
+
+
 def detect_family(
     repo_id: str, *, override_family: Optional[str] = None
 ) -> Optional[DiffusionFamily]:
     """Return the diffusion family matching ``repo_id``.
 
-    Matching is substring-based and case-insensitive. ``override_family``
-    bypasses substring matching and looks up by ``DiffusionFamily.name``
-    or (when explicitly asked) by ``_FULL_REPO_FAMILIES.name``.
-    Returns ``None`` when no family applies so callers can surface a
-    clear "unsupported model" error rather than guessing wrong.
+    Matching is substring-based and case-insensitive, with a small
+    deny list (``_FAMILY_EXCLUDE``) for known false positives such as
+    SD3.5 (would otherwise match SD3 Medium) and Qwen-Image-Edit
+    (would otherwise match Qwen-Image). ``override_family`` bypasses
+    substring matching and looks up by ``DiffusionFamily.name`` or
+    (when explicitly asked) by ``_FULL_REPO_FAMILIES.name``. Returns
+    ``None`` when no family applies so callers can surface a clear
+    "unsupported model" error rather than guessing wrong.
     """
     if override_family:
         wanted = override_family.strip().lower()
@@ -193,6 +207,9 @@ def detect_family(
     if not needle:
         return None
     for fam in _FAMILIES:
+        excludes = _FAMILY_EXCLUDE.get(fam.name, ())
+        if any(e in needle for e in excludes):
+            continue
         if fam.name in needle:
             return fam
         for alias in fam.aliases:
@@ -345,12 +362,6 @@ class DiffusionBackend:
                 self._loading = True
                 self._last_error = None
             try:
-                # Unload any chat model that is holding GPU memory so the
-                # diffusion load does not OOM on a < 24 GB GPU. Best
-                # effort: if the llama-cpp backend module is absent (eg
-                # tests, headless tooling) we just continue.
-                _release_chat_backend_for_diffusion()
-
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
                     raise RuntimeError(
@@ -412,10 +423,23 @@ class DiffusionBackend:
                         token = hf_token,
                     )
                     quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
+                    # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
+                    # SD3) need the matching base repo's component config
+                    # at config=<base_repo>, subfolder="transformer".
+                    # Older city96-style GGUFs ignore those kwargs. The
+                    # token is also passed because gated GGUF repos
+                    # require it both at download and at config read time.
+                    single_file_kwargs: dict[str, Any] = {
+                        "quantization_config": quant_config,
+                        "torch_dtype": dtype,
+                        "config": effective_base,
+                        "subfolder": "transformer",
+                    }
+                    if hf_token:
+                        single_file_kwargs["token"] = hf_token
                     transformer = transformer_cls.from_single_file(
                         local_gguf_path,
-                        quantization_config = quant_config,
-                        torch_dtype = dtype,
+                        **single_file_kwargs,
                     )
 
                 pipe_kwargs: dict[str, Any] = {
@@ -433,10 +457,15 @@ class DiffusionBackend:
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
 
-                # Release the previous pipeline BEFORE allocating the
-                # new one so peak VRAM stays at one model's worth, not
-                # two. This matters on 16-24 GB consumer GPUs where the
-                # combined footprint would OOM the from_pretrained call.
+                # Cheap failure modes (bad gguf_filename, gated token,
+                # transient Hub error) have all happened by now. Only
+                # release the current chat backend + previous diffusion
+                # pipeline right before the expensive allocation so a
+                # typo does not kill the user's loaded chat model. Peak
+                # VRAM still stays at one model's worth because the
+                # release happens before from_pretrained.
+                _release_chat_backend_for_diffusion()
+                _release_other_gpu_owners_for_diffusion()
                 old = self._pipe
                 if old is not None:
                     with self._lock:
@@ -642,6 +671,40 @@ def _release_chat_backend_for_diffusion() -> None:
             backend.unload_model(active_model_name)
     except Exception as exc:
         logger.debug("safetensors unload skipped: %s", exc)
+
+
+def _release_other_gpu_owners_for_diffusion() -> None:
+    """Best-effort: shut down export subprocess + active training before
+    a diffusion load. Both can hold multi-GB of VRAM and would OOM the
+    diffusion allocation on consumer GPUs."""
+    # Export subprocess
+    try:
+        from core.export import get_export_backend  # type: ignore
+
+        exp = get_export_backend()
+        if getattr(exp, "current_checkpoint", None):
+            logger.info("Shutting down export subprocess before diffusion load")
+            exp._shutdown_subprocess()
+            exp.current_checkpoint = None
+            exp.is_vision = False
+            exp.is_peft = False
+    except Exception as exc:
+        logger.debug("export unload skipped: %s", exc)
+
+    # Active training subprocess
+    try:
+        from core.training import get_training_backend  # type: ignore
+
+        trn = get_training_backend()
+        if trn.is_training_active():
+            logger.info("Stopping training subprocess before diffusion load")
+            trn.stop_training()
+            for _ in range(60):
+                if not trn.is_training_active():
+                    break
+                time.sleep(0.5)
+    except Exception as exc:
+        logger.debug("training unload skipped: %s", exc)
 
 
 def _release(obj: Any) -> None:

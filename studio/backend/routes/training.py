@@ -297,6 +297,20 @@ async def start_training(
         except Exception as e:
             logger.warning("Could not shut down export subprocess: %s", e)
 
+        # Also unload any loaded diffusion pipeline (Images page); it
+        # holds the same GPU and would survive the inference shutdown.
+        try:
+            from core.inference.diffusion import get_diffusion_backend
+
+            diff_backend = get_diffusion_backend()
+            if diff_backend.is_loaded:
+                logger.info(
+                    "Unloading diffusion model to free GPU memory for training"
+                )
+                diff_backend.unload_model()
+        except Exception as e:
+            logger.warning("Could not unload diffusion model: %s", e)
+
         # start_training now spawns a subprocess (non-blocking)
         success = backend.start_training(job_id = job_id, **training_kwargs)
 

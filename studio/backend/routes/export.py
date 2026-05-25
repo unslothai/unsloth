@@ -81,6 +81,21 @@ async def load_checkpoint(
         except Exception as e:
             logger.warning("Could not unload inference model: %s", e)
 
+        # Also unload any active GGUF llama-server (the inference unload
+        # above only covers the safetensors / Unsloth backend; GGUF
+        # chat runs as a separate subprocess).
+        try:
+            from routes.inference import get_llama_cpp_backend
+
+            llama = get_llama_cpp_backend()
+            if getattr(llama, "is_loaded", False):
+                logger.info(
+                    "Unloading GGUF chat model to free GPU memory for export"
+                )
+                llama.unload_model()
+        except Exception as e:
+            logger.debug("llama-server unload skipped for export: %s", e)
+
         # Also unload any active diffusion pipeline (Images page); it
         # competes for the same GPU and would survive the inference
         # shutdown above. Best effort; silently skip if the module is
