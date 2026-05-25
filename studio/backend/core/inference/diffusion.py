@@ -253,9 +253,7 @@ class DiffusionBackend:
         # Only echo the GGUF basename; full absolute path leaks the
         # local HF cache layout (and the system username on default
         # POSIX layouts) to any authenticated Studio session.
-        gguf_basename = (
-            Path(self._gguf_path).name if self._gguf_path else None
-        )
+        gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
         return {
             "is_loaded": self.is_loaded,
             "is_loading": self._loading,
