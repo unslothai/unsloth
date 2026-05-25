@@ -182,6 +182,43 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     return "black-forest-labs/FLUX.2-klein-4B"
 
 
+def _expand_existing_local_path(value: str) -> str:
+    """Expand ``~`` in ``value`` when the expanded path exists locally.
+
+    Round 14 P2 #11: the GGUF local path branch already calls
+    ``Path(repo_id).expanduser()``, but the full-diffusers-repo and
+    base-companion-repo paths passed the literal ``~/...`` straight
+    into ``from_pretrained``, which treated it as a Hub id and tried
+    to download. Keep behaviour identical for Hub ids (no leading
+    ``~`` -> return as-is) and for non-existent expansions (the
+    diffusers loader will surface its own ``not found`` error).
+    """
+    if not value or not isinstance(value, str) or not value.startswith("~"):
+        return value
+    candidate = Path(value).expanduser()
+    if candidate.exists():
+        return str(candidate)
+    return value
+
+
+_HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
+
+
+def _redact_hf_tokens(value: Any) -> Any:
+    """Scrub embedded ``hf_xxxxxxxx`` tokens out of a string before
+    logging. Round 14 P2 #9: callers can wrap an authenticated URL
+    (``https://hf_token@huggingface.co/...``) into ``repo_id`` /
+    ``base_repo`` / paths; the token would otherwise reach
+    structured-log sinks via the load-info / load-failure log lines.
+    Non-strings are returned unchanged so the helper is safe to
+    sprinkle through ``logger.info`` / ``logger.error`` argument
+    lists.
+    """
+    if not isinstance(value, str):
+        return value
+    return _HF_TOKEN_RE.sub("<redacted>", value)
+
+
 def _resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     """Resolve a GGUF filename inside a local repo directory safely.
 
@@ -288,12 +325,26 @@ def detect_family(
     needle = (repo_id or "").lower()
     if not needle:
         return None
+    # Normalise mixed separator spellings (``Qwen_Image-Edit-GGUF``,
+    # ``Qwen-Image_Edit-GGUF``, ``Qwen.Image.Edit-GGUF``) and the
+    # compact concatenation (``QwenImageEdit-GGUF``) so the
+    # _FAMILY_EXCLUDE deny lists do not need every permutation of
+    # ``-``, ``_``, ``.`` and run-together spellings to keep
+    # Qwen-Image-Edit out of the base Qwen-Image family (round 14
+    # P2 #8).
+    needle_norm = re.sub(r"[^a-z0-9]+", "-", needle).strip("-")
+    needle_compact = re.sub(r"[^a-z0-9]+", "", needle)
     # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES
     # so a repo like ``stabilityai/stable-diffusion-xl-base-1.0`` is
     # auto-detected as SDXL instead of returning None.
     for fam in _FAMILIES + _FULL_REPO_FAMILIES:
         excludes = _FAMILY_EXCLUDE.get(fam.name, ())
-        if any(e in needle for e in excludes):
+        if any(
+            e in needle
+            or re.sub(r"[^a-z0-9]+", "-", e).strip("-") in needle_norm
+            or re.sub(r"[^a-z0-9]+", "", e) in needle_compact
+            for e in excludes
+        ):
             continue
         if fam.name in needle:
             return fam
@@ -352,9 +403,24 @@ class DiffusionBackend:
         self._family: Optional[DiffusionFamily] = None
         self._repo_id: Optional[str] = None
         self._gguf_path: Optional[str] = None
+        # Original ``gguf_filename`` the caller passed in, preserved
+        # so delete guards can compare against subdirectory variants
+        # like ``BF16/model.gguf`` or ``Q4_K_M/model.gguf`` instead
+        # of the collapsed basename (round 14 P1 #4). The basename
+        # alone (``model.gguf``) loses the quant directory and lets
+        # /delete-cached unlink the wrong file.
+        self._gguf_filename: Optional[str] = None
         self._base_repo: Optional[str] = None
         self._device: Optional[str] = None
         self._dtype: Optional[str] = None
+        # True when ``enable_model_cpu_offload()`` was applied on the
+        # loaded pipeline. Diffusers' offload moves the active
+        # submodule between CPU and GPU on each step, so a CUDA
+        # ``torch.Generator`` mismatches the CPU-resident embeddings
+        # and generation crashes mid-forward (round 14 P1 #6). When
+        # this is True, seeded generation has to use a CPU generator
+        # regardless of self._device.
+        self._cpu_offload_enabled: bool = False
         self._loaded_at: Optional[float] = None
         self._loading: bool = False
         self._last_error: Optional[str] = None
@@ -387,6 +453,11 @@ class DiffusionBackend:
         # local HF cache layout (and the system username on default
         # POSIX layouts) to any authenticated Studio session.
         with self._lock:
+            # UI-facing collapsed basename. Full local path leaks the
+            # HF cache layout + system username; the original caller-
+            # supplied filename (e.g. ``BF16/model.gguf``) is kept
+            # separately as ``active_gguf_filename`` for delete
+            # guards.
             gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
             # Expose BOTH the resident pipeline's id AND the pending
             # load target. Delete guards must check both: when model A
@@ -398,7 +469,7 @@ class DiffusionBackend:
             # user just clicked.
             active_repo = self._repo_id
             active_base = self._base_repo
-            active_gguf = gguf_basename
+            active_gguf = self._gguf_filename
             pending_repo = self._pending_repo_id if self._loading else None
             pending_base = self._pending_base_repo if self._loading else None
             pending_gguf = self._pending_gguf_filename if self._loading else None
@@ -414,6 +485,14 @@ class DiffusionBackend:
             if pending_repo and pending_repo != active_repo:
                 ui_family = None
                 ui_pipeline_class = None
+            # UI-facing ``gguf_filename`` collapses to the basename
+            # so the Images panel does not surface internal cache /
+            # variant directory names. Guard-facing ``active_*`` /
+            # ``pending_*`` retain the full caller-supplied filename
+            # so /delete-cached can compare against subdirectory
+            # variants like ``BF16/model.gguf`` (round 14 P1 #4-5).
+            ui_gguf = pending_gguf or active_gguf
+            ui_gguf_basename = Path(ui_gguf).name if ui_gguf else None
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
@@ -421,7 +500,7 @@ class DiffusionBackend:
                 "family": ui_family,
                 "pipeline_class": ui_pipeline_class,
                 "base_repo": pending_base or active_base,
-                "gguf_filename": pending_gguf or active_gguf,
+                "gguf_filename": ui_gguf_basename,
                 # Guard-facing fields: every repo / path / GGUF
                 # filename the backend owns RIGHT NOW. Delete routes
                 # iterate both, paired so the variant-filename check
@@ -550,9 +629,11 @@ class DiffusionBackend:
                 # success.
                 self._pending_repo_id = repo_id
                 self._pending_base_repo = base_repo
-                self._pending_gguf_filename = (
-                    Path(gguf_filename).name if gguf_filename else None
-                )
+                # Store the caller's full ``gguf_filename`` (e.g.
+                # ``BF16/model.gguf``) so the variant-aware delete
+                # guards have the subdirectory info. The UI side of
+                # status() still collapses to the basename for display.
+                self._pending_gguf_filename = gguf_filename if gguf_filename else None
             try:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
@@ -595,11 +676,15 @@ class DiffusionBackend:
                             "or load a full diffusers repo (base_repo only "
                             "applies when picking a GGUF quant)."
                         )
-                    effective_base = repo_id
+                    # ``~/models/my-flux`` must be expanded so
+                    # diffusers' from_pretrained does not pass the
+                    # literal tilde through to ``os.path.isdir`` and
+                    # fall back to the Hub (round 14 P2 #11).
+                    effective_base = _expand_existing_local_path(repo_id)
                     with self._lock:
                         self._pending_base_repo = effective_base
                 elif base_repo:
-                    effective_base = base_repo
+                    effective_base = _expand_existing_local_path(base_repo)
                     # Refresh pending so delete guards see the actual
                     # base, not just caller-supplied None.
                     with self._lock:
@@ -608,13 +693,19 @@ class DiffusionBackend:
                     effective_base = _smart_base_repo(fam, repo_id)
                     with self._lock:
                         self._pending_base_repo = effective_base
+                # ``repo_id`` / ``effective_base`` are user-supplied
+                # strings that can embed an ``hf_xxxxx`` token via a
+                # URL-style path (``https://hf_token@huggingface.co/...``).
+                # Scrub them BEFORE the logger formats the line so the
+                # token never reaches structured-log sinks (round 14
+                # P2 #9).
                 logger.info(
                     "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
-                    repo_id,
+                    _redact_hf_tokens(repo_id),
                     fam.name,
                     device,
                     dtype,
-                    effective_base,
+                    _redact_hf_tokens(effective_base),
                 )
 
                 transformer = None
@@ -685,9 +776,11 @@ class DiffusionBackend:
                         self._family = None
                         self._repo_id = None
                         self._gguf_path = None
+                        self._gguf_filename = None
                         self._base_repo = None
                         self._device = None
                         self._dtype = None
+                        self._cpu_offload_enabled = False
                         self._loaded_at = None
                     _release(old)
                     old = None
@@ -735,6 +828,9 @@ class DiffusionBackend:
                     pipe_kwargs["token"] = hf_token
 
                 pipe = None
+                cpu_offload_enabled = bool(
+                    enable_model_cpu_offload and device == "cuda"
+                )
                 try:
                     pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
                     # Device placement / offload can ALSO raise after
@@ -746,7 +842,7 @@ class DiffusionBackend:
                     # the next load attempt. Explicitly release both
                     # pipe and transformer in the same try (round 13
                     # P2 #11).
-                    if enable_model_cpu_offload and device == "cuda":
+                    if cpu_offload_enabled:
                         pipe.enable_model_cpu_offload()
                     else:
                         pipe.to(device)
@@ -765,9 +861,14 @@ class DiffusionBackend:
                     self._family = fam
                     self._repo_id = repo_id
                     self._gguf_path = local_gguf_path
+                    # Preserve the full caller-supplied filename, not
+                    # just the basename, so per-variant delete guards
+                    # see ``BF16/model.gguf`` (round 14 P1 #4).
+                    self._gguf_filename = gguf_filename if gguf_filename else None
                     self._base_repo = effective_base
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
+                    self._cpu_offload_enabled = cpu_offload_enabled
                     self._loaded_at = time.time()
                     # Clear loading + pending here, BEFORE returning,
                     # so the response payload reports the resident
@@ -813,7 +914,11 @@ class DiffusionBackend:
                 # Use ``logger.error`` with the already-scrubbed
                 # message and exc_info=False so the bearer token
                 # cannot leak through structured logging sinks.
-                logger.error("Diffusion load failed for %s: %s", repo_id, exc_msg)
+                logger.error(
+                    "Diffusion load failed for %s: %s",
+                    _redact_hf_tokens(repo_id),
+                    exc_msg,
+                )
                 raise RuntimeError(
                     f"Failed to load diffusion model: {exc_msg}"
                 ) from exc
@@ -845,9 +950,11 @@ class DiffusionBackend:
                 self._family = None
                 self._repo_id = None
                 self._gguf_path = None
+                self._gguf_filename = None
                 self._base_repo = None
                 self._device = None
                 self._dtype = None
+                self._cpu_offload_enabled = False
                 self._loaded_at = None
             _release(old)
             old = None  # noqa: F841
@@ -930,14 +1037,25 @@ class DiffusionBackend:
                 raise RuntimeError("No diffusion model is loaded.")
             pipe = self._pipe
             device = self._device or "cpu"
+            cpu_offload_enabled = self._cpu_offload_enabled
         generator = None
         if seed is not None:
             # Match the device of the pipeline so determinism holds
-            # across reload cycles. For CPU offload, the noise still
-            # has to live on the device the diffusion forward runs on.
-            gen_device = (
-                "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
-            )
+            # across reload cycles. When CPU offload is enabled
+            # (the default on CUDA hosts), diffusers shuttles each
+            # submodule between CPU and GPU on every step. A CUDA
+            # torch.Generator then mismatches the CPU-resident
+            # embeddings at the start of the forward and the run
+            # crashes (round 14 P1 #6). Use a CPU generator in that
+            # case; numerical determinism for the same seed is
+            # preserved because the seed feeds an int rather than a
+            # device-local RNG state.
+            if cpu_offload_enabled:
+                gen_device = "cpu"
+            else:
+                gen_device = (
+                    "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+                )
             generator = torch.Generator(device = gen_device).manual_seed(int(seed))
 
         call_kwargs: dict[str, Any] = {
@@ -1126,34 +1244,49 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     # higher-level guard) cannot still kill an active export.
     try:
         from core.export import get_export_backend  # type: ignore
-
-        exp = get_export_backend()
-        if getattr(exp, "current_checkpoint", None):
-            is_export_active_fn = getattr(exp, "is_export_active", None)
-            export_is_active = False
-            if is_export_active_fn is not None:
-                try:
-                    export_is_active = bool(is_export_active_fn())
-                except Exception:
-                    # Unverifiable status -> treat as 'might be
-                    # active' and refuse to touch the subprocess.
-                    export_is_active = True
-            if export_is_active:
-                logger.info(
-                    "Skipping export shutdown for diffusion load: "
-                    "is_export_active=True (route layer should have "
-                    "rejected this request with 409)"
-                )
-            else:
-                logger.info(
-                    "Shutting down idle export subprocess before diffusion load"
-                )
-                exp._shutdown_subprocess()
-                exp.current_checkpoint = None
-                exp.is_vision = False
-                exp.is_peft = False
     except Exception as exc:
-        logger.debug("export unload skipped: %s", exc)
+        logger.debug("export module not importable: %s", exc)
+        return
+
+    try:
+        exp = get_export_backend()
+    except Exception as exc:
+        logger.debug("export backend not available: %s", exc)
+        return
+
+    is_export_active_fn = getattr(exp, "is_export_active", None)
+    if is_export_active_fn is not None:
+        try:
+            export_is_active = bool(is_export_active_fn())
+        except Exception:
+            # Unverifiable status -> treat as 'might be active' and
+            # refuse so a direct backend caller (test / script /
+            # future route that forgot the higher-level 409 guard)
+            # cannot still terminate an in-flight export.
+            export_is_active = True
+        if export_is_active:
+            # Round 14 P2 #10: the prior behaviour logged a warning
+            # and continued, so direct ``DiffusionBackend.load_model``
+            # callers (tests, scripts) silently bypassed the route
+            # layer's 409. Hard-refuse instead so any code path that
+            # reaches this helper while an export is active sees the
+            # same failure mode the route returns.
+            raise RuntimeError(
+                "An export job is currently active. Stop the export "
+                "job before loading a diffusion image model."
+            )
+
+    if getattr(exp, "current_checkpoint", None):
+        try:
+            logger.info(
+                "Shutting down idle export subprocess before diffusion load"
+            )
+            exp._shutdown_subprocess()
+            exp.current_checkpoint = None
+            exp.is_vision = False
+            exp.is_peft = False
+        except Exception as exc:
+            logger.debug("idle export shutdown failed: %s", exc)
 
     # Note: active training is *not* stopped here. The route layer
     # (`_raise_if_training_active` in routes/inference.py) refuses

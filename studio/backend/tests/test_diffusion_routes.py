@@ -84,6 +84,9 @@ class _FakeBackend:
             "active_base_repo": (
                 "black-forest-labs/FLUX.2-klein" if self._loaded else None
             ),
+            # Round 14: guard-facing GGUF filename is now the full
+            # caller-supplied value, but this fake never sets one so
+            # both active and pending stay None.
             "active_gguf_filename": None,
             "pending_repo_id": None,
             "pending_base_repo": None,

@@ -1359,6 +1359,120 @@ def test_generate_image_with_metadata_returns_active_pipeline(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "unsloth/Qwen_Image-Edit-GGUF",
+        "unsloth/Qwen-Image_Edit-GGUF",
+        "unsloth/Qwen-ImageEdit-GGUF",
+        "unsloth/qwen-image_edit-2509-GGUF",
+        "unsloth/Qwen.Image.Edit-GGUF",
+    ],
+)
+def test_detect_family_qwen_image_edit_mixed_separators(repo_id):
+    """Round 14 P2 #8: every spelling of Qwen-Image-Edit must NOT
+    match the base Qwen-Image text-to-image family."""
+    from core.inference.diffusion import detect_family
+
+    assert detect_family(repo_id) is None
+
+
+def test_redact_hf_tokens_removes_url_embedded_token():
+    """Round 14 P2 #9: tokens embedded in user-supplied paths /
+    URLs must be scrubbed before logging."""
+    from core.inference.diffusion import _redact_hf_tokens
+
+    leaky = "https://hf_abcdefghij0123456789@huggingface.co/unsloth/FLUX.2-klein-4B-GGUF"
+    redacted = _redact_hf_tokens(leaky)
+    assert "hf_" not in redacted
+    assert "<redacted>" in redacted
+    # Non-strings pass through unchanged so the helper is safe in
+    # logger argument lists where families / dtypes mix in.
+    assert _redact_hf_tokens(None) is None
+    assert _redact_hf_tokens(42) == 42
+
+
+def test_status_preserves_active_gguf_subdir(monkeypatch):
+    """Round 14 P1 #4: status() must surface the original caller-
+    supplied gguf_filename (``BF16/model.gguf``) instead of the
+    collapsed basename."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._repo_id = "unsloth/FLUX.2-klein-4B-GGUF"
+    backend._gguf_path = "/cache/models/unsloth/FLUX.2-klein-4B-GGUF/BF16/model.gguf"
+    backend._gguf_filename = "BF16/model.gguf"
+    backend._family = d.DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = (),
+    )
+
+    s = backend.status()
+    assert s["active_gguf_filename"] == "BF16/model.gguf"
+    # UI-facing field still collapses to the basename.
+    assert s["gguf_filename"] == "model.gguf"
+
+
+def test_generator_uses_cpu_when_cpu_offload_enabled(monkeypatch):
+    """Round 14 P1 #6: seeded CUDA generation must NOT create a
+    CUDA torch.Generator when the pipeline was loaded with CPU
+    offload enabled, otherwise it crashes mid-forward."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakePipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(self, **kwargs):
+            self.last_kwargs = kwargs
+            from PIL import Image
+
+            return SimpleNamespace(images = [Image.new("RGB", (8, 8))])
+
+    fake_pipe = _FakePipe()
+    backend._pipe = fake_pipe
+    backend._device = "cuda"
+    backend._cpu_offload_enabled = True
+
+    captured_devices: list[str] = []
+
+    class _FakeGenerator:
+        def __init__(self, device):
+            captured_devices.append(device)
+
+        def manual_seed(self, seed):
+            return self
+
+    class _FakeTorchCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+    fake_torch = SimpleNamespace(
+        Generator = _FakeGenerator, cuda = _FakeTorchCuda
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    backend._generate_image_unlocked(prompt = "x", seed = 7, width = 8, height = 8)
+    assert captured_devices == ["cpu"]
+
+
+def test_smart_base_repo_uses_windows_leaf_only_already_set_separator_round14():
+    """Sanity: relative paths still work after the Windows fix."""
+    from core.inference.diffusion import _smart_base_repo, detect_family
+
+    repo = "owner/FLUX.2-klein-9B-GGUF"
+    fam = detect_family(repo)
+    assert fam is not None
+    assert _smart_base_repo(fam, repo) == "black-forest-labs/FLUX.2-klein-9B"
+
+
 def test_generate_image_with_metadata_blocks_concurrent_unload(monkeypatch):
     """Round 13 P2 #9: _generate_lock serialises the forward AND the
     meta snapshot, so a queued unload cannot wipe state in between."""

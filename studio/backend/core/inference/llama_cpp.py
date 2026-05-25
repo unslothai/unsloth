@@ -2616,9 +2616,66 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
-        # Serialise the whole load so concurrent /load calls never
-        # leave two llama-server processes alive (#5401 / #5161). Does
-        # not block /unload, /status, /load-progress.
+        # Publish ``_loading_model_identifier`` BEFORE any phase of
+        # the load can begin and clear it AFTER the load fully settles
+        # (success or failure, including the duplicate-state fast path
+        # and every internal early ``return False``). Round 14 P1 #2:
+        # the prior inline try/finally only wrapped the download, so
+        # /delete-cached and the cross-workload handoff helpers saw
+        # the backend as idle once the GGUF bytes had landed but the
+        # subprocess had not yet spawned. Mark the load as pending
+        # for the entire duration -- download, metadata read,
+        # VRAM settle, process spawn, health check, audio probe.
+        self._loading_model_identifier = model_identifier
+        try:
+            # Serialise the whole load so concurrent /load calls never
+            # leave two llama-server processes alive (#5401 / #5161).
+            # Does not block /unload, /status, /load-progress.
+            return self._load_model_impl(
+                gguf_path = gguf_path,
+                mmproj_path = mmproj_path,
+                hf_repo = hf_repo,
+                hf_variant = hf_variant,
+                hf_token = hf_token,
+                model_identifier = model_identifier,
+                is_vision = is_vision,
+                n_ctx = n_ctx,
+                chat_template_override = chat_template_override,
+                cache_type_kv = cache_type_kv,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
+                n_threads = n_threads,
+                n_gpu_layers = n_gpu_layers,
+                n_parallel = n_parallel,
+                extra_args = extra_args,
+            )
+        finally:
+            self._loading_model_identifier = None
+
+    def _load_model_impl(
+        self,
+        *,
+        gguf_path: Optional[str] = None,
+        mmproj_path: Optional[str] = None,
+        hf_repo: Optional[str] = None,
+        hf_variant: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        model_identifier: str,
+        is_vision: bool = False,
+        n_ctx: int = 4096,
+        chat_template_override: Optional[str] = None,
+        cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
+        spec_draft_n_max: Optional[int] = None,
+        n_threads: Optional[int] = None,
+        n_gpu_layers: Optional[int] = None,
+        n_parallel: int = 1,
+        extra_args: Optional[List[str]] = None,
+    ) -> bool:
+        """Internal body of ``load_model``. Kept as a separate method
+        so ``load_model`` can wrap it in a single try/finally that
+        publishes ``_loading_model_identifier`` for the WHOLE load
+        instead of only the download window."""
         with self._serial_load_lock:
             # Duplicate /load that raced past the route-level check
             # (the first one hadn't published _healthy=True yet). If the
@@ -2693,40 +2750,25 @@ class LlamaCppBackend:
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # at the start of one load cannot quarantine future loads.
-            #
-            # Publish ``_loading_model_identifier`` BEFORE entering the
-            # download so /delete-cached and the cross-workload handoff
-            # helpers can see a multi-GB pending load: previously they
-            # only consulted ``model_identifier``, which the success
-            # path sets later (see "Set identifier early" below). That
-            # left a window where the user could rmtree the cache the
-            # download was still writing to, or start /images/load
-            # while llama-server was about to come up on the same GPU.
-            # Cleared in ``finally`` so failed / cancelled loads do not
-            # leak the pending state.
-            self._loading_model_identifier = model_identifier
-            try:
-                if hf_repo:
-                    with _hf_offline_if_dns_dead():
-                        model_path = self._download_gguf(
+            if hf_repo:
+                with _hf_offline_if_dns_dead():
+                    model_path = self._download_gguf(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
+                    )
+                    # Auto-download mmproj for vision models
+                    if is_vision and not mmproj_path:
+                        mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
-                            hf_variant = hf_variant,
                             hf_token = hf_token,
                         )
-                        # Auto-download mmproj for vision models
-                        if is_vision and not mmproj_path:
-                            mmproj_path = self._download_mmproj(
-                                hf_repo = hf_repo,
-                                hf_token = hf_token,
-                            )
-                elif gguf_path:
-                    if not Path(gguf_path).is_file():
-                        raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                    model_path = gguf_path
-                else:
-                    raise ValueError("Either gguf_path or hf_repo must be provided")
-            finally:
-                self._loading_model_identifier = None
+            elif gguf_path:
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                model_path = gguf_path
+            else:
+                raise ValueError("Either gguf_path or hf_repo must be provided")
 
             # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
             self._model_identifier = model_identifier

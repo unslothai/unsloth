@@ -1940,6 +1940,27 @@ async def delete_finetuned_model(
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
+        # Pending HF GGUF download targeting this path: round 14 P1 #3.
+        # ``loading_model_identifier`` is set before the download starts
+        # and cleared after the subprocess settles, so the user cannot
+        # rmtree the directory llama.cpp is writing into mid-flight.
+        loading_identifier = getattr(llama_backend, "loading_model_identifier", None)
+        if (
+            loading_identifier
+            and _loaded_model_matches_deleted_path(
+                loading_identifier,
+                target_path,
+            )
+            and (
+                not gguf_variant
+                or not getattr(llama_backend, "hf_variant", None)
+                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+            )
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         if (
             llama_backend.is_active
             and not llama_backend.is_loaded
@@ -2745,14 +2766,24 @@ async def delete_cached_model(
         # Exact match only (case-insensitive). Prefix match would
         # block deleting unrelated ``org/model`` while
         # ``org/model-v2`` is loaded -- same surface the diffusion
-        # guard fixed in round 5.
+        # guard fixed in round 5. Per-variant deletes that target a
+        # DIFFERENT quant than the loaded one are allowed so the
+        # llama and diffusion paths stay symmetric (round 14 P1 #7).
         if loaded_id == needle and (
             llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unload the model before deleting",
+            loaded_variant = (getattr(llama_backend, "hf_variant", None) or "").lower()
+            requested_variant = (variant or "").lower()
+            same_variant = (
+                not requested_variant
+                or not loaded_variant
+                or requested_variant == loaded_variant
             )
+            if same_variant:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
