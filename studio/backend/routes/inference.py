@@ -1192,9 +1192,14 @@ async def load_model(
             # corrupt the user's exported artifact).
             _raise_if_training_active("chat")
             _raise_if_export_active("chat")
-            # Drop a settled export checkpoint that is just holding
-            # GPU memory but is not actively producing output.
+            # Round 24 P1 #4: release order is now
+            # export -> diffusion -> safetensors chat (was
+            # export -> safetensors chat -> diffusion). A wedged
+            # diffusion unload used to fire AFTER the safetensors
+            # chat was already gone, so the user lost both. Drop
+            # the chat last so an earlier failure preserves it.
             await _release_export_for("GGUF chat")
+            await _release_diffusion_for("GGUF chat load")
 
             llama_backend = get_llama_cpp_backend()
             # Round 19 P2 #8: previously also called
@@ -1206,18 +1211,12 @@ async def load_model(
             # ``_release_safetensors_chat_for`` below already
             # handles missing-backend cases as a no-op.
 
-            # Unload any safetensors / Unsloth model first to free
-            # VRAM. Uses the shared helper so we also drain
-            # ``loading_models`` (round 10 review #4); the inline
-            # version only checked ``active_model_name`` and let an
-            # in-flight safetensors load race the new GGUF allocation.
+            # Unload any safetensors / Unsloth model. Uses the shared
+            # helper so we also drain ``loading_models`` (round 10
+            # review #4); the inline version only checked
+            # ``active_model_name`` and let an in-flight safetensors
+            # load race the new GGUF allocation.
             await _release_safetensors_chat_for("GGUF chat")
-
-            # Round 17 P1 #4: route the diffusion unload through the
-            # strict ``_release_diffusion_for`` helper so a wedged
-            # diffusion pipeline blocks the GGUF chat load with 503
-            # instead of silently double-owning VRAM.
-            await _release_diffusion_for("GGUF chat load")
 
             # Inherit llama_extra_args from the previous load when the
             # request omits the field (the chat-settings Apply path
@@ -1392,21 +1391,21 @@ async def load_model(
         # and so we do not silently corrupt an in-flight export.
         _raise_if_training_active("chat")
         _raise_if_export_active("chat")
-        # Drop a settled export checkpoint that is just holding GPU
-        # memory but is not actively producing output.
+        # Round 24 P1 #5: release order is now
+        # export -> diffusion -> llama-chat (was
+        # export -> llama-chat -> diffusion). A wedged diffusion
+        # unload used to fire AFTER the GGUF chat was already gone,
+        # so the user lost both. Drop llama-chat last so an earlier
+        # failure preserves it.
         await _release_export_for("safetensors chat")
+        await _release_diffusion_for("safetensors chat load")
 
         backend = get_inference_backend()
 
-        # Unload any active or mid-download llama-server first.
-        # Shared helper so this stays in sync with the GGUF path's
+        # Unload any active or mid-download llama-server. Shared
+        # helper so this stays in sync with the GGUF path's
         # symmetric ``_release_safetensors_chat_for``.
         await _release_llama_for("safetensors chat")
-
-        # Round 17 P1 #5: strict diffusion unload via the shared
-        # helper so a wedged pipeline blocks the safetensors chat
-        # load with 503 instead of silently double-owning VRAM.
-        await _release_diffusion_for("safetensors chat load")
 
         # Export was already dropped above via the shared
         # ``await _release_export_for("safetensors chat")`` call

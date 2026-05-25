@@ -150,22 +150,15 @@ async def load_checkpoint(
         # reviews #1, #8, #9 flagged.
         from routes.inference import _release_chat_for, _release_diffusion_for
 
-        await _release_chat_for("export")
-
-        # Also unload any active diffusion pipeline (Images page); it
-        # competes for the same GPU and would survive the inference
-        # shutdown above. is_loading is treated like is_loaded so an
-        # in-flight load is also waited out (the diffusion unload
-        # acquires _load_lock + _generate_lock and blocks until the
-        # current load completes, then unloads).
-        # Round 17: previously this was a best-effort try/except that
-        # swallowed every failure with logger.debug, so a wedged
-        # diffusion backend let the export checkpoint load anyway and
-        # OOM at first allocation. ``_release_diffusion_for`` is
-        # strict: it raises HTTPException 503 if status() or
-        # unload_model() fails, or if the backend remains loaded or
-        # loading after the unload call.
+        # Round 24 P1 #3: release diffusion BEFORE chat so a failing
+        # diffusion unload does not leave the user with no chat
+        # model loaded. Same reasoning as the training-start flow
+        # (round 18 P1 #8 / round 24 P1 #2). Earlier rounds kept the
+        # chat release first because the helper was best-effort;
+        # now that ``_release_diffusion_for`` is strict it must run
+        # while chat is still resident so a failure preserves it.
         await _release_diffusion_for("export load")
+        await _release_chat_for("export")
 
         # load_checkpoint spawns and waits on a subprocess and can take
         # minutes. Run it in a worker thread so the event loop stays

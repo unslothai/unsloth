@@ -1876,6 +1876,14 @@ async def delete_finetuned_model(
     Only paths under Studio's outputs/exports roots are accepted.  Exported
     GGUF entries can delete one quantization variant at a time.
     """
+    # Round 24 P1 #7 + P2 #13: harden both ``model_path`` and
+    # ``gguf_variant`` for control characters and embedded HF
+    # tokens, mirroring the chat / diffusion / training request
+    # validators. Both fields end up in logger.info(...) lines.
+    model_path = _validate_logged_identifier(model_path, "model_path")
+    if gguf_variant is not None:
+        gguf_variant = _validate_logged_identifier(gguf_variant, "gguf_variant")
+
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -2506,6 +2514,10 @@ async def get_download_progress(
         "progress": 0,
         "cache_path": None,
     }
+    # Round 24 P1 #9: ``repo_id`` flows into log lines deep in
+    # ``_get_repo_size_cached`` on lookup failure, so the same
+    # hardening the request-body models use applies here too.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
     try:
         if not _is_valid_repo_id(repo_id):
             return _empty
@@ -2769,6 +2781,12 @@ async def delete_cached_model(
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
     Refuses if the model is currently loaded for inference.
     """
+    # Round 24 P1 #8 + #10: harden both ``repo_id`` and ``variant``
+    # against control characters / embedded HF tokens before they
+    # reach logger.info(...) lines or the HF cache scan.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
+    if variant is not None:
+        variant = _validate_logged_identifier(variant, "variant")
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 

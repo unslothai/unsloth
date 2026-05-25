@@ -139,9 +139,58 @@ def _gpu_workload_busy_for_helper() -> bool:
     blocks the helper instead of double-owning VRAM. Each step
     fails closed: an unverifiable status counts as busy so the
     user's primary workload is preserved over the optional helper.
+
+    Round 24 P1 #1: extended to also catch a Chat-backend GPU owner.
+    The helper GGUF used to run on top of a loaded GGUF chat model
+    (llama-server) or safetensors chat model and OOM their shared
+    GPU; mirror the diffusion check by inspecting llama
+    ``is_loaded`` / ``is_active`` / ``loading_model_identifier`` and
+    safetensors ``active_model_name`` / ``loading_models``.
     """
     if _diffusion_image_model_busy():
         return True
+
+    try:
+        from routes.inference import get_llama_cpp_backend
+    except Exception:
+        pass
+    else:
+        try:
+            llama = get_llama_cpp_backend()
+            if (
+                getattr(llama, "is_loaded", False)
+                or getattr(llama, "is_active", False)
+                or getattr(llama, "loading_model_identifier", None)
+            ):
+                logger.info(
+                    "Skipping helper GGUF while a GGUF chat model is loaded/loading"
+                )
+                return True
+        except Exception:
+            logger.info(
+                "Skipping helper GGUF because llama-server status is unavailable"
+            )
+            return True
+
+    try:
+        from core.inference import get_inference_backend
+    except Exception:
+        pass
+    else:
+        try:
+            inf = get_inference_backend()
+            active = getattr(inf, "active_model_name", None)
+            loading = set(getattr(inf, "loading_models", set()) or set())
+            if active or loading:
+                logger.info(
+                    "Skipping helper GGUF while a safetensors chat model is loaded/loading"
+                )
+                return True
+        except Exception:
+            logger.info(
+                "Skipping helper GGUF because safetensors chat status is unavailable"
+            )
+            return True
 
     try:
         from core.training import get_training_backend

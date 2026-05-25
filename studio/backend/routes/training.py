@@ -284,20 +284,18 @@ async def start_training(
         # model. The previous order (chat -> export) would drop chat
         # and then refuse training when a wedged idle export raised,
         # leaving the user with nothing loaded.
+        # Round 24 P1 #2: same reasoning extended to diffusion ->
+        # chat. A wedged diffusion unload used to fire AFTER the chat
+        # backend was already gone, so the user lost both chat and
+        # diffusion on a single failure mode. Order is now
+        # export -> diffusion -> chat, with chat as the last drop so
+        # earlier failures preserve it.
         await _release_export_for("training")
+        await _release_diffusion_for("training")
         await _release_chat_for("training")
 
-        # Also unload any loaded diffusion pipeline (Images page); it
-        # holds the same GPU and would survive the inference shutdown.
-        # is_loading=True is also handled (unload_model takes
-        # _load_lock + _generate_lock and waits the in-flight load out).
-        # Round 17: previously the diffusion unload was best-effort
-        # (try/except + logger.warning), so a stuck diffusion backend
-        # would let training start anyway and immediately OOM the
-        # subprocess. ``_release_diffusion_for`` is strict: it raises
-        # HTTPException 503 if status() or unload_model() fails, or if
-        # the backend remains loaded / loading after the unload call.
-        await _release_diffusion_for("training")
+        # (Diffusion release moved above chat in round 24 P1 #2;
+        # the old trailing call was removed to avoid double-unload.)
 
         # start_training now spawns a subprocess (non-blocking)
         success = backend.start_training(job_id = job_id, **training_kwargs)
