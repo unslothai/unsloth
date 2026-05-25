@@ -1086,10 +1086,15 @@ async def cancel_inference(
     A cancel_id arriving before its stream registers is stashed briefly
     and replayed on registration. Returns {"cancelled": N}.
     """
+    # The cancel body is a tiny dict of identifiers; cap the read so an
+    # authenticated client cannot make this endpoint buffer megabytes
+    # the way the sibling JSON inference endpoints already prevent.
     try:
-        body = await request.json()
+        body = await _read_json_body_limited(request, max_bytes = 64 * 1024)
         if not isinstance(body, dict):
             body = {}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.debug("Failed to parse cancel request body: %s", e)
         body = {}
