@@ -612,6 +612,13 @@ class LlamaCppBackend:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_identifier: Optional[str] = None
+        # Pending-load identifier: set BEFORE _download_gguf starts and
+        # cleared after the load finishes (success or failure). Delete
+        # guards and cross-workload handoff helpers read it via
+        # ``loading_model_identifier`` so a multi-GB HF download cannot
+        # have its cache rmtree'd or be ignored by /images/load,
+        # /training/start, /export/load while it is still resolving.
+        self._loading_model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         self._hf_repo: Optional[str] = None
         self._hf_variant: Optional[str] = None
@@ -712,6 +719,19 @@ class LlamaCppBackend:
     @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
+
+    @property
+    def loading_model_identifier(self) -> Optional[str]:
+        """Identifier of a load currently in progress, or None.
+
+        Populated while ``_download_gguf`` is fetching the GGUF for a
+        new ``load_model`` call. Cleared in the surrounding
+        ``finally`` block, so a failed load leaves it None. Delete
+        guards in ``routes/models.py`` and handoff helpers in
+        ``routes/inference.py`` consult this so a long HF download
+        cannot have its destination rmtree'd or be ignored by a
+        concurrent /images/load that thinks llama-server is idle."""
+        return self._loading_model_identifier
 
     @property
     def is_vision(self) -> bool:
@@ -2673,25 +2693,44 @@ class LlamaCppBackend:
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # at the start of one load cannot quarantine future loads.
-            if hf_repo:
-                with _hf_offline_if_dns_dead():
-                    model_path = self._download_gguf(
-                        hf_repo = hf_repo,
-                        hf_variant = hf_variant,
-                        hf_token = hf_token,
-                    )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
-                        mmproj_path = self._download_mmproj(
+            #
+            # Publish ``_loading_model_identifier`` BEFORE entering the
+            # download so /delete-cached and the cross-workload handoff
+            # helpers can see a multi-GB pending load: previously they
+            # only consulted ``model_identifier``, which the success
+            # path sets later (see "Set identifier early" below). That
+            # left a window where the user could rmtree the cache the
+            # download was still writing to, or start /images/load
+            # while llama-server was about to come up on the same GPU.
+            # Cleared in ``finally`` so failed / cancelled loads do not
+            # leak the pending state.
+            self._loading_model_identifier = model_identifier
+            try:
+                if hf_repo:
+                    with _hf_offline_if_dns_dead():
+                        model_path = self._download_gguf(
                             hf_repo = hf_repo,
+                            hf_variant = hf_variant,
                             hf_token = hf_token,
                         )
-            elif gguf_path:
-                if not Path(gguf_path).is_file():
-                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                model_path = gguf_path
-            else:
-                raise ValueError("Either gguf_path or hf_repo must be provided")
+                        # Auto-download mmproj for vision models
+                        if is_vision and not mmproj_path:
+                            mmproj_path = self._download_mmproj(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                            )
+                elif gguf_path:
+                    if not Path(gguf_path).is_file():
+                        raise FileNotFoundError(
+                            f"GGUF file not found: {gguf_path}"
+                        )
+                    model_path = gguf_path
+                else:
+                    raise ValueError(
+                        "Either gguf_path or hf_repo must be provided"
+                    )
+            finally:
+                self._loading_model_identifier = None
 
             # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
             self._model_identifier = model_identifier

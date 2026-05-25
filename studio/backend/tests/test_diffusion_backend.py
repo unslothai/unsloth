@@ -24,6 +24,7 @@ import base64
 import io
 import sys
 import types
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -184,6 +185,12 @@ def test_status_shape_unloaded():
         "pipeline_class",
         "base_repo",
         "gguf_filename",
+        "active_repo_id",
+        "active_base_repo",
+        "active_gguf_filename",
+        "pending_repo_id",
+        "pending_base_repo",
+        "pending_gguf_filename",
         "device",
         "dtype",
         "loaded_at",
@@ -193,6 +200,8 @@ def test_status_shape_unloaded():
     assert expected_keys.issubset(s.keys())
     assert s["is_loaded"] is False
     assert s["repo_id"] is None
+    assert s["active_gguf_filename"] is None
+    assert s["pending_gguf_filename"] is None
 
 
 # ── encode_png_base64 ───────────────────────────────────────────
@@ -1192,3 +1201,219 @@ def test_bf16_falls_back_to_fp16_on_old_cuda(monkeypatch):
     device, dtype = backend._pick_device_and_dtype()
     assert device == "cuda"
     assert dtype is fake_torch.float16
+
+
+# ── round 13 regressions ──────────────────────────────────────────
+
+
+def test_smart_base_repo_uses_windows_leaf_only():
+    """Round 13 P2 #13: a Windows path whose PARENT directory contains
+    'base' must not be misclassified as the Klein Base 4B variant."""
+    from core.inference.diffusion import _smart_base_repo, detect_family
+
+    repo = r"C:\Users\me\base\FLUX.2-klein-4B-GGUF"
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == "flux.2-klein"
+    assert _smart_base_repo(fam, repo) == "black-forest-labs/FLUX.2-klein-4B"
+
+
+def test_resolve_local_gguf_child_rejects_traversal(tmp_path):
+    """Round 13 P1 #2: gguf_filename must not escape the repo root."""
+    from core.inference.diffusion import _resolve_local_gguf_child
+
+    repo_root = tmp_path / "my-flux"
+    repo_root.mkdir()
+    (repo_root / "model.gguf").write_bytes(b"x")
+    sibling = tmp_path / "other.gguf"
+    sibling.write_bytes(b"y")
+
+    assert _resolve_local_gguf_child(repo_root, "model.gguf").name == "model.gguf"
+
+    # ``./model.gguf`` is normalised by PurePosixPath to ``model.gguf``
+    # and stays inside the repo, so it is intentionally accepted.
+    for bad in ("../other.gguf", "", "sub/../model.gguf"):
+        with pytest.raises(RuntimeError):
+            _resolve_local_gguf_child(repo_root, bad)
+    with pytest.raises(RuntimeError):
+        _resolve_local_gguf_child(repo_root, "/etc/passwd")
+
+
+def test_resolve_local_gguf_child_rejects_backslash(tmp_path):
+    """Round 13 P1 #2: a Windows-style separator inside gguf_filename
+    must be rejected even on POSIX so it never becomes a literal name."""
+    from core.inference.diffusion import _resolve_local_gguf_child
+
+    repo_root = tmp_path / "my-flux"
+    repo_root.mkdir()
+    (repo_root / "model.gguf").write_bytes(b"x")
+
+    with pytest.raises(RuntimeError):
+        _resolve_local_gguf_child(repo_root, r"..\\other.gguf")
+
+
+def test_load_model_accepts_relative_local_dir(monkeypatch, tmp_path):
+    """Round 13 P1 #2: relative directory paths (Studio exports) must
+    NOT be routed through hf_hub_download."""
+    import core.inference.diffusion as d
+
+    repo_root = tmp_path / "exports" / "my-flux"
+    repo_root.mkdir(parents = True)
+    gguf_file = repo_root / "model.gguf"
+    gguf_file.write_bytes(b"x")
+
+    # cwd so the relative path resolves to repo_root
+    monkeypatch.chdir(tmp_path)
+
+    fake_transformer = object()
+    fake_pipe = SimpleNamespace(
+        to = lambda *a, **kw: None,
+        enable_model_cpu_offload = lambda: None,
+    )
+
+    class _FakeQuantConfig:
+        def __init__(self, **_):
+            pass
+
+    class _FakeTransformerCls:
+        from_single_file_calls: list[tuple[str, dict]] = []
+
+        @classmethod
+        def from_single_file(cls, path, **kwargs):
+            cls.from_single_file_calls.append((path, kwargs))
+            return fake_transformer
+
+    class _FakePipeCls:
+        @classmethod
+        def from_pretrained(cls, base, **kwargs):
+            return fake_pipe
+
+    fake_diffusers = SimpleNamespace(
+        __version__ = "0.99",
+        GGUFQuantizationConfig = _FakeQuantConfig,
+        Flux2Transformer2DModel = _FakeTransformerCls,
+        Flux2KleinPipeline = _FakePipeCls,
+    )
+
+    fake_torch = SimpleNamespace(
+        cuda = SimpleNamespace(
+            is_available = lambda: False,
+            is_bf16_supported = lambda: False,
+            empty_cache = lambda: None,
+        ),
+        bfloat16 = "bf16",
+        float16 = "fp16",
+        float32 = "fp32",
+        backends = SimpleNamespace(
+            mps = SimpleNamespace(is_available = lambda: False),
+        ),
+    )
+
+    def _boom(**_):
+        raise AssertionError("hf_hub_download must not run for a local dir")
+
+    fake_hub = SimpleNamespace(hf_hub_download = _boom)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    backend = d.DiffusionBackend()
+    backend.load_model(
+        repo_id = "exports/my-flux",
+        gguf_filename = "model.gguf",
+        family_override = "flux.2-klein",
+        enable_model_cpu_offload = False,
+    )
+
+    assert _FakeTransformerCls.from_single_file_calls
+    resolved_path = _FakeTransformerCls.from_single_file_calls[0][0]
+    assert str(gguf_file.resolve()) == resolved_path
+
+
+def test_generate_image_with_metadata_returns_active_pipeline(monkeypatch):
+    """Round 13 P2 #9: meta returns the resident pipeline's identity."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    fake_fam = d.DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2KleinTransformer3DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = (),
+    )
+
+    def _fake_unlocked(**kwargs):
+        from PIL import Image as _Image
+
+        return _Image.new("RGB", (8, 8))
+
+    backend._pipe = object()
+    backend._repo_id = "unsloth/FLUX.2-klein-4B-GGUF"
+    backend._family = fake_fam
+    monkeypatch.setattr(backend, "_generate_image_unlocked", _fake_unlocked)
+
+    _, meta = backend.generate_image_with_metadata(prompt = "x")
+    assert meta == {
+        "model": "unsloth/FLUX.2-klein-4B-GGUF",
+        "family": "flux.2-klein",
+    }
+
+
+def test_generate_image_with_metadata_blocks_concurrent_unload(monkeypatch):
+    """Round 13 P2 #9: _generate_lock serialises the forward AND the
+    meta snapshot, so a queued unload cannot wipe state in between."""
+    import threading
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    fake_fam = d.DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2KleinTransformer3DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = (),
+    )
+
+    started = threading.Event()
+    finish = threading.Event()
+
+    def _fake_unlocked(**kwargs):
+        from PIL import Image as _Image
+
+        started.set()
+        # Hold long enough for the unload thread to race the metadata
+        # snapshot if the lock were released too early.
+        finish.wait(timeout = 2.0)
+        return _Image.new("RGB", (8, 8))
+
+    backend._pipe = object()
+    backend._repo_id = "unsloth/FLUX.2-klein-4B-GGUF"
+    backend._family = fake_fam
+    monkeypatch.setattr(backend, "_generate_image_unlocked", _fake_unlocked)
+
+    result: list = []
+
+    def _gen():
+        result.append(backend.generate_image_with_metadata(prompt = "x"))
+
+    gen_thread = threading.Thread(target = _gen)
+    gen_thread.start()
+    assert started.wait(timeout = 2.0)
+
+    def _unload():
+        backend.unload_model()
+
+    un_thread = threading.Thread(target = _unload)
+    un_thread.start()
+    # The unload must NOT have completed yet; it queues behind the
+    # generation's _generate_lock.
+    un_thread.join(timeout = 0.2)
+    assert un_thread.is_alive()
+    finish.set()
+    gen_thread.join(timeout = 5.0)
+    un_thread.join(timeout = 5.0)
+
+    assert result
+    _, meta = result[0]
+    assert meta["model"] == "unsloth/FLUX.2-klein-4B-GGUF"
+    assert meta["family"] == "flux.2-klein"

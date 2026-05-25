@@ -359,18 +359,25 @@ def _raise_if_export_active(workload: str) -> None:
 
 async def _release_llama_for(workload: str) -> None:
     """Unload the llama-server (GGUF) chat backend if it owns the
-    GPU. Treats ``is_loaded`` OR ``is_active`` as held (the latter
-    is mid-download / mid-startup, before health probes pass).
+    GPU. Treats ``is_loaded`` OR ``is_active`` OR
+    ``loading_model_identifier`` as held: the third covers an HF GGUF
+    download that has not yet flipped ``is_active`` to True (round
+    13 P1 #7). Without it, /images/load, /training/start, and
+    /export/load could start while a long ``_download_gguf`` was in
+    flight; llama-server would then come up afterwards and double-own
+    the GPU.
     """
     try:
         llama = get_llama_cpp_backend()
         is_loaded = bool(getattr(llama, "is_loaded", False))
         is_active = bool(getattr(llama, "is_active", False))
-        if is_loaded or is_active:
+        is_loading = bool(getattr(llama, "loading_model_identifier", None))
+        if is_loaded or is_active or is_loading:
             logger.info(
-                "Unloading GGUF chat (loaded=%s active=%s) before %s load",
+                "Unloading GGUF chat (loaded=%s active=%s loading=%s) before %s load",
                 is_loaded,
                 is_active,
+                is_loading,
                 workload,
             )
             await asyncio.to_thread(llama.unload_model)
@@ -1985,9 +1992,16 @@ async def diffusion_generate(
 
     start = time.time()
     try:
-        from core.inference.diffusion import async_generate, encode_png_base64
+        from core.inference.diffusion import (
+            async_generate_with_metadata,
+            encode_png_base64,
+        )
 
-        image = await async_generate(
+        # ``async_generate_with_metadata`` snapshots ``model`` /
+        # ``family`` under the same ``_generate_lock`` that owns the
+        # forward, so a queued unload/load cannot replace them between
+        # generation end and response assembly (round 13 P2 #9).
+        image, meta = await async_generate_with_metadata(
             backend,
             prompt = payload.prompt,
             negative_prompt = payload.negative_prompt,
@@ -2006,7 +2020,6 @@ async def diffusion_generate(
         raise HTTPException(status_code = 500, detail = str(exc))
 
     duration_ms = int((time.time() - start) * 1000)
-    status = backend.status()
     return DiffusionGenerateResponse(
         image_b64 = encode_png_base64(image),
         image_mime = "image/png",
@@ -2022,12 +2035,8 @@ async def diffusion_generate(
         # browser side.
         seed_str = str(payload.seed) if payload.seed is not None else None,
         duration_ms = duration_ms,
-        # Use ``active_repo_id`` (the pipeline that just ran the
-        # forward) rather than the UI-facing ``repo_id`` so a
-        # queued /images/load promoting a new pending model cannot
-        # leak that model's identity into our response.
-        model = status.get("active_repo_id") or status.get("repo_id"),
-        family = status.get("family"),
+        model = meta.get("model"),
+        family = meta.get("family"),
     )
 
 

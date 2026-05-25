@@ -35,10 +35,11 @@ from __future__ import annotations
 import asyncio
 import gc
 import io
+import re
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -159,11 +160,15 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     Only the LAST segment of the repo id / path is inspected so a
     namespace or parent directory like ``baseorg/...`` or
     ``/home/me/.cache/base/...`` does not falsely select the Base
-    variant (round 12 review #9).
+    variant (round 12 review #9). Splits on BOTH ``/`` and ``\\`` so
+    Windows local paths like ``C:\\Users\\me\\base\\FLUX.2-klein-4B``
+    do not get scored as "base" via the parent directory either
+    (round 13 P2 #13).
     """
     if fam.name != "flux.2-klein":
         return fam.base_repo
-    last_segment = (repo_id or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    cleaned = (repo_id or "").rstrip("/\\")
+    last_segment = re.split(r"[\\/]+", cleaned)[-1].lower() if cleaned else ""
     is_9b = "9b" in last_segment
     is_base = "base" in last_segment
     if is_9b and is_base:
@@ -175,6 +180,47 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     # Distilled 4B is the default for any flux-2-klein GGUF that does
     # not advertise 9B or "base".
     return "black-forest-labs/FLUX.2-klein-4B"
+
+
+def _resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
+    """Resolve a GGUF filename inside a local repo directory safely.
+
+    Returns the resolved absolute path or raises ``RuntimeError`` if:
+    - ``gguf_filename`` is absolute (``/etc/passwd``) or contains a
+      Windows separator (``..\\..\\secret.gguf``);
+    - the parts contain ``""`` / ``.`` / ``..`` (``../other.gguf``);
+    - the resolved candidate escapes ``repo_root`` after symlinks /
+      ``..`` collapse;
+    - the resolved candidate is not a regular file.
+
+    This is the only path that bridges a user-supplied ``gguf_filename``
+    string into ``Path``s the loader opens, so confining it to the
+    chosen repo here protects the delete-ownership guards downstream
+    (round 13 P1 #2). ``hf_hub_download`` already enforces the same
+    invariant for Hub repos.
+    """
+    if Path(gguf_filename).is_absolute() or "\\" in gguf_filename:
+        raise RuntimeError(
+            "gguf_filename must be a relative file path inside repo_id."
+        )
+    rel = PurePosixPath(gguf_filename)
+    if any(part in ("", ".", "..") for part in rel.parts):
+        raise RuntimeError(
+            "gguf_filename must not contain empty, '.', or '..' segments."
+        )
+    root = repo_root.expanduser().resolve(strict = True)
+    candidate = (root / Path(*rel.parts)).resolve(strict = True)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "gguf_filename must stay inside the local repo_id directory."
+        ) from exc
+    if not candidate.is_file():
+        raise RuntimeError(
+            f"Local repo path '{repo_root}' does not contain '{gguf_filename}'."
+        )
+    return candidate
 
 
 # Negative substrings that disqualify a candidate family even when its
@@ -335,6 +381,7 @@ class DiffusionBackend:
             # user just clicked.
             active_repo = self._repo_id
             active_base = self._base_repo
+            active_gguf = gguf_basename
             pending_repo = self._pending_repo_id if self._loading else None
             pending_base = self._pending_base_repo if self._loading else None
             pending_gguf = self._pending_gguf_filename if self._loading else None
@@ -357,11 +404,15 @@ class DiffusionBackend:
                 "family": ui_family,
                 "pipeline_class": ui_pipeline_class,
                 "base_repo": pending_base or active_base,
-                "gguf_filename": pending_gguf or gguf_basename,
-                # Guard-facing fields: every repo / path the backend
-                # owns RIGHT NOW. Delete routes iterate both.
+                "gguf_filename": pending_gguf or active_gguf,
+                # Guard-facing fields: every repo / path / GGUF
+                # filename the backend owns RIGHT NOW. Delete routes
+                # iterate both, paired so the variant-filename check
+                # is compared against the SAME repo that owns it
+                # (round 13 P1 #3-5).
                 "active_repo_id": active_repo,
                 "active_base_repo": active_base,
+                "active_gguf_filename": active_gguf,
                 "pending_repo_id": pending_repo,
                 "pending_base_repo": pending_base,
                 "pending_gguf_filename": pending_gguf,
@@ -431,9 +482,24 @@ class DiffusionBackend:
         keep peak VRAM bounded; status() reports is_loaded=false with
         last_error set so the caller can react.
         """
-        from huggingface_hub import hf_hub_download
-        import diffusers
-        import torch
+        # Surface a friendly load error when the no-torch / partial
+        # install path is active: the user clicked Load on the Images
+        # page but the runtime never installed torch + diffusers (round
+        # 13 P2 #12). Without this wrapper the import surfaces as a
+        # raw ``ModuleNotFoundError`` -> 500 instead of a 400 the UI
+        # can display.
+        try:
+            from huggingface_hub import hf_hub_download
+            import diffusers
+            import torch
+        except ModuleNotFoundError as exc:
+            missing = exc.name or str(exc)
+            raise RuntimeError(
+                "Diffusion image generation requires the torch / diffusers "
+                f"runtime. Missing dependency: {missing}. Install the Studio "
+                "torch runtime (re-run setup.sh / install.ps1) before "
+                "loading an image model."
+            ) from exc
 
         fam = detect_family(repo_id, override_family = family_override)
         if fam is None:
@@ -485,19 +551,21 @@ class DiffusionBackend:
 
                 # Resolution rules for the "what repo to call
                 # from_pretrained on" question:
-                #   1. caller-supplied base_repo wins
-                #   2. if no GGUF file was requested the user is loading a
-                #      full diffusers repo; use repo_id directly so we do
+                #   1. no GGUF file -> caller is loading a full
+                #      diffusers repo; use repo_id directly so we do
                 #      not silently substitute the family default
-                #   3. otherwise use the family + repo_id heuristic so a
-                #      9B GGUF picks the 9B base, not the 4B fallback
-                if base_repo:
-                    effective_base = base_repo
-                    # Refresh pending so delete guards see the actual
-                    # base, not just caller-supplied None.
-                    with self._lock:
-                        self._pending_base_repo = effective_base
-                elif not gguf_filename:
+                #      AND ignore any base_repo input (it is only
+                #      meaningful as a GGUF companion override). The
+                #      old order let ``base_repo`` swap a fine-tuned
+                #      ``owner/my-flux.1-finetune`` for
+                #      ``black-forest-labs/FLUX.1-dev`` while status
+                #      still advertised the user's repo (round 13
+                #      P2 #10).
+                #   2. otherwise prefer caller-supplied base_repo for
+                #      the missing VAE / text encoder components.
+                #   3. otherwise use the family + repo_id heuristic so
+                #      a 9B GGUF picks the 9B base, not the 4B fallback.
+                if not gguf_filename:
                     # Guard: a repo that ends in "-GGUF" (the unsloth
                     # convention) is GGUF-only and will 500 on
                     # from_pretrained; surface a clear error instead of
@@ -507,10 +575,16 @@ class DiffusionBackend:
                         raise RuntimeError(
                             f"'{repo_id}' looks like a GGUF-only repo. "
                             "Either provide gguf_filename to pick a quant, "
-                            "or pass base_repo to override the full-repo "
-                            "load target."
+                            "or load a full diffusers repo (base_repo only "
+                            "applies when picking a GGUF quant)."
                         )
                     effective_base = repo_id
+                    with self._lock:
+                        self._pending_base_repo = effective_base
+                elif base_repo:
+                    effective_base = base_repo
+                    # Refresh pending so delete guards see the actual
+                    # base, not just caller-supplied None.
                     with self._lock:
                         self._pending_base_repo = effective_base
                 else:
@@ -535,21 +609,26 @@ class DiffusionBackend:
                             "path wired in this build; load the full repo instead."
                         )
                     # DiffusionLoadRequest.repo_id is documented to
-                    # accept either a Hub repo id OR a local
-                    # absolute path (Studio export, downloaded HF
-                    # snapshot, etc.). Only the Hub case wants
-                    # hf_hub_download -- a local repo path passed
-                    # to it raises HFValidationError because
-                    # "/abs/path" is not "namespace/repo".
+                    # accept either a Hub repo id OR a local path
+                    # (Studio export, downloaded HF snapshot, etc.).
+                    # We accept BOTH absolute and relative local
+                    # directories: Studio exports surface as relative
+                    # paths like ``exports/my-flux`` and earlier
+                    # versions only accepted absolute paths, falling
+                    # through to ``hf_hub_download`` which then
+                    # raised HFValidationError on the relative path
+                    # (round 13 P1 #2). For local paths we route the
+                    # gguf_filename through ``_resolve_local_gguf_child``
+                    # so traversal (``../secret.gguf``) and absolute
+                    # filename escapes (``/etc/passwd``) are rejected
+                    # BEFORE the file is opened, which also keeps the
+                    # delete-ownership guards aligned with what was
+                    # actually loaded.
                     repo_id_path = Path(repo_id).expanduser()
-                    if repo_id_path.is_absolute() and repo_id_path.is_dir():
-                        candidate = repo_id_path / gguf_filename
-                        if not candidate.is_file():
-                            raise RuntimeError(
-                                f"Local repo path '{repo_id}' does not contain "
-                                f"'{gguf_filename}'."
-                            )
-                        local_gguf_path = str(candidate)
+                    if repo_id_path.is_dir():
+                        local_gguf_path = str(
+                            _resolve_local_gguf_child(repo_id_path, gguf_filename)
+                        )
                     else:
                         local_gguf_path = hf_hub_download(
                             repo_id = repo_id,
@@ -638,24 +717,31 @@ class DiffusionBackend:
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
 
+                pipe = None
                 try:
                     pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                    # Device placement / offload can ALSO raise after
+                    # from_pretrained succeeded (OOM at the .to(device)
+                    # copy, accelerate offload hook misconfigured, etc.).
+                    # If we let the exception escape now, the local
+                    # ``pipe`` lives on the traceback frame until the
+                    # caller drops it, holding multi-GB of VRAM behind
+                    # the next load attempt. Explicitly release both
+                    # pipe and transformer in the same try (round 13
+                    # P2 #11).
+                    if enable_model_cpu_offload and device == "cuda":
+                        pipe.enable_model_cpu_offload()
+                    else:
+                        pipe.to(device)
                 except Exception:
-                    # If from_pretrained fails after the transformer was
-                    # already loaded, the transformer object holds GPU
-                    # weights that would only be freed at GC. Drop the
-                    # local reference and force a collect so the next
-                    # load attempt does not stack VRAM with a phantom
-                    # transformer.
+                    if pipe is not None:
+                        _release(pipe)
+                        pipe = None
                     if transformer is not None:
                         _release(transformer)
                         transformer = None
-                        _drain_cuda_cache()
+                    _drain_cuda_cache()
                     raise
-                if enable_model_cpu_offload and device == "cuda":
-                    pipe.enable_model_cpu_offload()
-                else:
-                    pipe.to(device)
 
                 with self._lock:
                     self._pipe = pipe
@@ -775,6 +861,39 @@ class DiffusionBackend:
         requests for the entire (minutes-long) generation, which made
         the UI feel frozen.
         """
+        # Take _generate_lock FIRST so a concurrent unload/load that
+        # observes us holding it will queue behind this generation
+        # (and `unload_model` then waits its turn before clearing
+        # state). Snapshotting `self._pipe` outside the lock and then
+        # taking the lock let a load/unload race in between, so the
+        # forward could run against a freed or swapped pipeline.
+        with self._generate_lock:
+            return self._generate_image_unlocked(
+                prompt = prompt,
+                negative_prompt = negative_prompt,
+                num_inference_steps = num_inference_steps,
+                guidance_scale = guidance_scale,
+                width = width,
+                height = height,
+                seed = seed,
+            )
+
+    def _generate_image_unlocked(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+        num_inference_steps: int = 24,
+        guidance_scale: float = 3.5,
+        width: int = 1024,
+        height: int = 1024,
+        seed: Optional[int] = None,
+    ) -> "Any":
+        """Inner body of ``generate_image`` that ASSUMES the caller
+        already holds ``_generate_lock``. Lets
+        ``generate_image_with_metadata`` snapshot metadata under the
+        same lock without deadlocking on a non-reentrant
+        ``threading.Lock`` (round 13 P2 #9)."""
         if not prompt or not prompt.strip():
             raise ValueError("prompt is empty")
         if num_inference_steps < 1 or num_inference_steps > 200:
@@ -789,64 +908,81 @@ class DiffusionBackend:
 
         import torch
 
-        # Take _generate_lock FIRST so a concurrent unload/load that
-        # observes us holding it will queue behind this generation
-        # (and `unload_model` then waits its turn before clearing
-        # state). Snapshotting `self._pipe` outside the lock and then
-        # taking the lock let a load/unload race in between, so the
-        # forward could run against a freed or swapped pipeline.
-        with self._generate_lock:
-            with self._lock:
-                if self._pipe is None:
-                    raise RuntimeError("No diffusion model is loaded.")
-                pipe = self._pipe
-                device = self._device or "cpu"
-            generator = None
-            if seed is not None:
-                # Match the device of the pipeline so determinism holds
-                # across reload cycles. For CPU offload, the noise still
-                # has to live on the device the diffusion forward runs on.
-                gen_device = (
-                    "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+        with self._lock:
+            if self._pipe is None:
+                raise RuntimeError("No diffusion model is loaded.")
+            pipe = self._pipe
+            device = self._device or "cpu"
+        generator = None
+        if seed is not None:
+            # Match the device of the pipeline so determinism holds
+            # across reload cycles. For CPU offload, the noise still
+            # has to live on the device the diffusion forward runs on.
+            gen_device = (
+                "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+            )
+            generator = torch.Generator(device = gen_device).manual_seed(int(seed))
+
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "num_inference_steps": int(num_inference_steps),
+            "guidance_scale": float(guidance_scale),
+            "width": int(width),
+            "height": int(height),
+        }
+        # FLUX.2 / FLUX.2 klein pipelines do NOT accept
+        # negative_prompt and 500 if you pass it in. Inspect the
+        # signature and only forward when supported; warn otherwise
+        # so the UI can disable the field for incompatible families.
+        if negative_prompt is not None and negative_prompt.strip():
+            if _pipe_accepts_kwarg(pipe, "negative_prompt"):
+                call_kwargs["negative_prompt"] = negative_prompt
+                # QwenImagePipeline and FluxPipeline treat
+                # guidance_scale as distilled CFG and use
+                # true_cfg_scale as the real classifier-free
+                # guidance knob; the negative prompt is only
+                # effective when true_cfg_scale > 1. Forward the
+                # user-supplied guidance_scale through both so the
+                # negative prompt actually steers generation.
+                if _pipe_accepts_kwarg(pipe, "true_cfg_scale"):
+                    call_kwargs["true_cfg_scale"] = float(guidance_scale)
+            else:
+                logger.info(
+                    "Dropping negative_prompt: %s does not accept it",
+                    type(pipe).__name__,
                 )
-                generator = torch.Generator(device = gen_device).manual_seed(int(seed))
+        if generator is not None:
+            call_kwargs["generator"] = generator
 
-            call_kwargs: dict[str, Any] = {
-                "prompt": prompt,
-                "num_inference_steps": int(num_inference_steps),
-                "guidance_scale": float(guidance_scale),
-                "width": int(width),
-                "height": int(height),
-            }
-            # FLUX.2 / FLUX.2 klein pipelines do NOT accept
-            # negative_prompt and 500 if you pass it in. Inspect the
-            # signature and only forward when supported; warn otherwise
-            # so the UI can disable the field for incompatible families.
-            if negative_prompt is not None and negative_prompt.strip():
-                if _pipe_accepts_kwarg(pipe, "negative_prompt"):
-                    call_kwargs["negative_prompt"] = negative_prompt
-                    # QwenImagePipeline and FluxPipeline treat
-                    # guidance_scale as distilled CFG and use
-                    # true_cfg_scale as the real classifier-free
-                    # guidance knob; the negative prompt is only
-                    # effective when true_cfg_scale > 1. Forward the
-                    # user-supplied guidance_scale through both so the
-                    # negative prompt actually steers generation.
-                    if _pipe_accepts_kwarg(pipe, "true_cfg_scale"):
-                        call_kwargs["true_cfg_scale"] = float(guidance_scale)
-                else:
-                    logger.info(
-                        "Dropping negative_prompt: %s does not accept it",
-                        type(pipe).__name__,
-                    )
-            if generator is not None:
-                call_kwargs["generator"] = generator
+        out = pipe(**call_kwargs)
+        images = getattr(out, "images", None) or []
+        if not images:
+            raise RuntimeError("Diffusion pipeline returned no images.")
+        return images[0]
 
-            out = pipe(**call_kwargs)
-            images = getattr(out, "images", None) or []
-            if not images:
-                raise RuntimeError("Diffusion pipeline returned no images.")
-            return images[0]
+    def generate_image_with_metadata(
+        self,
+        **kwargs: Any,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Generate a single image AND snapshot its identifying metadata.
+
+        Returns ``(pil_image, {"model": <repo_id>, "family": <name>})``
+        where the metadata reflects the pipeline that produced the
+        image. Snapshotted under ``_generate_lock + _lock`` so a
+        queued unload / load that promotes a different pipeline
+        cannot replace ``self._repo_id`` / ``self._family`` between
+        the forward returning and the route reading status (round
+        13 P2 #9). The route uses these values directly in the
+        response instead of re-calling ``status()``.
+        """
+        with self._generate_lock:
+            image = self._generate_image_unlocked(**kwargs)
+            with self._lock:
+                meta = {
+                    "model": self._repo_id,
+                    "family": self._family.name if self._family else None,
+                }
+        return image, meta
 
 
 def _pipe_accepts_kwarg(pipe: Any, name: str) -> bool:
@@ -895,21 +1031,24 @@ def _release_chat_backend_for_diffusion() -> None:
     """
     # 1. GGUF chat backend (llama-server subprocess). We unload when
     #    EITHER is_loaded is True (resident model) OR is_active is
-    #    True (mid-download / startup); the latter case is the
-    #    "llama-server is currently starting" race where weights are
-    #    being downloaded and the diffusion load would otherwise
-    #    double-spend GPU memory.
+    #    True (mid-download / startup) OR loading_model_identifier is
+    #    populated (HF GGUF download in progress, before is_active /
+    #    is_loaded flip). The last case is what round 13 P1 #8 flagged:
+    #    a multi-GB HF download from one workload + a diffusion load
+    #    racing on the same GPU would otherwise both end up live.
     try:
         from routes.inference import get_llama_cpp_backend  # type: ignore
 
         backend = get_llama_cpp_backend()
         is_loaded = bool(getattr(backend, "is_loaded", False))
         is_active = bool(getattr(backend, "is_active", False))
-        if is_loaded or is_active:
+        is_loading = bool(getattr(backend, "loading_model_identifier", None))
+        if is_loaded or is_active or is_loading:
             logger.info(
-                "Unloading llama-server (loaded=%s active=%s) before diffusion load",
+                "Unloading llama-server (loaded=%s active=%s loading=%s) before diffusion load",
                 is_loaded,
                 is_active,
+                is_loading,
             )
             backend.unload_model()
     except Exception as exc:
@@ -1086,3 +1225,20 @@ async def async_generate(
     do not block the event loop for the 5-30 s a diffusion step takes."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: backend.generate_image(**kwargs))
+
+
+async def async_generate_with_metadata(
+    backend: DiffusionBackend,
+    **kwargs: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """Run ``generate_image_with_metadata`` in the default executor.
+
+    Used by the /images/generate route so the response model / family
+    fields reflect the pipeline that actually produced the image, even
+    if an unload races the route between the forward returning and the
+    response being assembled (round 13 P2 #9)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: backend.generate_image_with_metadata(**kwargs),
+    )

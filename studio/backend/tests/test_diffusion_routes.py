@@ -80,6 +80,14 @@ class _FakeBackend:
             "pipeline_class": "Flux2KleinPipeline" if self._loaded else None,
             "base_repo": "black-forest-labs/FLUX.2-klein" if self._loaded else None,
             "gguf_filename": None,
+            "active_repo_id": self._repo,
+            "active_base_repo": (
+                "black-forest-labs/FLUX.2-klein" if self._loaded else None
+            ),
+            "active_gguf_filename": None,
+            "pending_repo_id": None,
+            "pending_base_repo": None,
+            "pending_gguf_filename": None,
             "device": "cpu",
             "dtype": "torch.bfloat16",
             "loaded_at": 0,
@@ -101,6 +109,14 @@ class _FakeBackend:
     def generate_image(self, **kw):
         self.calls.append({"op": "generate", **kw})
         return Image.new("RGB", (kw["width"], kw["height"]), color = (123, 45, 67))
+
+    def generate_image_with_metadata(self, **kw):
+        image = self.generate_image(**kw)
+        meta = {
+            "model": self._repo,
+            "family": "flux.2-klein" if self._loaded else None,
+        }
+        return image, meta
 
 
 @pytest.fixture

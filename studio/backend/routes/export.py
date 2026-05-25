@@ -142,6 +142,40 @@ async def load_checkpoint(
             logger.debug("diffusion unload skipped for export: %s", e)
 
         backend = get_export_backend()
+        # Refuse to reload the export checkpoint while an export job
+        # is still running. ``ExportBackend.load_checkpoint`` would
+        # terminate the running subprocess in order to spawn a new
+        # one, silently corrupting the partial output the user is
+        # waiting on (round 13 P1 #1). Mirrors the symmetric guards
+        # already in place for chat / diffusion / training handoffs.
+        # ``is_export_active`` may be absent on older / mocked
+        # backends -- treat missing as "no async-job tracker
+        # available" -> skip rather than fail-closed; the
+        # surrounding chat / diffusion unloads have already run.
+        is_export_active_fn = getattr(backend, "is_export_active", None)
+        if is_export_active_fn is not None:
+            try:
+                export_is_active = bool(is_export_active_fn())
+            except Exception as e:
+                logger.warning(
+                    "Could not verify export status before export load: %s", e
+                )
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "Could not verify export status before loading "
+                        "an export checkpoint. Try again."
+                    ),
+                ) from e
+            if export_is_active:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "An export job is currently active. Stop the "
+                        "export job before loading another checkpoint."
+                    ),
+                )
+
         # load_checkpoint spawns and waits on a subprocess and can take
         # minutes. Run it in a worker thread so the event loop stays
         # free to serve the live log SSE stream concurrently.

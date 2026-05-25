@@ -1709,6 +1709,53 @@ def _is_path_under(path: Path, root: Path) -> bool:
         return False
 
 
+def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
+    """Return ``(owned_repo_or_path, owned_gguf_filename)`` pairs for
+    every diffusion target the backend currently holds.
+
+    Pairs the active / pending repo with the active / pending GGUF
+    filename (not the UI-facing collapsed ``gguf_filename``) so the
+    per-variant delete guards know which quant is actually owned by
+    each repo. Without this pairing, a swap in progress (active
+    ``Q4_K_S``, pending ``Q8_0``) collapsed both to the pending
+    variant and the active ``Q4_K_S`` GGUF could be deleted while
+    still mmap'd by the resident pipeline (round 13 P1 #3-5).
+
+    Base repos are paired with ``None`` for the GGUF: the base /
+    component repo is loaded whole via ``from_pretrained`` and has no
+    per-variant delete to take advantage of.
+    """
+    return [
+        (
+            diff_status.get("active_repo_id") or "",
+            diff_status.get("active_gguf_filename"),
+        ),
+        (diff_status.get("active_base_repo") or "", None),
+        (
+            diff_status.get("pending_repo_id") or "",
+            diff_status.get("pending_gguf_filename"),
+        ),
+        (diff_status.get("pending_base_repo") or "", None),
+    ]
+
+
+def _variant_delete_is_safe_for_owned_gguf(
+    requested_variant: str | None,
+    owned_gguf_filename: str | None,
+) -> bool:
+    """True iff a per-variant delete for ``requested_variant`` against
+    a repo that owns ``owned_gguf_filename`` cannot remove the owned
+    file.
+
+    Returns False (i.e. unsafe -> block the delete) when either
+    argument is missing so a NULL owned filename or a full-repo delete
+    (no variant) does not accidentally pass the guard."""
+    if not requested_variant or not owned_gguf_filename:
+        return False
+    loaded_label = (_extract_quant_label(owned_gguf_filename.lower()) or "").lower()
+    return bool(loaded_label and loaded_label != requested_variant.lower())
+
+
 def _is_path_under_lexically(path: Path, root: Path) -> bool:
     """Check containment without resolving the final path's symlink target."""
     try:
@@ -1991,27 +2038,17 @@ async def delete_finetuned_model(
         diff_backend = get_diffusion_backend()
         diff_status = diff_backend.status()
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-            candidates: list[str] = []
-            for key in (
-                "active_repo_id",
-                "active_base_repo",
-                "pending_repo_id",
-                "pending_base_repo",
-            ):
-                v = diff_status.get(key) or ""
-                if v:
-                    candidates.append(v)
             target_str = str(target_path)
-            # Per-variant deletes only touch ``_delete_gguf_variant_
-            # files(target_path, gguf_variant)`` which removes a
-            # specific quant file. If the loaded pipeline uses a
-            # DIFFERENT variant from the same directory, the delete
-            # is safe. Round 12 review #3.
-            loaded_gguf = (diff_status.get("gguf_filename") or "").lower()
-            wants_variant = export_type == "gguf" and gguf_variant and loaded_gguf
-            for candidate in candidates:
+            # Pair each owned repo / path with the GGUF variant it
+            # actually owns (round 13 P1 #5). For a swap in flight
+            # (active Q4_K_S, pending Q8_0) the active variant must
+            # NOT be deleted just because the pending variant uses
+            # a different quant.
+            for candidate, owned_gguf in _diffusion_owned_targets(diff_status):
+                if not candidate:
+                    continue
                 try:
-                    candidate_path = Path(candidate).expanduser()
+                    candidate_resolved = Path(candidate).expanduser().resolve()
                 except Exception:
                     continue
                 # Relative paths (the user can do
@@ -2019,27 +2056,23 @@ async def delete_finetuned_model(
                 # legitimate path candidates; resolve against the
                 # backend cwd so they can be compared with the
                 # absolute ``target_path``. Round 8 review #11.
-                try:
-                    candidate_resolved = candidate_path.resolve()
-                except Exception:
-                    continue
-                if (
+                overlaps = (
                     candidate_resolved == target_path
                     or str(candidate_resolved) == target_str
                     or _is_path_under(candidate_resolved, target_path)
                     or _is_path_under(target_path, candidate_resolved)
+                )
+                if not overlaps:
+                    continue
+                if export_type == "gguf" and _variant_delete_is_safe_for_owned_gguf(
+                    gguf_variant,
+                    owned_gguf,
                 ):
-                    # Allow per-variant deletes that target a
-                    # different quant than the loaded one.
-                    if wants_variant:
-                        variant_low = gguf_variant.lower()
-                        loaded_label = (_extract_quant_label(loaded_gguf) or "").lower()
-                        if loaded_label and loaded_label != variant_low:
-                            continue
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the diffusion image model before deleting",
-                    )
+                    continue
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the diffusion image model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
@@ -2695,12 +2728,25 @@ async def delete_cached_model(
 
         llama_backend = get_llama_cpp_backend()
         loaded_id = (llama_backend.model_identifier or "").lower()
+        loading_id = (
+            getattr(llama_backend, "loading_model_identifier", None) or ""
+        ).lower()
+        # Also consult the pending-load identifier: a multi-GB HF
+        # download stays in ``loading_model_identifier`` until the
+        # download completes, before ``model_identifier`` is set
+        # (round 13 P1 #6). Without this check the cache directory
+        # the download was writing into could be rmtree'd mid-flight.
+        needle = repo_id.lower()
+        if loading_id == needle:
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         # Exact match only (case-insensitive). Prefix match would
         # block deleting unrelated ``org/model`` while
         # ``org/model-v2`` is loaded -- same surface the diffusion
         # guard fixed in round 5.
-        wants = loaded_id == repo_id.lower()
-        if wants and (
+        if loaded_id == needle and (
             llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
             raise HTTPException(
@@ -2775,35 +2821,21 @@ async def delete_cached_model(
         diff_status = diff_backend.status()
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
             needle = repo_id.lower()
-            owned = {
-                (diff_status.get("active_repo_id") or "").lower(),
-                (diff_status.get("active_base_repo") or "").lower(),
-                (diff_status.get("pending_repo_id") or "").lower(),
-                (diff_status.get("pending_base_repo") or "").lower(),
-            }
-            owned.discard("")
-            if needle in owned:
-                # Per-variant delete only touches the requested
-                # quant via ``_delete_gguf_variant_files``. If the
-                # loaded pipeline uses a DIFFERENT variant from the
-                # same repo, the delete is safe. Round 12 review #4.
-                loaded_gguf = (diff_status.get("gguf_filename") or "").lower()
-                if variant and loaded_gguf:
-                    variant_low = variant.lower()
-                    loaded_label = (_extract_quant_label(loaded_gguf) or "").lower()
-                    if loaded_label and loaded_label != variant_low:
-                        # Different quant from the same repo -> allow.
-                        pass
-                    else:
-                        raise HTTPException(
-                            status_code = 400,
-                            detail = "Unload the diffusion image model before deleting",
-                        )
-                else:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the diffusion image model before deleting",
-                    )
+            # Pair each owned repo with the GGUF variant it actually
+            # owns (active or pending) so a swap in progress does not
+            # collapse both quants into the pending one (round 13
+            # P1 #4). Per-variant delete is still allowed if the
+            # requested variant differs from the variant that owns
+            # the matched repo.
+            for owned_id, owned_gguf in _diffusion_owned_targets(diff_status):
+                if not owned_id or owned_id.lower() != needle:
+                    continue
+                if _variant_delete_is_safe_for_owned_gguf(variant, owned_gguf):
+                    continue
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the diffusion image model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
