@@ -2582,9 +2582,7 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": (
-                                    '{"_server_tool": true, "query": "x"}'
-                                ),
+                                "arguments": ('{"_server_tool": true, "query": "x"}'),
                             },
                         }
                     ],
