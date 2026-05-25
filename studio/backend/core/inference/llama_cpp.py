@@ -3118,12 +3118,10 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # On Windows, llama-server's default KV-cache checkpoints write
-                # prompt-cache snapshots to system RAM over the WDDM driver /
-                # PCI-E bus.  This adds substantial overhead even when the model
-                # is fully GPU-offloaded.  Disable all checkpoint machinery to
-                # keep the cache entirely in VRAM.  #5692.
-                if _sys.platform == "win32":
+                # Windows + full GPU offload: KV-cache checkpoints write to
+                # system RAM over WDDM / PCI-E. Disable to keep cache in VRAM.
+                # CPU / partial offload keeps prompt caching across turns. #5692.
+                if _sys.platform == "win32" and _fully_gpu_offloaded:
                     cmd.extend(
                         [
                             "--cache-ram",
@@ -3171,15 +3169,12 @@ class LlamaCppBackend:
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
 
-                    # Windows OpenMP defaults to active spin-wait (Intel
-                    # compiler runtime), burning 100% CPU across all logical
-                    # cores even when the model is fully GPU-offloaded.
-                    # PASSIVE tells the runtime to yield instead of spinning;
-                    # limiting to 2 threads keeps the few remaining CPU-side
-                    # operations (tokenisation, copy) from monopolising the
-                    # scheduler.  #5692.
-                    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
-                    env.setdefault("OMP_NUM_THREADS", "2")
+                    # Windows + full GPU offload: PASSIVE OMP + 2 threads
+                    # to stop spin-wait burning 100% CPU during GPU decode.
+                    # CPU / partial offload keeps default OMP parallelism. #5692.
+                    if _fully_gpu_offloaded:
+                        env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+                        env.setdefault("OMP_NUM_THREADS", "2")
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)

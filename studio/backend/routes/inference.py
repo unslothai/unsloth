@@ -419,23 +419,26 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
         return
 
 
-async def _await_disconnect_then_close(request, resp) -> None:
+async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
     """Watch ``request.is_disconnected()`` and close ``resp`` when the client
-    disconnects (tab closed, navigation away, fetch abort).  This prevents
-    llama-server from continuing to decode after the client is gone — a
-    particularly expensive leak on Windows where Keep-Alive + WDDM makes
-    llama-server unaware the downstream socket has closed (#5692).
+    disconnects (tab closed, navigation away, fetch abort). Prevents
+    llama-server from continuing to decode after the client is gone, an
+    expensive leak on Windows where Keep-Alive + WDDM masks the downstream
+    socket close (#5692).
 
-    100ms cadence is a trade-off: fast enough that the GPU waste after a
-    client disconnect is ≤100ms of decode, slow enough to avoid flooding
-    the event loop.  Unlike the cancel-event watcher this polls the
-    Starlette Request directly, so it covers client-initiated aborts that
-    never reach the /cancel POST path (proxied fetches, Colab, mobile
-    tab-close, etc.).
+    100ms cadence: GPU waste after disconnect <=100ms of decode. Polls the
+    Starlette Request directly so it catches aborts that never reach the
+    /cancel POST path (proxied fetches, Colab, mobile tab-close, etc.).
+
+    Sets ``cancel_event`` before closing ``resp`` so the streamer's
+    ``except (RemoteProtocolError, ReadError, CloseError)`` clause, which
+    only suppresses when ``cancel_event.is_set()``, treats the close as a
+    normal cancellation rather than an upstream error.
     """
     try:
         while not await request.is_disconnected():
             await asyncio.sleep(0.1)
+        cancel_event.set()
         try:
             await resp.aclose()
         except Exception as e:
@@ -5065,7 +5068,7 @@ async def _anthropic_passthrough_stream(
                 _await_cancel_then_close(cancel_event, resp)
             )
             disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp)
+                _await_disconnect_then_close(request, resp, cancel_event)
             )
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
@@ -5491,7 +5494,7 @@ async def _openai_passthrough_stream(
                 _await_cancel_then_close(cancel_event, resp)
             )
             disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp)
+                _await_disconnect_then_close(request, resp, cancel_event)
             )
             try:
                 lines_iter = resp.aiter_lines()
