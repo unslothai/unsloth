@@ -332,13 +332,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
         return 2
 
+    raw_findings = diff_new_install_scripts(base_lock, head_lock)
+    raw_findings_keys = {_finding_allowlist_key(f) for f in raw_findings}
+
     # Bootstrap: if the BASE ref has no allowlist file at all, this is
     # the PR that creates it. There is no prior allowlist to diff
     # against, and refusing every head entry here would make the gate
     # unlandable. The workflow signals "missing on base" by NOT writing
     # the temp file (rm -f after a failed ``git show``), which is what
     # we detect here. Once the file exists on base, future PRs must
-    # land allowlist deltas there first.
+    # respect the head-only / deletion rules below.
     if not base_allowlist_path.exists():
         print(
             f"[install-script-diff] bootstrap: {base_allowlist_path} "
@@ -353,34 +356,40 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
             return 2
 
-        # Refuse a PR that adds new allowlist entries on its own head
-        # branch. Allowlist deltas must land in a separate trusted
-        # commit on base first; otherwise the same PR could approve
-        # its own postinstall dependency.
-        added_head_only = sorted(head_allowlist - base_allowlist)
-        if added_head_only:
+        added_head_only = head_allowlist - base_allowlist
+        # Refuse the bypass shape where a PR introduces a new postinstall
+        # dep AND allowlists it in the same diff -- head-only allowlist
+        # entries that match install-script findings in the same PR are
+        # rejected. Entries that match no current finding are allowed:
+        # they prepare the trust list for a follow-up PR that actually
+        # adds the dependency, and the human-review path still sees the
+        # allowlist diff before that follow-up can land.
+        self_approving = sorted(added_head_only & raw_findings_keys)
+        if self_approving:
             print(
-                "[install-script-diff] FAIL: install-script allowlist "
-                "entries must already exist on the base branch; do not "
-                "let a PR allowlist its own new postinstall dependency.",
+                "[install-script-diff] FAIL: this PR both introduces an "
+                "install-script dependency AND allowlists it in the "
+                "same diff. Allowlist entries that approve a NEW "
+                "postinstall must land on the base branch first.",
                 file = sys.stderr,
             )
-            for entry in added_head_only:
+            for entry in self_approving:
                 print(
-                    f"  head-only allowlist entry: {entry}",
+                    f"  self-approving allowlist entry: {entry}",
                     file = sys.stderr,
                 )
             return 1
 
-        # Also refuse a PR that DROPS trusted base entries. Without
-        # this, an attacker could land a two-step bypass:
+        # Refuse a PR that DROPS trusted base entries. Without this,
+        # an attacker could land a two-step bypass:
         #   1. PR A removes ``.install-script-allowlist`` from base
-        #      (passes -- no new lockfile findings).
+        #      (no new lockfile findings -> passes today).
         #   2. PR B then hits the bootstrap path (base allowlist
         #      missing) and self-allowlists a newly introduced
         #      install-script dependency.
-        # Removing an allowlist entry is a security-sensitive change
-        # and must land via the same review path that added it.
+        # Allowlist deletions are rare; doing them via an
+        # admin-override / branch-protection bypass keeps the
+        # bootstrap path closed for the everyday gate.
         removed_from_head = sorted(base_allowlist - head_allowlist)
         if removed_from_head:
             print(
@@ -398,9 +407,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         # Only the trusted base allowlist participates in the skip set.
+        # Head-only entries that survived the self-approval check above
+        # are deliberately NOT honored here -- they wait for the next
+        # PR (running against this PR's merged base) to take effect.
         allowlist = base_allowlist
 
-    findings = diff_new_install_scripts(base_lock, head_lock)
+    findings = raw_findings
     if allowlist:
         skipped = [f for f in findings if _finding_allowlist_key(f) in allowlist]
         findings = [f for f in findings if _finding_allowlist_key(f) not in allowlist]
