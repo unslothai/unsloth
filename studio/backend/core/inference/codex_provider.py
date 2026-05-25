@@ -58,10 +58,12 @@ logger = structlog.get_logger(__name__)
 # the verification URL out of stdout (`/device`, `/activate`,
 # `/verify`), but Studio refuses to surface anything not on this list,
 # so the malicious URL never reaches the user.
-_ALLOWED_DEVICE_AUTH_HOSTS: frozenset[str] = frozenset({
-    "auth.openai.com",
-    "chatgpt.com",
-})
+_ALLOWED_DEVICE_AUTH_HOSTS: frozenset[str] = frozenset(
+    {
+        "auth.openai.com",
+        "chatgpt.com",
+    }
+)
 
 
 def _safe_host(url: str) -> Optional[str]:
@@ -1467,9 +1469,7 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
                         # "Open verification page" to a real user.
                         logger.warning(
                             "codex_provider.login_url_rejected",
-                            host = (
-                                _safe_host(candidate) or "<unparsable>"
-                            ),
+                            host = (_safe_host(candidate) or "<unparsable>"),
                         )
             if not code_emitted:
                 cm = code_re.search(line)
