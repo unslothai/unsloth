@@ -18,47 +18,28 @@ const EMPTY_VERSIONS: StudioVersions = {
   studioVersion: null,
 };
 
-let versionsPromise: Promise<StudioVersions> | null = null;
-
-function hasCompleteStudioVersions(versions: StudioVersions): boolean {
-  return Boolean(versions.packageVersion && versions.studioVersion);
-}
-
-async function requestStudioVersions(): Promise<StudioVersions> {
-  const token = getAuthToken();
-  const headers = new Headers();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(apiUrl("/api/health"), { headers });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Studio versions (${res.status})`);
-  }
-  const data = (await res.json()) as ApiObject;
-  const packageVersion = data["version"];
-  const studioVersion = data["studio_version"];
-  return {
-    packageVersion: typeof packageVersion === "string" ? packageVersion : null,
-    studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-  };
-}
-
 async function fetchStudioVersions(): Promise<StudioVersions> {
-  if (versionsPromise) {
-    return versionsPromise;
-  }
-
-  versionsPromise = requestStudioVersions()
-    .then((versions) => {
-      if (!hasCompleteStudioVersions(versions)) {
-        versionsPromise = null;
-      }
-      return versions;
-    })
-    .catch(() => {
-      versionsPromise = null;
+  try {
+    const token = getAuthToken();
+    const headers = new Headers();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+    const res = await fetch(apiUrl("/api/health"), { headers });
+    if (!res.ok) {
       return EMPTY_VERSIONS;
-    });
-
-  return versionsPromise;
+    }
+    const data = (await res.json()) as ApiObject;
+    const packageVersion = data.version;
+    const studioVersion = data.studio_version;
+    return {
+      packageVersion:
+        typeof packageVersion === "string" ? packageVersion : null,
+      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
+    };
+  } catch {
+    return EMPTY_VERSIONS;
+  }
 }
 
 export function StudioVersionSection() {
