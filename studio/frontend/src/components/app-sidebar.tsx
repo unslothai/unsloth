@@ -40,7 +40,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
@@ -60,7 +59,6 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  NoteEditIcon,
   Settings02Icon,
   TestTube01Icon,
   ZapIcon,
@@ -81,7 +79,6 @@ import {
   moveChatItemToProject,
   renameChatItem,
   renameChatProject,
-  updateChatProjectInstructions,
   useChatRuntimeStore,
   useChatProjects,
   useChatSearchStore,
@@ -206,7 +203,6 @@ function ProjectSidebarItem({
   onOpenProject,
   onNewChat,
   onRenameProject,
-  onProjectInstructions,
   onDeleteProject,
   renderChatItem,
   items,
@@ -218,7 +214,6 @@ function ProjectSidebarItem({
   onOpenProject: (projectId: string) => void;
   onNewChat: (projectId: string) => void;
   onRenameProject: (project: ProjectRecord) => void;
-  onProjectInstructions: (project: ProjectRecord) => void;
   onDeleteProject: (project: ProjectRecord) => void;
   renderChatItem: (item: SidebarItem, variant: "project") => React.ReactNode;
   items: SidebarItem[];
@@ -309,10 +304,6 @@ function ProjectSidebarItem({
             <DropdownMenuItem onSelect={() => onRenameProject(project)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onProjectInstructions(project)}>
-              <HugeiconsIcon icon={NoteEditIcon} strokeWidth={1.75} className="size-icon" />
-              <span>Instructions</span>
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
@@ -472,9 +463,6 @@ export function AppSidebar() {
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
     useState<SidebarItem | null>(null);
-  const [editingProjectInstructions, setEditingProjectInstructions] =
-    useState<ProjectRecord | null>(null);
-  const [projectInstructionsDraft, setProjectInstructionsDraft] = useState("");
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
@@ -494,10 +482,6 @@ export function AppSidebar() {
   function openRenameProject(project: ProjectRecord) {
     setRenameDraft(project.name);
     setRenamingTarget({ kind: "project", project, current: project.name });
-  }
-  function openProjectInstructions(project: ProjectRecord) {
-    setProjectInstructionsDraft(project.instructions ?? "");
-    setEditingProjectInstructions(project);
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = run.display_name ?? run.model_name;
@@ -612,23 +596,6 @@ export function AppSidebar() {
       }
     } catch (err) {
       toast.error(moveTarget ? "Failed to create and move chat" : "Failed to create project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
-  }
-
-  async function commitProjectInstructions() {
-    const project = editingProjectInstructions;
-    if (!project) return;
-    try {
-      await updateChatProjectInstructions(
-        project.id,
-        projectInstructionsDraft,
-      );
-      setEditingProjectInstructions(null);
-      setProjectInstructionsDraft("");
-    } catch (err) {
-      toast.error("Failed to save instructions", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -974,7 +941,6 @@ export function AppSidebar() {
                     onOpenProject={openProject}
                     onNewChat={openNewChat}
                     onRenameProject={openRenameProject}
-                    onProjectInstructions={openProjectInstructions}
                     onDeleteProject={(target) =>
                       setConfirmingDelete({ kind: "project", project: target })
                     }
@@ -1375,41 +1341,6 @@ export function AppSidebar() {
             disabled={!projectNameDraft.trim()}
           >
             Create
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-    <Dialog
-      open={editingProjectInstructions !== null}
-      onOpenChange={(open) => {
-        if (!open) {
-          setEditingProjectInstructions(null);
-          setProjectInstructionsDraft("");
-        }
-      }}
-    >
-      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Project instructions</DialogTitle>
-        </DialogHeader>
-        <Textarea
-          value={projectInstructionsDraft}
-          onChange={(event) => setProjectInstructionsDraft(event.target.value)}
-          rows={8}
-          placeholder="Shared instructions"
-          aria-label="Project instructions"
-          className="resize-none focus-visible:border-input focus-visible:ring-0"
-        />
-        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setEditingProjectInstructions(null)}
-          >
-            Cancel
-          </Button>
-          <Button type="button" onClick={() => void commitProjectInstructions()}>
-            Save
           </Button>
         </DialogFooter>
       </DialogContent>

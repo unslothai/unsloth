@@ -712,7 +712,8 @@
 		border-color: rgb(255 255 255 / 0.12) !important;
 	}
 
-	.app-user-menu [data-slot="dropdown-menu-item"] {
+	.app-user-menu [data-slot="dropdown-menu-item"],
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		height: 32px;
 		padding: 0 0.625rem !important;
 		gap: 8.5px !important;
@@ -723,25 +724,35 @@
 		letter-spacing: 0.015em;
 		color: var(--nav-fg);
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"] {
+	.dark .app-user-menu [data-slot="dropdown-menu-item"],
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		letter-spacing: 0.03em;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"] svg {
+	.app-user-menu [data-slot="dropdown-menu-item"] svg,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
 		width: 19px !important;
 		height: 19px !important;
 		flex-shrink: 0;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"]:focus {
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
 		background-color: var(--nav-surface-hover);
 		color: #000;
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus {
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
 		color: #fff;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"]:focus * {
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
 		color: #000 !important;
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus * {
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
 		color: #fff !important;
 	}
 
