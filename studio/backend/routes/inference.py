@@ -2498,6 +2498,12 @@ async def diffusion_load(
                 # Round 28 P2 #15: AI Assist running (raised by
                 # _release_chat_backend_for_diffusion) is retryable.
                 or "AI Assist" in detail
+                # Backend mid-handoff race (raised by
+                # _raise_if_helper_advisor_busy_for_diffusion when
+                # another workload's public_load_pending is set) mirrors
+                # the route-level 503 at routes/inference.py:415, so the
+                # backend-surfaced phrasing must classify the same way.
+                or "Another GPU workload is mid-handoff" in detail
             ):
                 # Round 17 P1 #2: chat unload failures raised by the
                 # backend helper map to 503 (retryable infra issue),

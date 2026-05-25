@@ -330,7 +330,9 @@ def _display_repo_id(value: Any) -> Any:
     try:
         candidate = Path(value).expanduser()
         if candidate.is_absolute() or candidate.exists():
-            return candidate.name or value
+            # Defense-in-depth: redact any hf_... pattern that survives
+            # in the leaf name before returning it to the UI / log line.
+            return _redact_hf_tokens(candidate.name or value)
     except (OSError, ValueError):
         pass
     return _redact_hf_tokens(value)

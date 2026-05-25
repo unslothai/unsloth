@@ -336,19 +336,20 @@ async def upload_dataset(
     file: UploadFile,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    filename = _sanitize_filename(file.filename or "dataset_upload")
-    # Round 34 P1: mirror the seed.py multipart filename hardening so
-    # /api/datasets/upload also rejects control characters and embedded
-    # HF tokens. The reflected filename + stored_path are echoed back
-    # to the client and persisted, so the validators must match the
-    # JSON-side hardening on SeedInspectUploadRequest.filename.
+    # Validate the raw multipart filename BEFORE sanitization so smuggled
+    # control characters and embedded HF tokens are rejected at the same
+    # boundary as the JSON path; sanitizing first would silently strip
+    # control chars and let raw inputs pass the validator.
+    raw_filename = file.filename or "dataset_upload"
     from models.inference import _no_control_chars, _reject_embedded_hf_token
 
     try:
-        _no_control_chars(filename, "filename")
-        _reject_embedded_hf_token(filename, "filename")
+        _no_control_chars(raw_filename, "filename")
+        _reject_embedded_hf_token(raw_filename, "filename")
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    filename = _sanitize_filename(raw_filename)
     ext = Path(filename).suffix.lower()
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
