@@ -20,6 +20,10 @@ const EMPTY_VERSIONS: StudioVersions = {
 
 let versionsPromise: Promise<StudioVersions> | null = null;
 
+function hasCompleteStudioVersions(versions: StudioVersions): boolean {
+  return Boolean(versions.packageVersion && versions.studioVersion);
+}
+
 async function requestStudioVersions(): Promise<StudioVersions> {
   const token = getAuthToken();
   const headers = new Headers();
@@ -42,10 +46,17 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
     return versionsPromise;
   }
 
-  versionsPromise = requestStudioVersions().catch(() => {
-    versionsPromise = null;
-    return EMPTY_VERSIONS;
-  });
+  versionsPromise = requestStudioVersions()
+    .then((versions) => {
+      if (!hasCompleteStudioVersions(versions)) {
+        versionsPromise = null;
+      }
+      return versions;
+    })
+    .catch(() => {
+      versionsPromise = null;
+      return EMPTY_VERSIONS;
+    });
 
   return versionsPromise;
 }
