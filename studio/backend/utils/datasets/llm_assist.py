@@ -150,14 +150,10 @@ def _gpu_workload_busy_for_helper() -> bool:
     else:
         try:
             if get_training_backend().is_training_active():
-                logger.info(
-                    "Skipping helper GGUF while training is active"
-                )
+                logger.info("Skipping helper GGUF while training is active")
                 return True
         except Exception:
-            logger.info(
-                "Skipping helper GGUF because training status is unavailable"
-            )
+            logger.info("Skipping helper GGUF because training status is unavailable")
             return True
 
     try:
@@ -168,15 +164,11 @@ def _gpu_workload_busy_for_helper() -> bool:
     try:
         exp = get_export_backend()
         is_active = getattr(exp, "is_export_active", None)
-        if (is_active and is_active()) or getattr(
-            exp, "current_checkpoint", None
-        ):
+        if (is_active and is_active()) or getattr(exp, "current_checkpoint", None):
             logger.info("Skipping helper GGUF while export owns the GPU")
             return True
     except Exception:
-        logger.info(
-            "Skipping helper GGUF because export status is unavailable"
-        )
+        logger.info("Skipping helper GGUF because export status is unavailable")
         return True
 
     return False
