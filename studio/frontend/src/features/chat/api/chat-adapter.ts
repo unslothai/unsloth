@@ -1143,8 +1143,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let codexTotalTabs = 0;
       let codexGatherEmitted = false;
 
-      function renderCodexBuffer(): string {
-        if (codexTabBuffers.size === 0 && !codexGatherEmitted) return "";
+      function renderCodexTabsBlock(): string {
+        if (codexTabBuffers.size === 0) return "";
         const lines: string[] = [];
         const ids = [...codexTabBuffers.keys()].sort((a, b) => a - b);
         for (const id of ids) {
@@ -1159,21 +1159,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             lines.push("\n");
           }
         }
-        if (codexGatherEmitted) {
-          lines.push("\n--- Synthesis ---\n");
-        }
         return lines.join("");
       }
 
-      // All chat-content yields go through this so the Codex per-tab
-      // output is always concatenated with the normal SSE text. The
-      // synthesis is emitted by the backend BOTH as a `codex_gather`
-      // tool event AND as a normal content delta; rendering both
-      // would duplicate it. Render the tabs above (header / tab text)
-      // separately from cumulativeText (which carries the synthesis
-      // content delta) so the user sees `[tabs] ... [synthesis]`.
+      // Codex parallel-calls fan-out renders the labeled tab outputs
+      // first, then a "--- Synthesis ---" divider, then the synthesis
+      // text the backend streams as plain content deltas after the
+      // `codex_gather` event. Earlier the synthesis came BEFORE the
+      // tabs (since cumulativeText was prepended) which left the
+      // trailing "--- Synthesis ---" line orphaned at the bottom with
+      // no synthesis text under it, confusing users. When there is no
+      // Codex fan-out (single-tab Codex turn or any other provider)
+      // the function falls back to the plain cumulativeText.
       function renderFullContent(): string {
-        return cumulativeText + renderCodexBuffer();
+        const tabsBlock = renderCodexTabsBlock();
+        if (!tabsBlock && !codexGatherEmitted) {
+          return cumulativeText;
+        }
+        const parts: string[] = [];
+        if (tabsBlock) parts.push(tabsBlock);
+        if (codexGatherEmitted) parts.push("\n\n--- Synthesis ---\n\n");
+        if (cumulativeText) parts.push(cumulativeText);
+        return parts.join("");
       }
       // Tracks whether we are currently inside a `<think>` block opened by
       // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
