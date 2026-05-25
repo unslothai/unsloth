@@ -477,6 +477,43 @@ def test_smart_base_repo_picks_base_4b(monkeypatch):
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
 
 
+def test_release_chat_backend_calls_unload_with_model_name(monkeypatch):
+    """The safetensors backend unload helper must call unload_model
+    with the active model name (the orchestrator's signature requires
+    it). The previous behaviour swallowed TypeError and left the chat
+    model resident, defeating the lifecycle handoff."""
+    import sys
+    import types
+
+    fake_pkg = types.ModuleType("core.inference")
+    calls: list = []
+
+    class _Stub:
+        active_model_name = "owner/some-model"
+
+        def unload_model(self, name):
+            calls.append(name)
+            self.active_model_name = None
+            return True
+
+    stub = _Stub()
+    fake_pkg.get_inference_backend = lambda: stub
+    monkeypatch.setitem(sys.modules, "core.inference", fake_pkg)
+
+    # Skip the llama-server branch by also stubbing routes.inference.
+    fake_routes = types.ModuleType("routes.inference")
+    fake_routes.get_llama_cpp_backend = lambda: types.SimpleNamespace(
+        is_loaded = False
+    )
+    monkeypatch.setitem(sys.modules, "routes.inference", fake_routes)
+
+    from core.inference.diffusion import _release_chat_backend_for_diffusion
+
+    _release_chat_backend_for_diffusion()
+    assert calls == ["owner/some-model"], calls
+    assert stub.active_model_name is None
+
+
 def test_load_model_uses_safetensors_flag(monkeypatch):
     """The pipeline.from_pretrained call must pass use_safetensors=True
     so pickle-backed .bin weights are refused at load time."""

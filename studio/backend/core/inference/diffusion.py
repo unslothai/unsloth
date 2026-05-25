@@ -623,17 +623,23 @@ def _release_chat_backend_for_diffusion() -> None:
     except Exception as exc:
         logger.debug("llama-server unload skipped: %s", exc)
 
-    # 2. Safetensors / HF chat backend (the Inference orchestrator that
+    # 2. Safetensors / HF chat backend (the InferenceOrchestrator that
     #    serves FastVisionModel / FastLanguageModel weights). When this
     #    backend has a model resident on the same GPU, a diffusion load
-    #    will OOM the same way.
+    #    will OOM the same way. The orchestrator's unload_model takes a
+    #    model_name; passing it without args raised TypeError and was
+    #    swallowed, leaving the chat model resident.
     try:
-        from core.inference.inference import get_inference_backend  # type: ignore
+        from core.inference import get_inference_backend  # type: ignore
 
         backend = get_inference_backend()
-        if getattr(backend, "active_model_name", None):
-            logger.info("Unloading safetensors chat backend before diffusion load")
-            backend.unload_model()
+        active_model_name = getattr(backend, "active_model_name", None)
+        if active_model_name:
+            logger.info(
+                "Unloading safetensors chat backend '%s' before diffusion load",
+                active_model_name,
+            )
+            backend.unload_model(active_model_name)
     except Exception as exc:
         logger.debug("safetensors unload skipped: %s", exc)
 
