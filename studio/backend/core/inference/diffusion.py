@@ -1278,9 +1278,7 @@ def _release_other_gpu_owners_for_diffusion() -> None:
 
     if getattr(exp, "current_checkpoint", None):
         try:
-            logger.info(
-                "Shutting down idle export subprocess before diffusion load"
-            )
+            logger.info("Shutting down idle export subprocess before diffusion load")
             exp._shutdown_subprocess()
             exp.current_checkpoint = None
             exp.is_vision = False

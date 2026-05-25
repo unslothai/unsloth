@@ -1382,7 +1382,9 @@ def test_redact_hf_tokens_removes_url_embedded_token():
     URLs must be scrubbed before logging."""
     from core.inference.diffusion import _redact_hf_tokens
 
-    leaky = "https://hf_abcdefghij0123456789@huggingface.co/unsloth/FLUX.2-klein-4B-GGUF"
+    leaky = (
+        "https://hf_abcdefghij0123456789@huggingface.co/unsloth/FLUX.2-klein-4B-GGUF"
+    )
     redacted = _redact_hf_tokens(leaky)
     assert "hf_" not in redacted
     assert "<redacted>" in redacted
@@ -1454,9 +1456,7 @@ def test_generator_uses_cpu_when_cpu_offload_enabled(monkeypatch):
         def is_available():
             return True
 
-    fake_torch = SimpleNamespace(
-        Generator = _FakeGenerator, cuda = _FakeTorchCuda
-    )
+    fake_torch = SimpleNamespace(Generator = _FakeGenerator, cuda = _FakeTorchCuda)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
     backend._generate_image_unlocked(prompt = "x", seed = 7, width = 8, height = 8)
