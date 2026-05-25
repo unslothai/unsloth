@@ -330,7 +330,8 @@ class SlidingWindowCompact(CompactStrategy):
                 # Keep the message (multimodal content stays) but strip
                 # tool_calls entries with no surviving tool follow-up.
                 kept_tcs = [
-                    tc for tc in (m.get("tool_calls") or [])
+                    tc
+                    for tc in (m.get("tool_calls") or [])
                     if isinstance(tc, dict)
                     and isinstance(tc.get("id"), str)
                     and tc["id"] in responded_ids
