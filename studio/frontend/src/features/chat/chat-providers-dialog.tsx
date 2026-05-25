@@ -556,7 +556,20 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
-      setAvailableModels([...entry.default_models]);
+      const defaults = [...entry.default_models];
+      setAvailableModels(defaults);
+      // Mirror the providerType-change effect's first-run behavior:
+      // Codex is the local CLI so pre-checking the default models lets
+      // the user click Save without re-ticking anything. Without this
+      // the resetForm above would zero selectedModelIds and the form
+      // would fail the "Add at least one model ID" save guard even
+      // though the round 7 Codex auto-enable effect would have
+      // populated them. Triggered when the user clicks Add connection
+      // while Codex was already the providerType (e.g. after closing
+      // and reopening the form).
+      setSelectedModelIds(
+        providerType === CODEX_PROVIDER_TYPE ? defaults : [],
+      );
     }
     setPage("form");
   }

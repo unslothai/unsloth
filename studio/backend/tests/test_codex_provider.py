@@ -2047,7 +2047,9 @@ class TestDeviceLoginLogFilter:
         # caught when the production source is loaded.
         import importlib
 
-        mod = importlib.reload(importlib.import_module("core.inference.codex_provider"))
+        mod = importlib.reload(
+            importlib.import_module("core.inference.codex_provider")
+        )
         # Walk the source string to find the patterns; they live inside
         # the generator. Use a stable proxy: read the regex literals.
         import re
@@ -2057,10 +2059,8 @@ class TestDeviceLoginLogFilter:
         # phrases AND an unsafe-content blocklist.
         assert "safe_log_res" in src
         assert "unsafe_log_re" in src
-        assert (
-            "not\\s+(?:logged|signed)\\s+in" in src
-            or "not\\\\s+(?:logged|signed)\\\\s+in" in src
-        )
+        assert "not\\s+(?:logged|signed)\\s+in" in src or \
+               "not\\\\s+(?:logged|signed)\\\\s+in" in src
         return None
 
     def test_safe_log_source_has_anchored_patterns_and_blocklist(self):
@@ -2117,6 +2117,98 @@ class TestDeviceLoginLogFilter:
             "Browser opened",
             "Press Ctrl+C to cancel",
         ]:
-            assert any(
-                pat.search(clean) for pat in safe_log_res
-            ), f"clean line should match safe: {clean!r}"
+            assert any(pat.search(clean) for pat in safe_log_res), \
+                f"clean line should match safe: {clean!r}"
+
+
+# ── Round 8: stream replay protection on non-visible events ──────────
+
+
+class TestStreamReplayProtection:
+    """Lock in the round 8 fix: a turn that fired non-rendered events
+    (command/file/tool deltas) before crashing MUST NOT replay via the
+    buffered `thread.run(prompt)` fallback even though no visible
+    text was yielded. The earlier guard only tracked `emitted_any`
+    (visible text), missing the case where shell commands or file
+    writes already happened upstream.
+    """
+
+    def test_buffered_run_not_called_after_non_visible_event_crash(self):
+        """Stream raises after a tool event with no visible text. The
+        buffered ``thread.run`` MUST NOT be called -- the Codex turn
+        has already started running side-effects upstream.
+        """
+        from core.inference.codex_provider import _stream_thread_run
+
+        class _Stream:
+            def __init__(self):
+                self._i = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                self._i += 1
+                if self._i == 1:
+                    # An event with no answer text -- _coerce_text
+                    # returns "" but the turn has demonstrably run.
+                    return {"type": "command.delta", "delta": "rm -rf"}
+                raise RuntimeError("upstream stream died mid-turn")
+
+        class _Turn:
+            def stream(self):
+                return _Stream()
+
+        class _Thread:
+            run_calls: int = 0
+
+            def turn(self_inner, prompt):
+                return _Turn()
+
+            async def run(self_inner, prompt):
+                self_inner.run_calls += 1
+                return "REPLAY-WOULD-RETURN-THIS"
+
+        thread = _Thread()
+
+        async def collect():
+            chunks = []
+            async for c in _stream_thread_run(thread, "hello"):
+                chunks.append(c)
+            return chunks
+
+        chunks = asyncio.run(collect())
+        # No visible text was emitted (the only event was filtered),
+        # but thread.run MUST NOT have been called because the turn
+        # already started.
+        assert thread.run_calls == 0, (
+            "thread.run was called after a partial-turn crash; this "
+            "would replay shell commands / file writes"
+        )
+        assert chunks == []
+
+    def test_buffered_run_called_when_no_streaming_helper(self):
+        """Threads that expose neither .turn nor .run_streaming still
+        fall through to the buffered .run -- that is the ONLY path
+        the buffered fallback is allowed to execute.
+        """
+        from core.inference.codex_provider import _stream_thread_run
+
+        class _Thread:
+            run_calls: int = 0
+
+            async def run(self_inner, prompt):
+                self_inner.run_calls += 1
+                return "answer"
+
+        thread = _Thread()
+
+        async def collect():
+            chunks = []
+            async for c in _stream_thread_run(thread, "hello"):
+                chunks.append(c)
+            return chunks
+
+        chunks = asyncio.run(collect())
+        assert thread.run_calls == 1
+        assert chunks == ["answer"]

@@ -719,12 +719,16 @@ async def _stream_thread_run(
        path. Used when neither streaming helper resolves and as the
        final fallback.
 
-    Cross-turn side-effect protection: once any chunk has been emitted
-    via a streaming helper, we never fall through to the buffered
-    ``thread.run(prompt)`` path -- a partial-stream failure would
-    otherwise re-execute the same Codex turn and duplicate side
-    effects (file writes, shell commands, etc.). The buffered path
-    runs only when streaming helpers produced zero output.
+    Cross-turn side-effect protection: once a turn has STARTED (any
+    SDK event was received, including ones that ``_coerce_text``
+    drops -- command/file/tool/plan events), we never fall through
+    to the buffered ``thread.run(prompt)`` path. A partial-stream
+    failure mid-turn must not re-execute the same Codex turn
+    because the side effects (file writes, shell commands, etc.)
+    would replay. Tracking only ``emitted_any`` (visible text) is
+    not enough -- a turn that crashes after running shell commands
+    but before producing answer text would otherwise replay because
+    no visible chunk was emitted.
 
     Empty-delta protection: the canonical SDK can complete a turn
     successfully without emitting any ``message.delta`` events --
@@ -734,6 +738,11 @@ async def _stream_thread_run(
     Studio never returns an empty answer for a successful turn.
     """
     emitted_any = False
+    # True once ANY event has been observed from a streaming helper.
+    # Even when ``_coerce_text`` filters the event out, the turn has
+    # demonstrably started executing on the Codex side, so a later
+    # error must not trigger a buffered ``thread.run`` replay.
+    turn_started = False
 
     # 1. Canonical: thread.turn(prompt).stream()
     turn_factory = getattr(thread, "turn", None)
@@ -741,6 +750,12 @@ async def _stream_thread_run(
         agent_message_texts: list[str] = []
         try:
             turn_handle = turn_factory(prompt)
+            # Asking the SDK for the turn handle is itself enough to
+            # start the turn on the upstream side; mark turn_started
+            # before we even start iterating so a crash inside the
+            # stream factory below does not look like a never-started
+            # turn that is safe to replay.
+            turn_started = True
             if asyncio.iscoroutine(turn_handle):
                 turn_handle = await turn_handle
             stream_fn = getattr(turn_handle, "stream", None)
@@ -749,6 +764,7 @@ async def _stream_thread_run(
                 if asyncio.iscoroutine(stream_obj):
                     stream_obj = await stream_obj
                 async for event in stream_obj:
+                    turn_started = True
                     payload = getattr(event, "payload", event)
                     text = _coerce_text(payload)
                     if text:
@@ -771,11 +787,16 @@ async def _stream_thread_run(
                 exc_type = type(exc).__name__,
                 error = str(exc),
                 emitted_any = emitted_any,
+                turn_started = turn_started,
             )
-            if emitted_any:
-                # The Codex turn already ran far enough to emit text;
-                # do not re-execute via run() or run_streaming() -- the
-                # side-effects (commands / writes) would replay.
+            if turn_started:
+                # The Codex turn has executed at least one event on
+                # the upstream side (it may have launched shell
+                # commands or written files via tool events that
+                # _coerce_text filtered out). Re-executing via
+                # run_streaming / run() would duplicate those side
+                # effects, so stop here even if no visible text was
+                # yielded.
                 return
 
     # 2. Legacy: thread.run_streaming(prompt)
@@ -783,9 +804,14 @@ async def _stream_thread_run(
     if run_streaming is not None:
         try:
             stream_obj = run_streaming(prompt)
+            # Same reasoning as the canonical path above: calling the
+            # streaming helper is enough to start the turn on the SDK
+            # side, so a later crash must NOT replay via buffered run.
+            turn_started = True
             if asyncio.iscoroutine(stream_obj):
                 stream_obj = await stream_obj
             async for event in stream_obj:
+                turn_started = True
                 text = _coerce_text(event)
                 if text:
                     emitted_any = True
@@ -797,13 +823,16 @@ async def _stream_thread_run(
                 exc_type = type(exc).__name__,
                 error = str(exc),
                 emitted_any = emitted_any,
+                turn_started = turn_started,
             )
-            if emitted_any:
+            if turn_started:
                 return
 
     # 3. Buffered fallback: await the full TurnResult, emit one chunk.
-    # Only reached when no streaming helper emitted anything, so this
-    # is the first (and only) execution of the turn.
+    # Only reached when no streaming helper ran at all (no turn /
+    # run_streaming attributes on the thread, or both raised before
+    # observing any event / starting the turn), so this is the first
+    # and only execution of the turn.
     result = await thread.run(prompt)
     text = _buffered_result_text(result)
     if text:
