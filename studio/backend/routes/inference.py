@@ -5419,6 +5419,103 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
     return out
 
 
+_LOCAL_SERVER_BUILTIN_TOOL_NAMES = frozenset(
+    {"web_search", "web_fetch", "code_execution", "image_generation"}
+)
+
+
+def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
+    """Drop synthetic provider-side tool_calls + matching role=tool replies
+    on the local-backend (llama-server / GGUF) dispatch path.
+
+    A Gemini chat that ran code_execution / image_generation persists the
+    server-side tool card into thread history as an assistant tool_calls
+    entry tagged with ``args._server_tool`` (or a Gemini
+    ``args.google.native_part`` payload) plus a follow-up role=tool reply.
+    When the user switches the SAME thread to a local GGUF model, those
+    synthetic tool_calls are not real user functions, llama-server has no
+    matching declaration, and Gemini-only ``extra_content`` /
+    ``native_part`` payloads are meaningless. Forward only ordinary user
+    function calls; strip the matched role=tool replies too so the
+    backend does not see an orphan tool_call_id.
+    """
+    dropped_ids: set[str] = set()
+    sanitized_assistant: list[dict] = []
+    for m in messages:
+        if m.get("role") != "assistant":
+            sanitized_assistant.append(m)
+            continue
+        tool_calls = m.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            sanitized_assistant.append(m)
+            continue
+        cleaned: list[dict] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                cleaned.append(tc)
+                continue
+            fn = tc.get("function")
+            name = ""
+            if isinstance(fn, dict):
+                name = (fn.get("name") or "").lower()
+            if name in _LOCAL_SERVER_BUILTIN_TOOL_NAMES:
+                raw_args = fn.get("arguments") if isinstance(fn, dict) else None
+                args_obj: Any = None
+                if isinstance(raw_args, str):
+                    try:
+                        args_obj = json.loads(raw_args) if raw_args else None
+                    except Exception:
+                        args_obj = None
+                elif isinstance(raw_args, dict):
+                    args_obj = raw_args
+                is_synthetic = False
+                if isinstance(args_obj, dict):
+                    if args_obj.get("_server_tool") is True:
+                        is_synthetic = True
+                    google = args_obj.get("google")
+                    if isinstance(google, dict) and isinstance(
+                        google.get("native_part"), dict
+                    ):
+                        is_synthetic = True
+                if is_synthetic:
+                    tc_id = tc.get("id")
+                    if isinstance(tc_id, str) and tc_id:
+                        dropped_ids.add(tc_id)
+                    continue
+            # Strip Gemini-only `extra_content` on real user tool_calls
+            # too — llama-server has no use for it and may pass it
+            # through to the model unchanged.
+            if "extra_content" in tc:
+                tc = {k: v for k, v in tc.items() if k != "extra_content"}
+            cleaned.append(tc)
+        # Drop top-level message-level `extra_content` (Gemini
+        # thoughtSignature replay metadata) on local dispatch.
+        m_clean = {k: v for k, v in m.items() if k != "extra_content"}
+        if cleaned:
+            m_clean["tool_calls"] = cleaned
+        else:
+            m_clean.pop("tool_calls", None)
+        if (
+            not m_clean.get("content")
+            and not m_clean.get("tool_calls")
+        ):
+            continue  # assistant turn now empty, drop
+        sanitized_assistant.append(m_clean)
+
+    if not dropped_ids:
+        return sanitized_assistant
+    out: list[dict] = []
+    for m in sanitized_assistant:
+        if (
+            m.get("role") == "tool"
+            and isinstance(m.get("tool_call_id"), str)
+            and m["tool_call_id"] in dropped_ids
+        ):
+            continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -5435,8 +5532,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = _drop_empty_assistant_sentinels(
-        [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(
+            [m.model_dump(exclude_none = True) for m in payload.messages]
+        )
     )
 
     if not payload.image_base64:
@@ -5485,8 +5584,10 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
     all per-turn ``image_url`` parts so multi-image chat history keeps each
     image attached to its original turn.
     """
-    messages = _drop_empty_assistant_sentinels(
-        [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(
+            [m.model_dump(exclude_none = True) for m in payload.messages]
+        )
     )
     has_message_image = any(
         isinstance(msg.get("content"), list)

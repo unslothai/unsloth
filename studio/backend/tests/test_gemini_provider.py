@@ -4753,6 +4753,115 @@ def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
     assert not routed_to_helper["called"]
 
 
+def test_strip_provider_synthetic_tool_history_drops_synthetic_only():
+    """Round 22: switching a thread from native Gemini (code_execution
+    / image_generation tool_cards in history) to a local GGUF backend
+    must strip the synthetic tool_calls + matching role=tool replies
+    before llama-server sees them. Real user-function tool_calls and
+    their matching tool replies must survive."""
+    from routes.inference import _strip_provider_synthetic_tool_history
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "let me run it",
+            "tool_calls": [
+                {
+                    "id": "synth_ce_1",
+                    "type": "function",
+                    "function": {
+                        "name": "code_execution",
+                        "arguments": json.dumps(
+                            {
+                                "_server_tool": True,
+                                "google": {"native_part": {"parts": []}},
+                            }
+                        ),
+                    },
+                    "extra_content": {"google": {"thought_signature": "abc"}},
+                },
+                {
+                    "id": "real_lookup",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_user",
+                        "arguments": json.dumps({"id": 42}),
+                    },
+                },
+            ],
+            "extra_content": {"google": {"thought_signature": "msglevel"}},
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "synth_ce_1",
+            "content": "Gemini-only result text",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "real_lookup",
+            "content": '{"name": "alice"}',
+        },
+    ]
+    out = _strip_provider_synthetic_tool_history(messages)
+    assistant = next(m for m in out if m.get("role") == "assistant")
+    tcs = assistant["tool_calls"]
+    assert len(tcs) == 1, tcs
+    assert tcs[0]["id"] == "real_lookup"
+    assert "extra_content" not in tcs[0]
+    assert "extra_content" not in assistant
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "real_lookup"
+
+
+def test_strip_provider_synthetic_tool_history_drops_empty_assistant():
+    """If every tool_call was synthetic and the assistant turn had no
+    content, the entire turn must be dropped (llama-server rejects
+    empty assistant messages with no tool_calls)."""
+    from routes.inference import _strip_provider_synthetic_tool_history
+
+    messages = [
+        {"role": "user", "content": "draw a sloth"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "synth_imggen",
+                    "type": "function",
+                    "function": {
+                        "name": "image_generation",
+                        "arguments": json.dumps(
+                            {
+                                "google": {
+                                    "native_part": {
+                                        "parts": [
+                                            {
+                                                "inlineData": {
+                                                    "mimeType": "image/png",
+                                                    "data": "Zm9v",
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "synth_imggen", "content": "(image)"},
+        {"role": "user", "content": "now try in pirate voice"},
+    ]
+    out = _strip_provider_synthetic_tool_history(messages)
+    roles = [m.get("role") for m in out]
+    # The synthetic assistant + its tool reply are both gone; only the
+    # two user turns survive.
+    assert roles == ["user", "user"], out
+
+
 def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice(
     monkeypatch,
 ):
