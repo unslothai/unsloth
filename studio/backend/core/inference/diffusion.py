@@ -1052,7 +1052,9 @@ def _drain_cuda_cache() -> None:
         mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
         if mps_backend is not None and mps_backend.is_available():
             mps_module = getattr(torch, "mps", None)
-            empty_cache = getattr(mps_module, "empty_cache", None) if mps_module else None
+            empty_cache = (
+                getattr(mps_module, "empty_cache", None) if mps_module else None
+            )
             if empty_cache is not None:
                 empty_cache()
     except Exception:

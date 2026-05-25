@@ -2007,14 +2007,8 @@ async def delete_finetuned_model(
             # specific quant file. If the loaded pipeline uses a
             # DIFFERENT variant from the same directory, the delete
             # is safe. Round 12 review #3.
-            loaded_gguf = (
-                diff_status.get("gguf_filename") or ""
-            ).lower()
-            wants_variant = (
-                export_type == "gguf"
-                and gguf_variant
-                and loaded_gguf
-            )
+            loaded_gguf = (diff_status.get("gguf_filename") or "").lower()
+            wants_variant = export_type == "gguf" and gguf_variant and loaded_gguf
             for candidate in candidates:
                 try:
                     candidate_path = Path(candidate).expanduser()
@@ -2039,9 +2033,7 @@ async def delete_finetuned_model(
                     # different quant than the loaded one.
                     if wants_variant:
                         variant_low = gguf_variant.lower()
-                        loaded_label = (
-                            _extract_quant_label(loaded_gguf) or ""
-                        ).lower()
+                        loaded_label = (_extract_quant_label(loaded_gguf) or "").lower()
                         if loaded_label and loaded_label != variant_low:
                             continue
                     raise HTTPException(
@@ -2795,14 +2787,10 @@ async def delete_cached_model(
                 # quant via ``_delete_gguf_variant_files``. If the
                 # loaded pipeline uses a DIFFERENT variant from the
                 # same repo, the delete is safe. Round 12 review #4.
-                loaded_gguf = (
-                    diff_status.get("gguf_filename") or ""
-                ).lower()
+                loaded_gguf = (diff_status.get("gguf_filename") or "").lower()
                 if variant and loaded_gguf:
                     variant_low = variant.lower()
-                    loaded_label = (
-                        _extract_quant_label(loaded_gguf) or ""
-                    ).lower()
+                    loaded_label = (_extract_quant_label(loaded_gguf) or "").lower()
                     if loaded_label and loaded_label != variant_low:
                         # Different quant from the same repo -> allow.
                         pass
