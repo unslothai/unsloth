@@ -487,44 +487,139 @@ async def _release_export_for(workload: str) -> None:
     route layer is expected to refuse the workload with HTTP 409
     via ``_raise_if_export_active`` before calling this.
 
-    This split is what round 10 reviewers flagged: the previous
-    behaviour terminated active exports on any release path, which
-    would corrupt the user's in-flight output artifact.
+    Round 17 P1 #8: idle-export shutdown failures now raise HTTP 503
+    instead of being swallowed, so a wedged export subprocess does
+    not silently leave GPU memory pinned while training / chat /
+    diffusion start on top.
     """
     try:
         from core.export import get_export_backend  # type: ignore
+    except Exception as exc:
+        logger.debug("export backend unavailable for %s: %s", workload, exc)
+        return
 
+    try:
         exp = get_export_backend()
-        has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
-        # Backends without an async-job tracker (older builds, some
-        # test mocks) cannot report 'active' separately from
-        # 'has_checkpoint'. Treat absence as 'not active' so a
-        # settled checkpoint still gets dropped; on builds that DO
-        # expose it, a True value blocks the drop.
-        is_export_active_fn = getattr(exp, "is_export_active", None)
-        if is_export_active_fn is None:
-            active = False
-        else:
-            try:
-                active = bool(is_export_active_fn())
-            except Exception:
-                # Treat unverifiable as 'might be active' and refuse
-                # to drop. The caller's _raise_if_export_active call
-                # already failed closed; reaching here with an
-                # unknown status is the safer no-op.
-                active = True
-        if has_checkpoint and not active:
+    except Exception as exc:
+        logger.warning(
+            "Could not access export backend before %s: %s", workload, exc
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not access export backend before starting {workload}. "
+                "Try again."
+            ),
+        ) from exc
+
+    has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
+    is_export_active_fn = getattr(exp, "is_export_active", None)
+    if is_export_active_fn is None:
+        active = False
+    else:
+        try:
+            active = bool(is_export_active_fn())
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not verify export status before starting "
+                    f"{workload}. Try again."
+                ),
+            ) from exc
+
+    if has_checkpoint and not active:
+        try:
             logger.info(
                 "Shutting down idle export (checkpoint=%s) for %s",
                 has_checkpoint,
                 workload,
             )
             await asyncio.to_thread(exp._shutdown_subprocess)
-            exp.current_checkpoint = None
-            exp.is_vision = False
-            exp.is_peft = False
-    except Exception as e:
-        logger.warning("Could not shut down export for %s: %s", workload, e)
+        except Exception as exc:
+            logger.warning(
+                "Could not shut down export for %s: %s", workload, exc
+            )
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not unload the idle export checkpoint before "
+                    f"starting {workload}. Try again."
+                ),
+            ) from exc
+        exp.current_checkpoint = None
+        exp.is_vision = False
+        exp.is_peft = False
+
+
+async def _release_diffusion_for(workload: str) -> None:
+    """Strict diffusion-unload helper for cross-workload handoffs.
+
+    Round 17 P1 #4-7: the GGUF chat load, safetensors chat load,
+    training start, and export load paths each had their own
+    best-effort try/except around ``diff_backend.unload_model()``.
+    A wedged diffusion pipeline therefore stayed resident while a
+    new GPU workload started on top. This helper raises HTTP 503
+    when the unload fails or leaves diffusion resident, so the
+    caller fails closed.
+    """
+    try:
+        from core.inference.diffusion import get_diffusion_backend  # type: ignore
+    except Exception as exc:
+        logger.debug("diffusion backend unavailable for %s: %s", workload, exc)
+        return
+
+    diff_backend = get_diffusion_backend()
+    try:
+        diff_status = diff_backend.status()
+    except Exception as exc:
+        logger.warning(
+            "Could not verify diffusion status before %s: %s", workload, exc
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify diffusion status before starting "
+                f"{workload}. Try again."
+            ),
+        ) from exc
+
+    if not (diff_status.get("is_loaded") or diff_status.get("is_loading")):
+        return
+
+    logger.info(
+        "Unloading diffusion (loaded=%s loading=%s) before %s",
+        diff_status.get("is_loaded"),
+        diff_status.get("is_loading"),
+        workload,
+    )
+    try:
+        result = await asyncio.to_thread(diff_backend.unload_model)
+    except Exception as exc:
+        logger.warning("Failed to unload diffusion before %s: %s", workload, exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not unload the existing diffusion image model "
+                f"before starting {workload}. Try again."
+            ),
+        ) from exc
+
+    after = {}
+    try:
+        after = diff_backend.status()
+    except Exception:
+        # status() failure here is unusual but should not mask the
+        # primary outcome. Fall back to assuming the unload finished.
+        pass
+    if result is False or after.get("is_loaded") or after.get("is_loading"):
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"The diffusion image model is still active after unload; "
+                f"retry before starting {workload}."
+            ),
+        )
 
 
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
@@ -1045,30 +1140,11 @@ async def load_model(
             # in-flight safetensors load race the new GGUF allocation.
             await _release_safetensors_chat_for("GGUF chat")
 
-            # Symmetric with /images/load: drop any active diffusion
-            # pipeline so the GGUF chat load does not race the FLUX VAE
-            # for VRAM. Also handles is_loading: unload_model takes
-            # _load_lock + _generate_lock and will wait out an
-            # in-flight load before clearing state. Best effort;
-            # silently continue on failure.
-            try:
-                from core.inference.diffusion import get_diffusion_backend
-
-                diff_backend = get_diffusion_backend()
-                diff_status = diff_backend.status()
-                if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-                    logger.info(
-                        "Unloading diffusion (loaded=%s loading=%s) before GGUF load",
-                        diff_status.get("is_loaded"),
-                        diff_status.get("is_loading"),
-                    )
-                    # diff_backend.unload_model takes _load_lock +
-                    # _generate_lock and can block for the duration of
-                    # an in-flight load / generation. Off-load to a
-                    # worker thread to keep the event loop responsive.
-                    await asyncio.to_thread(diff_backend.unload_model)
-            except Exception as e:
-                logger.debug("diffusion unload skipped (GGUF path): %s", e)
+            # Round 17 P1 #4: route the diffusion unload through the
+            # strict ``_release_diffusion_for`` helper so a wedged
+            # diffusion pipeline blocks the GGUF chat load with 503
+            # instead of silently double-owning VRAM.
+            await _release_diffusion_for("GGUF chat load")
 
             # Inherit llama_extra_args from the previous load when the
             # request omits the field (the chat-settings Apply path
@@ -1254,26 +1330,10 @@ async def load_model(
         # symmetric ``_release_safetensors_chat_for``.
         await _release_llama_for("safetensors chat")
 
-        # Unload any active diffusion pipeline so the new chat model is
-        # not racing the FLUX VAE for VRAM on a 16-24 GB card. is_loading
-        # is treated like is_loaded; unload waits behind _load_lock +
-        # _generate_lock so the in-flight load completes first.
-        try:
-            from core.inference.diffusion import get_diffusion_backend
-
-            diff_backend = get_diffusion_backend()
-            diff_status = diff_backend.status()
-            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-                logger.info(
-                    "Unloading diffusion (loaded=%s loading=%s) before chat load",
-                    diff_status.get("is_loaded"),
-                    diff_status.get("is_loading"),
-                )
-                # Same blocking concern as the GGUF chat path:
-                # _load_lock + _generate_lock serialise the call.
-                await asyncio.to_thread(diff_backend.unload_model)
-        except Exception as e:
-            logger.debug("diffusion unload skipped: %s", e)
+        # Round 17 P1 #5: strict diffusion unload via the shared
+        # helper so a wedged pipeline blocks the safetensors chat
+        # load with 503 instead of silently double-owning VRAM.
+        await _release_diffusion_for("safetensors chat load")
 
         # Export was already dropped above via the shared
         # ``await _release_export_for("safetensors chat")`` call
@@ -1968,6 +2028,14 @@ async def diffusion_load(
     # the request is refused with 409 instead of silently killing it.
     _raise_if_training_active("diffusion")
     _raise_if_export_active("diffusion")
+    # Round 17 P1 #3: drop the chat backends through the strict
+    # route-level helpers BEFORE the diffusion load. The backend's
+    # own ``_release_chat_backend_for_diffusion`` is now strict
+    # too (round 17 P1 #2), but doing it here keeps the public API
+    # path symmetric with training / export / chat handoffs that
+    # already use ``_release_chat_for``.
+    await _release_chat_for("diffusion")
+    await _release_export_for("diffusion")
     backend = _get_diffusion_backend()
     try:
         status = await asyncio.get_event_loop().run_in_executor(
@@ -1993,7 +2061,13 @@ async def diffusion_load(
         if (
             "Could not verify training status" in detail
             or "Could not verify export status" in detail
+            or "Could not unload" in detail
+            or "refused to unload" in detail
+            or "still active after unload" in detail
         ):
+            # Round 17 P1 #2: chat unload failures raised by the
+            # backend helper map to 503 (retryable infra issue),
+            # matching the route-level _release_*_for helpers.
             raise HTTPException(status_code = 503, detail = detail) from exc
         if (
             "export job is currently active" in detail

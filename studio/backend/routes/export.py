@@ -148,7 +148,7 @@ async def load_checkpoint(
         # helper so we cover llama-server is_active=True and
         # safetensors loading_models -- the asymmetries round 9
         # reviews #1, #8, #9 flagged.
-        from routes.inference import _release_chat_for
+        from routes.inference import _release_chat_for, _release_diffusion_for
 
         await _release_chat_for("export")
 
@@ -157,25 +157,15 @@ async def load_checkpoint(
         # shutdown above. is_loading is treated like is_loaded so an
         # in-flight load is also waited out (the diffusion unload
         # acquires _load_lock + _generate_lock and blocks until the
-        # current load completes, then unloads). Best effort; silently
-        # skip if the module is absent.
-        try:
-            from core.inference.diffusion import get_diffusion_backend
-
-            diff = get_diffusion_backend()
-            diff_status = diff.status()
-            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-                logger.info(
-                    "Unloading diffusion model (loaded=%s loading=%s) for export",
-                    diff_status.get("is_loaded"),
-                    diff_status.get("is_loading"),
-                )
-                # Block-move to thread; unload acquires the
-                # diffusion _load_lock + _generate_lock and can take
-                # the full duration of an in-flight load/generation.
-                await asyncio.to_thread(diff.unload_model)
-        except Exception as e:
-            logger.debug("diffusion unload skipped for export: %s", e)
+        # current load completes, then unloads).
+        # Round 17: previously this was a best-effort try/except that
+        # swallowed every failure with logger.debug, so a wedged
+        # diffusion backend let the export checkpoint load anyway and
+        # OOM at first allocation. ``_release_diffusion_for`` is
+        # strict: it raises HTTPException 503 if status() or
+        # unload_model() fails, or if the backend remains loaded or
+        # loading after the unload call.
+        await _release_diffusion_for("export load")
 
         # load_checkpoint spawns and waits on a subprocess and can take
         # minutes. Run it in a worker thread so the event loop stays

@@ -348,6 +348,23 @@ def detect_family(
     needle = (repo_id or "").lower()
     if not needle:
         return None
+    # Round 17 P2 #10: if repo_id is an absolute local path, the
+    # whole path goes into ``needle`` and the _FAMILY_EXCLUDE deny
+    # lists match against parent-directory names too. That means
+    # ``/home/me/qwen-image-edit-cache/flux-2-klein-4b`` would be
+    # excluded from the Flux family because the parent contains
+    # ``qwen-image-edit``. Reduce to the leaf when the candidate
+    # looks like a filesystem path so excludes only consider the
+    # model directory itself.
+    if "/" in needle or "\\" in needle:
+        try:
+            candidate = Path(repo_id).expanduser()
+            if candidate.is_absolute() or candidate.exists():
+                leaf = candidate.name
+                if leaf:
+                    needle = leaf.lower()
+        except (OSError, ValueError):
+            pass
     # Normalise mixed separator spellings (``Qwen_Image-Edit-GGUF``,
     # ``Qwen-Image_Edit-GGUF``, ``Qwen.Image.Edit-GGUF``) and the
     # compact concatenation (``QwenImageEdit-GGUF``) so the
@@ -989,6 +1006,50 @@ class DiffusionBackend:
                 import re
 
                 exc_msg = re.sub(r"hf_[A-Za-z0-9]{20,}", "<redacted>", exc_msg)
+                # Round 17 P2 #9: diffusers / safetensors raise errors
+                # like ``FileNotFoundError: /home/alice/models/foo.gguf``
+                # or ``OSError: Error while loading state dict from
+                # C:\\Users\\bob\\repos\\flux``. These messages flow
+                # into ``_last_error`` (rendered by status() to every
+                # authenticated browser tab) and the user-facing
+                # RuntimeError, which would leak the operator's
+                # filesystem layout to other sessions. Collapse the
+                # known repo / base / gguf paths to their leaf name
+                # using the same convention as _display_repo_id().
+                def _collapse_local(msg: str, candidate: Optional[str]) -> str:
+                    if not candidate or not isinstance(candidate, str):
+                        return msg
+                    try:
+                        p = Path(candidate).expanduser()
+                    except (OSError, ValueError):
+                        return msg
+                    leaf = p.name or candidate
+                    abs_str = None
+                    if p.is_absolute() or p.exists():
+                        try:
+                            abs_str = str(p)
+                        except (OSError, ValueError):
+                            abs_str = None
+                    if abs_str and abs_str in msg:
+                        msg = msg.replace(abs_str, leaf)
+                    if (
+                        candidate != leaf
+                        and candidate in msg
+                        and ("/" in candidate or "\\" in candidate)
+                    ):
+                        msg = msg.replace(candidate, leaf)
+                    return msg
+
+                # ``effective_base`` and ``gguf_filename`` are local
+                # to the try block above and may be unbound if the
+                # exception fired before assignment (e.g. the GGUF
+                # repo / filename validation raises before
+                # ``effective_base`` is computed). ``locals().get``
+                # keeps the scrub a no-op in that case.
+                _locals = locals()
+                exc_msg = _collapse_local(exc_msg, repo_id)
+                exc_msg = _collapse_local(exc_msg, _locals.get("effective_base"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("gguf_filename"))
                 with self._lock:
                     self._last_error = exc_msg
                 # ``logger.exception`` would emit the raw exception
@@ -1247,20 +1308,22 @@ def _release_chat_backend_for_diffusion() -> None:
     their weights first means a typical 24 GB consumer GPU can host
     one chat model OR one diffusion model without manual unload steps.
 
-    Best effort: if a chat backend module is not importable (CI,
-    isolated tests, custom builds) or fails on the unload, we log and
-    continue; the diffusion load can still try and surface its own OOM.
+    A missing chat backend module is a silent no-op (fresh install /
+    no GGUF use). An unload that ACTUALLY fails (raises or leaves
+    the backend resident) raises ``RuntimeError`` so the surrounding
+    diffusion ``load_model`` bails out instead of double-owning VRAM
+    (round 17 P1 #2).
     """
     # 1. GGUF chat backend (llama-server subprocess). We unload when
     #    EITHER is_loaded is True (resident model) OR is_active is
     #    True (mid-download / startup) OR loading_model_identifier is
     #    populated (HF GGUF download in progress, before is_active /
-    #    is_loaded flip). The last case is what round 13 P1 #8 flagged:
-    #    a multi-GB HF download from one workload + a diffusion load
-    #    racing on the same GPU would otherwise both end up live.
+    #    is_loaded flip). The last case is what round 13 P1 #8 flagged.
     try:
         from routes.inference import get_llama_cpp_backend  # type: ignore
-
+    except Exception as exc:
+        logger.debug("llama-server unavailable before diffusion load: %s", exc)
+    else:
         backend = get_llama_cpp_backend()
         is_loaded = bool(getattr(backend, "is_loaded", False))
         is_active = bool(getattr(backend, "is_active", False))
@@ -1272,45 +1335,67 @@ def _release_chat_backend_for_diffusion() -> None:
                 is_active,
                 is_loading,
             )
-            backend.unload_model()
-    except Exception as exc:
-        logger.debug("llama-server unload skipped: %s", exc)
+            try:
+                ok = backend.unload_model()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Could not unload the existing GGUF chat model before "
+                    "loading a diffusion image model."
+                ) from exc
+            if (
+                ok is False
+                or getattr(backend, "is_loaded", False)
+                or getattr(backend, "is_active", False)
+            ):
+                raise RuntimeError(
+                    "The existing GGUF chat model is still active after "
+                    "unload; retry before loading a diffusion image model."
+                )
 
     # 2. Safetensors / HF chat backend (the InferenceOrchestrator that
     #    serves FastVisionModel / FastLanguageModel weights). When this
     #    backend has a model resident on the same GPU, a diffusion load
-    #    will OOM the same way. The orchestrator's unload_model takes a
-    #    model_name; passing it without args raised TypeError and was
-    #    swallowed, leaving the chat model resident. We also flush any
-    #    loading_models set so a chat load that is mid-download cannot
-    #    race the diffusion allocation.
+    #    will OOM the same way. We also flush any loading_models set so
+    #    a chat load that is mid-download cannot race the diffusion
+    #    allocation.
     try:
         from core.inference import get_inference_backend  # type: ignore
-
-        backend = get_inference_backend()
-        active_model_name = getattr(backend, "active_model_name", None)
-        loading_models = set(getattr(backend, "loading_models", set()) or set())
-        if active_model_name:
-            logger.info(
-                "Unloading safetensors chat backend '%s' before diffusion load",
-                active_model_name,
-            )
-            backend.unload_model(active_model_name)
-        for loading in loading_models:
-            if loading == active_model_name:
-                continue
-            try:
-                logger.info(
-                    "Unloading in-flight safetensors chat load '%s' before diffusion",
-                    loading,
-                )
-                backend.unload_model(loading)
-            except Exception as inner:
-                logger.debug(
-                    "loading safetensors unload skipped for %s: %s", loading, inner
-                )
     except Exception as exc:
-        logger.debug("safetensors unload skipped: %s", exc)
+        logger.debug("safetensors unavailable before diffusion load: %s", exc)
+        return
+
+    backend = get_inference_backend()
+    active_model_name = getattr(backend, "active_model_name", None)
+    loading_models = set(getattr(backend, "loading_models", set()) or set())
+
+    def _require_unload(model_name: str) -> None:
+        try:
+            ok = backend.unload_model(model_name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not unload safetensors chat model '{model_name}' "
+                "before loading a diffusion image model."
+            ) from exc
+        if ok is False:
+            raise RuntimeError(
+                f"Safetensors backend refused to unload '{model_name}' "
+                "before loading a diffusion image model."
+            )
+
+    if active_model_name:
+        logger.info(
+            "Unloading safetensors chat backend '%s' before diffusion load",
+            active_model_name,
+        )
+        _require_unload(active_model_name)
+    for loading in loading_models:
+        if loading == active_model_name:
+            continue
+        logger.info(
+            "Unloading in-flight safetensors chat load '%s' before diffusion",
+            loading,
+        )
+        _require_unload(loading)
 
 
 def _release_other_gpu_owners_for_diffusion() -> None:

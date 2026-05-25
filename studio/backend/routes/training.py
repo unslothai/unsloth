@@ -274,6 +274,7 @@ async def start_training(
         from routes.inference import (
             _raise_if_export_active,
             _release_chat_for,
+            _release_diffusion_for,
             _release_export_for,
         )
 
@@ -285,23 +286,13 @@ async def start_training(
         # holds the same GPU and would survive the inference shutdown.
         # is_loading=True is also handled (unload_model takes
         # _load_lock + _generate_lock and waits the in-flight load out).
-        try:
-            from core.inference.diffusion import get_diffusion_backend
-
-            diff_backend = get_diffusion_backend()
-            diff_status = diff_backend.status()
-            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-                logger.info(
-                    "Unloading diffusion (loaded=%s loading=%s) for training",
-                    diff_status.get("is_loaded"),
-                    diff_status.get("is_loading"),
-                )
-                # Async route: offload the blocking unload to a
-                # worker thread so the event loop stays responsive
-                # during long in-flight load / generate calls.
-                await asyncio.to_thread(diff_backend.unload_model)
-        except Exception as e:
-            logger.warning("Could not unload diffusion model: %s", e)
+        # Round 17: previously the diffusion unload was best-effort
+        # (try/except + logger.warning), so a stuck diffusion backend
+        # would let training start anyway and immediately OOM the
+        # subprocess. ``_release_diffusion_for`` is strict: it raises
+        # HTTPException 503 if status() or unload_model() fails, or if
+        # the backend remains loaded / loading after the unload call.
+        await _release_diffusion_for("training")
 
         # start_training now spawns a subprocess (non-blocking)
         success = backend.start_training(job_id = job_id, **training_kwargs)

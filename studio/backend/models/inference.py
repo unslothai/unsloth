@@ -1519,9 +1519,15 @@ class DiffusionLoadRequest(BaseModel):
     def _no_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("repo_id", "base_repo")
+    @field_validator("repo_id", "gguf_filename", "base_repo")
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):
+        # Round 17 P2 #12: ``gguf_filename`` is forwarded to the
+        # backend and stored on ``DiffusionBackend._gguf_filename``,
+        # which is later surfaced via ``status()`` / log lines. If a
+        # user pastes a URL-form quant path like
+        # ``https://hf_xxxxx@huggingface.co/.../flux.gguf`` we drop
+        # the embedded credential before it can leak.
         return _reject_embedded_hf_token(v, info.field_name)
 
 

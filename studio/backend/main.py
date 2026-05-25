@@ -306,6 +306,7 @@ app = FastAPI(
 # ``<redacted>`` before serialisation. Scoped to the response body
 # only; the underlying validator behaviour is unchanged.
 from fastapi.exceptions import RequestValidationError as _RequestValidationError  # noqa: E402
+from fastapi.encoders import jsonable_encoder as _jsonable_encoder  # noqa: E402
 from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
 import re as _re_validation  # noqa: E402
 
@@ -314,8 +315,21 @@ _HF_TOKEN_VALIDATION_RE = _re_validation.compile(r"hf_[A-Za-z0-9]{20,}")
 
 
 def _scrub_validation_obj(value):
+    """Recursively scrub ``hf_xxxxx`` tokens out of a value tree.
+
+    Pydantic v2 nests raw ``ValueError`` (and other ``BaseException``)
+    instances under ``ctx.error``. Convert them to scrubbed strings
+    here; otherwise the default ``JSONResponse`` serializer raises
+    ``TypeError: Object of type ValueError is not JSON serializable``
+    and the 422 turns into a 500 (round 17 P1 #1). Tuples become
+    lists so the downstream JSON encoder accepts them.
+    """
     if isinstance(value, str):
         return _HF_TOKEN_VALIDATION_RE.sub("<redacted>", value)
+    if isinstance(value, BaseException):
+        return _scrub_validation_obj(str(value))
+    if isinstance(value, tuple):
+        return [_scrub_validation_obj(v) for v in value]
     if isinstance(value, list):
         return [_scrub_validation_obj(v) for v in value]
     if isinstance(value, dict):
@@ -325,9 +339,14 @@ def _scrub_validation_obj(value):
 
 @app.exception_handler(_RequestValidationError)
 async def _validation_error_scrubbing_handler(request, exc):
+    # ``jsonable_encoder`` walks the scrubbed payload one more time
+    # to convert anything else Pydantic v2 surfaces (URL objects,
+    # Path objects, Url instances, etc.) into JSON-safe primitives.
     return _JSONResponse(
         status_code = 422,
-        content = {"detail": _scrub_validation_obj(exc.errors())},
+        content = _jsonable_encoder(
+            {"detail": _scrub_validation_obj(exc.errors())}
+        ),
     )
 
 
