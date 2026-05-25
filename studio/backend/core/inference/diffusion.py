@@ -563,6 +563,12 @@ class DiffusionBackend:
                         self._loaded_at = None
                     _release(old)
                     old = None
+                    # Now that both the attribute and the local
+                    # have been nulled, the pipeline is unreachable;
+                    # ask the CUDA allocator to release its slabs so
+                    # the next from_pretrained does not OOM behind
+                    # an already-freed-but-cached arena.
+                    _drain_cuda_cache()
 
                 if gguf_filename:
                     quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
@@ -612,6 +618,7 @@ class DiffusionBackend:
                     if transformer is not None:
                         _release(transformer)
                         transformer = None
+                        _drain_cuda_cache()
                     raise
                 if enable_model_cpu_offload and device == "cuda":
                     pipe.enable_model_cpu_offload()
@@ -635,13 +642,29 @@ class DiffusionBackend:
                 # some structlog formatters render frame locals, which
                 # would otherwise echo the raw hf_... token into logs
                 # and any error reporting sink the user has wired up.
+                # ALSO scrub the exception message itself: huggingface_hub
+                # / diffusers can include the bearer token verbatim in
+                # 401 / 403 messages, which would propagate through
+                # ``_last_error`` (rendered in status()) and the
+                # user-facing RuntimeError (rendered in route responses).
+                scrub_token = hf_token
                 hf_token = None  # noqa: F841
                 pipe_kwargs = None  # noqa: F841
                 single_file_kwargs = None  # noqa: F841
+                exc_msg = str(exc)
+                if scrub_token:
+                    exc_msg = exc_msg.replace(scrub_token, "<redacted>")
+                # Hugging Face tokens are prefixed ``hf_``; replace any
+                # leftover ``hf_...`` substrings to catch tokens we did
+                # not store as ``scrub_token`` (e.g. cached tokens that
+                # huggingface_hub picked up on its own).
+                import re
+
+                exc_msg = re.sub(r"hf_[A-Za-z0-9]{20,}", "<redacted>", exc_msg)
                 with self._lock:
-                    self._last_error = str(exc)
+                    self._last_error = exc_msg
                 logger.exception("Diffusion load failed for %s", repo_id)
-                raise RuntimeError(f"Failed to load diffusion model: {exc}") from exc
+                raise RuntimeError(f"Failed to load diffusion model: {exc_msg}") from exc
             finally:
                 with self._lock:
                     self._loading = False
@@ -675,6 +698,8 @@ class DiffusionBackend:
                 self._dtype = None
                 self._loaded_at = None
             _release(old)
+            old = None  # noqa: F841
+            _drain_cuda_cache()
         return {"is_loaded": False}
 
     # ── generation ────────────────────────────────────────────────
@@ -819,13 +844,24 @@ def _release_chat_backend_for_diffusion() -> None:
     isolated tests, custom builds) or fails on the unload, we log and
     continue; the diffusion load can still try and surface its own OOM.
     """
-    # 1. GGUF chat backend (llama-server subprocess).
+    # 1. GGUF chat backend (llama-server subprocess). We unload when
+    #    EITHER is_loaded is True (resident model) OR is_active is
+    #    True (mid-download / startup); the latter case is the
+    #    "llama-server is currently starting" race where weights are
+    #    being downloaded and the diffusion load would otherwise
+    #    double-spend GPU memory.
     try:
         from routes.inference import get_llama_cpp_backend  # type: ignore
 
         backend = get_llama_cpp_backend()
-        if getattr(backend, "is_loaded", False):
-            logger.info("Unloading llama-server before diffusion load")
+        is_loaded = bool(getattr(backend, "is_loaded", False))
+        is_active = bool(getattr(backend, "is_active", False))
+        if is_loaded or is_active:
+            logger.info(
+                "Unloading llama-server (loaded=%s active=%s) before diffusion load",
+                is_loaded,
+                is_active,
+            )
             backend.unload_model()
     except Exception as exc:
         logger.debug("llama-server unload skipped: %s", exc)
@@ -835,18 +871,34 @@ def _release_chat_backend_for_diffusion() -> None:
     #    backend has a model resident on the same GPU, a diffusion load
     #    will OOM the same way. The orchestrator's unload_model takes a
     #    model_name; passing it without args raised TypeError and was
-    #    swallowed, leaving the chat model resident.
+    #    swallowed, leaving the chat model resident. We also flush any
+    #    loading_models set so a chat load that is mid-download cannot
+    #    race the diffusion allocation.
     try:
         from core.inference import get_inference_backend  # type: ignore
 
         backend = get_inference_backend()
         active_model_name = getattr(backend, "active_model_name", None)
+        loading_models = set(getattr(backend, "loading_models", set()) or set())
         if active_model_name:
             logger.info(
                 "Unloading safetensors chat backend '%s' before diffusion load",
                 active_model_name,
             )
             backend.unload_model(active_model_name)
+        for loading in loading_models:
+            if loading == active_model_name:
+                continue
+            try:
+                logger.info(
+                    "Unloading in-flight safetensors chat load '%s' before diffusion",
+                    loading,
+                )
+                backend.unload_model(loading)
+            except Exception as inner:
+                logger.debug(
+                    "loading safetensors unload skipped for %s: %s", loading, inner
+                )
     except Exception as exc:
         logger.debug("safetensors unload skipped: %s", exc)
 
@@ -855,13 +907,27 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     """Best-effort: shut down export subprocess + active training before
     a diffusion load. Both can hold multi-GB of VRAM and would OOM the
     diffusion allocation on consumer GPUs."""
-    # Export subprocess
+    # Export subprocess. Shut down when EITHER a checkpoint is
+    # resident OR is_export_active() reports work in flight (a
+    # checkpoint load that has been kicked off but not yet completed
+    # the assignment to current_checkpoint). Either case can hold
+    # GPU memory that would OOM the diffusion allocation.
     try:
         from core.export import get_export_backend  # type: ignore
 
         exp = get_export_backend()
-        if getattr(exp, "current_checkpoint", None):
-            logger.info("Shutting down export subprocess before diffusion load")
+        has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
+        is_active = False
+        try:
+            is_active = bool(exp.is_export_active())
+        except Exception:
+            is_active = False
+        if has_checkpoint or is_active:
+            logger.info(
+                "Shutting down export subprocess (checkpoint=%s active=%s)",
+                has_checkpoint,
+                is_active,
+            )
             exp._shutdown_subprocess()
             exp.current_checkpoint = None
             exp.is_vision = False
@@ -879,7 +945,16 @@ def _release_other_gpu_owners_for_diffusion() -> None:
 
 
 def _release(obj: Any) -> None:
-    """Best-effort GPU-memory release for a pipeline being swapped out."""
+    """Best-effort GPU-memory release for a pipeline being swapped out.
+
+    Only drops the local reference (which the caller has already
+    nulled in its own scope) and runs ``gc.collect()`` so __del__
+    fires. Does NOT call ``torch.cuda.empty_cache()`` here because
+    when the caller still holds the actual reference in a local /
+    attribute, ``empty_cache()`` would run before __del__ released
+    the weights and would not actually free GPU memory. Use
+    ``_drain_cuda_cache()`` AFTER the last reference has been nulled.
+    """
     if obj is None:
         return
     try:
@@ -887,6 +962,15 @@ def _release(obj: Any) -> None:
     except Exception:
         pass
     gc.collect()
+
+
+def _drain_cuda_cache() -> None:
+    """Hand freed weights back to the CUDA allocator.
+
+    Call this AFTER every reference to the freed object has been
+    dropped (caller's local + attribute) and a ``gc.collect()`` has
+    fired __del__. Calling earlier would empty an already-pinned
+    cache and not actually release the memory."""
     try:
         import torch
 

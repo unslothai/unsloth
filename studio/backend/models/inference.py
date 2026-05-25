@@ -1427,19 +1427,22 @@ class AnthropicMessagesResponse(BaseModel):
 
 
 def _no_control_chars(value: Optional[str], field_name: str) -> Optional[str]:
-    """Reject newlines and other ASCII control chars in identifiers
-    that get logged before HF validates them.
+    """Reject newlines, tabs, and other ASCII control chars in
+    identifiers that get logged before HF validates them.
 
     Authenticated callers could otherwise inject ``\\n`` / ``\\r`` /
-    NUL into ``logger.info("Loading diffusion model %s", repo_id)``
-    and forge fake log lines. HF repo ids and filenames legitimately
-    contain only ``[A-Za-z0-9._/-]``, so this is also a useful
-    correctness check (catches accidental ``"my repo\\n"`` paste).
+    ``\\t`` / NUL into ``logger.info("Loading diffusion model %s",
+    repo_id)`` and forge fake log lines. HF repo ids and filenames
+    legitimately contain only ``[A-Za-z0-9._/-]``, so this is also a
+    useful correctness check (catches accidental ``"my repo\\n"``
+    paste). Tab is included in the reject set because some logging
+    sinks split fields on tab; allowing it would still let an
+    attacker forge fake columns.
     """
     if value is None:
         return value
     for ch in value:
-        if ch == "\x7f" or (ord(ch) < 0x20 and ch != "\t"):
+        if ch == "\x7f" or ord(ch) < 0x20:
             raise ValueError(
                 f"{field_name} contains control characters; use a plain "
                 "Hugging Face repo / file name."

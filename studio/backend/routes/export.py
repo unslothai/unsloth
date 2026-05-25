@@ -78,9 +78,14 @@ async def load_checkpoint(
         # importable but its status check raises.
         try:
             from core.training import get_training_backend  # type: ignore
-
-            trn = get_training_backend()
+        except Exception as e:
+            logger.debug(
+                "core.training not importable, skipping export training guard: %s",
+                e,
+            )
+        else:
             try:
+                trn = get_training_backend()
                 active = trn.is_training_active()
             except Exception as e:
                 logger.warning(
@@ -101,10 +106,6 @@ async def load_checkpoint(
                         "run before loading an export checkpoint."
                     ),
                 )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.debug("training activity check skipped for export: %s", e)
 
         # Free GPU memory: shut down any running inference/training subprocesses
         # before loading the export checkpoint (they'd compete for VRAM).
@@ -154,7 +155,10 @@ async def load_checkpoint(
                     diff_status.get("is_loaded"),
                     diff_status.get("is_loading"),
                 )
-                diff.unload_model()
+                # Block-move to thread; unload acquires the
+                # diffusion _load_lock + _generate_lock and can take
+                # the full duration of an in-flight load/generation.
+                await asyncio.to_thread(diff.unload_model)
         except Exception as e:
             logger.debug("diffusion unload skipped for export: %s", e)
 

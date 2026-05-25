@@ -816,7 +816,11 @@ async def load_model(
                         diff_status.get("is_loaded"),
                         diff_status.get("is_loading"),
                     )
-                    diff_backend.unload_model()
+                    # diff_backend.unload_model takes _load_lock +
+                    # _generate_lock and can block for the duration of
+                    # an in-flight load / generation. Off-load to a
+                    # worker thread to keep the event loop responsive.
+                    await asyncio.to_thread(diff_backend.unload_model)
             except Exception as e:
                 logger.debug("diffusion unload skipped (GGUF path): %s", e)
 
@@ -1016,7 +1020,9 @@ async def load_model(
                     diff_status.get("is_loaded"),
                     diff_status.get("is_loading"),
                 )
-                diff_backend.unload_model()
+                # Same blocking concern as the GGUF chat path:
+                # _load_lock + _generate_lock serialise the call.
+                await asyncio.to_thread(diff_backend.unload_model)
         except Exception as e:
             logger.debug("diffusion unload skipped: %s", e)
 
@@ -1702,7 +1708,7 @@ def _get_diffusion_backend():
     return get_diffusion_backend()
 
 
-@router.post("/images/load")
+@studio_router.post("/images/load")
 async def diffusion_load(
     payload: DiffusionLoadRequest,
     current_subject: str = Depends(get_current_subject),
@@ -1738,16 +1744,22 @@ async def diffusion_load(
         raise HTTPException(status_code = 500, detail = str(exc))
 
 
-@router.post("/images/unload")
+@studio_router.post("/images/unload")
 async def diffusion_unload(
     current_subject: str = Depends(get_current_subject),
 ):
     """Unload the current diffusion model and free GPU memory."""
     backend = _get_diffusion_backend()
-    return backend.unload_model()
+    # DiffusionBackend.unload_model takes _load_lock + _generate_lock
+    # and waits for any in-flight load / generation to complete.
+    # Calling it directly from an async route would freeze the
+    # FastAPI worker (and the SSE log stream, hardware poller, etc.)
+    # for the full duration of the generation. Push it onto a worker
+    # thread so the event loop stays responsive.
+    return await asyncio.to_thread(backend.unload_model)
 
 
-@router.get("/images/status")
+@studio_router.get("/images/status")
 async def diffusion_status(
     current_subject: str = Depends(get_current_subject),
 ):
@@ -1756,7 +1768,7 @@ async def diffusion_status(
     return backend.status()
 
 
-@router.post("/images/generate", response_model = DiffusionGenerateResponse)
+@studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 async def diffusion_generate(
     payload: DiffusionGenerateRequest,
     current_subject: str = Depends(get_current_subject),
@@ -1813,7 +1825,11 @@ async def diffusion_generate(
         # browser side.
         seed_str = str(payload.seed) if payload.seed is not None else None,
         duration_ms = duration_ms,
-        model = status.get("repo_id"),
+        # Use ``active_repo_id`` (the pipeline that just ran the
+        # forward) rather than the UI-facing ``repo_id`` so a
+        # queued /images/load promoting a new pending model cannot
+        # leak that model's identity into our response.
+        model = status.get("active_repo_id") or status.get("repo_id"),
         family = status.get("family"),
     )
 

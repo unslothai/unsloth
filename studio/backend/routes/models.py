@@ -2007,8 +2007,11 @@ async def delete_finetuned_model(
                     candidate_path = Path(candidate).expanduser()
                 except Exception:
                     continue
-                if not candidate_path.is_absolute():
-                    continue
+                # Relative paths (the user can do
+                # `/images/load repo_id=exports/my-flux`) are still
+                # legitimate path candidates; resolve against the
+                # backend cwd so they can be compared with the
+                # absolute ``target_path``. Round 8 review #11.
                 try:
                     candidate_resolved = candidate_path.resolve()
                 except Exception:
@@ -2670,6 +2673,9 @@ async def delete_cached_model(
     # Check if model is currently loaded OR loading. is_active and
     # not is_loaded means an llama-server download / startup is in
     # flight; the cache delete would race the hf_hub_download / mmap.
+    # Fail CLOSED on exception (503) like the diffusion guard below:
+    # unverifiable load state means we cannot confirm the delete is
+    # safe.
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -2685,8 +2691,14 @@ async def delete_cached_model(
             )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Could not check llama.cpp backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify llama.cpp load status before deleting cache",
+        ) from e
 
     try:
         inference_backend = get_inference_backend()
@@ -2711,8 +2723,14 @@ async def delete_cached_model(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Could not check safetensors backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify safetensors load status before deleting cache",
+        ) from e
 
     # Also refuse to delete the cache underlying a loaded OR loading
     # diffusion pipeline. The diffusion backend mmap's the GGUF + base

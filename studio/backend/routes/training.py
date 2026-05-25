@@ -327,7 +327,10 @@ async def start_training(
                     diff_status.get("is_loaded"),
                     diff_status.get("is_loading"),
                 )
-                diff_backend.unload_model()
+                # Async route: offload the blocking unload to a
+                # worker thread so the event loop stays responsive
+                # during long in-flight load / generate calls.
+                await asyncio.to_thread(diff_backend.unload_model)
         except Exception as e:
             logger.warning("Could not unload diffusion model: %s", e)
 

@@ -116,7 +116,11 @@ def app_with_stub(monkeypatch):
     monkeypatch.setattr(inf, "_get_diffusion_backend", lambda: stub)
 
     app = FastAPI()
+    # Diffusion image routes live on studio_router so they are NOT
+    # exposed under /v1 (which would let OpenAI-compat clients
+    # trigger Studio-only side effects).
     app.include_router(inf.router, prefix = "/api/inference")
+    app.include_router(inf.studio_router, prefix = "/api/inference")
     # Bypass auth by overriding the dependency.
     from auth.authentication import get_current_subject
 
