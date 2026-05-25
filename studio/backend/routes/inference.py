@@ -302,8 +302,13 @@ def _raise_if_export_active(workload: str) -> None:
     Failure-mode split:
       * ``core.export`` cannot be imported -> silently skip.
       * ``get_export_backend()`` raises -> 503 fail closed.
-      * ``is_export_active()`` raises -> 503 fail closed (round 10
-        review #7).
+      * Backend does not expose ``is_export_active`` -> silently
+        skip. Older ExportBackend builds and several test mocks
+        only expose ``current_checkpoint``; there is no async-job
+        tracker for them, and forcing a 503 here would break those
+        flows without adding any safety they did not previously have.
+      * ``is_export_active()`` itself raises -> 503 fail closed
+        (round 10 review #7).
     """
     try:
         from core.export import get_export_backend  # type: ignore
@@ -324,8 +329,11 @@ def _raise_if_export_active(workload: str) -> None:
                 f"{workload} model. Try again."
             ),
         ) from exc
+    is_export_active_fn = getattr(exp, "is_export_active", None)
+    if is_export_active_fn is None:
+        return
     try:
-        active = bool(exp.is_export_active())
+        active = bool(is_export_active_fn())
     except Exception as exc:
         logger.warning(
             "Could not verify export status before %s load: %s",
@@ -440,14 +448,23 @@ async def _release_export_for(workload: str) -> None:
 
         exp = get_export_backend()
         has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
-        try:
-            active = bool(exp.is_export_active())
-        except Exception:
-            # Treat unverifiable export state as 'might be active' and
-            # refuse to drop. The caller's _raise_if_export_active call
-            # already failed closed; reaching here with an unknown
-            # status is the safer no-op.
-            active = True
+        # Backends without an async-job tracker (older builds, some
+        # test mocks) cannot report 'active' separately from
+        # 'has_checkpoint'. Treat absence as 'not active' so a
+        # settled checkpoint still gets dropped; on builds that DO
+        # expose it, a True value blocks the drop.
+        is_export_active_fn = getattr(exp, "is_export_active", None)
+        if is_export_active_fn is None:
+            active = False
+        else:
+            try:
+                active = bool(is_export_active_fn())
+            except Exception:
+                # Treat unverifiable as 'might be active' and refuse
+                # to drop. The caller's _raise_if_export_active call
+                # already failed closed; reaching here with an
+                # unknown status is the safer no-op.
+                active = True
         if has_checkpoint and not active:
             logger.info(
                 "Shutting down idle export (checkpoint=%s) for %s",
