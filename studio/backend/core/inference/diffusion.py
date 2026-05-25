@@ -1088,9 +1088,7 @@ class DiffusionBackend:
                 # contribute to public_load_pending().
                 backend_pending_published = _raise_if_helper_advisor_busy_for_diffusion(
                     publish_pending = True,
-                    ignore_pending_workload = (
-                        ignore_public_load_pending_workload
-                    ),
+                    ignore_pending_workload = (ignore_public_load_pending_workload),
                 )
                 _release_other_gpu_owners_for_diffusion()
                 _release_chat_backend_for_diffusion(check_helper_advisor = False)
@@ -1612,9 +1610,7 @@ def _raise_if_helper_advisor_busy_for_diffusion(
         # route's own publish (which happened just before
         # backend.load_model) does not cause the backend's atomic
         # check to self-block.
-        if publish_pending and public_load_pending(
-            excluding = ignore_pending_workload
-        ):
+        if publish_pending and public_load_pending(excluding = ignore_pending_workload):
             raise RuntimeError(
                 "Another GPU workload is mid-handoff. Wait for it to "
                 "finish before loading a diffusion image model."
