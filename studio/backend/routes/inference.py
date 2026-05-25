@@ -2273,15 +2273,24 @@ def _get_diffusion_backend():
 
 
 def _looks_like_local_diffusion_path(value: Optional[str]) -> bool:
-    """Round 30 P1 #4: decide whether ``repo_id`` / ``base_repo``
-    names a local filesystem path that requires a signed
-    ``native_path_lease`` grant. Hub ids (``owner/repo`` form, no
-    leading separator or tilde) skip the lease check; anything that
-    starts with ``/``, ``~``, ``./``, ``../``, contains a backslash,
-    or resolves to an absolute path is treated as a local-path
-    access attempt. We DO NOT consult ``Path.exists`` so the route
-    does not side-channel filesystem layout information back to the
-    caller via the lease error vs. the load error."""
+    """Round 30 P1 #4 / round 31 P1 #2: decide whether ``repo_id`` /
+    ``base_repo`` names a local filesystem path that requires a
+    signed ``native_path_lease`` grant.
+
+    Hub ids on huggingface.co are strictly ``owner/repo`` -- exactly
+    two non-empty segments with no path-traversal parts, no weight
+    file suffix, and no leading separator. Anything else (absolute
+    paths, ``~`` / ``./`` / ``../`` prefixes, backslashes, single
+    segments, three-or-more-segment paths like ``exports/my-flux``,
+    or weight-file-shaped strings) is treated as a local-path
+    attempt so it cannot bypass the lease boundary by looking like
+    an ``owner/repo`` relative directory.
+
+    Round 31 closes the bypass where ``DiffusionBackend.load_model``
+    accepted cwd-relative directories such as ``exports/my-flux``
+    that this function previously returned False for. We DO NOT
+    consult ``Path.exists`` so the route does not side-channel
+    filesystem layout via differential errors."""
     if not value:
         return False
     if value.startswith(("/", "~", "./", "../")):
@@ -2289,12 +2298,41 @@ def _looks_like_local_diffusion_path(value: Optional[str]) -> bool:
     if "\\" in value:
         return True
     try:
-        if Path(value).expanduser().is_absolute():
-            return True
+        candidate = Path(value).expanduser()
     except (OSError, ValueError):
         # Treat unparseable identifiers as local-path attempts so a
         # broken input does not silently fall through to the Hub
         # loader (defence-in-depth, not a tested code path).
+        return True
+    if candidate.is_absolute():
+        return True
+    # Weight-file shaped strings ("owner/model.gguf") are not Hub
+    # ids; route them through the lease path so a caller cannot
+    # smuggle a relative file path past the repo_id field.
+    if value.endswith((".gguf", ".safetensors", ".bin", ".pt", ".pth")):
+        return True
+    # A canonical Hub id decomposes into exactly two non-empty,
+    # non-traversal segments. Anything else is invalid as a Hub id
+    # or path-shaped enough that DiffusionBackend.load_model would
+    # treat it as a local directory.
+    parts = value.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return True
+    if parts[0] in (".", "..") or parts[1] in (".", ".."):
+        return True
+    # Last resort: a 2-segment value like ``exports/my-flux`` passes
+    # all the syntactic checks above but
+    # ``DiffusionBackend.load_model`` would still open it as a local
+    # directory via ``Path(repo_id).expanduser().is_dir()``. Trigger
+    # the lease path for any 2-segment value that actually resolves
+    # to an existing local directory / file under backend CWD. This
+    # is a minor probe side-channel (existence of cwd-relative paths
+    # to an already-authenticated caller), accepted in exchange for
+    # closing the silent-bypass of the new lease boundary.
+    try:
+        if candidate.exists():
+            return True
+    except (OSError, ValueError):
         return True
     return False
 
@@ -2336,108 +2374,133 @@ async def diffusion_load(
     desired ``gguf_filename``. Returns the new status payload (same
     shape as ``/images/status``).
     """
-    # Refuse before the long download starts: silently stopping a
-    # running training run to free VRAM was the previous behavior and
-    # left the user with no model loaded plus a dead training job.
-    # Same logic for export: an export subprocess that is mid-flight
-    # cannot be safely terminated without corrupting the output, so
-    # the request is refused with 409 instead of silently killing it.
-    _raise_if_training_active("diffusion")
-    _raise_if_export_active("diffusion")
-    # Round 28 P1 #4: AI Assist helper/advisor owns a private llama
-    # backend invisible to _release_chat_backend_for_diffusion's
-    # global checks. Refuse early so we do not first tear down an
-    # idle export checkpoint just to fail on the helper check inside
-    # load_model.
-    # Round 30 P1 #10: also publishes the public-load pending entry so
-    # a concurrent helper start cannot win the start lock between our
-    # snapshot and DiffusionBackend.load_model flipping is_loaded.
-    _raise_if_helper_advisor_busy("diffusion")
-    # Round 30 P1 #4: enforce the signed native_path_lease boundary the
-    # chat load path uses so local-path repo_id / base_repo cannot be
-    # probed without a frontend-issued grant. Hub ids pass through.
-    resolved_repo_id = (
-        _resolve_diffusion_repo_for_request(
-            payload.repo_id,
-            payload.native_path_lease,
+    # Round 31 P1 #1 / #6: track whether THIS request actually
+    # published a public-load pending entry so the outer finally
+    # only clears its own publish, never another request's. The
+    # publish has to happen before lease resolution / backend setup,
+    # both of which can raise HTTPException, so the cleanup scope
+    # must wrap the publish too (mirrors training / export pattern).
+    diffusion_load_window_published = False
+    try:
+        # Refuse before the long download starts: silently stopping a
+        # running training run to free VRAM was the previous behavior
+        # and left the user with no model loaded plus a dead training
+        # job. Same logic for export: an export subprocess that is
+        # mid-flight cannot be safely terminated without corrupting
+        # the output, so the request is refused with 409 instead of
+        # silently killing it.
+        _raise_if_training_active("diffusion")
+        _raise_if_export_active("diffusion")
+        # Round 28 P1 #4: AI Assist helper/advisor owns a private
+        # llama backend invisible to
+        # _release_chat_backend_for_diffusion's global checks. Refuse
+        # early so we do not first tear down an idle export
+        # checkpoint just to fail on the helper check inside
+        # load_model.
+        # Round 30 P1 #10: also publishes the public-load pending
+        # entry so a concurrent helper start cannot win the start
+        # lock between our snapshot and DiffusionBackend.load_model
+        # flipping is_loaded. Mark the publish flag immediately so
+        # any failure between here and the final return clears it.
+        _raise_if_helper_advisor_busy("diffusion")
+        diffusion_load_window_published = True
+        # Round 30 P1 #4: enforce the signed native_path_lease
+        # boundary the chat load path uses so local-path repo_id /
+        # base_repo cannot be probed without a frontend-issued grant.
+        # Hub ids pass through.
+        resolved_repo_id = (
+            _resolve_diffusion_repo_for_request(
+                payload.repo_id,
+                payload.native_path_lease,
+                operation = "load-diffusion-model",
+            )
+            or payload.repo_id
+        )
+        resolved_base_repo = _resolve_diffusion_repo_for_request(
+            payload.base_repo,
+            payload.base_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
-        or payload.repo_id
-    )
-    resolved_base_repo = _resolve_diffusion_repo_for_request(
-        payload.base_repo,
-        payload.base_repo_native_path_lease,
-        operation = "load-diffusion-model",
-    )
-    # Round 18 P1 #3 + P1 #7: the route used to drop chat and idle
-    # export BEFORE ``backend.load_model`` ran its cheap validation
-    # (family inference, GGUF filename checks, gated-token failures,
-    # missing diffusers). A malformed image request would therefore
-    # unload the user's chat model and then return a 400 with nothing
-    # loaded; if export cleanup raised, chat had already been dropped.
-    # ``DiffusionBackend.load_model`` itself calls
-    # ``_release_other_gpu_owners_for_diffusion`` (strict idle-export
-    # shutdown after round 18 P1 #2) and
-    # ``_release_chat_backend_for_diffusion`` (strict GGUF + safetensors
-    # unload after round 17 P1 #2 + round 18 P1 #4), so the GPU is
-    # still freed before any allocation, just AFTER validation.
-    backend = _get_diffusion_backend()
-    try:
-        status = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: backend.load_model(
-                repo_id = resolved_repo_id,
-                gguf_filename = payload.gguf_filename,
-                base_repo = resolved_base_repo,
-                family_override = payload.family,
-                hf_token = payload.hf_token,
-                enable_model_cpu_offload = payload.enable_model_cpu_offload,
-            ),
-        )
-        return JSONResponse(content = status)
-    except RuntimeError as exc:
-        # Round 15 P2 #7 / round 16 P2 #7: backend-level conflict
-        # checks raise RuntimeError that surfaces here. Distinguish:
-        # - "Could not verify ..." -> 503 (retryable, status check
-        #   itself failed), matching the route-level pre-check.
-        # - explicit "currently active" -> 409 conflict.
-        # - anything else -> 400 (bad request).
-        detail = str(exc)
-        if (
-            "Could not verify training status" in detail
-            or "Could not verify export status" in detail
-            or "Could not unload" in detail
-            or "refused to unload" in detail
-            or "still active after unload" in detail
-            # Round 19 P2 #7: round 18 introduced new RuntimeError
-            # phrasings (``still active or loading after unload``)
-            # that the original marker list did not cover, so a
-            # retryable chat-unload failure was returning HTTP 400
-            # to the user instead of 503. Match both wordings.
-            or "still active or loading after unload" in detail
-            or "still loading after unload" in detail
-            # Round 28 P2 #15: AI Assist running (raised by
-            # _release_chat_backend_for_diffusion) is retryable.
-            or "AI Assist" in detail
-        ):
-            # Round 17 P1 #2: chat unload failures raised by the
-            # backend helper map to 503 (retryable infra issue),
-            # matching the route-level _release_*_for helpers.
-            raise HTTPException(status_code = 503, detail = detail) from exc
-        if (
-            "export job is currently active" in detail
-            or "Training is currently active" in detail
-        ):
-            raise HTTPException(status_code = 409, detail = detail) from exc
-        raise HTTPException(status_code = 400, detail = detail) from exc
-    except Exception as exc:
-        logger.exception("Diffusion load failed")
-        raise HTTPException(status_code = 500, detail = str(exc))
+        # Round 18 P1 #3 + P1 #7: the route used to drop chat and
+        # idle export BEFORE ``backend.load_model`` ran its cheap
+        # validation (family inference, GGUF filename checks,
+        # gated-token failures, missing diffusers). A malformed image
+        # request would therefore unload the user's chat model and
+        # then return a 400 with nothing loaded; if export cleanup
+        # raised, chat had already been dropped.
+        # ``DiffusionBackend.load_model`` itself calls
+        # ``_release_other_gpu_owners_for_diffusion`` (strict
+        # idle-export shutdown after round 18 P1 #2) and
+        # ``_release_chat_backend_for_diffusion`` (strict GGUF +
+        # safetensors unload after round 17 P1 #2 + round 18 P1 #4),
+        # so the GPU is still freed before any allocation, just
+        # AFTER validation.
+        backend = _get_diffusion_backend()
+        try:
+            status = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: backend.load_model(
+                    repo_id = resolved_repo_id,
+                    gguf_filename = payload.gguf_filename,
+                    base_repo = resolved_base_repo,
+                    family_override = payload.family,
+                    hf_token = payload.hf_token,
+                    enable_model_cpu_offload = payload.enable_model_cpu_offload,
+                ),
+            )
+            return JSONResponse(content = status)
+        except RuntimeError as exc:
+            # Round 15 P2 #7 / round 16 P2 #7: backend-level conflict
+            # checks raise RuntimeError that surfaces here.
+            # Distinguish:
+            # - "Could not verify ..." -> 503 (retryable, status
+            #   check itself failed), matching the route-level
+            #   pre-check.
+            # - explicit "currently active" -> 409 conflict.
+            # - anything else -> 400 (bad request).
+            detail = str(exc)
+            if (
+                "Could not verify training status" in detail
+                or "Could not verify export status" in detail
+                or "Could not unload" in detail
+                or "refused to unload" in detail
+                or "still active after unload" in detail
+                # Round 19 P2 #7: round 18 introduced new
+                # RuntimeError phrasings (``still active or loading
+                # after unload``) that the original marker list did
+                # not cover, so a retryable chat-unload failure was
+                # returning HTTP 400 to the user instead of 503.
+                # Match both wordings.
+                or "still active or loading after unload" in detail
+                or "still loading after unload" in detail
+                # Round 28 P2 #15: AI Assist running (raised by
+                # _release_chat_backend_for_diffusion) is retryable.
+                or "AI Assist" in detail
+            ):
+                # Round 17 P1 #2: chat unload failures raised by the
+                # backend helper map to 503 (retryable infra issue),
+                # matching the route-level _release_*_for helpers.
+                raise HTTPException(status_code = 503, detail = detail) from exc
+            if (
+                "export job is currently active" in detail
+                or "Training is currently active" in detail
+            ):
+                raise HTTPException(status_code = 409, detail = detail) from exc
+            raise HTTPException(status_code = 400, detail = detail) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Diffusion load failed")
+            raise HTTPException(status_code = 500, detail = str(exc))
     finally:
-        # Round 30 P1 #10: clear the public-load pending publish so a
-        # subsequent helper / advisor start can proceed once the
-        # diffusion load attempt has finished (success or failure).
-        _clear_public_load_window("diffusion")
+        # Round 31 P1 #1 / #6: only clear when this request actually
+        # published. Skipped when _raise_if_training_active /
+        # _raise_if_export_active / _raise_if_helper_advisor_busy
+        # raised, so the counter stays in sync with publishes and a
+        # second request's failure cannot decrement a first request's
+        # still-active marker.
+        if diffusion_load_window_published:
+            _clear_public_load_window("diffusion")
 
 
 @studio_router.post("/images/unload")
