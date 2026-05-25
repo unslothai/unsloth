@@ -2462,21 +2462,39 @@ extra_eos_tokens = None,
             )
     except:
         output_pos = chat_template.find("{OUTPUT}")
-        if output_pos == -1:
+        input_pos  = chat_template.find("{INPUT}")
+        if output_pos == -1 or input_pos == -1:
+            missing = []
+            if input_pos  == -1: missing.append("{INPUT}")
+            if output_pos == -1: missing.append("{OUTPUT}")
             raise RuntimeError(
-                "Unsloth: chat_template must contain a '{OUTPUT}' placeholder."
+                f"Unsloth: chat_template must contain {' and '.join(missing)} "
+                f"placeholder(s). Got: {chat_template[:200]!r}"
             )
         ending = chat_template[output_pos + len("{OUTPUT}"):]
 
         ending = re.escape(ending)
         find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
         response_part = re.findall(find_text, chat_template, flags = re.DOTALL | re.MULTILINE)
+        if len(response_part) == 0:
+            raise RuntimeError(
+                "Unsloth: Could not recover a two-example structure from chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         response_part = response_part[0]
 
+        found = None
         for j in range(1, len(response_part)):
             try_find = re.escape(response_part[:j])
             try: found = next(re.finditer("(" + try_find + ").+?\\{INPUT\\}", chat_template, flags = re.DOTALL | re.MULTILINE))
             except: break
+        if found is None:
+            raise RuntimeError(
+                "Unsloth: Could not locate a separator between examples in chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         separator = found.group(1)
 
         response_start = chat_template.find(response_part)
@@ -2616,11 +2634,13 @@ extra_eos_tokens = None,
     output_idx = output_part.find("{OUTPUT}")
     if input_idx == -1:
         raise RuntimeError(
-            "Unsloth: input_part must contain '{INPUT}' placeholder."
+            f"Unsloth: The instruction section of the template must contain the "
+            f"'{{INPUT}}' placeholder. Section: {input_part[:200]!r}"
         )
     if output_idx == -1:
         raise RuntimeError(
-            "Unsloth: output_part must contain '{OUTPUT}' placeholder."
+            f"Unsloth: The response section of the template must contain the "
+            f"'{{OUTPUT}}' placeholder. Section: {output_part[:200]!r}"
         )
     input_part  = input_part [:input_idx ]
     output_part = output_part[:output_idx]
