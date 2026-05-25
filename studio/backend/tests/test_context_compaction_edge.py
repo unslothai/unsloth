@@ -579,7 +579,11 @@ def test_paired_window_resumes_after_new_assistant_with_tool_call():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "A", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                {
+                    "id": "A",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
             ],
         },
         {"role": "user", "content": "wait, do this instead"},
@@ -587,7 +591,11 @@ def test_paired_window_resumes_after_new_assistant_with_tool_call():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "B", "type": "function", "function": {"name": "g", "arguments": "{}"}}
+                {
+                    "id": "B",
+                    "type": "function",
+                    "function": {"name": "g", "arguments": "{}"},
+                }
             ],
         },
         {
