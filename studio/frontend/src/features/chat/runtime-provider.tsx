@@ -66,6 +66,7 @@ import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
+const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -752,6 +753,22 @@ function trackHistoryAppend(
   return write;
 }
 
+function trackRunStartReady(
+  messageId: string,
+  ready: Promise<void>,
+): Promise<void> {
+  pendingRunStartReadyByMessageId.set(messageId, ready);
+  const cleanup = () => {
+    setTimeout(() => {
+      if (pendingRunStartReadyByMessageId.get(messageId) === ready) {
+        pendingRunStartReadyByMessageId.delete(messageId);
+      }
+    }, 30_000);
+  };
+  ready.then(cleanup, cleanup);
+  return ready;
+}
+
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
 ): Promise<void> {
@@ -759,20 +776,22 @@ async function waitForRunStartHistoryAppend(
   if (!lastMessage || lastMessage.role !== "user") {
     return;
   }
-  const write = pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!write) {
+  const ready =
+    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
+    pendingHistoryAppendByMessageId.get(lastMessage.id);
+  if (!ready) {
     return;
   }
-  let didPersist = false;
+  let didBecomeReady = false;
   try {
-    await write;
-    didPersist = true;
+    await ready;
+    didBecomeReady = true;
   } finally {
     if (
-      didPersist &&
-      pendingHistoryAppendByMessageId.get(lastMessage.id) === write
+      didBecomeReady &&
+      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
     ) {
-      pendingHistoryAppendByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(lastMessage.id);
     }
   }
 }
@@ -795,7 +814,10 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   };
 }
 
-function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
+function useStudioRuntimeAdapters(
+  modelType: ModelType,
+  pairId?: string,
+): StudioRuntimeAdapters {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -876,14 +898,22 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
+        const initializeThread = aui.threadListItem().initialize();
+        trackRunStartReady(message.id, initializeThread.then(() => undefined));
         const write = (async () => {
-          const { remoteId } = await aui.threadListItem().initialize();
+          const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;
           }
           // Keep single-chat runtime state in sync once a new chat is first
           // persisted. Compare panes intentionally do not write global activeThreadId.
+          if (modelType === "base" && !pairId) {
+            const store = useChatRuntimeStore.getState();
+            if (store.activeThreadId !== remoteId) {
+              store.setActiveThreadId(remoteId);
+            }
+          }
           const thread = await getStoredChatThread(remoteId);
           if (thread) {
             await ensureStoredChatThread(remoteId, thread);
@@ -920,7 +950,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui],
+    [aui, modelType, pairId],
   );
 
   const dictation = useMemo(
@@ -952,13 +982,22 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
 
 const chatAdapter = createOpenAIStreamAdapter();
 
-function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  const adapters = useStudioRuntimeAdapters();
+function useRuntimeHook(
+  modelType: ModelType,
+  pairId?: string,
+): ReturnType<typeof useLocalRuntime> {
+  const adapters = useStudioRuntimeAdapters(modelType, pairId);
   const persistedChatAdapter = useMemo(
     () => createPersistedRunAdapter(chatAdapter),
     [],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
+}
+
+function createRuntimeHook(modelType: ModelType, pairId?: string) {
+  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+    return useRuntimeHook(modelType, pairId);
+  };
 }
 
 function ThreadAutoSwitch({
@@ -1153,8 +1192,12 @@ export function ChatRuntimeProvider({
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
 }): ReactElement {
+  const runtimeHook = useMemo(
+    () => createRuntimeHook(modelType, pairId),
+    [modelType, pairId],
+  );
   const runtime = useRemoteThreadListRuntime({
-    runtimeHook: useRuntimeHook,
+    runtimeHook,
     adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
 

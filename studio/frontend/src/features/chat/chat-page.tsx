@@ -632,7 +632,12 @@ function ProjectLanding({
 }): ReactElement {
   const navigate = useNavigate();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
+  const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
+    null,
+  );
+  const [pendingRunStarted, setPendingRunStarted] = useState(false);
   const [newThreadNonce, setNewThreadNonce] = useState(() =>
     crypto.randomUUID(),
   );
@@ -645,6 +650,8 @@ function ProjectLanding({
       useChatRuntimeStore.getState().activeThreadId;
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
+    setPendingNewThreadId(null);
+    setPendingRunStarted(false);
     setNewThreadNonce(crypto.randomUUID());
   }, [projectId]);
 
@@ -655,12 +662,25 @@ function ProjectLanding({
     ) {
       return;
     }
-    navigate({
-      to: "/chat",
-      search: { thread: activeThreadId, project: projectId },
-      replace: true,
-    });
-  }, [activeThreadId, navigate, projectId]);
+    setPendingNewThreadId(activeThreadId);
+    setPendingRunStarted(false);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (!pendingNewThreadId) {
+      return;
+    }
+
+    const isRunning =
+      Boolean(runningByThreadId[pendingNewThreadId]) ||
+      Object.keys(runningByThreadId).length > 0;
+    if (isRunning) {
+      setPendingRunStarted(true);
+    }
+  }, [
+    pendingNewThreadId,
+    runningByThreadId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -709,80 +729,89 @@ function ProjectLanding({
       newThreadNonce={newThreadNonce}
       listThreads={false}
     >
-      <div
-        className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
-        style={
-          {
-            ["--thread-max-width" as string]: "48rem",
-          } as CSSProperties
-        }
-      >
-        <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
-          <div className="mb-12 flex items-center gap-3">
-            <HugeiconsIcon
-              icon={Folder02Icon}
-              strokeWidth={1.75}
-              className="size-9 shrink-0 text-foreground"
+      {pendingNewThreadId && pendingRunStarted ? (
+        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
+        </div>
+      ) : (
+        <div
+          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          style={
+            {
+              ["--thread-max-width" as string]: "48rem",
+            } as CSSProperties
+          }
+        >
+          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-3">
+              <HugeiconsIcon
+                icon={Folder02Icon}
+                strokeWidth={1.75}
+                className="size-9 shrink-0 text-foreground"
+              />
+              <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+                {projectName}
+              </h1>
+            </div>
+
+            <ProjectComposer
+              disabled={Boolean(pendingNewThreadId)}
+              placeholder={`New chat in ${projectName}`}
             />
-            <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
-              {projectName}
-            </h1>
-          </div>
 
-          <ProjectComposer placeholder={`New chat in ${projectName}`} />
+            <div className="mt-9 flex items-center gap-2">
+              <button
+                type="button"
+                className="h-10 rounded-full border border-border bg-muted px-5 text-[14px] font-semibold text-foreground"
+              >
+                Chats
+              </button>
+              <button
+                type="button"
+                className="h-10 rounded-full px-5 text-[14px] font-semibold text-muted-foreground"
+              >
+                Sources
+              </button>
+            </div>
 
-          <div className="mt-9 flex items-center gap-2">
-            <button
-              type="button"
-              className="h-10 rounded-full border border-border bg-muted px-5 text-[14px] font-semibold text-foreground"
-            >
-              Chats
-            </button>
-            <button
-              type="button"
-              className="h-10 rounded-full px-5 text-[14px] font-semibold text-muted-foreground"
-            >
-              Sources
-            </button>
-          </div>
-
-          <div className="mt-8 flex flex-col gap-1">
-            {items.map((item) => {
-              const preview = previews[item.id];
-              return (
-                <button
-                  key={`${item.type}:${item.id}`}
-                  type="button"
-                  onClick={() => {
-                    navigate({
-                      to: "/chat",
-                      search:
-                        item.type === "single"
-                          ? { thread: item.id, project: projectId }
-                          : { compare: item.id, project: projectId },
-                    });
-                  }}
-                  className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                      {item.title}
-                    </div>
-                    {preview?.snippet ? (
-                      <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                        {preview.snippet}
+            <div className="mt-8 flex flex-col gap-1">
+              {items.map((item) => {
+                const preview = previews[item.id];
+                return (
+                  <button
+                    key={`${item.type}:${item.id}`}
+                    type="button"
+                    onClick={() => {
+                      navigate({
+                        to: "/chat",
+                        search:
+                          item.type === "single"
+                            ? { thread: item.id, project: projectId }
+                            : { compare: item.id, project: projectId },
+                      });
+                    }}
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                        {item.title}
                       </div>
-                    ) : null}
-                  </div>
-                  <span className="shrink-0 text-[14px] text-muted-foreground">
-                    {preview?.date ?? formatProjectChatDate(item.createdAt)}
-                  </span>
-                </button>
-              );
-            })}
+                      {preview?.snippet ? (
+                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                          {preview.snippet}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-[14px] text-muted-foreground">
+                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </ChatRuntimeProvider>
   );
 }
@@ -821,7 +850,9 @@ export function ChatPage(): ReactElement {
         });
         navigate({
           to: "/chat",
-          search: { new: crypto.randomUUID() },
+          search: search.project
+            ? { project: search.project }
+            : { new: crypto.randomUUID() },
           replace: true,
         });
       })

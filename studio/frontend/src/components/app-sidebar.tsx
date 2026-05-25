@@ -267,9 +267,11 @@ export function AppSidebar() {
   const chatDisabled = isTrainingRunning;
 
   function chatSearchForProject(projectId: string | null) {
+    if (projectId) {
+      return { project: projectId };
+    }
     return {
       new: createNavigationNonce(),
-      ...(projectId ? { project: projectId } : {}),
     };
   }
 
@@ -293,10 +295,9 @@ export function AppSidebar() {
     await deleteChatItem(item, activeThreadId, (view) => {
       navigate({
         to: "/chat",
-        search: {
-          new: view.newThreadNonce,
-          ...(item.projectId ? { project: item.projectId } : {}),
-        },
+        search: item.projectId
+          ? { project: item.projectId }
+          : { new: view.newThreadNonce },
       });
     });
   }
