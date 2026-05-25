@@ -10,7 +10,11 @@ snac
 peft==0.18.1
 
 # TRL and related packages
-trl==0.23.1
+# macOS arm64: trl 0.23.1 transitively requires huggingface-hub<1, which
+# conflicts with the mlx-vlm chain's huggingface-hub>=1.5.0. Skip the pin
+# here on darwin arm64 so the resolver can pick a trl version compatible
+# with the realigned transformers / huggingface-hub stack.
+trl==0.23.1 ; sys_platform != "darwin" or platform_machine != "arm64"
 git+https://github.com/meta-pytorch/OpenEnv.git
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
