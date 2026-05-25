@@ -106,9 +106,7 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
         _sys.path.insert(0, str(backend))
     from core.inference.llama_server_args import _DENYLIST_GROUPS
 
-    parallel_group = next(
-        (g for g in _DENYLIST_GROUPS if "--parallel" in g), None
-    )
+    parallel_group = next((g for g in _DENYLIST_GROUPS if "--parallel" in g), None)
     assert parallel_group is not None, "denylist must include a --parallel group"
 
     sig = inspect.signature(studio_mod.run)

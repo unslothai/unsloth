@@ -213,8 +213,8 @@ def _find_setup_script() -> Optional[Path]:
 # here without updating run.py + the denylist test will desync silently.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_RUN = 4       # pre-PR hardcoded value for `unsloth studio run`
-_PARALLEL_DEFAULT_PLAIN = 1     # pre-PR effective default for plain `unsloth studio`
+_PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded value for `unsloth studio run`
+_PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective default for plain `unsloth studio`
 
 
 # ── helpers for `unsloth studio run` ────────────────────────────────

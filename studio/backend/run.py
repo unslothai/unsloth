@@ -749,9 +749,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
-        parser.error(
-            f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}"
-        )
+        parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
 
     kwargs = dict(
         host = args.host,
