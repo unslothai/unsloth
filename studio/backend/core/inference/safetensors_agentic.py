@@ -66,7 +66,11 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return f"Calling: {tool_name}"
 
 
-_CANONICAL_HEAL_ARG = {"python": "code", "terminal": "command"}
+_CANONICAL_HEAL_ARG = {
+    "python": "code",
+    "terminal": "command",
+    "render_html": "code",
+}
 
 
 def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
