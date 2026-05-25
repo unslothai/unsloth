@@ -1315,7 +1315,7 @@ def _release_self_exe_lock_windows() -> None:
         os.replace(exe, stale)
     except OSError as e:
         # Not fatal; setup.ps1 retries from a sibling process.
-        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+        typer.echo(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
 
 
 def _restore_self_exe_lock_windows() -> None:
@@ -1341,7 +1341,7 @@ def _restore_self_exe_lock_windows() -> None:
     try:
         os.replace(stale, exe)
     except OSError as e:
-        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+        typer.echo(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
 
 
 def _cleanup_self_exe_lock_windows() -> None:
