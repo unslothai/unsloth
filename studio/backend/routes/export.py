@@ -64,6 +64,48 @@ async def load_checkpoint(
         # Version switching is handled automatically by the subprocess-based
         # export backend — no need for ensure_transformers_version() here.
 
+        # Symmetric lifecycle guard: refuse to load an export
+        # checkpoint while training is active so we do not silently
+        # terminate someone's long-running training job and possibly
+        # fail the export load on top of that. Mirrors the
+        # _raise_if_training_active checks in routes/inference.py for
+        # chat and /images/load.
+        # Run BEFORE the chat / inference / diffusion unload helpers
+        # below: otherwise a 409 from this guard would still leave
+        # the user's chat / inference / diffusion GPU owners freed
+        # for nothing, which is the asymmetry round 7 review #5
+        # flagged. Fail-CLOSED (503) when the training backend is
+        # importable but its status check raises.
+        try:
+            from core.training import get_training_backend  # type: ignore
+
+            trn = get_training_backend()
+            try:
+                active = trn.is_training_active()
+            except Exception as e:
+                logger.warning(
+                    "Could not verify training status before export load: %s", e
+                )
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "Could not verify training status before loading "
+                        "an export checkpoint. Try again."
+                    ),
+                ) from e
+            if active:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Training is currently active. Stop the training "
+                        "run before loading an export checkpoint."
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.debug("training activity check skipped for export: %s", e)
+
         # Free GPU memory: shut down any running inference/training subprocesses
         # before loading the export checkpoint (they'd compete for VRAM).
         try:
@@ -93,30 +135,6 @@ async def load_checkpoint(
                 llama.unload_model()
         except Exception as e:
             logger.debug("llama-server unload skipped for export: %s", e)
-
-        # Symmetric lifecycle guard: refuse to load an export
-        # checkpoint while training is active so we do not silently
-        # terminate someone's long-running training job and possibly
-        # fail the export load on top of that. Mirrors the
-        # _raise_if_training_active checks in routes/inference.py for
-        # chat and /images/load. Fail-closed (503) when the training
-        # backend can be imported but its status check raises.
-        try:
-            from core.training import get_training_backend  # type: ignore
-
-            trn = get_training_backend()
-            if trn.is_training_active():
-                raise HTTPException(
-                    status_code = 409,
-                    detail = (
-                        "Training is currently active. Stop the training "
-                        "run before loading an export checkpoint."
-                    ),
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.debug("training activity check skipped for export: %s", e)
 
         # Also unload any active diffusion pipeline (Images page); it
         # competes for the same GPU and would survive the inference

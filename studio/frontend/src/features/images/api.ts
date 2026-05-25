@@ -60,7 +60,14 @@ export interface DiffusionGenerateResponse {
   height: number;
   num_inference_steps: number;
   guidance_scale: number;
+  /**
+   * Numeric seed. Safe ONLY for values <= Number.MAX_SAFE_INTEGER.
+   * For larger seeds, prefer ``seed_str`` (full-precision decimal).
+   */
   seed: number | null;
+  /** Decimal string with full uint64 precision. Use this for display
+   *  and reproduction when the user pastes the seed back in. */
+  seed_str: string | null;
   duration_ms: number;
   model: string | null;
   family: string | null;
@@ -95,14 +102,27 @@ export async function unloadDiffusionModel(): Promise<{ is_loaded: boolean }> {
   );
 }
 
-/** JSON.stringify cannot serialise BigInt directly. We only ever
- * have BigInts in the seed field, which is an integer; emit the
- * literal digits so the server receives a JSON integer rather than
- * a string. Pydantic v2 accepts arbitrarily large ints. */
-function stringifyWithBigInt(value: unknown): string {
-  return JSON.stringify(value, (_, v) =>
-    typeof v === "bigint" ? `__bigint__:${v.toString()}` : v,
-  ).replace(/"__bigint__:(-?\d+)"/g, "$1");
+/** JSON.stringify cannot serialise BigInt directly. Pull the seed
+ * BigInt out, stringify the rest of the payload normally, then
+ * splice the seed's decimal digits back into the JSON literal at the
+ * exact ``"seed":<int>`` slot.
+ *
+ * Avoids the previous regex-over-JSON approach, which could be
+ * tripped by a user-supplied prompt that exactly matched the
+ * sentinel string. With this approach the only thing we touch is
+ * the literal ``"seed":<number>`` substring we wrote ourselves.
+ */
+function stringifyWithBigInt(value: DiffusionGenerateRequest): string {
+  const { seed, ...rest } = value;
+  if (typeof seed !== "bigint") {
+    return JSON.stringify(value);
+  }
+  // Serialise the rest without seed, then inject the seed at the end
+  // of the object literal as a JSON integer. Strip the trailing "}"
+  // and re-append once the field is added.
+  const base = JSON.stringify(rest);
+  const inner = base.length === 2 /* '{}' */ ? "" : base.slice(1, -1) + ",";
+  return `{${inner}"seed":${seed.toString()}}`;
 }
 
 export async function generateDiffusionImage(

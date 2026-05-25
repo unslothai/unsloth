@@ -320,24 +320,36 @@ class DiffusionBackend:
         # POSIX layouts) to any authenticated Studio session.
         with self._lock:
             gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
-            # During an in-flight load, expose _pending_* so cache /
-            # finetuned delete guards can refuse to wipe the repo
-            # that is mid-download. After the load completes (success
-            # or failure), the pending fields are cleared so status()
-            # reverts to publishing only the resident pipeline's id.
-            effective_repo = self._repo_id or self._pending_repo_id
-            effective_base = self._base_repo or self._pending_base_repo
-            effective_gguf = gguf_basename or self._pending_gguf_filename
+            # Expose BOTH the resident pipeline's id AND the pending
+            # load target. Delete guards must check both: when model A
+            # is already loaded and a swap to model B is in flight,
+            # only checking one would let the user rmtree whichever
+            # repo the guard ignored. UI-facing ``repo_id`` /
+            # ``base_repo`` / ``gguf_filename`` still prefer pending
+            # during a swap so the panel shows the load target the
+            # user just clicked.
+            active_repo = self._repo_id
+            active_base = self._base_repo
+            pending_repo = self._pending_repo_id if self._loading else None
+            pending_base = self._pending_base_repo if self._loading else None
+            pending_gguf = self._pending_gguf_filename if self._loading else None
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
-                "repo_id": effective_repo,
+                "repo_id": pending_repo or active_repo,
                 "family": self._family.name if self._family else None,
                 "pipeline_class": (
                     self._family.pipeline_class if self._family else None
                 ),
-                "base_repo": effective_base,
-                "gguf_filename": effective_gguf,
+                "base_repo": pending_base or active_base,
+                "gguf_filename": pending_gguf or gguf_basename,
+                # Guard-facing fields: every repo / path the backend
+                # owns RIGHT NOW. Delete routes iterate both.
+                "active_repo_id": active_repo,
+                "active_base_repo": active_base,
+                "pending_repo_id": pending_repo,
+                "pending_base_repo": pending_base,
+                "pending_gguf_filename": pending_gguf,
                 "device": self._device,
                 "dtype": self._dtype,
                 "loaded_at": self._loaded_at,
@@ -703,19 +715,18 @@ class DiffusionBackend:
 
         import torch
 
-        with self._lock:
-            if self._pipe is None:
-                raise RuntimeError("No diffusion model is loaded.")
-            pipe = self._pipe
-            device = self._device or "cpu"
-
-        # _generate_lock outside _lock: only one forward at a time, but
-        # status() / unload() callers do not block on a running forward
-        # pass. unload_model takes _load_lock + _lock; the pipe object
-        # itself is kept alive by the local ``pipe`` reference until
-        # this function returns, so a concurrent unload during forward
-        # cannot free the weights from under us.
+        # Take _generate_lock FIRST so a concurrent unload/load that
+        # observes us holding it will queue behind this generation
+        # (and `unload_model` then waits its turn before clearing
+        # state). Snapshotting `self._pipe` outside the lock and then
+        # taking the lock let a load/unload race in between, so the
+        # forward could run against a freed or swapped pipeline.
         with self._generate_lock:
+            with self._lock:
+                if self._pipe is None:
+                    raise RuntimeError("No diffusion model is loaded.")
+                pipe = self._pipe
+                device = self._device or "cpu"
             generator = None
             if seed is not None:
                 # Match the device of the pipeline so determinism holds

@@ -1973,9 +1973,15 @@ async def delete_finetuned_model(
     # the merged repo locally, then loaded it via /images/load with a
     # local path as repo_id). Without this guard /delete-finetuned
     # could rmtree the directory the diffusion backend is reading from.
-    # is_loading is also blocked: status() exposes _pending_repo_id /
-    # _pending_base_repo during the load window so deletes during a
-    # mid-flight from_pretrained are refused.
+    # is_loading is also blocked: status() exposes pending_repo_id /
+    # pending_base_repo during the load window so deletes during a
+    # mid-flight from_pretrained are refused. During a swap we still
+    # see the previous load's active_repo_id, so every owned path is
+    # checked rather than just the UI-facing one.
+    # Block both DIRECTIONS:
+    #   * loaded path is the same as target (or a parent), and
+    #   * loaded path is a child of target (so the user cannot rmtree
+    #     a parent directory that contains the pipeline's mmap'd file).
     # Fail-CLOSED on exception (503) like the llama.cpp / safetensors
     # guards above: an unverifiable diffusion state means we cannot
     # confirm the target is safe to rmtree.
@@ -1985,12 +1991,18 @@ async def delete_finetuned_model(
         diff_backend = get_diffusion_backend()
         diff_status = diff_backend.status()
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-            diff_repo = diff_status.get("repo_id") or ""
-            diff_base = diff_status.get("base_repo") or ""
+            candidates: list[str] = []
+            for key in (
+                "active_repo_id",
+                "active_base_repo",
+                "pending_repo_id",
+                "pending_base_repo",
+            ):
+                v = diff_status.get(key) or ""
+                if v:
+                    candidates.append(v)
             target_str = str(target_path)
-            for candidate in (diff_repo, diff_base):
-                if not candidate:
-                    continue
+            for candidate in candidates:
                 try:
                     candidate_path = Path(candidate).expanduser()
                 except Exception:
@@ -2005,6 +2017,7 @@ async def delete_finetuned_model(
                     candidate_resolved == target_path
                     or str(candidate_resolved) == target_str
                     or _is_path_under(candidate_resolved, target_path)
+                    or _is_path_under(target_path, candidate_resolved)
                 ):
                     raise HTTPException(
                         status_code = 400,
@@ -2654,18 +2667,26 @@ async def delete_cached_model(
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
-    # Check if model is currently loaded
+    # Check if model is currently loaded OR loading. is_active and
+    # not is_loaded means an llama-server download / startup is in
+    # flight; the cache delete would race the hf_hub_download / mmap.
     try:
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_id = llama_backend.model_identifier.lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
-                )
+        loaded_id = (llama_backend.model_identifier or "").lower()
+        wants = (
+            loaded_id == repo_id.lower()
+            or loaded_id.startswith(repo_id.lower())
+        )
+        if wants and (
+            llama_backend.is_loaded
+            or getattr(llama_backend, "is_active", False)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unload the model before deleting",
+            )
     except HTTPException:
         raise
     except Exception:
@@ -2673,9 +2694,21 @@ async def delete_cached_model(
 
     try:
         inference_backend = get_inference_backend()
+        loading_models = getattr(inference_backend, "loading_models", set()) or set()
+        needle = repo_id.lower()
+        # Loading set holds model identifiers currently being
+        # downloaded / instantiated; treat them like active loads
+        # so a delete cannot race a partial mmap.
+        for loading_model in loading_models:
+            ml = (loading_model or "").lower()
+            if ml == needle or ml.startswith(needle):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
         if inference_backend.active_model_name:
             active = inference_backend.active_model_name.lower()
-            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+            if active == needle or active.startswith(needle):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -2685,7 +2718,7 @@ async def delete_cached_model(
     except Exception:
         pass
 
-    # Also refuse to delete the cache underlying a loaded or *loading*
+    # Also refuse to delete the cache underlying a loaded OR loading
     # diffusion pipeline. The diffusion backend mmap's the GGUF + base
     # repo weights and continues to read from the cache long after
     # load; deleting them out from under it would corrupt generation.
@@ -2694,6 +2727,9 @@ async def delete_cached_model(
     # Match exactly on repo_id (case-insensitive) instead of prefix to
     # avoid blocking unrelated deletes like "org/model" while
     # "org/model-v2" is loaded.
+    # During a swap (model A loaded, model B loading), status()
+    # exposes both via ``active_*`` and ``pending_*`` so we check
+    # every repo the backend currently owns.
     # Fail-CLOSED on exception (return 503) like the neighboring
     # llama.cpp / safetensors guards: we cannot verify whether the
     # delete is safe, so refuse rather than risk corrupting the
@@ -2704,10 +2740,15 @@ async def delete_cached_model(
         diff_backend = get_diffusion_backend()
         diff_status = diff_backend.status()
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-            diff_repo = (diff_status.get("repo_id") or "").lower()
-            diff_base = (diff_status.get("base_repo") or "").lower()
             needle = repo_id.lower()
-            if diff_repo == needle or diff_base == needle:
+            owned = {
+                (diff_status.get("active_repo_id") or "").lower(),
+                (diff_status.get("active_base_repo") or "").lower(),
+                (diff_status.get("pending_repo_id") or "").lower(),
+                (diff_status.get("pending_base_repo") or "").lower(),
+            }
+            owned.discard("")
+            if needle in owned:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the diffusion image model before deleting",

@@ -1526,7 +1526,15 @@ class DiffusionGenerateResponse(BaseModel):
     height: int
     num_inference_steps: int
     guidance_scale: float
+    # ``seed`` ships as a JSON number for backwards compatibility with
+    # the gallery and existing API consumers, but JavaScript rounds
+    # integers above Number.MAX_SAFE_INTEGER on JSON.parse so seeds
+    # bigger than 2**53 would render different from the value the
+    # backend actually used. ``seed_str`` is the exact decimal
+    # representation; the frontend reads it for reproducibility and
+    # falls back to ``seed`` when not supplied.
     seed: Optional[int] = None
+    seed_str: Optional[str] = None
     duration_ms: int
     model: Optional[str] = None
     family: Optional[str] = None

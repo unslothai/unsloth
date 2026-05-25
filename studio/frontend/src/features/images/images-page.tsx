@@ -110,6 +110,7 @@ export function ImagesPage() {
   const [presetIndex, setPresetIndex] = useState(0);
   const [customRepoId, setCustomRepoId] = useState("");
   const [customGguf, setCustomGguf] = useState("");
+  const [customBaseRepo, setCustomBaseRepo] = useState("");
   const [customFamily, setCustomFamily] = useState<string>("auto");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
@@ -162,10 +163,14 @@ export function ImagesPage() {
           : customFamily
         : preset.family;
       // Always pass base_repo for curated entries; custom-repo mode
-      // lets the backend either infer it from the family default or
-      // (when no GGUF is given) treat the repo as a full diffusers
-      // checkpoint and call from_pretrained on it directly.
-      const baseRepo = useCustom ? undefined : preset.base_repo;
+      // now also lets the user pin one because private / mirrored
+      // GGUFs (e.g. a 9B klein transformer) would otherwise fall
+      // back to the family-default 4B base and 500 on load. Empty
+      // string still falls back to the backend's smart-base /
+      // repo-id defaults.
+      const baseRepo = useCustom
+        ? customBaseRepo.trim() || undefined
+        : preset.base_repo;
       if (!repo) {
         toast.error("Pick a model first");
         return;
@@ -191,7 +196,7 @@ export function ImagesPage() {
     } finally {
       setBusy("idle");
     }
-  }, [useCustom, customRepoId, customGguf, customFamily, preset, hfToken, refreshStatus]);
+  }, [useCustom, customRepoId, customGguf, customBaseRepo, customFamily, preset, hfToken, refreshStatus]);
 
   const handleUnload = useCallback(async () => {
     setBusy("unloading");
@@ -350,6 +355,17 @@ export function ImagesPage() {
                 onChange={(e) => setCustomGguf(e.target.value)}
                 placeholder="FLUX.2-klein-4B-Q4_K_S.gguf"
               />
+              <Label>Base diffusers repo (optional)</Label>
+              <Input
+                value={customBaseRepo}
+                onChange={(e) => setCustomBaseRepo(e.target.value)}
+                placeholder="black-forest-labs/FLUX.2-klein-9B"
+              />
+              <p className="text-xs text-muted-foreground">
+                {"Optional. Defaults to the family base. Set this when "}
+                {"your GGUF expects a non-default base (for example a 9B "}
+                {"transformer that would otherwise fall back to a 4B base)."}
+              </p>
               <Label>Pipeline family (override)</Label>
               <Select
                 value={customFamily}
@@ -539,7 +555,15 @@ export function ImagesPage() {
                 />
                 <figcaption className="text-xs text-muted-foreground">
                   {r.width}x{r.height} - {r.num_inference_steps} steps - g={r.guidance_scale.toFixed(1)}
-                  {r.seed !== null && r.seed !== undefined ? ` - seed ${r.seed}` : ""} -
+                  {/* Prefer seed_str (full uint64 precision) since the
+                       numeric seed gets rounded by JSON.parse above
+                       Number.MAX_SAFE_INTEGER and would otherwise
+                       display a value that does not reproduce. */}
+                  {r.seed_str
+                    ? ` - seed ${r.seed_str}`
+                    : r.seed !== null && r.seed !== undefined
+                    ? ` - seed ${r.seed}`
+                    : ""} -
                   {` ${(r.duration_ms / 1000).toFixed(1)}s`}
                 </figcaption>
               </figure>

@@ -248,8 +248,15 @@ def _raise_if_training_active(workload: str) -> None:
     Without this guard the load path would either (a) silently stop a
     running training run via _release_other_gpu_owners_for_diffusion
     or (b) double-spend VRAM and OOM both jobs. Both are worse for the
-    user than a 409 explaining why the request was refused. Best-effort
-    import so unit-test backends without core.training do not 500.
+    user than a 409 explaining why the request was refused.
+
+    Failure modes are split:
+      * ``core.training`` cannot be imported (CI, isolated tests,
+        custom builds) -> silently return; nothing to protect.
+      * ``core.training`` is importable but ``get_training_backend()``
+        or ``is_training_active()`` raises -> 503 fail-closed. We
+        cannot verify the GPU is free, so taking the safer route
+        avoids OOMing an unverifiable training run.
     """
     try:
         from core.training import get_training_backend  # type: ignore
@@ -257,18 +264,28 @@ def _raise_if_training_active(workload: str) -> None:
         return
     try:
         trn = get_training_backend()
-        if trn.is_training_active():
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Training is currently active. Stop the training run "
-                    f"before loading a {workload} model."
-                ),
-            )
-    except HTTPException:
-        raise
+        active = trn.is_training_active()
     except Exception as exc:
-        logger.debug("training activity check skipped: %s", exc)
+        logger.warning(
+            "Could not verify training status before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify training status before loading the "
+                f"{workload} model. Try again."
+            ),
+        ) from exc
+    if active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"Training is currently active. Stop the training run "
+                f"before loading a {workload} model."
+            ),
+        )
 
 
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
@@ -1789,6 +1806,12 @@ async def diffusion_generate(
         num_inference_steps = payload.num_inference_steps,
         guidance_scale = payload.guidance_scale,
         seed = payload.seed,
+        # str() of a Python int has full precision; JavaScript can
+        # display it via BigInt without rounding. The numeric ``seed``
+        # field above is kept for backwards compatibility with older
+        # clients but is unsafe to use for seeds above 2**53 on the
+        # browser side.
+        seed_str = str(payload.seed) if payload.seed is not None else None,
         duration_ms = duration_ms,
         model = status.get("repo_id"),
         family = status.get("family"),
