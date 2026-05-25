@@ -367,6 +367,7 @@ left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
 align_completion_tool_mask = RL_REPLACEMENTS.get("align_completion_tool_mask")
 if align_completion_tool_mask is None:
+
     def align_completion_tool_mask(
         tool_mask: torch.Tensor,
         completion_mask: torch.Tensor,
@@ -374,18 +375,22 @@ if align_completion_tool_mask is None:
         if tool_mask is None:
             return completion_mask
         if tool_mask.shape[0] != completion_mask.shape[0]:
-            raise ValueError("tool_mask batch size must match completion_mask batch size.")
+            raise ValueError(
+                "tool_mask batch size must match completion_mask batch size."
+            )
 
-        tool_mask = tool_mask.to(device=completion_mask.device)
+        tool_mask = tool_mask.to(device = completion_mask.device)
         if tool_mask.shape == completion_mask.shape:
             aligned_tool_mask = tool_mask
         else:
             aligned_tool_mask = align_logprobs_with_mask(
                 tool_mask,
                 completion_mask,
-                pad_value=0,
+                pad_value = 0,
             )
-        return completion_mask * aligned_tool_mask.to(dtype=completion_mask.dtype)
+        return completion_mask * aligned_tool_mask.to(dtype = completion_mask.dtype)
+
+
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 sanitize_logprob = RL_REPLACEMENTS["sanitize_logprob"]
 

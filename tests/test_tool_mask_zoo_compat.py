@@ -98,12 +98,19 @@ def test_local_tool_mask_alignment_validates_batch_size():
 def test_grpo_accumulated_loss_omits_none_tool_mask_for_old_zoo():
     src = _read(RL_REPLACEMENTS_SOURCE_PATH)
     assert "_grpo_accumulated_loss_kwargs = {}" in src
-    assert 'if tool_mask is not None:\n                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask' in src
+    assert (
+        'if tool_mask is not None:\n                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask'
+        in src
+    )
     assert src.count("**_grpo_accumulated_loss_kwargs") == 2
 
-    accelerated_loss_start = src.find("if hasattr(self.args, \"loss_type\"):")
+    accelerated_loss_start = src.find('if hasattr(self.args, "loss_type"):')
     assert accelerated_loss_start != -1
-    accelerated_loss_body = src[accelerated_loss_start : src.find('if "train" in self._metrics:', accelerated_loss_start)]
+    accelerated_loss_body = src[
+        accelerated_loss_start : src.find(
+            'if "train" in self._metrics:', accelerated_loss_start
+        )
+    ]
     assert "tool_mask = tool_mask" not in accelerated_loss_body
 
 
