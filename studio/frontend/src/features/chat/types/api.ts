@@ -267,7 +267,14 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
-  enable_prompt_caching?: boolean | null;
+  /**
+   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For
+   * Gemini the backend also accepts the cached-content resource name
+   * (`cachedContents/...`) as a string, which is forwarded as
+   * `generationConfig.cachedContent` on the native streamGenerateContent
+   * request.
+   */
+  enable_prompt_caching?: boolean | string | null;
   /**
    * OpenAI shell-tool container id captured from the prior response in
    * this chat thread. When set and the Code pill is on, the backend
@@ -291,7 +298,20 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string;
+  content?: string | null;
+  /**
+   * Streamed assistant tool calls. The Gemini and OpenAI Responses
+   * translators emit incremental `tool_calls` deltas (function name +
+   * arguments fragments) so the chat-adapter can render tool cards as
+   * they arrive.
+   */
+  tool_calls?: OpenAIToolCallPart[];
+  /**
+   * Provider-specific passthrough. Gemini ships `thoughtSignature`,
+   * citations, `native_part`, etc., here so the round-trip can replay
+   * them on follow-up turns without bleeding into other providers.
+   */
+  extra_content?: Record<string, unknown>;
 }
 
 export interface OpenAIChatChunkChoice {

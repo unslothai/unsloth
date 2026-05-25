@@ -1989,8 +1989,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     // outbound translator can replay both the
                     // executableCode (tool_start) and the
                     // codeExecutionResult / inlineData (tool_end) on
-                    // the same assistant turn. Without this, follow-up
-                    // Gemini turns lose the prior execution result.
+                    // the same assistant turn. Concatenate the `parts`
+                    // list so each entry keeps its own per-part
+                    // `thoughtSignature` (Gemini 3 strict validators
+                    // reject a signature placed on the wrong part).
                     const endGoogle = (
                       toolEvent as { google?: { native_part?: unknown } }
                     ).google;
@@ -2013,12 +2015,61 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           string,
                           unknown
                         >) ?? {};
+                      const endNative = endGoogle.native_part as Record<
+                        string,
+                        unknown
+                      >;
+                      // Extract part entries from either the new
+                      // `parts: [...]` shape or a legacy single-object
+                      // native_part. Legacy entries had at most one of
+                      // executableCode/codeExecutionResult/inlineData
+                      // plus an optional `thoughtSignature` sibling,
+                      // and on Gemini 3 that signature was always
+                      // emitted on `executableCode`, so move it onto
+                      // that key only when we synthesise a part.
+                      const collectParts = (
+                        native: Record<string, unknown>,
+                      ): Record<string, unknown>[] => {
+                        if (Array.isArray(native.parts)) {
+                          return (native.parts as unknown[]).filter(
+                            (entry): entry is Record<string, unknown> =>
+                              Boolean(entry) &&
+                              typeof entry === "object" &&
+                              !Array.isArray(entry),
+                          );
+                        }
+                        const out: Record<string, unknown>[] = [];
+                        const legacySig =
+                          typeof native.thoughtSignature === "string"
+                            ? native.thoughtSignature
+                            : typeof native.thought_signature === "string"
+                              ? (native.thought_signature as string)
+                              : null;
+                        for (const key of [
+                          "executableCode",
+                          "codeExecutionResult",
+                          "inlineData",
+                        ] as const) {
+                          const sub = native[key];
+                          if (sub && typeof sub === "object") {
+                            const entry: Record<string, unknown> = {
+                              [key]: sub,
+                            };
+                            if (key === "executableCode" && legacySig) {
+                              entry.thoughtSignature = legacySig;
+                            }
+                            out.push(entry);
+                          }
+                        }
+                        return out;
+                      };
+                      const mergedParts = [
+                        ...collectParts(existingNative),
+                        ...collectParts(endNative),
+                      ];
                       argsObj.google = {
                         ...existingGoogle,
-                        native_part: {
-                          ...existingNative,
-                          ...(endGoogle.native_part as Record<string, unknown>),
-                        },
+                        native_part: { parts: mergedParts },
                       };
                     }
                     toolCallParts[idx] = {

@@ -1584,7 +1584,7 @@ def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
     inline them as base64 inlineData."""
     image_bytes = b"FAKEPNGBYTES"
 
-    async def fake_fetch(url, fallback_mime):
+    async def fake_fetch(url, fallback_mime, max_bytes = None):
         assert url == "https://cdn.example.com/diagram.png"
         return ("image/png", base64.b64encode(image_bytes).decode("ascii"))
 
@@ -1620,7 +1620,7 @@ def test_remote_image_url_dropped_when_fetch_returns_none(monkeypatch):
     image part is silently dropped instead of forwarding raw bytes
     or a fileData fallback."""
 
-    async def fake_fetch_reject(url, fallback_mime):
+    async def fake_fetch_reject(url, fallback_mime, max_bytes = None):
         return None
 
     monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch_reject)
@@ -1899,12 +1899,17 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
     assert code_start is not None, starts
     assert code_start["tool_call_id"] == "code_a", code_start
     native = code_start["arguments"]["google"]["native_part"]
-    assert native["executableCode"]["id"] == "code_a"
-    assert native["thoughtSignature"] == "SIG-CODE"
+    # Round 21: native_part now uses an ordered `parts` list so per-part
+    # `thoughtSignature` survives a frontend merge of executableCode +
+    # codeExecutionResult into one tool-call card.
+    start_parts = native["parts"]
+    assert start_parts[0]["executableCode"]["id"] == "code_a"
+    assert start_parts[0]["thoughtSignature"] == "SIG-CODE"
     assert code_end is not None, ends
     assert code_end["tool_call_id"] == "code_a", code_end
     native_end = code_end["google"]["native_part"]
-    assert native_end["codeExecutionResult"]["id"] == "result_a"
+    end_parts = native_end["parts"]
+    assert end_parts[0]["codeExecutionResult"]["id"] == "result_a"
 
 
 def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
@@ -1949,11 +1954,14 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
     # Multi-turn image edit must replay the original inlineData part with
     # its thoughtSignature; the outbound translator reads
-    # google.native_part.inlineData, so stow it on the tool_end too.
+    # google.native_part.parts[].inlineData, so stow it on the tool_end
+    # too. Round 21 changed native_part to an ordered parts list so a
+    # per-part signature stays attached to inlineData only.
     native = image_ends[0]["google"]["native_part"]
-    assert native["inlineData"]["mimeType"] == "image/png"
-    assert native["inlineData"]["data"] == base64.b64encode(b"PNG").decode()
-    assert native["thoughtSignature"] == "SIG-IMG"
+    image_parts = native["parts"]
+    assert image_parts[0]["inlineData"]["mimeType"] == "image/png"
+    assert image_parts[0]["inlineData"]["data"] == base64.b64encode(b"PNG").decode()
+    assert image_parts[0]["thoughtSignature"] == "SIG-IMG"
 
 
 def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
@@ -2024,8 +2032,9 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     )
     assert image_end is not None, code_ends
     native = image_end["google"]["native_part"]
-    assert native["inlineData"]["mimeType"] == "image/png"
-    assert native["inlineData"]["data"] == plot_data
+    plot_parts = native["parts"]
+    assert plot_parts[0]["inlineData"]["mimeType"] == "image/png"
+    assert plot_parts[0]["inlineData"]["data"] == plot_data
 
 
 def test_text_chunk_carries_thought_signature(monkeypatch):
@@ -2725,7 +2734,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
     captured_outbound: dict = {}
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime):
+    async def fake_fetch(url, fallback_mime, max_bytes = None):
         fetch_calls.append(url)
         return "image/png", base64.b64encode(b"DATA").decode("ascii")
 
@@ -3703,7 +3712,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
     failing/slow URLs runs 100 fetches each up to the 15s timeout."""
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime):
+    async def fake_fetch(url, fallback_mime, max_bytes = None):
         fetch_calls.append(url)
         return None
 
@@ -3878,7 +3887,7 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
     runs."""
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime):
+    async def fake_fetch(url, fallback_mime, max_bytes = None):
         fetch_calls.append(url)
         return None
 
@@ -4056,12 +4065,18 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
                 obj = json.loads(payload)
             except Exception:
                 continue
-            choices = obj.get("choices") or []
-            for ch in choices:
+            # Backend emits synthetic tool events as a top-level
+            # `_toolEvent` on the SSE payload (not nested inside
+            # `delta`). Read both shapes so a future format change
+            # cannot mask this regression.
+            evt = obj.get("_toolEvent")
+            if isinstance(evt, dict):
+                captured_events.append(evt)
+            for ch in obj.get("choices") or []:
                 delta = ch.get("delta") or {}
-                evt = delta.get("_toolEvent")
-                if isinstance(evt, dict):
-                    captured_events.append(evt)
+                nested = delta.get("_toolEvent") if isinstance(delta, dict) else None
+                if isinstance(nested, dict):
+                    captured_events.append(nested)
         await client.close()
 
     _drive(run())
@@ -4275,3 +4290,323 @@ def test_openai_responses_assistant_text_serialized_before_function_call(
         "function_call_output",
         "user",
     ], items
+
+
+def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
+    """Round 21: `tool_choice="none"` must also flip the implicit
+    image-generation hosted tool off on image-tier models. Otherwise
+    `responseModalities=["TEXT","IMAGE"]` still rides on the outbound
+    body and the provider can generate (and bill for) image output
+    despite the explicit OpenAI tool opt-out."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = ["image_generation"],
+        tool_choice = "none",
+    )
+    body = captured["body"]
+    assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
+
+
+def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
+    """Round 21: forced-function `tool_choice` (e.g.
+    `{"type":"function","function":{"name":"lookup"}}`) must suppress
+    hosted Google Search / code execution. Gemini's toolConfig only
+    constrains function declarations, not hosted tools, so leaving
+    `googleSearch`/`codeExecution` in `tools[]` lets them fire despite
+    the caller pinning a specific user function."""
+    captured = _capture_body(
+        monkeypatch,
+        enabled_tools = ["web_search", "code_execution"],
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ],
+        tool_choice = {
+            "type": "function",
+            "function": {"name": "lookup"},
+        },
+    )
+    body = captured["body"]
+    tool_kinds = [list(t.keys())[0] for t in (body.get("tools") or [])]
+    assert "googleSearch" not in tool_kinds, body
+    assert "codeExecution" not in tool_kinds, body
+    # User function declaration still survives.
+    assert "functionDeclarations" in tool_kinds, body
+
+
+def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
+    """Round 21: forced-function `tool_choice` must also flip the
+    implicit image-generation hosted tool off on image-tier models."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-2.5-flash-image",
+        enabled_tools = ["image_generation"],
+        tool_choice = {
+            "type": "function",
+            "function": {"name": "lookup"},
+        },
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    body = captured["body"]
+    assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
+
+
+def test_gemini_code_execution_native_part_list_replays_per_part_signatures(
+    monkeypatch,
+):
+    """Round 21: merged code-execution history must replay per-part
+    `thoughtSignature`s, not fan one top-level signature across every
+    native subpart. Gemini 3 strict validators reject a signature
+    placed on the wrong part."""
+    history = [
+        {"role": "user", "content": "plot 1+1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {
+                        "name": "code_execution",
+                        "arguments": "{}",
+                    },
+                    "extra_content": {
+                        "google": {
+                            "native_part": {
+                                "parts": [
+                                    {
+                                        "executableCode": {
+                                            "id": "code_a",
+                                            "language": "PYTHON",
+                                            "code": "print(1+1)",
+                                        },
+                                        "thoughtSignature": "SIG-EXEC",
+                                    },
+                                    {
+                                        "codeExecutionResult": {
+                                            "id": "res_a",
+                                            "outcome": "OUTCOME_OK",
+                                            "output": "2\n",
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "name": "code_execution",
+            "content": "2",
+        },
+        {"role": "user", "content": "next"},
+    ]
+    captured = _capture_body(monkeypatch, messages = history)
+    contents = captured["body"]["contents"]
+    # Locate the assistant turn replayed as native code-exec parts.
+    assistant_turn = next(c for c in contents if c["role"] == "model")
+    parts = assistant_turn["parts"]
+    exec_parts = [p for p in parts if "executableCode" in p]
+    result_parts = [p for p in parts if "codeExecutionResult" in p]
+    assert exec_parts and result_parts, parts
+    assert exec_parts[0].get("thoughtSignature") == "SIG-EXEC", exec_parts[0]
+    # codeExecutionResult had no signature -- must NOT inherit one.
+    assert "thoughtSignature" not in result_parts[0], result_parts[0]
+
+
+def test_gemini_code_execution_legacy_merged_signature_only_on_executable(
+    monkeypatch,
+):
+    """Round 21: backward compatibility for pre-round-21 persisted
+    history that stored merged `native_part` as a single object plus a
+    top-level `thoughtSignature`. The replay branch must attach that
+    signature only to `executableCode` (where Gemini 3 emits it), not
+    fan it across `codeExecutionResult` / `inlineData`."""
+    history = [
+        {"role": "user", "content": "plot 1+1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {
+                        "name": "code_execution",
+                        "arguments": "{}",
+                    },
+                    "extra_content": {
+                        "google": {
+                            "native_part": {
+                                "executableCode": {
+                                    "id": "code_b",
+                                    "language": "PYTHON",
+                                    "code": "print(1+1)",
+                                },
+                                "codeExecutionResult": {
+                                    "id": "res_b",
+                                    "outcome": "OUTCOME_OK",
+                                    "output": "2\n",
+                                },
+                                "thoughtSignature": "LEGACY-SIG",
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_b",
+            "name": "code_execution",
+            "content": "2",
+        },
+        {"role": "user", "content": "next"},
+    ]
+    captured = _capture_body(monkeypatch, messages = history)
+    contents = captured["body"]["contents"]
+    assistant_turn = next(c for c in contents if c["role"] == "model")
+    exec_parts = [p for p in assistant_turn["parts"] if "executableCode" in p]
+    result_parts = [
+        p for p in assistant_turn["parts"] if "codeExecutionResult" in p
+    ]
+    assert exec_parts[0].get("thoughtSignature") == "LEGACY-SIG", exec_parts[0]
+    assert "thoughtSignature" not in result_parts[0], result_parts[0]
+
+
+def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
+    """Round 21: OpenAI-shape role=tool messages may carry list content
+    like `[{"type":"text","text":"result"}]`. Forwarding those parts
+    verbatim into `functionResponse.response.result` yields a list of
+    content-part objects instead of the actual tool output text."""
+    history = [
+        {"role": "user", "content": "look up"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": json.dumps({"q": "x"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "lookup",
+            "content": [{"type": "text", "text": "answer-text"}],
+        },
+        {"role": "user", "content": "next"},
+    ]
+    captured = _capture_body(monkeypatch, messages = history)
+    contents = captured["body"]["contents"]
+    fn_response = None
+    for c in contents:
+        for p in c.get("parts") or []:
+            if isinstance(p, dict) and "functionResponse" in p:
+                fn_response = p["functionResponse"]
+                break
+        if fn_response:
+            break
+    assert fn_response is not None, contents
+    assert fn_response["response"] == {"result": "answer-text"}, fn_response
+
+
+def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
+    """Round 21: the aggregate per-request byte cap must be passed into
+    `_safe_fetch_image_for_gemini` so an oversize URL is refused via
+    Content-Length (short-circuit) rather than fully downloaded then
+    discarded after the fact."""
+    import socket
+
+    captured: dict = {"reads": 0, "content_length_seen": None}
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("8.8.8.8", 0),
+                )
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _StubResp:
+        status = 200
+        # Declared 5 MiB, but caller passes a 1 MiB remaining budget.
+        headers = {
+            "content-type": "image/png",
+            "content-length": str(5 * 1024 * 1024),
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n = None):
+            captured["reads"] += 1
+            return b"\x00" * (5 * 1024 * 1024)
+
+    class _StubOpener:
+        def open(self, req, timeout = None):
+            return _StubResp()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda *_args, **_kw: _StubOpener()
+    )
+
+    res = _drive(
+        ep_mod._safe_fetch_image_for_gemini(
+            "https://cdn.example.com/big.png",
+            "image/png",
+            max_bytes = 1 * 1024 * 1024,
+        )
+    )
+    assert res is None
+    # Refused via Content-Length pre-check, never read.
+    assert captured["reads"] == 0
+
+
+def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
+    """Round 21: the frontend `OpenAIChatDelta` interface must expose
+    `tool_calls` and `extra_content` so TypeScript callers can consume
+    the Gemini-native stream fields without `any` casts. This test is
+    a static-string assertion against the .ts source; mirrors how other
+    frontend wire-contract tests are pinned from the backend suite."""
+    import os
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    types_path = os.path.join(
+        here, "frontend", "src", "features", "chat", "types", "api.ts"
+    )
+    with open(types_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    assert "tool_calls?: OpenAIToolCallPart[]" in src, src[:200]
+    assert "extra_content?: Record<string, unknown>" in src, src[:200]
+    assert "boolean | string | null" in src, src[:200]

@@ -266,7 +266,9 @@ _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
 
 
 def _safe_fetch_image_for_gemini_sync(
-    url: str, fallback_mime: str
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
 ) -> Optional[tuple[str, str]]:
     """Synchronous IP-pinned HTTPS image fetch with SSRF guards.
 
@@ -274,10 +276,21 @@ def _safe_fetch_image_for_gemini_sync(
     DNS rebinding between validation and the actual connection cannot
     redirect us to a private/metadata address. Follows up to 4 hops,
     re-validating each redirect target. Returns (mime, base64) or None.
+
+    `max_bytes` is clamped to the per-image cap and additionally lets
+    the caller pass the remaining per-request budget so an over-budget
+    URL is rejected via Content-Length (or read short-circuit) instead
+    of being fully downloaded then discarded after the fact.
     """
     import urllib.error
     import urllib.request
     from urllib.parse import urljoin, urlunparse
+
+    # Clamp to the per-image hard cap. A non-positive max_bytes means the
+    # per-request aggregate budget is already spent; refuse upfront.
+    _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
+    if _byte_limit <= 0:
+        return None
 
     # Reuse the pinned-IP helpers in tools.py so both fetchers share the
     # same hardening (validate-once-then-pin, no httpx hostname re-resolve).
@@ -430,20 +443,22 @@ def _safe_fetch_image_for_gemini_sync(
             if (
                 _hdr_len
                 and _hdr_len.isdigit()
-                and int(_hdr_len) > _GEMINI_REMOTE_IMAGE_MAX_BYTES
+                and int(_hdr_len) > _byte_limit
             ):
                 logger.info(
-                    "Gemini image fetch: declared %s bytes exceeds cap host=%s",
+                    "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
                     _hdr_len,
+                    _byte_limit,
                     current_host,
                 )
                 return None
             # Read at most cap+1 bytes so we can detect oversize without
             # buffering unbounded data from a missing/lying Content-Length.
-            raw = resp.read(_GEMINI_REMOTE_IMAGE_MAX_BYTES + 1)
-            if len(raw) > _GEMINI_REMOTE_IMAGE_MAX_BYTES:
+            raw = resp.read(_byte_limit + 1)
+            if len(raw) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: streamed bytes exceed cap host=%s",
+                    "Gemini image fetch: streamed bytes exceed cap=%s host=%s",
+                    _byte_limit,
                     current_host,
                 )
                 return None
@@ -454,18 +469,22 @@ def _safe_fetch_image_for_gemini_sync(
 
 
 async def _safe_fetch_image_for_gemini(
-    url: str, fallback_mime: str
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
 ) -> Optional[tuple[str, str]]:
     """Async wrapper: runs the IP-pinned fetch on a worker thread so the
     event loop is not blocked by getaddrinfo / TLS handshake / blocking
     socket reads. SSRF guards (https only, validated + pinned IP,
     per-hop redirect re-check, size cap, image/* content-type) live in
-    `_safe_fetch_image_for_gemini_sync`.
+    `_safe_fetch_image_for_gemini_sync`. `max_bytes` lets the caller
+    pass the remaining per-request budget so over-budget URLs are
+    refused via Content-Length / short read instead of fully buffered.
     """
     import asyncio
 
     return await asyncio.to_thread(
-        _safe_fetch_image_for_gemini_sync, url, fallback_mime
+        _safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes
     )
 
 
@@ -3308,37 +3327,55 @@ class ExternalProviderClient:
                                     _GEMINI_REMOTE_IMAGE_MAX_COUNT,
                                 )
                             else:
-                                # Count attempts BEFORE awaiting the
-                                # fetch so 100 failing / slow URLs cannot
-                                # each consume the 15s fetch timeout.
-                                _remote_image_count += 1
-                                _fetched = await _safe_fetch_image_for_gemini(
-                                    url, _media_type
+                                # Refuse before awaiting the fetch when
+                                # the aggregate per-request byte budget
+                                # is already spent; pass the remaining
+                                # budget into the fetcher so an
+                                # over-budget URL is rejected via the
+                                # Content-Length pre-check rather than
+                                # fully downloaded then discarded.
+                                _remaining_bytes = (
+                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                    - _remote_image_total_bytes
                                 )
-                                if _fetched is not None:
-                                    _final_mime, _b64 = _fetched
-                                    # base64 expands bytes ~4/3; cap on
-                                    # decoded length by counting the
-                                    # base64 chars (within ~25% of
-                                    # exact decoded size).
-                                    _approx_bytes = (len(_b64) * 3) // 4
-                                    if (
-                                        _remote_image_total_bytes + _approx_bytes
-                                        > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                    ):
-                                        logger.info(
-                                            "Gemini image fetch: per-request byte cap reached, dropping image",
-                                        )
-                                    else:
-                                        _remote_image_total_bytes += _approx_bytes
-                                        parts.append(
-                                            {
-                                                "inlineData": {
-                                                    "mimeType": _final_mime,
-                                                    "data": _b64,
+                                if _remaining_bytes <= 0:
+                                    logger.info(
+                                        "Gemini image fetch: per-request byte cap already reached, dropping image",
+                                    )
+                                else:
+                                    # Count attempts BEFORE awaiting the
+                                    # fetch so 100 failing / slow URLs
+                                    # cannot each consume the 15s timeout.
+                                    _remote_image_count += 1
+                                    _fetched = await _safe_fetch_image_for_gemini(
+                                        url,
+                                        _media_type,
+                                        max_bytes = _remaining_bytes,
+                                    )
+                                    if _fetched is not None:
+                                        _final_mime, _b64 = _fetched
+                                        # base64 expands bytes ~4/3; cap
+                                        # on decoded length by counting
+                                        # the base64 chars (within ~25%
+                                        # of exact decoded size).
+                                        _approx_bytes = (len(_b64) * 3) // 4
+                                        if (
+                                            _remote_image_total_bytes + _approx_bytes
+                                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                        ):
+                                            logger.info(
+                                                "Gemini image fetch: per-request byte cap reached, dropping image",
+                                            )
+                                        else:
+                                            _remote_image_total_bytes += _approx_bytes
+                                            parts.append(
+                                                {
+                                                    "inlineData": {
+                                                        "mimeType": _final_mime,
+                                                        "data": _b64,
+                                                    }
                                                 }
-                                            }
-                                        )
+                                            )
             # Gemini 3 strict function-calling requires text-part
             # thoughtSignatures to be replayed on history; the frontend
             # stows the latest one as
@@ -3412,6 +3449,42 @@ class ExternalProviderClient:
                     if fn_name in ("code_execution", "image_generation") and isinstance(
                         _native_part, dict
                     ):
+                        # New shape: `native_part.parts` is an ordered list
+                        # of full part wrappers, each carrying its own
+                        # `thoughtSignature`. This preserves Gemini 3's
+                        # strict per-part replay requirement when the
+                        # frontend has merged executableCode +
+                        # codeExecutionResult + inlineData into the same
+                        # tool-call card.
+                        _native_parts_list = _native_part.get("parts")
+                        if isinstance(_native_parts_list, list):
+                            for _entry in _native_parts_list:
+                                if isinstance(_entry, dict):
+                                    parts.append(_entry)
+                            continue
+                        # Legacy shape (persisted before round 21): a
+                        # single merged native_part object whose top-level
+                        # `thoughtSignature` is shared by every nested
+                        # subpart. Safely fan it out only when the legacy
+                        # object holds ONE replayable subpart (e.g. a
+                        # standalone image_generation tool_end). When the
+                        # legacy object merged multiple subparts (code +
+                        # result), prefer `executableCode` since that is
+                        # where Gemini 3 emits the signature for code-exec
+                        # turns; otherwise drop the signature rather than
+                        # fan it onto unrelated parts.
+                        _legacy_sig = _native_part.get(
+                            "thoughtSignature"
+                        ) or _native_part.get("thought_signature")
+                        _legacy_subparts = [
+                            _k
+                            for _k in (
+                                "executableCode",
+                                "codeExecutionResult",
+                                "inlineData",
+                            )
+                            if isinstance(_native_part.get(_k), dict)
+                        ]
                         for _native_key in (
                             "executableCode",
                             "codeExecutionResult",
@@ -3421,11 +3494,15 @@ class ExternalProviderClient:
                             if not isinstance(_sub, dict):
                                 continue
                             _replay_part: dict[str, Any] = {_native_key: _sub}
-                            _sig = _native_part.get(
-                                "thoughtSignature"
-                            ) or _native_part.get("thought_signature")
-                            if isinstance(_sig, str) and _sig:
-                                _replay_part["thoughtSignature"] = _sig
+                            if isinstance(_legacy_sig, str) and _legacy_sig:
+                                if len(_legacy_subparts) == 1:
+                                    _replay_part["thoughtSignature"] = (
+                                        _legacy_sig
+                                    )
+                                elif _native_key == "executableCode":
+                                    _replay_part["thoughtSignature"] = (
+                                        _legacy_sig
+                                    )
                             parts.append(_replay_part)
                         continue
 
@@ -3466,7 +3543,28 @@ class ExternalProviderClient:
                     if isinstance(tc_id, str) and tc_id in tool_call_names:
                         tool_name = tool_call_names[tc_id]
                 response_payload: Any
-                if isinstance(content, str):
+                if isinstance(content, list):
+                    # OpenAI tool messages may carry list-form content
+                    # (`[{"type":"text","text":"..."}]`). Forwarding the
+                    # content-part objects verbatim into Gemini's
+                    # `functionResponse.response.result` yields
+                    # `result:[{"type":"text","text":"..."}]` instead of
+                    # the actual tool output text; flatten text parts so
+                    # the result mirrors the string-content path.
+                    _flat_parts: list[str] = []
+                    for _cpart in content:
+                        if (
+                            isinstance(_cpart, dict)
+                            and _cpart.get("type") == "text"
+                            and isinstance(_cpart.get("text"), str)
+                        ):
+                            _flat_parts.append(_cpart["text"])
+                    _flat_text = "".join(_flat_parts)
+                    try:
+                        response_payload = _json.loads(_flat_text)
+                    except Exception:
+                        response_payload = {"result": _flat_text}
+                elif isinstance(content, str):
                     try:
                         response_payload = _json.loads(content)
                     except Exception:
@@ -3544,6 +3642,23 @@ class ExternalProviderClient:
         # https://ai.google.dev/gemini-api/docs/image-generation
         model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
+        # tool_choice="none" / forced-function tool_choice must also
+        # suppress the implicit image-generation hosted tool. Otherwise
+        # an explicit OpenAI-style opt-out (or an explicit user-function
+        # pin) still flips `responseModalities=["TEXT","IMAGE"]` on
+        # image-tier models and bills for image output.
+        _tool_choice_disabled = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _hosted_builtins_allowed = (
+            not _tool_choice_disabled and not _tool_choice_forced_function
+        )
         # Image-tier model IDs reject text-only tools (code_execution,
         # user functions) and thinkingConfig regardless of whether the
         # Images pill is on -- those are model-level constraints
@@ -3554,7 +3669,9 @@ class ExternalProviderClient:
         # forwards `tools: [{codeExecution: {}}]` plus
         # `thinkingConfig` to an image model and 400s.
         image_tool_requested = bool(
-            enabled_tools and "image_generation" in enabled_tools
+            _hosted_builtins_allowed
+            and enabled_tools
+            and "image_generation" in enabled_tools
         )
         # Strict tool / thinking strip uses the model-id check.
         is_image_model_strict = is_image_picker_model
@@ -3700,23 +3817,23 @@ class ExternalProviderClient:
         )
         code_execution_allowed = not is_image_model_strict
         text_tools_allowed = not is_image_model_strict
-        # tool_choice="none" must disable hosted builtins as well as
-        # user function declarations; otherwise an API client that
-        # opted out of tool use still triggers grounded search / code
-        # execution with their privacy + billing implications.
-        _tool_choice_disabled = (
-            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
-        )
+        # tool_choice="none" / forced-function tool_choice must disable
+        # hosted builtins as well as user function declarations;
+        # otherwise an API client that opted out of tool use (or pinned
+        # a specific user function) still triggers grounded search /
+        # code execution with privacy + billing implications. Reuses
+        # _hosted_builtins_allowed computed above so image_generation,
+        # googleSearch, codeExecution all share the same gate.
         tools_array: list[dict[str, Any]] = []
         if (
-            not _tool_choice_disabled
+            _hosted_builtins_allowed
             and enabled_tools
             and "web_search" in enabled_tools
             and google_search_allowed
         ):
             tools_array.append({"googleSearch": {}})
         if (
-            not _tool_choice_disabled
+            _hosted_builtins_allowed
             and enabled_tools
             and "code_execution" in enabled_tools
             and code_execution_allowed
@@ -4281,16 +4398,31 @@ class ExternalProviderClient:
                                             _exec_thought_sig = part.get(
                                                 "thoughtSignature"
                                             ) or part.get("thought_signature")
-                                            _exec_native: dict[str, Any] = {
+                                            # Store native parts as an ordered
+                                            # list of full part wrappers so a
+                                            # per-part `thoughtSignature` stays
+                                            # attached to the exact part Gemini
+                                            # returned. The earlier shape
+                                            # collapsed executableCode +
+                                            # codeExecutionResult into one
+                                            # object with a shared top-level
+                                            # `thoughtSignature`, which fanned
+                                            # one signature out across unrelated
+                                            # parts on replay (Gemini 3 strict
+                                            # validators reject that).
+                                            _exec_part_entry: dict[str, Any] = {
                                                 "executableCode": exec_code,
                                             }
                                             if (
                                                 isinstance(_exec_thought_sig, str)
                                                 and _exec_thought_sig
                                             ):
-                                                _exec_native["thoughtSignature"] = (
+                                                _exec_part_entry["thoughtSignature"] = (
                                                     _exec_thought_sig
                                                 )
+                                            _exec_native: dict[str, Any] = {
+                                                "parts": [_exec_part_entry],
+                                            }
                                             yield _emit_tool_event(
                                                 {
                                                     "type": "tool_start",
@@ -4359,16 +4491,19 @@ class ExternalProviderClient:
                                         _result_thought_sig = part.get(
                                             "thoughtSignature"
                                         ) or part.get("thought_signature")
-                                        _result_native: dict[str, Any] = {
+                                        _result_part_entry: dict[str, Any] = {
                                             "codeExecutionResult": exec_result,
                                         }
                                         if (
                                             isinstance(_result_thought_sig, str)
                                             and _result_thought_sig
                                         ):
-                                            _result_native["thoughtSignature"] = (
+                                            _result_part_entry["thoughtSignature"] = (
                                                 _result_thought_sig
                                             )
+                                        _result_native: dict[str, Any] = {
+                                            "parts": [_result_part_entry],
+                                        }
                                         yield _emit_tool_event(
                                             {
                                                 "type": "tool_end",
@@ -4426,9 +4561,26 @@ class ExternalProviderClient:
                                                 # alongside the executableCode
                                                 # and codeExecutionResult; the
                                                 # frontend tool_end merge
-                                                # union joins it into the
-                                                # existing code-exec card's
-                                                # native_part.
+                                                # concatenates the parts list
+                                                # so per-part thoughtSignatures
+                                                # stay attached to the exact
+                                                # part Gemini emitted.
+                                                _plot_thought_sig = part.get(
+                                                    "thoughtSignature"
+                                                ) or part.get("thought_signature")
+                                                _plot_part_entry: dict[str, Any] = {
+                                                    "inlineData": {
+                                                        "mimeType": mime,
+                                                        "data": b64,
+                                                    },
+                                                }
+                                                if (
+                                                    isinstance(_plot_thought_sig, str)
+                                                    and _plot_thought_sig
+                                                ):
+                                                    _plot_part_entry[
+                                                        "thoughtSignature"
+                                                    ] = _plot_thought_sig
                                                 yield _emit_tool_event(
                                                     {
                                                         "type": "tool_end",
@@ -4438,10 +4590,9 @@ class ExternalProviderClient:
                                                         "result": updated_result,
                                                         "google": {
                                                             "native_part": {
-                                                                "inlineData": {
-                                                                    "mimeType": mime,
-                                                                    "data": b64,
-                                                                },
+                                                                "parts": [
+                                                                    _plot_part_entry
+                                                                ],
                                                             },
                                                         },
                                                     }
@@ -4490,11 +4641,25 @@ class ExternalProviderClient:
                                                 # signature on Gemini 3) as
                                                 # native Gemini history rather
                                                 # than a generic functionCall.
-                                                _img_native: dict[str, Any] = {
+                                                # Use the parts-list shape so a
+                                                # per-part `thoughtSignature`
+                                                # stays attached to the
+                                                # inlineData part only.
+                                                _img_part_entry: dict[str, Any] = {
                                                     "inlineData": {
                                                         "mimeType": mime,
                                                         "data": b64,
                                                     },
+                                                }
+                                                if (
+                                                    isinstance(_img_thought_sig, str)
+                                                    and _img_thought_sig
+                                                ):
+                                                    _img_part_entry[
+                                                        "thoughtSignature"
+                                                    ] = _img_thought_sig
+                                                _img_native: dict[str, Any] = {
+                                                    "parts": [_img_part_entry],
                                                 }
                                                 _img_google: dict[str, Any] = {
                                                     "native_part": _img_native,
@@ -4503,9 +4668,6 @@ class ExternalProviderClient:
                                                     isinstance(_img_thought_sig, str)
                                                     and _img_thought_sig
                                                 ):
-                                                    _img_native["thoughtSignature"] = (
-                                                        _img_thought_sig
-                                                    )
                                                     _img_google["thought_signature"] = (
                                                         _img_thought_sig
                                                     )
