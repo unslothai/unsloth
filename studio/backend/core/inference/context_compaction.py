@@ -46,7 +46,10 @@ def estimate_tokens(messages: list[dict]) -> int:
     """Rough token count for ``messages``. Uses a 4-char-per-token
     char-count heuristic on the visible ``content`` (str) and on
     serialized ``tool_calls`` arguments. Multimodal parts (list-typed
-    content) contribute only their text parts.
+    content) contribute only their text parts. Studio's ``compaction``
+    content parts (Anthropic round-trip state) also contribute their
+    ``content`` string so a multi-KB compaction summary does not
+    estimate as zero and slip past the threshold.
     """
     total_chars = 0
     for m in messages:
@@ -55,14 +58,28 @@ def estimate_tokens(messages: list[dict]) -> int:
             total_chars += len(content)
         elif isinstance(content, list):
             for part in content:
-                if isinstance(part, dict):
-                    t = part.get("text")
-                    if isinstance(t, str):
-                        total_chars += len(t)
+                if not isinstance(part, dict):
+                    continue
+                t = part.get("text")
+                if isinstance(t, str):
+                    total_chars += len(t)
+                # Studio's compaction content part: {"type":"compaction",
+                # "content": "<summary>"}. Count the summary string.
+                if part.get("type") == "compaction":
+                    summary = part.get("content")
+                    if isinstance(summary, str):
+                        total_chars += len(summary)
         tcs = m.get("tool_calls")
         if isinstance(tcs, list):
             for tc in tcs:
-                args = (tc.get("function") or {}).get("arguments")
+                # Defensive: pre-pydantic OpenAI payloads occasionally
+                # carry malformed entries (string, None) before
+                # validation. Skip non-dict items instead of raising
+                # AttributeError mid-compaction.
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                args = (fn or {}).get("arguments") if isinstance(fn, dict) else None
                 if isinstance(args, str):
                     total_chars += len(args)
     # Ceil-style division: floor (`// 4`) would systematically
@@ -104,17 +121,26 @@ def _pair_linked_indices(messages: list[dict]) -> dict[int, set[int]]:
     # Walk in order so the next tool-role messages after an assistant
     # call are the natural matches. A tool message is matched to the
     # most recent prior assistant whose ``tool_calls`` contain that id.
+    # Any non-assistant / non-tool message (user, system) ends the
+    # pending window: per the OpenAI chat schema tool messages must
+    # follow their assistant directly, so a tool message arriving
+    # after an intervening user is malformed input. Clearing here
+    # prevents the compactor from treating a stale assistant + a
+    # later-turn tool as one group and dropping them together.
     pending_ids: dict[str, int] = {}
     for i, m in enumerate(messages):
-        if m.get("role") == "assistant":
+        role = m.get("role")
+        if role == "assistant":
             ids = _assistant_tool_call_ids(m)
             out.setdefault(i, set())
             for tid in ids:
                 pending_ids[tid] = i
-        elif _is_tool_message(m):
+        elif role == "tool":
             tcid = m.get("tool_call_id")
             if isinstance(tcid, str) and tcid in pending_ids:
                 out.setdefault(pending_ids[tcid], set()).add(i)
+        else:
+            pending_ids.clear()
     return out
 
 

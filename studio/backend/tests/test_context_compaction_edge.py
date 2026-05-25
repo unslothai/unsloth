@@ -521,3 +521,127 @@ class TestNoCompactWithEmpty:
     def test_nocompact_empty_messages_returns_empty(self):
         out = NoCompact().compact([], budget_tokens = 100)
         assert out == []
+
+
+# ── User-boundary breaks the pair window ─────────────────────
+
+
+def test_tool_message_after_user_does_not_pair_with_earlier_assistant():
+    """An intervening user message ends the pending pair window. A
+    later tool message arriving after the user is malformed input per
+    the OpenAI chat schema and must NOT be grouped with the earlier
+    assistant tool_call; otherwise the compactor would drop them
+    together and corrupt the surviving template.
+    """
+    from core.inference.context_compaction import _pair_linked_indices
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_X",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
+        },
+        # User interrupts before any tool message lands. The next tool
+        # message (malformed) must not pair back to assistant[2].
+        {"role": "user", "content": "changed my mind, ask something else"},
+        {
+            "role": "tool",
+            "content": "stale result",
+            "tool_call_id": "call_X",
+            "name": "search",
+        },
+    ]
+    out = _pair_linked_indices(msgs)
+    # Assistant at index 2 keeps an entry (it was seen) but with NO
+    # tool follow-ups paired across the user boundary.
+    assert 2 in out, out
+    assert out[2] == set(), out
+
+
+def test_paired_window_resumes_after_new_assistant_with_tool_call():
+    """A fresh assistant after a user message starts a new pending
+    window. Its own tool messages pair correctly, the prior assistant
+    stays unpaired.
+    """
+    from core.inference.context_compaction import _pair_linked_indices
+
+    msgs = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "A", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ],
+        },
+        {"role": "user", "content": "wait, do this instead"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "B", "type": "function", "function": {"name": "g", "arguments": "{}"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "result B",
+            "tool_call_id": "B",
+            "name": "g",
+        },
+    ]
+    out = _pair_linked_indices(msgs)
+    assert out[1] == set(), out
+    assert out[3] == {4}, out
+
+
+# ── Defensive estimate_tokens ────────────────────────────────
+
+
+def test_estimate_tokens_does_not_crash_on_non_dict_tool_calls():
+    """OpenAI dicts can carry non-dict tool_calls entries before
+    pydantic validation; the heuristic must skip them rather than
+    raise AttributeError mid-compaction.
+    """
+    msgs = [
+        {
+            "role": "assistant",
+            "content": "",
+            # First entry is malformed (string), second is fine.
+            "tool_calls": [
+                "bad-entry",
+                None,
+                {
+                    "id": "ok",
+                    "function": {"name": "f", "arguments": "{}"},
+                },
+            ],
+        }
+    ]
+    assert estimate_tokens(msgs) >= 0
+
+
+def test_estimate_tokens_counts_compaction_part():
+    """Studio's compaction content part carries an Anthropic summary
+    that can be multi-KB; counting it prevents the threshold check
+    from skipping compaction when the real prompt is huge.
+    """
+    summary = "x" * 4000
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "intro"},
+                {"type": "compaction", "content": summary},
+            ],
+        }
+    ]
+    # 5 + 4000 chars -> ceil-divided by 4 ~= 1002 tokens.
+    assert estimate_tokens(msgs) >= 1000, estimate_tokens(msgs)
