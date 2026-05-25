@@ -1506,7 +1506,9 @@ def _release_chat_backend_for_diffusion() -> None:
     # owned names. Catches races where a name we did not explicitly
     # unload (because it appeared in loading_models between the
     # snapshot and the unload calls) is still owned after the loop.
-    remaining_loading = set(getattr(backend, "loading_models", set()) or set()) & owned_names
+    remaining_loading = (
+        set(getattr(backend, "loading_models", set()) or set()) & owned_names
+    )
     remaining_active = getattr(backend, "active_model_name", None)
     if remaining_loading or (remaining_active in owned_names):
         raise RuntimeError(

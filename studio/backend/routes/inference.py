@@ -506,7 +506,9 @@ async def _release_safetensors_chat_for(workload: str) -> None:
     # initially present. Catches races where a model name we did not
     # explicitly unload (because it appeared between the snapshot and
     # the unload calls) is still in the owned set after the loop.
-    remaining_loading = set(getattr(inf, "loading_models", set()) or set()) & owned_names
+    remaining_loading = (
+        set(getattr(inf, "loading_models", set()) or set()) & owned_names
+    )
     remaining_active = getattr(inf, "active_model_name", None)
     if remaining_loading or (remaining_active in owned_names):
         raise HTTPException(
