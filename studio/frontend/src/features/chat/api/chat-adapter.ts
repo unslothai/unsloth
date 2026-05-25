@@ -143,6 +143,28 @@ async function updateStoredChatThreadEventually(
   }
 }
 
+/**
+ * Return ``raw`` when it is a safe-to-navigate http(s) URL, or "" otherwise.
+ * Rejects non-string input, CR/LF (header-injection / link-smuggling), and
+ * any non-http(s) scheme so provider/tool-controlled strings such as
+ * ``javascript:`` / ``data:`` / ``vbscript:`` cannot land in an
+ * ``<a href>`` rendered by the Sources panel.
+ */
+function isSafeNavigableSourceUrl(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const value = raw.trim();
+  if (!value || /[\r\n]/.test(value)) return "";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // Fall through.
+  }
+  return "";
+}
+
 /** Convert an Anthropic document citation dict into a Sources-panel source. */
 function documentCitationToSource(
   cit: Record<string, unknown>,
@@ -169,11 +191,8 @@ function documentCitationToSource(
   // can also return ``javascript:`` / ``data:`` / ``vbscript:``
   // strings that would execute when rendered as an <a href>. Fall
   // back to a stable doc anchor for anything else.
-  const isNavigable =
-    /^https?:\/\//i.test(source) && !/[\r\n]/.test(source);
-  const url = isNavigable
-    ? source
-    : `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  const url =
+    isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited =
     typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
@@ -240,7 +259,12 @@ function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      const url = urlMatch[1].trim();
+      // Drop blocks whose ``URL:`` is not a safe-to-navigate http(s) link.
+      // Provider/tool output is attacker-controllable, so a hostile
+      // ``URL: javascript:...`` / ``URL: data:...`` line would otherwise
+      // be rendered as a clickable <a href> in the Sources panel.
+      const url = isSafeNavigableSourceUrl(urlMatch[1]);
+      if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
