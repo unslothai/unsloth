@@ -1741,10 +1741,15 @@ def _build_external_messages(
 
     def _is_marked_server_builtin_tool_call(tc: Any) -> bool:
         """Return True iff `tc` is a synthetic provider-side tool card
-        the backend stamped with `args._server_tool` and one of the
-        canonical builtin names. Such cards must not be forwarded to
-        non-native providers because they are not real user functions
-        and the receiving API will reject the orphan tool history.
+        with one of the canonical builtin names and either:
+          - the new `args._server_tool` marker stamped by the backend, or
+          - a Gemini `args.google.native_part` payload (durable replay
+            signal for code_execution / image_generation that predates
+            the marker).
+        Such cards must not be forwarded to non-native providers
+        because they are not real user functions and the receiving API
+        will reject the orphan tool history. Real user functions with
+        these names normally have neither signal.
         """
         if not isinstance(tc, dict):
             return False
@@ -1759,7 +1764,14 @@ def _build_external_messages(
             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         except Exception:
             return False
-        return isinstance(args, dict) and args.get("_server_tool") is True
+        if not isinstance(args, dict):
+            return False
+        if args.get("_server_tool") is True:
+            return True
+        google = args.get("google")
+        return isinstance(google, dict) and isinstance(
+            google.get("native_part"), dict
+        )
 
     def _filter_tool_calls(tool_calls: Any) -> Optional[list]:
         """Sanitize assistant `tool_calls` for non-native-Gemini providers.

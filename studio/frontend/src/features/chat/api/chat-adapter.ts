@@ -117,50 +117,25 @@ const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
  *   2. Gemini `native_part` payload present in `args.google` →
  *      server-side. Gemini code_execution / image_generation always
  *      stow `executableCode` / `codeExecutionResult` / `inlineData`
- *      here so the native translator can replay them, so this is the
- *      only durable way to distinguish them from a user function
- *      with the same name when the marker is absent.
- *   3. For canonical builtin names with NO marker and NO native_part,
- *      use a shape heuristic for the two provider-specific shapes that
- *      pre-PR Studio used to persist:
- *        - `code_execution`: `args.kind` in {bash, code_execution,
- *          text_editor} or `args.command`/`args.code` string.
- *        - `image_generation`: `args.kind === "image"` or
- *          `args.prompt` string.
- *      `web_search` / `web_fetch` are NOT name-only dropped: the
- *      marker is required, because a real user function named
- *      `web_search` is a realistic OpenAI / Gemini function-calling
- *      input and we must not silently delete its history.
+ *      here so the native translator can replay them.
+ *
+ * No shape heuristic on `args.kind` / `args.command` / `args.prompt`:
+ * those can legitimately appear in a user-declared function with one
+ * of the canonical builtin names, and dropping a real user function
+ * call from chat history breaks function-calling round-trips. Old
+ * pre-PR persisted hosted cards lacking the marker now leak through
+ * to a non-native provider on a provider switch, which is the lesser
+ * of the two evils.
  */
 function isServerSideBuiltinToolPart(
   toolNameLower: string,
-  argsObj: Record<string, unknown> | null,
+  _argsObj: Record<string, unknown> | null,
   hasServerToolMarker: boolean,
   hasNativePart: boolean,
 ): boolean {
-  if (hasServerToolMarker && SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) {
-    return true;
-  }
   if (!SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) return false;
-  if (hasNativePart) return true;
-  if (!argsObj) return false;
-  if (toolNameLower === "code_execution") {
-    const kind =
-      typeof argsObj.kind === "string" ? argsObj.kind.toLowerCase() : "";
-    return (
-      kind === "bash" ||
-      kind === "code_execution" ||
-      kind === "text_editor" ||
-      typeof argsObj.command === "string" ||
-      typeof argsObj.code === "string"
-    );
-  }
-  if (toolNameLower === "image_generation") {
-    const kind =
-      typeof argsObj.kind === "string" ? argsObj.kind.toLowerCase() : "";
-    return kind === "image" || typeof argsObj.prompt === "string";
-  }
-  return false;
+  if (hasServerToolMarker) return true;
+  return hasNativePart;
 }
 
 /**

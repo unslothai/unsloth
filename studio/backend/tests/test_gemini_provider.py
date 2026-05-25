@@ -3469,3 +3469,456 @@ def test_openai_responses_tool_choice_none_drops_hosted_tools(monkeypatch):
     _drive(run())
     body = captured["body"] or {}
     assert body.get("tools") in (None, []), body
+
+
+def test_anthropic_tool_choice_none_drops_hosted_tools(monkeypatch):
+    """Round 19: tool_choice="none" must opt out of Anthropic hosted
+    builtins (web_search, web_fetch, code_execution) just like it does
+    for Gemini and OpenAI Responses."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search", "web_fetch", "code_execution"],
+            tool_choice = "none",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    assert body.get("tools") in (None, []), body
+
+
+def test_openrouter_tool_choice_none_drops_web_plugin(monkeypatch):
+    """Round 19: tool_choice="none" must drop the OpenRouter web
+    plugin so a request that opted out of tool use does not still
+    trigger hosted web search."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "sk-or-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = "none",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    assert body.get("plugins") in (None, []), body
+
+
+def test_kimi_tool_choice_none_skips_web_search_helper(monkeypatch):
+    """Round 19: when tool_choice="none" plus enabled_tools=
+    ["web_search"] on Kimi, the dispatcher must NOT route into
+    `_stream_kimi_web_search`. Falling through to the generic OAI-
+    compat path is the expected behavior."""
+    routed_to_helper = {"called": False}
+
+    real_helper = ExternalProviderClient._stream_kimi_web_search
+
+    async def fake_helper(self, *args, **kwargs):  # noqa: ARG001
+        routed_to_helper["called"] = True
+        if False:
+            yield ""  # pragma: no cover
+
+    monkeypatch.setattr(
+        ExternalProviderClient,
+        "_stream_kimi_web_search",
+        fake_helper,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "https://api.moonshot.ai/v1",
+            api_key = "sk-kimi-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "kimi-k2.6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search"],
+            tool_choice = "none",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert routed_to_helper["called"] is False
+
+    monkeypatch.setattr(
+        ExternalProviderClient,
+        "_stream_kimi_web_search",
+        real_helper,
+    )
+
+
+def test_user_code_execution_function_not_dropped():
+    """Round 19: a user-declared function literally named
+    `code_execution` with normal `code` arguments must survive
+    `_build_external_messages` -- round 17's shape heuristic dropped
+    it, which broke function-calling round-trips."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_user",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": '{"code": "print(1)"}',
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    result = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+        base_url = None,
+    )
+    assert len(result) == 1, result
+    tcs = result[0].get("tool_calls") or []
+    assert len(tcs) == 1, result
+    assert tcs[0]["function"]["name"] == "code_execution"
+
+
+def test_native_part_code_execution_treated_as_server_side():
+    """Round 19: a Gemini `code_execution` card persists its replay
+    payload at `args.google.native_part` (no `_server_tool` marker on
+    pre-PR cards). The backend filter must still drop it for non-native
+    providers because it is a synthetic card, not a real user function."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    args_with_native_part = json.dumps(
+        {
+            "google": {
+                "native_part": {
+                    "executableCode": {
+                        "language": "PYTHON",
+                        "code": "print(1)",
+                    }
+                }
+            }
+        }
+    )
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_x",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": args_with_native_part,
+                        },
+                    }
+                ],
+            }
+        ],
+        "stream": True,
+    }
+    req = ChatCompletionRequest.model_validate(payload)
+    result = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+        base_url = None,
+    )
+    assert result == [] or all(
+        not (m.get("tool_calls") or []) for m in result
+    ), result
+
+
+def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
+    """Round 19: the per-request image fetch count cap must count
+    ATTEMPTS, not just successes. Otherwise a request with 100
+    failing/slow URLs runs 100 fetches each up to the 15s timeout."""
+    fetch_calls: list[str] = []
+
+    async def fake_fetch(url, fallback_mime):
+        fetch_calls.append(url)
+        return None
+
+    monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _gemini_sse(
+                [
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [{"text": "ok"}],
+                                },
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 1,
+                            "candidatesTokenCount": 1,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = _make_gemini_client()
+        image_parts = [
+            {
+                "type": "image_url",
+                "image_url": {"url": f"https://cdn.example.com/img{idx}.png"},
+            }
+            for idx in range(20)
+        ]
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        *image_parts,
+                    ],
+                }
+            ],
+            model = "gemini-2.5-flash",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert len(fetch_calls) <= 8, len(fetch_calls)
+
+
+def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
+    """Round 19: when a marked server-side builtin `function_call` is
+    dropped from OpenAI Responses input items, the matching role=tool
+    follow-up must also be dropped to avoid an orphan
+    `function_call_output`."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "search please"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps(
+                                    {"_server_tool": True, "query": "x"}
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "result_text",
+                    "tool_call_id": "call_b",
+                    "name": "web_search",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    items = captured["input_items"] or []
+    fn_calls = [i for i in items if i.get("type") == "function_call"]
+    fn_outs = [i for i in items if i.get("type") == "function_call_output"]
+    assert all(c.get("call_id") != "call_b" for c in fn_calls), items
+    assert all(o.get("call_id") != "call_b" for o in fn_outs), items
+
+
+def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
+    """Round 19: a JSON Schema `"type": ["string","integer","null"]`
+    must be sanitized to anyOf:[{string},{integer}] + nullable:true.
+    Flattening to just `{"type":"string"}` silently drops the integer
+    branch and changes the function contract."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "either": {
+                                "type": ["string", "integer", "null"]
+                            },
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    decls = next(
+        t["functionDeclarations"]
+        for t in captured["body"].get("tools") or []
+        if "functionDeclarations" in t
+    )
+    either = decls[0]["parameters"]["properties"]["either"]
+    assert either.get("nullable") is True
+    inner = either.get("anyOf")
+    assert isinstance(inner, list) and len(inner) == 2, either
+    types = sorted(
+        b.get("type") for b in inner if isinstance(b, dict) and b.get("type")
+    )
+    assert types == ["integer", "string"], inner
+
+
+def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
+    """Round 19: invalid Gemini model IDs are rejected at the top of
+    `_stream_gemini`, BEFORE any user-controlled remote image fetch
+    runs."""
+    fetch_calls: list[str] = []
+
+    async def fake_fetch(url, fallback_mime):
+        fetch_calls.append(url)
+        return None
+
+    monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = b"",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = _make_gemini_client()
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://cdn.example.com/x.png"},
+                        },
+                    ],
+                }
+            ],
+            model = "../cachedContents/leak",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert fetch_calls == [], fetch_calls

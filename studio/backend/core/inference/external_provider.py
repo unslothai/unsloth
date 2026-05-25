@@ -654,6 +654,17 @@ class ExternalProviderClient:
         provider-capability map already filters these per provider, so we
         treat them as opt-in here.
         """
+        # `tool_choice="none"` is the OpenAI Chat Completions opt-out
+        # for all hosted/builtin tool use. We honor it on every
+        # provider path so a caller cannot accidentally trigger
+        # provider-side web search / code execution / image generation
+        # (privacy + billing) by passing `enabled_tools=[...]` while
+        # also setting `tool_choice="none"`.
+        tool_choice_disabled = (
+            isinstance(tool_choice, str)
+            and tool_choice.strip().lower() == "none"
+        )
+
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts);
             # `_stream_gemini` translates request/response into the OpenAI
@@ -691,6 +702,7 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                tool_choice,
             ):
                 yield line
             return
@@ -729,6 +741,7 @@ class ExternalProviderClient:
         #   https://platform.kimi.ai/docs/guide/use-web-search
         if (
             self.provider_type == "kimi"
+            and not tool_choice_disabled
             and enabled_tools
             and "web_search" in enabled_tools
         ):
@@ -830,7 +843,11 @@ class ExternalProviderClient:
             # `plugins: [{id: "web"}]` works everywhere, no model id
             # rewrite needed, and idempotent if some future call site
             # adds the entry first.
-            if enabled_tools and "web_search" in enabled_tools:
+            if (
+                not tool_choice_disabled
+                and enabled_tools
+                and "web_search" in enabled_tools
+            ):
                 plugins = list(body.get("plugins") or [])
                 if not any(
                     isinstance(p, dict) and p.get("id") == "web" for p in plugins
@@ -1514,6 +1531,7 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tool_choice: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1911,6 +1929,17 @@ class ExternalProviderClient:
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
+        # `tool_choice="none"` opts out of all hosted tool use. The
+        # OpenAI Chat Completions surface allows callers to enable a
+        # tool category via `enabled_tools=[...]` while explicitly
+        # disabling its invocation via `tool_choice="none"`; honor that
+        # privacy/billing opt-out here so a stale UI toggle doesn't
+        # accidentally invoke server-side search / code execution.
+        _anthropic_tool_choice_disabled = (
+            isinstance(tool_choice, str)
+            and tool_choice.strip().lower() == "none"
+        )
+
         # Anthropic server-side web_search — see
         #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
         # The tool type is date-pinned per model family. Newer Opus /
@@ -1923,7 +1952,11 @@ class ExternalProviderClient:
         # url-citation annotations on text deltas. We translate all of
         # that into our local _toolEvent shape so the chat UI renders
         # web_search exactly like OpenAI's path.
-        if enabled_tools and "web_search" in enabled_tools:
+        if (
+            not _anthropic_tool_choice_disabled
+            and enabled_tools
+            and "web_search" in enabled_tools
+        ):
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
@@ -1947,7 +1980,11 @@ class ExternalProviderClient:
         # `enabled_tools=["web_fetch"]`, citations off by default
         # because the frontend already paints source pills from the
         # generic tool_end payload.
-        web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
+        web_fetch_enabled = bool(
+            not _anthropic_tool_choice_disabled
+            and enabled_tools
+            and "web_fetch" in enabled_tools
+        )
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
@@ -1977,7 +2014,9 @@ class ExternalProviderClient:
         # content blocks and generated-file retrieval via the Files
         # API) are a deliberate follow-up.
         code_execution_enabled = bool(
-            enabled_tools and "code_execution" in enabled_tools
+            not _anthropic_tool_choice_disabled
+            and enabled_tools
+            and "code_execution" in enabled_tools
         )
         if code_execution_enabled:
             anthropic_tools = list(body.get("tools") or [])
@@ -3029,6 +3068,20 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        # Validate the user-controlled model id BEFORE any message
+        # translation. A model like `../cachedContents/x` is path-
+        # traversal that lands in `/v1beta/cachedContents/...`; rejecting
+        # it here also avoids triggering user-controlled outbound fetches
+        # (remote image_url inlining) on a request we'll error out
+        # anyway. Documented catalog ids match `[A-Za-z0-9._-]+`.
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+            yield _error_sse_line(
+                400,
+                f"Invalid Gemini model id: {model!r}",
+                self.provider_type,
+            )
+            return
+
         # Translate OpenAI messages -> Gemini contents. The `system`
         # role becomes a top-level `systemInstruction`; user / assistant
         # turns map to role="user" / role="model" with `parts` carrying
@@ -3093,14 +3146,40 @@ class ExternalProviderClient:
                                 or "image/jpeg"
                             )
                             if b64data:
-                                parts.append(
-                                    {
-                                        "inlineData": {
-                                            "mimeType": media_type,
-                                            "data": b64data,
+                                # Both data: URLs and fetched remote
+                                # URLs end up in Gemini's `inlineData`,
+                                # so they share the per-request count +
+                                # byte caps; an attacker who can post
+                                # large base64 payloads in the chat
+                                # body must not bypass those caps just
+                                # because the bytes came inline.
+                                _data_approx_bytes = (len(b64data) * 3) // 4
+                                if (
+                                    _remote_image_count
+                                    >= _GEMINI_REMOTE_IMAGE_MAX_COUNT
+                                ):
+                                    logger.info(
+                                        "Gemini inlineData: per-request count cap %d reached, dropping image",
+                                        _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                                    )
+                                elif (
+                                    _remote_image_total_bytes + _data_approx_bytes
+                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                ):
+                                    logger.info(
+                                        "Gemini inlineData: per-request byte cap reached, dropping image",
+                                    )
+                                else:
+                                    _remote_image_count += 1
+                                    _remote_image_total_bytes += _data_approx_bytes
+                                    parts.append(
+                                        {
+                                            "inlineData": {
+                                                "mimeType": media_type,
+                                                "data": b64data,
+                                            }
                                         }
-                                    }
-                                )
+                                    )
                         elif url:
                             # Gemini's `fileData.fileUri` part only
                             # accepts a) URIs returned by the Files API
@@ -3161,6 +3240,10 @@ class ExternalProviderClient:
                                     _GEMINI_REMOTE_IMAGE_MAX_COUNT,
                                 )
                             else:
+                                # Count attempts BEFORE awaiting the
+                                # fetch so 100 failing / slow URLs cannot
+                                # each consume the 15s fetch timeout.
+                                _remote_image_count += 1
                                 _fetched = await _safe_fetch_image_for_gemini(
                                     url, _media_type
                                 )
@@ -3179,7 +3262,6 @@ class ExternalProviderClient:
                                             "Gemini image fetch: per-request byte cap reached, dropping image",
                                         )
                                     else:
-                                        _remote_image_count += 1
                                         _remote_image_total_bytes += _approx_bytes
                                         parts.append(
                                             {
@@ -3620,13 +3702,23 @@ class ExternalProviderClient:
                 cleaned: dict[str, Any] = {}
                 _nullable_from_union = False
                 _flattened_type: Optional[str] = None
+                _union_any_of: Optional[list[dict[str, Any]]] = None
                 _raw_type = node.get("type")
                 if isinstance(_raw_type, list):
                     _non_null = [t for t in _raw_type if t != "null"]
                     if len(_non_null) < len(_raw_type):
                         _nullable_from_union = True
-                    if _non_null:
+                    if len(_non_null) == 1:
                         _flattened_type = _non_null[0]
+                    elif len(_non_null) > 1:
+                        # Preserve multi-type unions as anyOf; flattening
+                        # to the first non-null type silently drops the
+                        # other branches and changes the tool contract.
+                        _union_any_of = [
+                            {"type": _t}
+                            for _t in _non_null
+                            if isinstance(_t, str)
+                        ]
                 for _k, _v in node.items():
                     if _k == "type" and isinstance(_v, list):
                         # Handled below via _flattened_type.
@@ -3679,7 +3771,11 @@ class ExternalProviderClient:
                         cleaned[_k] = _v
                     else:
                         cleaned[_k] = _v
-                if _flattened_type is not None:
+                if _union_any_of is not None and "anyOf" not in cleaned:
+                    cleaned["anyOf"] = [
+                        _sanitize_gemini_schema(_s) for _s in _union_any_of
+                    ]
+                elif _flattened_type is not None:
                     cleaned["type"] = _flattened_type
                 if _nullable_from_union and "nullable" not in cleaned:
                     cleaned["nullable"] = True
@@ -3743,19 +3839,8 @@ class ExternalProviderClient:
         if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
             body["cachedContent"] = enable_prompt_caching
 
-        # Guard against path-traversal in the user-controlled model id
-        # before it lands in a URL path segment. A model like
-        # `../cachedContents/x` would otherwise normalize to
-        # `/v1beta/cachedContents/x` and send the configured API key to
-        # an unintended endpoint. Gemini model ids in the documented
-        # catalog match `[A-Za-z0-9._-]+` only.
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
-            yield _error_sse_line(
-                400,
-                f"Invalid Gemini model id: {model!r}",
-                self.provider_type,
-            )
-            return
+        # Model id is already validated at the top of _stream_gemini so
+        # we never reach a path-traversed URL segment here.
         url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
@@ -4552,6 +4637,12 @@ class ExternalProviderClient:
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
+        # When we drop a server-side builtin `function_call` here, the
+        # matching `role="tool"` follow-up must also be dropped --
+        # otherwise the outbound body contains an orphan
+        # `function_call_output` with no matching `function_call`, which
+        # OpenAI Responses can reject or mis-associate.
+        skipped_server_builtin_call_ids: set[str] = set()
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -4575,6 +4666,12 @@ class ExternalProviderClient:
             # shape and Responses 400s the request.
             if role == "tool":
                 _call_id = msg.get("tool_call_id") or ""
+                # If the matching assistant `function_call` was a
+                # server-side builtin we already dropped, drop the
+                # follow-up too to avoid emitting an orphan
+                # `function_call_output`.
+                if _call_id and _call_id in skipped_server_builtin_call_ids:
+                    continue
                 if isinstance(content, list):
                     _flat_parts: list[str] = []
                     for part in content:
@@ -4619,16 +4716,21 @@ class ExternalProviderClient:
                     if _fn_name_lc in _SERVER_SIDE_BUILTIN_TOOL_NAMES:
                         try:
                             _args_obj = _json.loads(_args_raw) if _args_raw else {}
-                            if (
-                                isinstance(_args_obj, dict)
-                                and _args_obj.get("_server_tool") is True
-                            ):
-                                _is_server_builtin = True
                         except Exception:
-                            _is_server_builtin = False
-                    if _is_server_builtin:
-                        continue
+                            _args_obj = None
+                        if isinstance(_args_obj, dict):
+                            if _args_obj.get("_server_tool") is True:
+                                _is_server_builtin = True
+                            else:
+                                _g = _args_obj.get("google")
+                                if isinstance(_g, dict) and isinstance(
+                                    _g.get("native_part"), dict
+                                ):
+                                    _is_server_builtin = True
                     _call_id_out = _tc.get("id") or f"call_{time.time_ns()}"
+                    if _is_server_builtin:
+                        skipped_server_builtin_call_ids.add(_call_id_out)
+                        continue
                     input_items.append(
                         {
                             "type": "function_call",
