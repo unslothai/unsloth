@@ -68,6 +68,21 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
+# Reasoning-class OpenAI families that reject `temperature` and `top_p`
+# with "Unsupported parameter" 400s on /v1/responses (and on
+# /v1/chat/completions for the same families). Sampling knobs MUST be
+# dropped for these. Other chat-completion families (gpt-4o*,
+# gpt-4.1*, gpt-3.5-turbo*, gpt-4*, gpt-audio*, gpt-realtime*)
+# accept the standard sampling shape and we forward both fields
+# verbatim so the user's slider settings actually take effect.
+#
+# Source: OpenAI's reasoning guide
+# (https://developers.openai.com/api/docs/guides/reasoning) and the
+# /v1/responses reference. Covers gpt-5.x family, o1/o3/o4 family,
+# and gpt-4.5 family. The `(?:[-.]|$)` anchor keeps gpt-50 / o30
+# hypotheticals out.
+_OPENAI_REASONING_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?|o[134]|gpt-4\.5)(?:[-.]|$)")
+
 
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
@@ -2650,21 +2665,35 @@ class ExternalProviderClient:
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
 
-        # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
-        # temperature and top_p with `Unsupported parameter` 400s on
-        # /v1/responses (and on /v1/chat/completions for the same families).
-        # The PROVIDER_REGISTRY['openai'] model_id_allowlist already scopes
-        # the picker to those families, so we never need to send sampling
-        # knobs here. ``reasoning.effort`` defaults to "medium" server-side
-        # if omitted — surface it in a future commit if a knob is wanted.
-        del temperature, top_p  # explicit drop — params are accepted for
-        # API symmetry with the other stream methods but not forwarded.
-
+        # Sampling knob handling. The old allowlist-scoped picker only
+        # admitted reasoning-class families (gpt-5.x / o3 / gpt-4.5),
+        # all of which reject `temperature` and `top_p` with
+        # "Unsupported parameter" 400s on /v1/responses -- so the
+        # earlier code unconditionally dropped both.
+        #
+        # The denylist-based picker (PR 5684) now also admits
+        # non-reasoning chat models (gpt-4o*, gpt-4.1*, gpt-4*,
+        # gpt-3.5-turbo*, gpt-audio*, gpt-realtime*) that accept the
+        # standard sampling shape. Forward temperature/top_p for those;
+        # keep dropping them for the reasoning families.
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
             "stream": True,
         }
+        is_reasoning_family = bool(
+            _OPENAI_REASONING_FAMILY.match(model.strip().lower())
+        )
+        if not is_reasoning_family:
+            if temperature is not None:
+                body["temperature"] = temperature
+            if top_p is not None:
+                body["top_p"] = top_p
+        else:
+            # Reasoning-class: explicit drop. ``reasoning.effort`` is
+            # the only knob the API accepts and defaults to "medium"
+            # server-side if omitted.
+            del temperature, top_p
         # `summary: "auto"` is what makes /v1/responses emit reasoning
         # summary events — without it OpenAI returns no thinking text on
         # most reasoning models, the SSE handler has no <think>…</think>

@@ -26,14 +26,89 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Keep the model picker scoped to the current generation. The remote
-        # /v1/models listing returns dozens of historical snapshots, fine-tunes
-        # and non-chat models (embeddings, TTS, image, moderation) that we
-        # never want to surface in the chat UI. Filtering here so backend
-        # is the single source of truth.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[345]|gpt-4\.5|o3)(?:[-.]|$)"),
-        # Hide dated snapshots and the retired plain gpt-5.3 id.
-        "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
+        # The remote /v1/models listing returns the full account catalog,
+        # including non-chat models (embeddings, TTS, image, moderation,
+        # whisper, dall-e) and fine-tunes. Previously we used a hardcoded
+        # family allowlist (`gpt-5\.[345]|gpt-4\.5|o3`) which silently
+        # dropped every new family OpenAI shipped, including the gpt-5.5
+        # generation today. Switch to a non-chat denylist instead so any
+        # new chat family auto-appears the moment OpenAI lists it.
+        #
+        # Pattern strategy:
+        # - Unambiguous *feature* indicators (tts/whisper/transcribe/
+        #   image/embedding/moderation/sora) match anywhere in the id
+        #   with `(?:^|-)` because OpenAI uses them as the primary
+        #   qualifier on every variant -- e.g. canonical `tts-1` AND
+        #   family variants `gpt-4o-tts`, `gpt-4o-mini-tts`. These
+        #   words don't appear in legitimate chat model ids mid-string,
+        #   so the mid-id match is intentional and safe.
+        # - `audio` and `realtime` are INTENTIONALLY NOT in the
+        #   mid-id set. Both the `gpt-audio*` and `gpt-realtime*`
+        #   families are chat/responses-capable today -- per OpenAI's
+        #   audio and realtime guides they accept text in via
+        #   /v1/chat/completions and /v1/responses, not only the
+        #   specialised /v1/realtime WebSocket transport. Dropping
+        #   them hid supported chat models from the picker. The
+        #   audio-only endpoint families (`tts-*`, `whisper-*`,
+        #   `*-transcribe`) are still caught above.
+        # - `search` is INTENTIONALLY NOT in the mid-id set because
+        #   `gpt-4o-search-preview` and `gpt-4o-mini-search-preview` are
+        #   chat-with-retrieval models that absolutely belong in the
+        #   picker. The standalone search API is caught separately by
+        #   `-search-api` (suffix) which never appears on a chat id.
+        # - Legacy completion bases (babbage / davinci / ada / curie)
+        #   are ^-anchored: they ONLY ever begin a legacy id like
+        #   `babbage-002`, `davinci-002`, `text-davinci-003`. A future
+        #   hypothetical `gpt-7-davinci-edition` chat model would NOT
+        #   be dropped, which is the right default for a denylist.
+        # - Prefix-only patterns (`^dall-e`, `^computer-use`, `^ft:`,
+        #   `^gpt-image`) cover canonical non-chat families without
+        #   risk of mid-id false positives.
+        #
+        # Verified against the live /v1/models listing 2026-05-22.
+        "model_id_denylist": re.compile(
+            # Feature suffixes that mark a non-chat variant on any base.
+            # `audio`/`realtime` are NOT in this group so `gpt-audio`
+            # (chat-capable, streaming) stays; specific non-streaming
+            # IDs are caught further down.
+            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
+            r"transcribe|translate|instruct|sora)\b"
+            # OpenAI realtime/audio variants that don't support chat
+            # streaming. Studio always sends `stream: true`, and OpenAI
+            # marks the full Realtime family as Streaming: Not supported
+            # (Realtime API only, WebRTC/WebSocket transport): `gpt-realtime`,
+            # `gpt-realtime-mini`, `gpt-4o-realtime-preview*` and
+            # `gpt-4o-mini-realtime-preview*`, plus `gpt-audio-mini`.
+            # Selecting them from the picker would 4xx at request time.
+            # `gpt-audio` and `gpt-4o-audio-preview` are kept -- they
+            # stream over Chat Completions / Responses.
+            r"|^gpt-realtime(?:$|-)"
+            r"|^gpt-4o(?:-mini)?-realtime\b"
+            r"|^gpt-audio-mini\b"
+            # Legacy completion bases -- ^-anchored to avoid false
+            # positives on hypothetical future chat ids containing
+            # those words mid-string.
+            r"|^(?:babbage|davinci|ada|curie)\b"
+            r"|^text-(?:embedding|moderation|davinci|curie|babbage|ada)\b"
+            # Standalone search API (separate endpoint shape).
+            # `gpt-4o-search-preview` (chat-with-search) is intentionally
+            # NOT matched here.
+            r"|-search-api(?:-\d{4}-\d{2}-\d{2})?$"
+            # Canonical non-chat prefixes.
+            r"|^dall-e\b"
+            r"|^computer-use\b"
+            # Fine-tunes carry the user's tenant in the id.
+            r"|^ft:"
+            # Dated snapshot suffixes hide behind the canonical id
+            # which is also in the listing. Covers both the modern
+            # `-YYYY-MM-DD` dated form and the legacy compact
+            # 4-digit `MMDD` form (e.g. `gpt-3.5-turbo-0125`,
+            # `gpt-4-0613`, `gpt-4-1106-preview`) so the picker only
+            # surfaces the canonical id even when the listing still
+            # returns the snapshot copy.
+            r"|-\d{4}-\d{2}-\d{2}$"
+            r"|-\d{4}(?:-preview)?$"
+        ),
     },
     "anthropic": {
         "display_name": "Anthropic",
@@ -42,16 +117,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
         ],
-        # Anthropic /v1/models returns dated snapshot ids alongside the
-        # canonical names (e.g. claude-3-5-sonnet-20241022). Hide the
-        # YYYYMMDD-suffixed variants from the picker — same intent as the
-        # OpenAI denylist, just a different date format (no dashes between
-        # year/month/day).
-        "model_id_denylist": re.compile(r"-\d{8}$"),
+        # Anthropic's /v1/models returns dated ids for every model in the
+        # pre-4.6 generation -- `claude-opus-4-5-20251101`,
+        # `claude-haiku-4-5-20251001`, `claude-sonnet-4-5-20250929`,
+        # `claude-opus-4-1-20250805`. Per the models overview, those
+        # dated ids ARE the canonical names for that generation, not
+        # snapshots to hide. Dropping the previous `-\d{8}$` denylist
+        # so every live model the API returns reaches the picker.
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,

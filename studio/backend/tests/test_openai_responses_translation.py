@@ -101,15 +101,115 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the
-    # only OpenAI ids the registry allowlist exposes) rejects these as
-    # `Unsupported parameter`. Make sure we never silently forward them.
+    # gpt-5.5 is reasoning-class: Responses API rejects temperature
+    # and top_p with `Unsupported parameter` 400s, so the helper must
+    # drop them. Non-reasoning models (gpt-4o*, gpt-4.1*, gpt-3.5-turbo*,
+    # gpt-audio*, gpt-realtime*) are covered in a sibling test that
+    # asserts the inverse forwarding.
     assert "temperature" not in body
     assert "top_p" not in body
     assert "presence_penalty" not in body
     assert "frequency_penalty" not in body
     assert "top_k" not in body
     assert "messages" not in body
+
+
+def test_responses_forwards_sampling_for_non_reasoning_chat_families(monkeypatch):
+    # Codex P1 follow-up to the picker filter change (PR 5684): the
+    # OpenAI denylist now admits non-reasoning chat families
+    # (gpt-4o*, gpt-4.1*, gpt-3.5-turbo*, gpt-audio*, gpt-realtime*).
+    # The Responses API ACCEPTS temperature and top_p on those, so
+    # the helper must forward the user's slider settings instead of
+    # silently dropping them.
+    for model in (
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4o-2026-01-01",
+        "gpt-4.1",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "gpt-audio",
+        "gpt-realtime",
+    ):
+        captured: dict = {}
+
+        def handler(request: httpx.Request, _captured = captured) -> httpx.Response:
+            _captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                content = _responses_sse(
+                    [{"type": "response.completed", "response": {}}]
+                ),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        _mock_http_client(monkeypatch, handler)
+
+        async def run():
+            client = _make_client()
+            async for _ in client._stream_openai_responses(
+                messages = [{"role": "user", "content": "Hi"}],
+                model = model,
+                temperature = 0.42,
+                top_p = 0.85,
+                max_tokens = 32,
+                enable_thinking = None,
+                reasoning_effort = None,
+            ):
+                pass
+            await client.close()
+
+        _drive(run())
+        body = captured["body"]
+        assert body["temperature"] == 0.42, (model, body)
+        assert body["top_p"] == 0.85, (model, body)
+
+
+def test_responses_still_drops_sampling_for_reasoning_families(monkeypatch):
+    # Sanity: parametrise across the reasoning-class families so a
+    # future regex tweak that accidentally weakens the drop surfaces
+    # here.
+    for model in (
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5",
+        "o1",
+        "o3-mini",
+        "o4-mini",
+        "gpt-4.5-preview",
+    ):
+        captured: dict = {}
+
+        def handler(request: httpx.Request, _captured = captured) -> httpx.Response:
+            _captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                content = _responses_sse(
+                    [{"type": "response.completed", "response": {}}]
+                ),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        _mock_http_client(monkeypatch, handler)
+
+        async def run():
+            client = _make_client()
+            async for _ in client._stream_openai_responses(
+                messages = [{"role": "user", "content": "Hi"}],
+                model = model,
+                temperature = 0.42,
+                top_p = 0.85,
+                max_tokens = 32,
+                enable_thinking = None,
+                reasoning_effort = None,
+            ):
+                pass
+            await client.close()
+
+        _drive(run())
+        body = captured["body"]
+        assert "temperature" not in body, (model, body)
+        assert "top_p" not in body, (model, body)
 
 
 def test_responses_translates_image_parts(monkeypatch):
