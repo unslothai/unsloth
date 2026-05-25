@@ -2675,13 +2675,9 @@ async def delete_cached_model(
 
         llama_backend = get_llama_cpp_backend()
         loaded_id = (llama_backend.model_identifier or "").lower()
-        wants = (
-            loaded_id == repo_id.lower()
-            or loaded_id.startswith(repo_id.lower())
-        )
+        wants = loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower())
         if wants and (
-            llama_backend.is_loaded
-            or getattr(llama_backend, "is_active", False)
+            llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
             raise HTTPException(
                 status_code = 400,
