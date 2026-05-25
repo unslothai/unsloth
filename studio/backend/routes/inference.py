@@ -363,34 +363,60 @@ def _raise_if_helper_advisor_busy(workload: str) -> None:
 
     Called early so callers do NOT first tear down idle export /
     diffusion / chat owners just to fail on the helper check.
+
+    Round 30 P1 #7-#10: also publishes a public-load pending entry
+    under the helper-advisor start lock so a concurrent helper start
+    sees the pending public owner and refuses VRAM. Callers MUST
+    invoke ``_clear_public_load_window(workload)`` in a paired
+    finally to clear the entry once the load attempt completes.
     """
     try:
-        from utils.datasets.llm_assist import helper_advisor_busy
+        from utils.datasets.llm_assist import (
+            _HELPER_ADVISOR_START_LOCK,
+            _publish_public_load_pending,
+            helper_advisor_busy,
+        )
+    except Exception:
+        return
+    with _HELPER_ADVISOR_START_LOCK:
+        try:
+            busy = helper_advisor_busy()
+        except Exception as exc:
+            logger.warning(
+                "Could not verify helper/advisor status before %s load: %s",
+                workload,
+                exc,
+            )
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not verify AI Assist status before starting {workload}. "
+                    f"Try again."
+                ),
+            ) from exc
+        if busy:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"AI Assist (helper / advisor GGUF) is still using the GPU. "
+                    f"Wait for it to finish before starting {workload}."
+                ),
+            )
+        _publish_public_load_pending(workload)
+
+
+def _clear_public_load_window(workload: str) -> None:
+    """Pair for ``_raise_if_helper_advisor_busy``: release the pending
+    public-load publish so a subsequent helper start can proceed.
+    Safe to call when the module import failed (no-op)."""
+    try:
+        from utils.datasets.llm_assist import _release_public_load_pending
     except Exception:
         return
     try:
-        busy = helper_advisor_busy()
-    except Exception as exc:
-        logger.warning(
-            "Could not verify helper/advisor status before %s load: %s",
-            workload,
-            exc,
-        )
-        raise HTTPException(
-            status_code = 503,
-            detail = (
-                f"Could not verify AI Assist status before starting {workload}. "
-                f"Try again."
-            ),
-        ) from exc
-    if busy:
-        raise HTTPException(
-            status_code = 503,
-            detail = (
-                f"AI Assist (helper / advisor GGUF) is still using the GPU. "
-                f"Wait for it to finish before starting {workload}."
-            ),
-        )
+        _release_public_load_pending(workload)
+    except Exception:
+        pass
 
 
 async def _release_llama_for(workload: str) -> None:
@@ -1098,6 +1124,10 @@ async def load_model(
     """
     native_grant_backed = False
     model_log_label = request.model_path
+    # Round 30 P1 #7 / #9: track which branch (GGUF / safetensors)
+    # published a public-load pending entry so the outer finally
+    # decrements the same counter, even on early exception.
+    chat_load_window_workload: Optional[str] = None
     try:
         # Validate user-supplied llama-server pass-through args up front
         # so a managed-flag collision returns 400 before any model work.
@@ -1262,6 +1292,7 @@ async def load_model(
             # so we do not tear down an idle export / diffusion just to
             # then 503 on the helper check.
             _raise_if_helper_advisor_busy("GGUF chat")
+            chat_load_window_workload = "GGUF chat"
             # Round 24 P1 #4: release order is now
             # export -> diffusion -> safetensors chat (was
             # export -> safetensors chat -> diffusion). A wedged
@@ -1464,6 +1495,7 @@ async def load_model(
         # Round 28 P1 #1: refuse before the release helpers tear down
         # idle GPU owners.
         _raise_if_helper_advisor_busy("safetensors chat")
+        chat_load_window_workload = "safetensors chat"
         # Round 24 P1 #5: release order is now
         # export -> diffusion -> llama-chat (was
         # export -> llama-chat -> diffusion). A wedged diffusion
@@ -1649,6 +1681,14 @@ async def load_model(
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+    finally:
+        # Round 30 P1 #7 / #9: clear whichever chat branch published a
+        # public-load pending entry so a subsequent helper / advisor
+        # start can proceed. Set on the GGUF / safetensors branches
+        # after _raise_if_helper_advisor_busy succeeds; stays None for
+        # the already-loaded fast paths above.
+        if chat_load_window_workload is not None:
+            _clear_public_load_window(chat_load_window_workload)
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
@@ -2232,6 +2272,59 @@ def _get_diffusion_backend():
     return get_diffusion_backend()
 
 
+def _looks_like_local_diffusion_path(value: Optional[str]) -> bool:
+    """Round 30 P1 #4: decide whether ``repo_id`` / ``base_repo``
+    names a local filesystem path that requires a signed
+    ``native_path_lease`` grant. Hub ids (``owner/repo`` form, no
+    leading separator or tilde) skip the lease check; anything that
+    starts with ``/``, ``~``, ``./``, ``../``, contains a backslash,
+    or resolves to an absolute path is treated as a local-path
+    access attempt. We DO NOT consult ``Path.exists`` so the route
+    does not side-channel filesystem layout information back to the
+    caller via the lease error vs. the load error."""
+    if not value:
+        return False
+    if value.startswith(("/", "~", "./", "../")):
+        return True
+    if "\\" in value:
+        return True
+    try:
+        if Path(value).expanduser().is_absolute():
+            return True
+    except (OSError, ValueError):
+        # Treat unparseable identifiers as local-path attempts so a
+        # broken input does not silently fall through to the Hub
+        # loader (defence-in-depth, not a tested code path).
+        return True
+    return False
+
+
+def _resolve_diffusion_repo_for_request(
+    value: Optional[str],
+    lease: Optional[str],
+    *,
+    operation: str,
+) -> Optional[str]:
+    """Round 30 P1 #4: enforce the same signed-lease boundary the chat
+    /api/inference/load path uses. Hub ids return as-is. Local
+    paths require a verified ``native_path_lease`` directory grant;
+    a missing or invalid lease returns 400 BEFORE any GPU handoff."""
+    if value is None:
+        return None
+    if not _looks_like_local_diffusion_path(value):
+        return value
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = operation,
+            expected_kind = "model",
+            expected_path_type = "directory",
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return str(grant.canonical_path)
+
+
 @studio_router.post("/images/load")
 async def diffusion_load(
     payload: DiffusionLoadRequest,
@@ -2256,7 +2349,23 @@ async def diffusion_load(
     # global checks. Refuse early so we do not first tear down an
     # idle export checkpoint just to fail on the helper check inside
     # load_model.
+    # Round 30 P1 #10: also publishes the public-load pending entry so
+    # a concurrent helper start cannot win the start lock between our
+    # snapshot and DiffusionBackend.load_model flipping is_loaded.
     _raise_if_helper_advisor_busy("diffusion")
+    # Round 30 P1 #4: enforce the signed native_path_lease boundary the
+    # chat load path uses so local-path repo_id / base_repo cannot be
+    # probed without a frontend-issued grant. Hub ids pass through.
+    resolved_repo_id = _resolve_diffusion_repo_for_request(
+        payload.repo_id,
+        payload.native_path_lease,
+        operation = "load-diffusion-model",
+    ) or payload.repo_id
+    resolved_base_repo = _resolve_diffusion_repo_for_request(
+        payload.base_repo,
+        payload.base_repo_native_path_lease,
+        operation = "load-diffusion-model",
+    )
     # Round 18 P1 #3 + P1 #7: the route used to drop chat and idle
     # export BEFORE ``backend.load_model`` ran its cheap validation
     # (family inference, GGUF filename checks, gated-token failures,
@@ -2274,9 +2383,9 @@ async def diffusion_load(
         status = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: backend.load_model(
-                repo_id = payload.repo_id,
+                repo_id = resolved_repo_id,
                 gguf_filename = payload.gguf_filename,
-                base_repo = payload.base_repo,
+                base_repo = resolved_base_repo,
                 family_override = payload.family,
                 hf_token = payload.hf_token,
                 enable_model_cpu_offload = payload.enable_model_cpu_offload,
@@ -2321,6 +2430,11 @@ async def diffusion_load(
     except Exception as exc:
         logger.exception("Diffusion load failed")
         raise HTTPException(status_code = 500, detail = str(exc))
+    finally:
+        # Round 30 P1 #10: clear the public-load pending publish so a
+        # subsequent helper / advisor start can proceed once the
+        # diffusion load attempt has finished (success or failure).
+        _clear_public_load_window("diffusion")
 
 
 @studio_router.post("/images/unload")

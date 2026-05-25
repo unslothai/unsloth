@@ -60,6 +60,10 @@ async def load_checkpoint(
 
     Wraps ExportBackend.load_checkpoint.
     """
+    # Round 30 P1 #8: track whether we published a public-load pending
+    # entry so the outer finally clears it on either success or
+    # failure path.
+    export_load_window_published = False
     try:
         # Version switching is handled automatically by the subprocess-based
         # export backend — no need for ensure_transformers_version() here.
@@ -149,6 +153,7 @@ async def load_checkpoint(
         # safetensors loading_models -- the asymmetries round 9
         # reviews #1, #8, #9 flagged.
         from routes.inference import (
+            _clear_public_load_window,
             _raise_if_helper_advisor_busy,
             _release_chat_for,
             _release_diffusion_for,
@@ -156,7 +161,12 @@ async def load_checkpoint(
 
         # Round 28 P1 #6: refuse before any release fires so AI Assist
         # busy does not first tear down idle diffusion.
+        # Round 30 P1 #8: also publishes a public-load pending entry so
+        # a concurrent helper / advisor start cannot win the start
+        # lock between our snapshot and load_checkpoint flipping
+        # current_checkpoint / is_export_active.
         _raise_if_helper_advisor_busy("export")
+        export_load_window_published = True
         # Round 24 P1 #3: release diffusion BEFORE chat so a failing
         # diffusion unload does not leave the user with no chat
         # model loaded. Same reasoning as the training-start flow
@@ -190,6 +200,18 @@ async def load_checkpoint(
             status_code = 500,
             detail = f"Failed to load checkpoint: {str(e)}",
         )
+    finally:
+        # Round 30 P1 #8: clear the public-load pending entry once the
+        # load attempt completes (success or failure). Skipped when
+        # the helper-busy check itself raised so the counter stays in
+        # sync with publishes.
+        if export_load_window_published:
+            try:
+                from routes.inference import _clear_public_load_window
+            except Exception:
+                pass
+            else:
+                _clear_public_load_window("export")
 
 
 @router.post("/cleanup", response_model = ExportOperationResponse)

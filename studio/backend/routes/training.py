@@ -127,6 +127,11 @@ async def start_training(
     This endpoint initiates training in the background and returns immediately.
     Use the /status endpoint to check training progress.
     """
+    # Round 30 P1 #7: track whether we published a public-load pending
+    # entry so the outer finally clears it on either success or
+    # failure (including any early HTTPException raised by the helper
+    # check itself).
+    training_load_window_published = False
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
@@ -272,6 +277,7 @@ async def start_training(
         # the user's output artifact. Now we 409 first; the user
         # stops the export and re-submits.
         from routes.inference import (
+            _clear_public_load_window,
             _raise_if_export_active,
             _raise_if_helper_advisor_busy,
             _release_chat_for,
@@ -282,7 +288,13 @@ async def start_training(
         _raise_if_export_active("training")
         # Round 28 P1 #5: refuse before any release fires so AI Assist
         # busy does not first tear down idle diffusion/export.
+        # Round 30 P1 #7: also publishes a public-load pending entry so
+        # a concurrent helper / advisor start cannot win the start
+        # lock between our snapshot and start_training flipping
+        # is_training_active. Paired clear lives in the outer
+        # ``finally`` below.
         _raise_if_helper_advisor_busy("training")
+        training_load_window_published = True
         # Round 18 P1 #8: release settled export FIRST so an export
         # cleanup failure preserves the user's currently loaded chat
         # model. The previous order (chat -> export) would drop chat
@@ -336,6 +348,18 @@ async def start_training(
             status_code = 500,
             detail = f"Failed to start training: {str(e)}",
         )
+    finally:
+        # Round 30 P1 #7: clear the public-load pending entry once the
+        # start attempt has finished. Skipped when the helper-busy
+        # check itself raised (no publish to clear) so the counter
+        # stays in sync with publishes.
+        if training_load_window_published:
+            try:
+                from routes.inference import _clear_public_load_window
+            except Exception:
+                pass
+            else:
+                _clear_public_load_window("training")
 
 
 @router.post("/stop", response_model = TrainingStopResponse)

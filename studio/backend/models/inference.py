@@ -1565,6 +1565,16 @@ class DiffusionLoadRequest(BaseModel):
     repo_id: str = Field(
         ..., min_length = 1, max_length = 1024, description = "HF repo id or local path"
     )
+    # Round 30 P1 #4: chat /api/inference/load gates native local paths
+    # through a signed native_path_lease grant before the backend
+    # touches the filesystem. Mirror that here so /api/inference/images/
+    # load cannot be used as an authenticated probe for arbitrary
+    # local directories. Optional: Hub ids (no leading slash / tilde)
+    # skip the lease check entirely.
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local repo_id",
+    )
     gguf_filename: Optional[str] = Field(
         None,
         max_length = 512,
@@ -1574,6 +1584,10 @@ class DiffusionLoadRequest(BaseModel):
         None,
         max_length = 1024,
         description = "Diffusers base repo (HF id or local path) for VAE + text encoders",
+    )
+    base_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local base_repo",
     )
     family: Optional[str] = Field(
         None,

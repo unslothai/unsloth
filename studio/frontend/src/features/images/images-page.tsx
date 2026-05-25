@@ -128,8 +128,11 @@ export function ImagesPage() {
   const preset = CURATED_MODELS[presetIndex] ?? DEFAULT_PRESET;
   const resolution = RESOLUTION_PRESETS[resolutionIdx];
 
-  const refreshStatus = useCallback(async () => {
-    setRefreshingStatus(true);
+  // Round 30 P2 #12: split the fetch from the spinner toggle so the
+  // mount + auto-poll effects can call the fetch without the
+  // synchronous setRefreshingStatus(true) that tripped
+  // react-hooks/set-state-in-effect.
+  const fetchAndUpdateStatus = useCallback(async () => {
     try {
       const next = await fetchDiffusionStatus();
       setStatus(next);
@@ -139,20 +142,25 @@ export function ImagesPage() {
         lastErrorRef.current = msg;
         toast.error("Could not fetch image-model status", { description: msg });
       }
-    } finally {
-      setRefreshingStatus(false);
     }
   }, []);
 
+  const refreshStatus = useCallback(async () => {
+    setRefreshingStatus(true);
+    try {
+      await fetchAndUpdateStatus();
+    } finally {
+      setRefreshingStatus(false);
+    }
+  }, [fetchAndUpdateStatus]);
+
   useEffect(() => {
-    // Round 30 P2 #12: defer the first refreshStatus call via
-    // queueMicrotask so the synchronous setRefreshingStatus(true)
-    // inside it does not trip the react-hooks/set-state-in-effect
-    // lint rule on the mount render.
-    queueMicrotask(() => {
-      void refreshStatus();
-    });
-  }, [refreshStatus]);
+    // Mount fetch goes through fetchAndUpdateStatus so the lint rule
+    // does not see any synchronous setState in the effect body; the
+    // user-driven Refresh button still calls refreshStatus to flip
+    // the spinner.
+    void fetchAndUpdateStatus();
+  }, [fetchAndUpdateStatus]);
 
   // Round 27 P2: when the backend is mid-load (is_loading=true) the
   // status label froze at "Loading..." until the user clicked
@@ -161,10 +169,10 @@ export function ImagesPage() {
   useEffect(() => {
     if (!status?.is_loading) return;
     const id = window.setInterval(() => {
-      void refreshStatus();
+      void fetchAndUpdateStatus();
     }, 2000);
     return () => window.clearInterval(id);
-  }, [status?.is_loading, refreshStatus]);
+  }, [status?.is_loading, fetchAndUpdateStatus]);
 
   const handleLoad = useCallback(async () => {
     setBusy("loading");

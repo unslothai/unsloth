@@ -46,11 +46,22 @@ README_MAX_CHARS = 1500
 #   * GPU  : blocks public chat / training / export / diffusion loads
 _HELPER_ADVISOR_CACHE_REFCOUNT: Counter[str] = Counter()
 _HELPER_ADVISOR_GPU_REFCOUNT: Counter[str] = Counter()
+# Round 30 P1 #7-#10: counter of public GPU workloads (chat /
+# diffusion / training / export) that have passed the helper-busy
+# snapshot but have not yet flipped their public ownership flags
+# (``llama.is_loaded`` / ``loading_model_identifier`` /
+# ``current_checkpoint`` / ``is_training_active``). Helper / advisor
+# starts consult this so they cannot win the start lock and race a
+# public load that already destroyed the previous owner.
+_PUBLIC_LOAD_PENDING_COUNT: Counter[str] = Counter()
 _HELPER_ADVISOR_LOCK = threading.Lock()
 # Round 28 P1 #7 / #8 / #10: serialize helper / advisor STARTS so two
 # concurrent invocations cannot both pass the busy precheck before
 # either registers. Held only across the precheck + register window,
 # not across the full helper run.
+# Round 30 P1 #7-#10: public GPU loads also enter under this lock to
+# publish their pending counter so a concurrent helper / advisor
+# start sees the pending public owner and refuses VRAM.
 _HELPER_ADVISOR_START_LOCK = threading.Lock()
 
 
@@ -97,6 +108,38 @@ def _unregister_helper_advisor_repo(repo_id: str, *, gpu_owner: bool = True) -> 
             _HELPER_ADVISOR_GPU_REFCOUNT[needle] -= 1
             if _HELPER_ADVISOR_GPU_REFCOUNT[needle] <= 0:
                 _HELPER_ADVISOR_GPU_REFCOUNT.pop(needle, None)
+
+
+def _publish_public_load_pending(workload: str) -> None:
+    """Mark a public GPU workload as mid-handoff. Must be called under
+    ``_HELPER_ADVISOR_START_LOCK`` immediately after the helper-busy
+    snapshot succeeded (round 30 P1 #7-#10)."""
+    if not workload:
+        return
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _PUBLIC_LOAD_PENDING_COUNT[needle] += 1
+
+
+def _release_public_load_pending(workload: str) -> None:
+    """Decrement the pending public-load counter once per matched
+    publish. Safe to call in finally even if the load failed."""
+    if not workload:
+        return
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _PUBLIC_LOAD_PENDING_COUNT[needle] -= 1
+        if _PUBLIC_LOAD_PENDING_COUNT[needle] <= 0:
+            _PUBLIC_LOAD_PENDING_COUNT.pop(needle, None)
+
+
+def public_load_pending() -> bool:
+    """True if any public GPU workload has passed its helper-busy
+    snapshot but not yet flipped its public ownership flags. Helper /
+    advisor starts treat this as busy so they cannot race a public
+    load mid-handoff."""
+    with _HELPER_ADVISOR_LOCK:
+        return sum(_PUBLIC_LOAD_PENDING_COUNT.values()) > 0
 
 
 def _strip_think_tags(text: str) -> str:
@@ -228,6 +271,15 @@ def _gpu_workload_busy_for_helper() -> bool:
     if helper_advisor_busy():
         logger.info(
             "Skipping helper GGUF while another helper/advisor is using the GPU"
+        )
+        return True
+    # Round 30 P1 #7-#10: a public GPU load (chat / diffusion / training /
+    # export) that has passed its busy snapshot but not yet flipped its
+    # public ownership flags is still mid-handoff. Refuse so the helper
+    # does not race it for VRAM after the previous owner was torn down.
+    if public_load_pending():
+        logger.info(
+            "Skipping helper GGUF while a public GPU load is mid-handoff"
         )
         return True
     if _diffusion_image_model_busy():
