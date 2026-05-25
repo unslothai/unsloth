@@ -8,6 +8,13 @@ Pydantic schemas for Training API
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
+# Round 22 P1 #1: reuse the chat / diffusion identifier validators
+# so /api/training/start rejects newline / tab / control characters
+# and URL-form ``hf_xxxxx`` tokens in ``model_name``. Without these
+# a caller could log-line-smuggle through "Loading model %s" lines
+# and leak the bearer token into structured-log sinks.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
+
 
 _MAX_BATCH_SIZE = 4096
 _MAX_GRAD_ACCUM = 4096
@@ -49,6 +56,20 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+
+    # Round 22 P1 #1: identifier hardening (round 5 / 15 / 20 / 21
+    # extended these to chat + diffusion request models; training
+    # was the last unguarded entry point).
+    @field_validator("model_name")
+    @classmethod
+    def _no_model_name_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("model_name")
+    @classmethod
+    def _no_model_name_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = (
         Field(
             ...,

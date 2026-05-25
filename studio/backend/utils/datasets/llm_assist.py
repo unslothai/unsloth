@@ -109,6 +109,28 @@ def precache_helper_gguf():
             pass
 
 
+def _diffusion_image_model_busy() -> bool:
+    """Round 22 P1 #2 / #3: helper / advisor GGUFs share VRAM with
+    the Images page diffusion pipeline. Public chat / training /
+    export routes call the strict ``_release_diffusion_for`` helper
+    before allocating, but these dataset-side helpers used to load
+    llama-server directly with no diffusion guard at all. Skip the
+    helper GGUF when ``DiffusionBackend.status()`` reports loaded /
+    loading so we do not double-own VRAM. Fail closed (treat as
+    busy) on any status() error to preserve the resident image
+    model rather than racing it for memory.
+    """
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+    except Exception:
+        return False
+    try:
+        status = get_diffusion_backend().status()
+    except Exception:
+        return True
+    return bool(status.get("is_loaded") or status.get("is_loading"))
+
+
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     """
     Load helper model, run one chat completion, unload.
@@ -116,6 +138,12 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     Returns the completion text, or None on any failure.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
+        return None
+
+    if _diffusion_image_model_busy():
+        logger.info(
+            "Skipping helper GGUF while a diffusion image model is loaded/loading"
+        )
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
@@ -506,6 +534,13 @@ def _run_multi_pass_advisor(
     Keeps model loaded across all passes. Returns combined result dict or None.
     """
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
+        return None
+
+    # Round 22 P1 #3: same diffusion-busy guard as ``_run_with_helper``.
+    if _diffusion_image_model_busy():
+        logger.info(
+            "Skipping advisor GGUF while a diffusion image model is loaded/loading"
+        )
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)

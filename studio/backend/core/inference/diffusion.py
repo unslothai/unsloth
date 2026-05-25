@@ -802,8 +802,13 @@ class DiffusionBackend:
 
         fam = detect_family(repo_id, override_family = family_override)
         if fam is None:
+            # Round 22 P2 #4: route the repo label through
+            # ``_display_repo_id`` so a local absolute path that did
+            # not match any family does not leak the operator's
+            # filesystem layout via the error message / last_error
+            # / 400 response body.
             raise RuntimeError(
-                f"Could not infer a diffusion family for '{repo_id}'. "
+                f"Could not infer a diffusion family for '{_display_repo_id(repo_id)}'. "
                 "Pass family_override = 'flux.2-klein' / 'flux.2' / "
                 "'flux.1' / 'qwen-image' / 'stable-diffusion-3' / "
                 "'stable-diffusion-xl' to disambiguate."
