@@ -918,7 +918,9 @@ def pip_install_with_floor_fallback(
     mirrors that do not see PyPI directly.
     """
     skip_floor = os.environ.get("UNSLOTH_NO_PYPI_FLOOR", "").strip().lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     )
     if skip_floor or not floor:
         pip_install(label, *args, req = req, constrain = constrain)
