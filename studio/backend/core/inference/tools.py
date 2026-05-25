@@ -632,8 +632,17 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        # `not ip.is_global` rejects every category the denylist below
+        # also rejects PLUS shared address space (100.64.0.0/10 carrier-
+        # grade NAT) and benchmarking/documentation/exchange ranges that
+        # Python classifies with `is_private=False` and `is_global=False`
+        # (see https://docs.python.org/3/library/ipaddress.html#ipaddress.IPv4Address.is_global).
+        # The explicit predicates after it give human-readable categories
+        # in the error message, but a single non-global check is the
+        # source of truth and prevents future ranges from leaking.
         if (
-            ip.is_private
+            not ip.is_global
+            or ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_multicast

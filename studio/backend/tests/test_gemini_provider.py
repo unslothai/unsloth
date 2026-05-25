@@ -4820,6 +4820,113 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
     assert tc.get("name") == "lookup_record", body
 
 
+def test_strip_provider_synthetic_tool_history_drops_text_only_extra_content():
+    """Round 24: a plain text Gemini reply (no tool_calls) carrying
+    `extra_content.google.thought_signature` must still have that
+    metadata stripped before being forwarded to a local llama-server
+    backend. Without this, switching a Gemini thread mid-stream to a
+    local GGUF model leaks Gemini-only fields to llama-server."""
+    from routes.inference import _strip_provider_synthetic_tool_history
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Hello!",
+            "extra_content": {"google": {"thought_signature": "SIG_ABC"}},
+        },
+        {"role": "user", "content": "now in pirate voice"},
+    ]
+    out = _strip_provider_synthetic_tool_history(messages)
+    # Same three turns, but the assistant's `extra_content` is gone.
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]
+    assistant = out[1]
+    assert "extra_content" not in assistant, assistant
+    assert assistant["content"] == "Hello!"
+
+
+def test_validate_and_resolve_host_blocks_shared_address_space():
+    """Round 24 SSRF P1: 100.64.0.0/10 carrier-grade NAT addresses are
+    `is_private=False` AND `is_global=False` per Python's ipaddress
+    docs. The previous denylist (is_private/loopback/link_local/etc.)
+    missed them. Adding `not ip.is_global` as the primary gate covers
+    all non-public ranges, current and future."""
+    import socket as _socket
+    from core.inference import tools as _tools
+
+    orig_getaddrinfo = _socket.getaddrinfo
+
+    def fake_getaddrinfo(hostname, port, *args, **kwargs):
+        if hostname == "shared.example":
+            return [
+                (
+                    _socket.AF_INET,
+                    _socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("100.64.0.1", port),
+                ),
+            ]
+        return orig_getaddrinfo(hostname, port, *args, **kwargs)
+
+    _socket.getaddrinfo = fake_getaddrinfo
+    try:
+        ok, reason, _ip = _tools._validate_and_resolve_host("shared.example", 443)
+    finally:
+        _socket.getaddrinfo = orig_getaddrinfo
+    assert ok is False, (ok, reason)
+    assert "non-public" in reason.lower() or "100.64.0.1" in reason
+
+
+def test_gemini_custom_oai_compat_base_skips_native_allowlist():
+    """Round 24: a custom Gemini OAI-compatible base (LiteLLM/proxy)
+    must NOT have its model list filtered through the native Gemini
+    allowlist regex. A LiteLLM gateway returning
+    `["google/gemini-2.5-flash", "my-team/gemini", "gemini-2.5-flash"]`
+    should be passed through; the native filter would strip the
+    prefixed IDs even though the chat dispatch routes them via the
+    OpenAI-compatible client."""
+    import asyncio as _asyncio
+
+    from routes import providers as _providers
+    from routes.providers import (
+        ProviderModelsRequest,
+        list_provider_models,
+    )
+
+    captured: dict = {"base": None}
+
+    class _FakeClient:
+        def __init__(self, *, base_url, **kwargs):
+            captured["base"] = base_url
+
+        async def list_models(self):
+            return [
+                {"id": "google/gemini-2.5-flash"},
+                {"id": "my-team/gemini"},
+                {"id": "gemini-2.5-flash"},
+            ]
+
+        async def close(self):
+            return None
+
+    orig = _providers.ExternalProviderClient
+    _providers.ExternalProviderClient = _FakeClient
+    try:
+        req = ProviderModelsRequest(
+            provider_type = "gemini",
+            base_url = "https://litellm.example/v1",
+        )
+        result = _asyncio.run(list_provider_models(req, current_subject = "unsloth"))
+    finally:
+        _providers.ExternalProviderClient = orig
+    ids = {m.id for m in result}
+    # All three IDs survive — the native allowlist was bypassed.
+    assert "google/gemini-2.5-flash" in ids, ids
+    assert "my-team/gemini" in ids, ids
+    assert "gemini-2.5-flash" in ids, ids
+
+
 def test_strip_provider_synthetic_tool_history_drops_synthetic_only():
     """Round 22: switching a thread from native Gemini (code_execution
     / image_generation tool_cards in history) to a local GGUF backend

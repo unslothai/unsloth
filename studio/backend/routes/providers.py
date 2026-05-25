@@ -318,22 +318,47 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        allow_prefixes = info.get("model_id_allow_prefixes")
-        if allow_prefixes is not None:
-            prefix_tuple = tuple(str(p) for p in allow_prefixes if str(p))
-            if prefix_tuple:
-                models = [m for m in models if m.get("id", "").startswith(prefix_tuple)]
-        allowlist = info.get("model_id_allowlist")
-        if allowlist is not None:
-            models = [m for m in models if allowlist.match(m.get("id", ""))]
-        deny_exact = info.get("model_id_deny_exact")
-        if deny_exact is not None:
-            deny_ids = {str(m) for m in deny_exact if str(m)}
-            if deny_ids:
-                models = [m for m in models if m.get("id", "") not in deny_ids]
-        denylist = info.get("model_id_denylist")
-        if denylist is not None:
-            models = [m for m in models if not denylist.search(m.get("id", ""))]
+        # Registry-level model-id filters are scoped to the canonical
+        # native Gemini base. A custom Gemini OAI-compatible proxy
+        # (LiteLLM, deployment gateway) returns IDs like
+        # `google/gemini-2.5-flash`, `gemini/gemini-2.5-flash`, or
+        # team-prefixed deployment aliases; the native allowlist regex
+        # would strip those out and leave the picker empty even though
+        # the chat path now routes them via the OAI-compatible
+        # dispatcher (the same gate ExternalProviderClient applies for
+        # request building). Match the host check here so the model
+        # list and chat dispatch agree on what counts as "native".
+        apply_registry_model_filters = True
+        if payload.provider_type == "gemini":
+            try:
+                from urllib.parse import urlparse as _urlparse
+
+                _host = (_urlparse(base_url).hostname or "").lower()
+            except Exception:
+                _host = ""
+            apply_registry_model_filters = (
+                _host == "generativelanguage.googleapis.com"
+            )
+
+        if apply_registry_model_filters:
+            allow_prefixes = info.get("model_id_allow_prefixes")
+            if allow_prefixes is not None:
+                prefix_tuple = tuple(str(p) for p in allow_prefixes if str(p))
+                if prefix_tuple:
+                    models = [
+                        m for m in models if m.get("id", "").startswith(prefix_tuple)
+                    ]
+            allowlist = info.get("model_id_allowlist")
+            if allowlist is not None:
+                models = [m for m in models if allowlist.match(m.get("id", ""))]
+            deny_exact = info.get("model_id_deny_exact")
+            if deny_exact is not None:
+                deny_ids = {str(m) for m in deny_exact if str(m)}
+                if deny_ids:
+                    models = [m for m in models if m.get("id", "") not in deny_ids]
+            denylist = info.get("model_id_denylist")
+            if denylist is not None:
+                models = [m for m in models if not denylist.search(m.get("id", ""))]
         # Apply an optional cap after filtering so registry entries with a
         # large remote catalog (e.g. HF Inference Providers) can stay
         # picker-sized. No popularity sort happens server-side, so this is

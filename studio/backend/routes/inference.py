@@ -5447,6 +5447,16 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             continue
         tool_calls = m.get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
+            # Plain text Gemini reply: still strip message-level
+            # `extra_content` (carries `google.thought_signature` replay
+            # metadata) so a text-only Gemini turn switched to a local
+            # GGUF backend does not leak Gemini-only fields to
+            # llama-server. ChatMessage previously did not have
+            # `extra_content`, so the field was implicitly dropped --
+            # round-22 added it to ChatMessage, which is what made this
+            # leak possible.
+            if "extra_content" in m:
+                m = {k: v for k, v in m.items() if k != "extra_content"}
             sanitized_assistant.append(m)
             continue
         cleaned: list[dict] = []
