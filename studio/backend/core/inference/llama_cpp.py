@@ -2721,14 +2721,10 @@ class LlamaCppBackend:
                             )
                 elif gguf_path:
                     if not Path(gguf_path).is_file():
-                        raise FileNotFoundError(
-                            f"GGUF file not found: {gguf_path}"
-                        )
+                        raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
                     model_path = gguf_path
                 else:
-                    raise ValueError(
-                        "Either gguf_path or hf_repo must be provided"
-                    )
+                    raise ValueError("Either gguf_path or hf_repo must be provided")
             finally:
                 self._loading_model_identifier = None
 
