@@ -282,6 +282,23 @@ async def start_training(
         except Exception as e:
             logger.warning("Could not unload inference model: %s", e)
 
+        # GGUF chat backend (llama-server subprocess). Without this,
+        # starting training while a GGUF model is loaded keeps the
+        # subprocess pinned to VRAM and OOMs the training job. Mirrors
+        # the symmetric handoffs in routes/inference.py and
+        # routes/export.py.
+        try:
+            from routes.inference import get_llama_cpp_backend
+
+            llama_backend = get_llama_cpp_backend()
+            if getattr(llama_backend, "is_loaded", False):
+                logger.info(
+                    "Unloading GGUF chat model to free GPU memory for training"
+                )
+                llama_backend.unload_model()
+        except Exception as e:
+            logger.warning("Could not unload GGUF chat model: %s", e)
+
         try:
             from core.export import get_export_backend
 

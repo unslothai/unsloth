@@ -178,8 +178,22 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
 # Qwen-Image-Edit. Each entry maps a family name to substrings that
 # must NOT appear anywhere in the repo id.
 _FAMILY_EXCLUDE: dict[str, tuple[str, ...]] = {
-    "stable-diffusion-3": ("3.5", "3-5", "stable-diffusion-3.5"),
-    "qwen-image": ("qwen-image-edit", "qwenimage-edit"),
+    "stable-diffusion-3": (
+        "3.5",
+        "3-5",
+        "3_5",
+        "stable-diffusion-3.5",
+        "stable_diffusion_3_5",
+    ),
+    # All underscore / hyphen spellings that appear in Hub repo ids for
+    # the *-Edit family must exclude Qwen-Image, otherwise
+    # ``unsloth/qwen_image_edit-GGUF`` matches the Qwen-Image base.
+    "qwen-image": (
+        "qwen-image-edit",
+        "qwenimage-edit",
+        "qwen_image_edit",
+        "qwenimageedit",
+    ),
 }
 
 
@@ -206,7 +220,10 @@ def detect_family(
     needle = (repo_id or "").lower()
     if not needle:
         return None
-    for fam in _FAMILIES:
+    # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES
+    # so a repo like ``stabilityai/stable-diffusion-xl-base-1.0`` is
+    # auto-detected as SDXL instead of returning None.
+    for fam in _FAMILIES + _FULL_REPO_FAMILIES:
         excludes = _FAMILY_EXCLUDE.get(fam.name, ())
         if any(e in needle for e in excludes):
             continue
@@ -243,15 +260,27 @@ class DiffusionBackend:
 
     def __init__(self) -> None:
         self._pipe: Any = None
-        # `_lock` protects mutations to the small state fields and the
-        # pipe call inside generate_image. `_load_lock` serialises the
-        # entire load_model call so two concurrent /images/load requests
-        # cannot both reach pipeline_cls.from_pretrained at the same
-        # time (which would double-spend VRAM and corrupt _pipe). The
-        # locks are taken in order load -> state so a generation in
-        # flight cannot deadlock the next load.
+        # `_lock` protects mutations to the small state fields and is
+        # the only lock taken by status(). It is intentionally NOT held
+        # for the long pipeline forward pass: holding it for the whole
+        # generate would block status() polls (frontend at 1 Hz) and
+        # any concurrent unload requests for minutes at a time.
+        #
+        # `_load_lock` serialises the entire load_model call so two
+        # concurrent /images/load requests cannot both reach
+        # pipeline_cls.from_pretrained at the same time (which would
+        # double-spend VRAM and corrupt _pipe).
+        #
+        # `_generate_lock` serialises pipeline __call__ since diffusers
+        # pipelines are not thread-safe; overlapping forwards on the
+        # shared pipe corrupt internal scheduler state.
+        #
+        # Lock order is load -> state and generate -> state (never
+        # state -> load/generate) so a forward in flight cannot
+        # deadlock the next load or a status poll.
         self._lock = threading.Lock()
         self._load_lock = threading.Lock()
+        self._generate_lock = threading.Lock()
         self._family: Optional[DiffusionFamily] = None
         self._repo_id: Optional[str] = None
         self._gguf_path: Optional[str] = None
@@ -306,11 +335,23 @@ class DiffusionBackend:
         validated on. On macOS we use MPS in float16 to keep the pipeline
         on the Metal GPU. CPU is allowed only as a last resort because
         running FLUX on CPU is unusably slow (> 10 minutes per image).
+
+        BF16 is gated on ``torch.cuda.is_bf16_supported`` because the
+        Pascal / Turing class (sm_60 / sm_70 / sm_75) reports
+        ``is_available() == True`` but lacks BF16 ALUs; FLUX kernels
+        then fail inside ``from_pretrained`` or at the first denoise
+        step. Those cards still work on FP16, so fall back rather than
+        refuse to load.
         """
         import torch
 
         if torch.cuda.is_available():
-            return "cuda", torch.bfloat16
+            bf16_ok = False
+            try:
+                bf16_ok = bool(torch.cuda.is_bf16_supported())
+            except Exception:
+                bf16_ok = False
+            return "cuda", torch.bfloat16 if bf16_ok else torch.float16
         if (
             hasattr(torch, "backends")
             and getattr(torch.backends, "mps", None)
@@ -430,6 +471,23 @@ class DiffusionBackend:
                         filename = gguf_filename,
                         token = hf_token,
                     )
+
+                # All cheap failure points (bad gguf_filename, missing
+                # pipeline / transformer class, gated download token,
+                # transient Hub error on the GGUF download) have now
+                # been validated. Anything past this line allocates
+                # GPU memory, so release competing GPU owners before
+                # we touch from_single_file or from_pretrained:
+                #   * Chat backends (llama-server + safetensors) so the
+                #     diffusion transformer does not race them for VRAM.
+                #   * Export subprocess (also holds GB on the same GPU).
+                # Training is *not* unloaded here: the route layer
+                # refuses /images/load with HTTP 409 when training is
+                # active so the user keeps their long run.
+                _release_chat_backend_for_diffusion()
+                _release_other_gpu_owners_for_diffusion()
+
+                if gguf_filename:
                     quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
                     # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
                     # SD3) need the matching base repo's component config
@@ -465,15 +523,6 @@ class DiffusionBackend:
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
 
-                # Cheap failure modes (bad gguf_filename, gated token,
-                # transient Hub error) have all happened by now. Only
-                # release the current chat backend + previous diffusion
-                # pipeline right before the expensive allocation so a
-                # typo does not kill the user's loaded chat model. Peak
-                # VRAM still stays at one model's worth because the
-                # release happens before from_pretrained.
-                _release_chat_backend_for_diffusion()
-                _release_other_gpu_owners_for_diffusion()
                 old = self._pipe
                 if old is not None:
                     with self._lock:
@@ -562,9 +611,14 @@ class DiffusionBackend:
     ) -> "Any":
         """Generate a single PIL image and return it.
 
-        The mutex is held for the entire call: diffusion pipelines are
-        not thread-safe, and overlapping ``__call__``s on a shared
-        pipeline frequently corrupt their internal scheduler state.
+        Concurrent generations are serialised by ``_generate_lock`` so
+        diffusion pipelines (not thread-safe; overlapping ``__call__``s
+        corrupt internal scheduler state) only ever run one at a time.
+        The state ``_lock`` is taken only to snapshot ``_pipe`` /
+        ``_device`` and immediately released: holding it for the whole
+        forward pass blocked ``status()`` polls and concurrent unload
+        requests for the entire (minutes-long) generation, which made
+        the UI feel frozen.
         """
         if not prompt or not prompt.strip():
             raise ValueError("prompt is empty")
@@ -586,6 +640,13 @@ class DiffusionBackend:
             pipe = self._pipe
             device = self._device or "cpu"
 
+        # _generate_lock outside _lock: only one forward at a time, but
+        # status() / unload() callers do not block on a running forward
+        # pass. unload_model takes _load_lock + _lock; the pipe object
+        # itself is kept alive by the local ``pipe`` reference until
+        # this function returns, so a concurrent unload during forward
+        # cannot free the weights from under us.
+        with self._generate_lock:
             generator = None
             if seed is not None:
                 # Match the device of the pipeline so determinism holds
@@ -728,20 +789,13 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     except Exception as exc:
         logger.debug("export unload skipped: %s", exc)
 
-    # Active training subprocess
-    try:
-        from core.training import get_training_backend  # type: ignore
-
-        trn = get_training_backend()
-        if trn.is_training_active():
-            logger.info("Stopping training subprocess before diffusion load")
-            trn.stop_training()
-            for _ in range(60):
-                if not trn.is_training_active():
-                    break
-                time.sleep(0.5)
-    except Exception as exc:
-        logger.debug("training unload skipped: %s", exc)
+    # Note: active training is *not* stopped here. The route layer
+    # (`_raise_if_training_active` in routes/inference.py) refuses
+    # /images/load with HTTP 409 before this helper runs, so reaching
+    # this point with training still active would only happen in
+    # programmatic backend calls (tests, scripts). Silently terminating
+    # someone's training run when the diffusion load might still fail
+    # is worse than letting the load OOM and surfacing it explicitly.
 
 
 def _release(obj: Any) -> None:

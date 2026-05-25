@@ -110,6 +110,7 @@ export function ImagesPage() {
   const [presetIndex, setPresetIndex] = useState(0);
   const [customRepoId, setCustomRepoId] = useState("");
   const [customGguf, setCustomGguf] = useState("");
+  const [customFamily, setCustomFamily] = useState<string>("auto");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
 
@@ -151,7 +152,15 @@ export function ImagesPage() {
     try {
       const repo = useCustom ? customRepoId.trim() : preset.repo_id;
       const gguf = useCustom ? customGguf.trim() || undefined : preset.default_gguf;
-      const family = useCustom ? undefined : preset.family;
+      // Custom mode lets the user pin a family explicitly because
+      // detect_family is substring-based and exotic repo names (custom
+      // fine-tunes, third-party mirrors) frequently fail to match.
+      // "auto" leaves the override blank and lets the backend infer.
+      const family = useCustom
+        ? customFamily === "auto"
+          ? undefined
+          : customFamily
+        : preset.family;
       // Always pass base_repo for curated entries; custom-repo mode
       // lets the backend either infer it from the family default or
       // (when no GGUF is given) treat the repo as a full diffusers
@@ -174,10 +183,15 @@ export function ImagesPage() {
       toast.error("Failed to load image model", {
         description: err instanceof Error ? err.message : String(err),
       });
+      // Backend clears its old pipeline before allocating the new one;
+      // a failed swap leaves status.is_loaded=false while our local
+      // copy still says loaded. Re-fetch so Generate disables and the
+      // user does not see a stale "Loaded:" label.
+      await refreshStatus();
     } finally {
       setBusy("idle");
     }
-  }, [useCustom, customRepoId, customGguf, preset, hfToken]);
+  }, [useCustom, customRepoId, customGguf, customFamily, preset, hfToken, refreshStatus]);
 
   const handleUnload = useCallback(async () => {
     setBusy("unloading");
@@ -320,6 +334,28 @@ export function ImagesPage() {
                 onChange={(e) => setCustomGguf(e.target.value)}
                 placeholder="FLUX.2-klein-4B-Q4_K_S.gguf"
               />
+              <Label>Pipeline family (override)</Label>
+              <Select
+                value={customFamily}
+                onValueChange={setCustomFamily}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto-detect from repo id</SelectItem>
+                  <SelectItem value="flux.2-klein">FLUX.2 klein</SelectItem>
+                  <SelectItem value="flux.2">FLUX.2</SelectItem>
+                  <SelectItem value="flux.1">FLUX.1</SelectItem>
+                  <SelectItem value="qwen-image">Qwen-Image</SelectItem>
+                  <SelectItem value="stable-diffusion-3">Stable Diffusion 3</SelectItem>
+                  <SelectItem value="stable-diffusion-xl">Stable Diffusion XL</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {"Set this when your repo name does not contain "}
+                {"a recognised family substring (e.g. private fine-tunes)."}
+              </p>
             </div>
           )}
 

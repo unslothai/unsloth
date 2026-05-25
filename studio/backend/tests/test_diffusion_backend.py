@@ -127,6 +127,25 @@ def test_detect_family_qwen_image_edit_is_not_qwen_image():
 
     assert detect_family("unsloth/Qwen-Image-Edit-GGUF") is None
     assert detect_family("unsloth/Qwen-Image-Edit-2509-GGUF") is None
+    # Underscore spellings on the Hub must also be excluded; otherwise
+    # qwen_image_edit-GGUF silently matches the base Qwen-Image family.
+    assert detect_family("unsloth/qwen_image_edit-GGUF") is None
+    assert detect_family("unsloth/QwenImageEdit-GGUF") is None
+
+
+def test_detect_family_finds_full_repo_sdxl():
+    """SDXL lives in _FULL_REPO_FAMILIES, but the auto-detector must
+    still find it for ``stabilityai/stable-diffusion-xl-base-1.0`` so
+    the Custom HF repo entry point does not fail with 'Could not infer
+    a diffusion family' for the canonical SDXL repo."""
+    from core.inference.diffusion import detect_family
+
+    fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert fam is not None
+    assert fam.name == "stable-diffusion-xl"
+    fam2 = detect_family("nerijs/sdxl-lora-test")
+    assert fam2 is not None
+    assert fam2.name == "stable-diffusion-xl"
 
 
 def test_supported_families_payload_shape():
@@ -937,3 +956,102 @@ def test_generate_image_skips_true_cfg_scale_without_negative_prompt(monkeypatch
     assert captured["guidance_scale"] == 7.5
     # Default left untouched: real CFG only activates with neg prompt.
     assert captured["true_cfg_scale"] == 4.0
+
+
+def test_generate_image_does_not_block_status(monkeypatch):
+    """status() must return promptly while a generation is in flight;
+    holding _lock for the whole forward froze the Images UI on the
+    polling endpoint for the entire (minutes long) generation."""
+    import threading
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    pipe_started = threading.Event()
+    pipe_release = threading.Event()
+
+    class _SlowPipe:
+        def __call__(self, **kw):
+            pipe_started.set()
+            # Wait until the test releases us; status() should return
+            # before this lock is released.
+            pipe_release.wait(timeout = 5)
+
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (kw["width"], kw["height"]), (1, 2, 3))]
+            return o
+
+    backend._pipe = _SlowPipe()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[0]
+    backend._repo_id = "stub/stub"
+
+    t = threading.Thread(
+        target = backend.generate_image,
+        kwargs = dict(
+            prompt = "a sloth",
+            num_inference_steps = 1,
+            guidance_scale = 1.0,
+            width = 64,
+            height = 64,
+        ),
+    )
+    t.start()
+    try:
+        assert pipe_started.wait(timeout = 5)
+        # Forward is in progress; status() must not block on _lock.
+        completed = [False]
+
+        def call_status():
+            backend.status()
+            completed[0] = True
+
+        s = threading.Thread(target = call_status)
+        s.start()
+        s.join(timeout = 2)
+        assert completed[0], "status() blocked on generate_image"
+    finally:
+        pipe_release.set()
+        t.join(timeout = 5)
+
+
+def test_bf16_falls_back_to_fp16_on_old_cuda(monkeypatch):
+    """CUDA availability does not imply BF16 support; old GPUs report
+    is_available()=True and is_bf16_supported()=False. The backend
+    must fall back to FP16 rather than picking BF16 and failing
+    deep inside from_pretrained."""
+    import core.inference.diffusion as d
+
+    class _FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def is_bf16_supported():
+            return False
+
+    class _FakeBackends:
+        class mps:
+            @staticmethod
+            def is_available():
+                return False
+
+    class _FakeTorch:
+        cuda = _FakeCuda
+        backends = _FakeBackends
+        # Sentinel objects so the dtype identity comparison works.
+        bfloat16 = object()
+        float16 = object()
+        float32 = object()
+
+    fake_torch = _FakeTorch()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    backend = d.DiffusionBackend()
+    device, dtype = backend._pick_device_and_dtype()
+    assert device == "cuda"
+    assert dtype is fake_torch.float16

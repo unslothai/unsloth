@@ -1968,6 +1968,49 @@ async def delete_finetuned_model(
             detail = "Could not verify model load status before deleting",
         ) from e
 
+    # Diffusion pipelines can also be loaded directly from a Studio
+    # outputs/exports path (e.g. user fine-tuned a FLUX LoRA, exported
+    # the merged repo locally, then loaded it via /images/load with a
+    # local path as repo_id). Without this guard /delete-finetuned
+    # could rmtree the directory the diffusion backend is reading from.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+
+        diff_backend = get_diffusion_backend()
+        diff_status = diff_backend.status()
+        if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+            diff_repo = diff_status.get("repo_id") or ""
+            diff_base = diff_status.get("base_repo") or ""
+            target_str = str(target_path)
+            for candidate in (diff_repo, diff_base):
+                if not candidate:
+                    continue
+                try:
+                    candidate_path = Path(candidate).expanduser()
+                except Exception:
+                    continue
+                if not candidate_path.is_absolute():
+                    continue
+                try:
+                    candidate_resolved = candidate_path.resolve()
+                except Exception:
+                    continue
+                if (
+                    candidate_resolved == target_path
+                    or str(candidate_resolved) == target_str
+                    or _is_path_under(candidate_resolved, target_path)
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the diffusion image model before deleting",
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Could not check diffusion backend loaded model before delete: %s", e
+        )
+
     try:
         if export_type == "gguf" and gguf_variant:
             if not target_path.is_dir():
@@ -2632,20 +2675,25 @@ async def delete_cached_model(
     except Exception:
         pass
 
-    # Also refuse to delete the cache underlying a loaded diffusion
-    # pipeline. The diffusion backend mmap's the GGUF + base repo
-    # weights and continues to read from the cache long after load,
-    # so deleting them out from under it would corrupt generation.
+    # Also refuse to delete the cache underlying a loaded or *loading*
+    # diffusion pipeline. The diffusion backend mmap's the GGUF + base
+    # repo weights and continues to read from the cache long after
+    # load; deleting them out from under it would corrupt generation.
+    # is_loading=True is also blocked because a mid-flight
+    # hf_hub_download / from_single_file would race the rmtree.
+    # Match exactly on repo_id (case-insensitive) instead of prefix to
+    # avoid blocking unrelated deletes like "org/model" while
+    # "org/model-v2" is loaded.
     try:
         from core.inference.diffusion import get_diffusion_backend
 
         diff_backend = get_diffusion_backend()
         diff_status = diff_backend.status()
-        if diff_status.get("is_loaded"):
+        if diff_status.get("is_loaded") or diff_status.get("is_loading"):
             diff_repo = (diff_status.get("repo_id") or "").lower()
             diff_base = (diff_status.get("base_repo") or "").lower()
             needle = repo_id.lower()
-            if diff_repo.startswith(needle) or diff_base.startswith(needle):
+            if diff_repo == needle or diff_base == needle:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the diffusion image model before deleting",

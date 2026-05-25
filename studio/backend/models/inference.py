@@ -1426,6 +1426,27 @@ class AnthropicMessagesResponse(BaseModel):
 # ── Diffusion image generation ────────────────────────────────────
 
 
+def _no_control_chars(value: Optional[str], field_name: str) -> Optional[str]:
+    """Reject newlines and other ASCII control chars in identifiers
+    that get logged before HF validates them.
+
+    Authenticated callers could otherwise inject ``\\n`` / ``\\r`` /
+    NUL into ``logger.info("Loading diffusion model %s", repo_id)``
+    and forge fake log lines. HF repo ids and filenames legitimately
+    contain only ``[A-Za-z0-9._/-]``, so this is also a useful
+    correctness check (catches accidental ``"my repo\\n"`` paste).
+    """
+    if value is None:
+        return value
+    for ch in value:
+        if ch == "\x7f" or (ord(ch) < 0x20 and ch != "\t"):
+            raise ValueError(
+                f"{field_name} contains control characters; use a plain "
+                "Hugging Face repo / file name."
+            )
+    return value
+
+
 class DiffusionLoadRequest(BaseModel):
     """Load a diffusion image-generation model.
 
@@ -1435,16 +1456,20 @@ class DiffusionLoadRequest(BaseModel):
     VAE / text encoders when loading a GGUF-only repo.
     """
 
-    repo_id: str = Field(..., description = "HF repo id")
+    repo_id: str = Field(..., min_length = 1, max_length = 256, description = "HF repo id")
     gguf_filename: Optional[str] = Field(
-        None, description = "GGUF filename inside repo_id (Q4_K_S, Q8_0, ...)"
+        None,
+        max_length = 256,
+        description = "GGUF filename inside repo_id (Q4_K_S, Q8_0, ...)",
     )
     base_repo: Optional[str] = Field(
         None,
+        max_length = 256,
         description = "Diffusers base repo to source VAE + text encoders from",
     )
     family: Optional[str] = Field(
         None,
+        max_length = 64,
         description = "Force pipeline family: flux.2-klein | flux.2 | flux.1 | qwen-image | stable-diffusion-3 | stable-diffusion-xl",
     )
     hf_token: Optional[str] = Field(
@@ -1454,6 +1479,20 @@ class DiffusionLoadRequest(BaseModel):
         True,
         description = "Offload submodules to CPU between forwards. Trades a small speed hit for ~6 GB less VRAM on FLUX-class models.",
     )
+
+    @field_validator("repo_id", "gguf_filename", "base_repo", "family")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+
+# torch.Generator.manual_seed packs into signed int64; values outside
+# [-2**63, 2**63 - 1] raise ``Overflow when unpacking long long`` deep
+# in the C++ layer. uint64 is also routinely cited online so accept
+# any value the underlying RNG could store and bounce the rest at the
+# Pydantic layer with a clean error.
+_SEED_MIN = -(2 ** 63)
+_SEED_MAX = (2 ** 64) - 1
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1466,7 +1505,10 @@ class DiffusionGenerateRequest(BaseModel):
     width: int = Field(1024, ge = 64, le = 2048)
     height: int = Field(1024, ge = 64, le = 2048)
     seed: Optional[int] = Field(
-        None, description = "Deterministic seed for reproducible outputs"
+        None,
+        ge = _SEED_MIN,
+        le = _SEED_MAX,
+        description = "Deterministic seed for reproducible outputs",
     )
 
     @field_validator("width", "height")

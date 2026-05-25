@@ -188,3 +188,54 @@ def test_unload_clears_state(app_with_stub):
     assert r.json()["is_loaded"] is False
     r = c.get("/api/inference/images/status")
     assert r.json()["is_loaded"] is False
+
+
+def test_load_rejects_control_chars_in_repo_id(app_with_stub):
+    """Newline-laden repo ids must be rejected by Pydantic BEFORE the
+    log line that echoes them. Catches log-injection from authenticated
+    callers (issues a 422 instead of forging a fake log line)."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "owner/model\nFAKE_LOG_LINE"},
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    text = repr(body).lower()
+    assert "control" in text or "repo_id" in text
+
+
+def test_generate_rejects_oversize_seed(app_with_stub):
+    """Huge seeds raise inside torch.Generator.manual_seed; Pydantic
+    must clamp first with a 422 instead of a 500 traceback."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "unsloth/FLUX.2-klein-4B-GGUF", "gguf_filename": "x.gguf"},
+    )
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "x", "seed": 2 ** 100},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_generate_accepts_uint64_max_seed(app_with_stub):
+    """Boundary value: 2**64 - 1 (uint64 max) is the largest seed
+    torch.Generator on CPU accepts; reject would frustrate users
+    who paste large seeds from other tooling."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "unsloth/FLUX.2-klein-4B-GGUF", "gguf_filename": "x.gguf"},
+    )
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "x", "seed": (2 ** 64) - 1},
+    )
+    # The fake backend returns 200 on success; we only care that the
+    # request did NOT 422 on seed bounds.
+    assert r.status_code != 422, r.text

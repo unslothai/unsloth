@@ -242,6 +242,35 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+def _raise_if_training_active(workload: str) -> None:
+    """Refuse a chat/diffusion/export load while training is active.
+
+    Without this guard the load path would either (a) silently stop a
+    running training run via _release_other_gpu_owners_for_diffusion
+    or (b) double-spend VRAM and OOM both jobs. Both are worse for the
+    user than a 409 explaining why the request was refused. Best-effort
+    import so unit-test backends without core.training do not 500.
+    """
+    try:
+        from core.training import get_training_backend  # type: ignore
+    except Exception:
+        return
+    try:
+        trn = get_training_backend()
+        if trn.is_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Training is currently active. Stop the training run "
+                    f"before loading a {workload} model."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.debug("training activity check skipped: %s", exc)
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so
     flags match across backends. gpt-oss is overridden because Harmony
@@ -737,6 +766,12 @@ async def load_model(
                     detail = "gpu_ids is not supported for GGUF models yet.",
                 )
 
+            # Symmetric lifecycle guard: refuse a chat load while
+            # training is active. Diffusion and export paths refuse;
+            # without this the GGUF chat load would start llama-server
+            # while training still owned VRAM and double-spend it.
+            _raise_if_training_active("chat")
+
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -928,6 +963,11 @@ async def load_model(
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
+        # Symmetric lifecycle guard: refuse a chat load while training
+        # is active so we do not OOM both the training and inference
+        # jobs together.
+        _raise_if_training_active("chat")
+
         backend = get_inference_backend()
 
         # Unload any active GGUF model first
@@ -1643,6 +1683,10 @@ async def diffusion_load(
     desired ``gguf_filename``. Returns the new status payload (same
     shape as ``/images/status``).
     """
+    # Refuse before the long download starts: silently stopping a
+    # running training run to free VRAM was the previous behavior and
+    # left the user with no model loaded plus a dead training job.
+    _raise_if_training_active("diffusion")
     backend = _get_diffusion_backend()
     try:
         status = await asyncio.get_event_loop().run_in_executor(
