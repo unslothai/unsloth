@@ -420,20 +420,9 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
 
 
 async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
-    """Watch ``request.is_disconnected()`` and close ``resp`` when the client
-    disconnects (tab closed, navigation away, fetch abort). Prevents
-    llama-server from continuing to decode after the client is gone, an
-    expensive leak on Windows where Keep-Alive + WDDM masks the downstream
-    socket close (#5692).
-
-    100ms cadence: GPU waste after disconnect <=100ms of decode. Polls the
-    Starlette Request directly so it catches aborts that never reach the
-    /cancel POST path (proxied fetches, Colab, mobile tab-close, etc.).
-
-    Sets ``cancel_event`` before closing ``resp`` so the streamer's
-    ``except (RemoteProtocolError, ReadError, CloseError)`` clause, which
-    only suppresses when ``cancel_event.is_set()``, treats the close as a
-    normal cancellation rather than an upstream error.
+    """Close ``resp`` on client disconnect; sets ``cancel_event`` first so
+    the streamer's RemoteProtocolError handler treats it as cancellation.
+    Catches aborts the in-loop /cancel check misses during prefill. #5692.
     """
     try:
         while not await request.is_disconnected():
@@ -5060,10 +5049,8 @@ async def _anthropic_passthrough_stream(
             )
             resp = await client.send(req, stream = True)
 
-            # See _openai_passthrough_stream for rationale: aiter_lines()
-            # blocks during llama-server prefill, so the in-loop cancel
-            # check is unreachable until the first SSE chunk arrives.
-            # Two background watchers: cancel POST + client disconnect.
+            # Background watchers unblock aiter_lines() during prefill,
+            # when the in-loop cancel/disconnect checks are unreachable.
             cancel_watcher = asyncio.create_task(
                 _await_cancel_then_close(cancel_event, resp)
             )
@@ -5480,16 +5467,9 @@ async def _openai_passthrough_stream(
             # save resp.aiter_lines() so the finally block can aclose() it
             # on our task. See that function for full rationale.
             lines_iter = None
-            # During llama-server prefill, `aiter_lines()` blocks until the
-            # first SSE chunk arrives. The in-loop `cancel_event` check
-            # cannot fire until then, which is the exact proxy/Colab
-            # scenario the cancel POST is meant to recover from. Run two
-            # background watchers:
-            #   1. cancel watcher — closes `resp` when the cancel POST fires
-            #   2. disconnect watcher — closes `resp` when the client
-            #      disconnects (tab close, navigation, proxy abort).
-            # Either watcher closes `resp`, unblocking the iterator with a
-            # RemoteProtocolError caught in the except clause below.
+            # Background watchers unblock aiter_lines() during prefill
+            # (cancel POST or client disconnect closes resp; the except
+            # clause below catches the resulting RemoteProtocolError).
             cancel_watcher = asyncio.create_task(
                 _await_cancel_then_close(cancel_event, resp)
             )

@@ -2972,12 +2972,9 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1"])
                     _fully_gpu_offloaded = True
 
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
-                # do not inherit llama-server's internal default, which has historically
-                # varied (hardware concurrency incl. hyperthreads on some builds).
-                # On Windows with full GPU offload (ngl -1), limit CPU threads to 2 so
-                # OpenMP's spin-wait pool doesn't burn 100% of logical cores polling
-                # for GPU completion — #5692.
+                # -1 = llama.cpp auto-detect (physical cores). Windows +
+                # full offload caps at 2 to stop OpenMP spin-wait burning
+                # CPU during GPU decode. #5692.
                 import sys as _sys
 
                 if _sys.platform == "win32" and _fully_gpu_offloaded:
@@ -3118,9 +3115,8 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # Windows + full GPU offload: KV-cache checkpoints write to
-                # system RAM over WDDM / PCI-E. Disable to keep cache in VRAM.
-                # CPU / partial offload keeps prompt caching across turns. #5692.
+                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
+                # overhead). CPU/partial offload keeps prompt caching. #5692.
                 if _sys.platform == "win32" and _fully_gpu_offloaded:
                     cmd.extend(
                         [
@@ -3169,9 +3165,9 @@ class LlamaCppBackend:
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
 
-                    # Windows + full GPU offload: PASSIVE OMP + 2 threads
-                    # to stop spin-wait burning 100% CPU during GPU decode.
-                    # CPU / partial offload keeps default OMP parallelism. #5692.
+                    # Windows + full offload: PASSIVE OMP + 2 threads stop
+                    # spin-wait burning CPU. CPU/partial offload keeps
+                    # default OMP parallelism. #5692.
                     if _fully_gpu_offloaded:
                         env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
                         env.setdefault("OMP_NUM_THREADS", "2")
