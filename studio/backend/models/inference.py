@@ -1557,20 +1557,30 @@ class DiffusionLoadRequest(BaseModel):
     VAE / text encoders when loading a GGUF-only repo.
     """
 
-    # repo_id and base_repo can be absolute local paths (Studio
-    # exports under deeply nested ``outputs/...`` directories,
-    # Windows paths with drive letter, etc.). 1024 chars matches
-    # POSIX PATH_MAX-class limits and Windows long-path support;
-    # the rounds-of-256 cap was rejecting realistic export paths.
+    # repo_id and base_repo are HF Hub identifiers in this release.
+    # Local-path support is gated behind a frontend / Tauri
+    # ``load-diffusion-model`` directory lease producer that has not
+    # shipped yet (round 32 P1 #3 in the PR reviewer trail). The
+    # 1024-char cap matches POSIX PATH_MAX so future local-path
+    # support can flip on without re-validating the field width.
     repo_id: str = Field(
-        ..., min_length = 1, max_length = 1024, description = "HF repo id or local path"
+        ...,
+        min_length = 1,
+        max_length = 1024,
+        description = (
+            "HF repo id (owner/name). Local filesystem paths are reserved "
+            "for a future native-lease flow and currently rejected by the "
+            "route's _looks_like_local_diffusion_path guard."
+        ),
     )
     # Round 30 P1 #4: chat /api/inference/load gates native local paths
     # through a signed native_path_lease grant before the backend
     # touches the filesystem. Mirror that here so /api/inference/images/
     # load cannot be used as an authenticated probe for arbitrary
-    # local directories. Optional: Hub ids (no leading slash / tilde)
-    # skip the lease check entirely.
+    # local directories. Optional; Hub ids (no leading slash / tilde)
+    # skip the lease check entirely. The Images UI does not yet
+    # surface a local-path picker, so callers that omit this field
+    # always get the Hub-id code path.
     native_path_lease: Optional[str] = Field(
         None,
         description = "Frontend-visible signed native path grant for a local repo_id",
@@ -1583,7 +1593,11 @@ class DiffusionLoadRequest(BaseModel):
     base_repo: Optional[str] = Field(
         None,
         max_length = 1024,
-        description = "Diffusers base repo (HF id or local path) for VAE + text encoders",
+        description = (
+            "Diffusers base repo (HF id) for VAE + text encoders. Local "
+            "paths are gated on the same future native-lease flow as "
+            "repo_id."
+        ),
     )
     base_repo_native_path_lease: Optional[str] = Field(
         None,

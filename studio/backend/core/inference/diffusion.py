@@ -834,6 +834,13 @@ class DiffusionBackend:
 
         device, dtype = self._pick_device_and_dtype()
 
+        # Round 32 P1 #3: track whether the backend-side
+        # helper-busy check published a "diffusion-backend" pending
+        # entry so the outer finally clears the matching publish
+        # exactly once. Set inside the try below right after the
+        # snapshot succeeds.
+        backend_pending_published = False
+
         # _load_lock serialises the entire load so two concurrent calls
         # cannot both kick off a multi-GB download + GPU upload at once.
         # The second caller waits behind the first and then loads on top
@@ -1062,7 +1069,19 @@ class DiffusionBackend:
                 # _release_other_gpu_owners_for_diffusion raises
                 # RuntimeError early when training/export is active
                 # without touching the chat backend.
-                _raise_if_helper_advisor_busy_for_diffusion()
+                # Round 32 P1 #3: publish a backend-side pending
+                # entry under the helper-advisor start lock so a
+                # direct / test / future caller of this method is
+                # symmetric with the route layer's
+                # _raise_if_helper_advisor_busy("diffusion"). The
+                # route's "diffusion" tag and this "diffusion-
+                # backend" tag refcount independently; both
+                # contribute to public_load_pending().
+                backend_pending_published = (
+                    _raise_if_helper_advisor_busy_for_diffusion(
+                        publish_pending = True,
+                    )
+                )
                 _release_other_gpu_owners_for_diffusion()
                 _release_chat_backend_for_diffusion(check_helper_advisor = False)
 
@@ -1306,6 +1325,12 @@ class DiffusionBackend:
                     self._pending_repo_id = None
                     self._pending_base_repo = None
                     self._pending_gguf_filename = None
+                # Round 32 P1 #3: clear the backend-side public-load
+                # pending publish if it was set. Skipped when the
+                # helper-busy snapshot raised (no publish to clear)
+                # so the counter stays in sync with publishes.
+                if backend_pending_published:
+                    _clear_diffusion_backend_pending()
 
     def unload_model(self) -> dict[str, Any]:
         # Take the load lock and the generate lock so unload cannot:
@@ -1528,23 +1553,64 @@ def encode_png_base64(pil_image: "Any") -> str:
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def _raise_if_helper_advisor_busy_for_diffusion() -> None:
+def _raise_if_helper_advisor_busy_for_diffusion(
+    *,
+    publish_pending: bool = False,
+) -> bool:
     """Round 29 P1 #1: split the helper-busy check out of
     _release_chat_backend_for_diffusion so the diffusion load can
     check ALL conflicts (helper, training, export) BEFORE doing ANY
     destructive unloads. Otherwise a route-precheck race or a direct
     backend call would unload the user's chat while training was
     active, then 409 with the user holding no model at all.
+
+    Round 32 P1 #3: when ``publish_pending=True`` also takes
+    ``_HELPER_ADVISOR_START_LOCK`` and publishes a
+    ``diffusion-backend`` public-load pending entry so a concurrent
+    AI Assist helper / advisor start that wins the start lock sees
+    the pending public owner and refuses VRAM. The route layer
+    publishes its own ``diffusion`` tag (refcount semantics, so the
+    two publishes coexist without erasing each other). Returns True
+    when a pending entry was actually published so the caller can
+    pair it with ``_clear_diffusion_backend_pending`` in finally.
+    Direct callers (tests, scripts) opt in with ``publish_pending=
+    True`` to get the same atomic check + publish the route gets.
+    The ``check_helper_advisor`` callback in
+    ``_release_chat_backend_for_diffusion`` keeps the default False
+    so legacy callers do not double-publish or leak pending entries.
     """
     try:
-        from utils.datasets.llm_assist import helper_advisor_busy
+        from utils.datasets.llm_assist import (
+            _HELPER_ADVISOR_START_LOCK,
+            _publish_public_load_pending,
+            helper_advisor_busy,
+        )
+    except Exception:
+        return False
+    with _HELPER_ADVISOR_START_LOCK:
+        if helper_advisor_busy():
+            raise RuntimeError(
+                "AI Assist (helper / advisor GGUF) is still using the GPU. "
+                "Wait for it to finish before loading a diffusion image model."
+            )
+        if publish_pending:
+            _publish_public_load_pending("diffusion-backend")
+            return True
+    return False
+
+
+def _clear_diffusion_backend_pending() -> None:
+    """Round 32 P1 #3: paired clear for
+    ``_raise_if_helper_advisor_busy_for_diffusion(publish_pending=True)``.
+    Safe to call when the helpers module is unavailable (no-op)."""
+    try:
+        from utils.datasets.llm_assist import _release_public_load_pending
     except Exception:
         return
-    if helper_advisor_busy():
-        raise RuntimeError(
-            "AI Assist (helper / advisor GGUF) is still using the GPU. "
-            "Wait for it to finish before loading a diffusion image model."
-        )
+    try:
+        _release_public_load_pending("diffusion-backend")
+    except Exception:
+        pass
 
 
 def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) -> None:

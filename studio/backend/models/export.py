@@ -27,7 +27,11 @@ def _validate_save_directory(value: str) -> str:
         raise ValueError("save_directory must not be empty")
     if "\x00" in raw:
         raise ValueError("save_directory may not contain null bytes")
-    if any(ch in raw for ch in ("\r", "\n")):
+    # Round 32 P1: reject ALL ASCII control characters (including
+    # TAB / VT / FF) so a caller cannot smuggle log-line breaks or
+    # subprocess argv splitters past the export worker. The earlier
+    # CR / LF check missed every other C0 byte.
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in raw):
         raise ValueError("save_directory may not contain control characters")
     if len(raw) > 255:
         raise ValueError("save_directory must be <= 255 characters")
