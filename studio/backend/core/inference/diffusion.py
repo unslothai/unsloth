@@ -669,9 +669,7 @@ class DiffusionBackend:
                 # Use ``logger.error`` with the already-scrubbed
                 # message and exc_info=False so the bearer token
                 # cannot leak through structured logging sinks.
-                logger.error(
-                    "Diffusion load failed for %s: %s", repo_id, exc_msg
-                )
+                logger.error("Diffusion load failed for %s: %s", repo_id, exc_msg)
                 raise RuntimeError(
                     f"Failed to load diffusion model: {exc_msg}"
                 ) from exc
