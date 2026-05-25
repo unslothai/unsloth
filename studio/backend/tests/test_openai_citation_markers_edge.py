@@ -89,6 +89,7 @@ def _simulate_delta_stream(
             for ch in (CITE_START, CITE_STOP, CITE_DELIM):
                 rendered = rendered.replace(ch, "")
             import re as _re
+
             rendered = _re.sub(r"^cite\S*", "", rendered)
         if rendered:
             emitted.append(rendered)
@@ -409,7 +410,6 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
     assert _no_private_use(out)
 
 
-
 # ---------------------------------------------------------------------------
 # Regression: unterminated marker tail must NOT leak the residual
 # ``cite``-prefixed source id as plain text. PR #5713 audit P1.
@@ -471,4 +471,3 @@ def test_closing_byte_arrives_after_pending_buffered_split():
     assert "a " in out and "b" in out
     assert _no_private_use(out)
     assert "citesid" not in out
-
