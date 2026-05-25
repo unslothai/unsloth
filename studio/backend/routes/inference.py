@@ -1681,19 +1681,11 @@ async def unload_model(
         llama_matches_request = (
             loaded_identifier == request.model_path
             or loading_identifier == request.model_path
-            or is_registered_native_path_label(
-                loaded_identifier, request.model_path
-            )
-            or is_registered_native_path_label(
-                loading_identifier, request.model_path
-            )
+            or is_registered_native_path_label(loaded_identifier, request.model_path)
+            or is_registered_native_path_label(loading_identifier, request.model_path)
         )
-        if (
-            getattr(llama_backend, "is_active", False)
-            or loading_identifier
-        ) and (
-            llama_matches_request
-            or not getattr(llama_backend, "is_loaded", False)
+        if (getattr(llama_backend, "is_active", False) or loading_identifier) and (
+            llama_matches_request or not getattr(llama_backend, "is_loaded", False)
         ):
             # Round 19 P1 #6: previously this called
             # ``llama_backend.unload_model()`` and unconditionally

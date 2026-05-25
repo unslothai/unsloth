@@ -398,9 +398,11 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     # ``subfolder="transformer"``) so existing tests that exercise
     # the GGUF path do not hit a TypeError from the fake signature.
     fake_hub = types.ModuleType("huggingface_hub")
+
     def _fake_download(repo_id, filename, token = None, subfolder = None, **_kwargs):
         sub = f"{subfolder}/" if subfolder else ""
         return f"/fake/{repo_id}/{sub}{filename}"
+
     fake_hub.hf_hub_download = _fake_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
 

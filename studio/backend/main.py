@@ -338,8 +338,9 @@ def _scrub_validation_obj(value):
         # ``{"hf_xxxxx": "owner/repo"}``. Scrub string keys too so the
         # token does not leak through the 422 response body.
         return {
-            (_scrub_validation_obj(k) if isinstance(k, str) else k):
-            _scrub_validation_obj(v)
+            (
+                _scrub_validation_obj(k) if isinstance(k, str) else k
+            ): _scrub_validation_obj(v)
             for k, v in value.items()
         }
     return value
