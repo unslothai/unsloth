@@ -904,18 +904,25 @@ def pip_install_with_floor_fallback(
 ) -> None:
     """Run pip_install with a soft lower-bound floor and fall back unpinned.
 
-    First attempts the install with ``*floor`` appended. If the resolver
-    cannot satisfy the floor (typical case: macOS arm64 host whose macOS
-    version predates the wheel-tag of a transitive ML dep, e.g. mlx
-    0.30+ which only ships ``macosx_14_0_arm64`` wheels), retries the
-    install without the floor and prints a warning. This preserves the
-    pre-fix "succeed but possibly stale" behaviour as a fallback while
-    still attempting the floor on platforms where it is satisfiable
-    (macos-14+, Linux, Windows).
+    Tried in order:
 
-    ``UNSLOTH_NO_PYPI_FLOOR=1`` skips the floor entirely and runs the
-    plain unpinned install. Useful for air-gapped CI / corporate
-    mirrors that do not see PyPI directly.
+      1. ``args + floor`` with ``-c constraints.txt`` -- the strict case
+         (works on Linux, Windows, and macos-14+ where the latest
+         unsloth-zoo stack is wheel-compatible).
+      2. ``args + floor`` WITHOUT constraints -- macOS arm64 needs this
+         because the single-env constraints pin ``transformers==4.57.6``
+         while ``unsloth-zoo``'s ``mlx-vlm`` dep requires
+         ``transformers>=5.1.0``. Skipping constraints lets the resolver
+         pick a transformers version that satisfies both; downstream
+         constrained steps still apply the pin to anything that doesn't
+         transitively conflict.
+      3. ``args`` with no floor and the caller's ``constrain`` setting --
+         the historical pre-fix code path. Last resort so the update
+         still completes (possibly stale) instead of failing outright.
+
+    ``UNSLOTH_NO_PYPI_FLOOR=1`` jumps straight to step 3 -- useful for
+    air-gapped CI / corporate mirrors that intentionally do not expose
+    pypi.org directly.
     """
     skip_floor = os.environ.get("UNSLOTH_NO_PYPI_FLOOR", "").strip().lower() in (
         "1",
@@ -926,6 +933,17 @@ def pip_install_with_floor_fallback(
         pip_install(label, *args, req = req, constrain = constrain)
         return
     if pip_install_try(label, *args, *floor, req = req, constrain = constrain):
+        return
+    # Strict floor failed -- the single-env constraints.txt is the most
+    # common cause on macOS arm64. Retry without constraints; downstream
+    # steps re-apply them where they matter.
+    if pip_install_try(label, *args, *floor, req = req, constrain = False):
+        _step(
+            "warning",
+            "Floor pin needed --no-constraints to resolve on this "
+            "platform; subsequent steps re-apply the single-env pins",
+            _cyan,
+        )
         return
     _step(
         "warning",
