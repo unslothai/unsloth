@@ -800,16 +800,23 @@ class DiffusionBackend:
                 "loading an image model."
             ) from exc
 
-        # Round 30 P1 #11: also preflight transformers + accelerate
-        # BEFORE any destructive unload. Diffusers can expose stub
-        # pipeline classes when transformers is missing or broken, so
-        # the load would otherwise tear down chat first and fail
-        # later inside from_pretrained. Use find_spec (no module
-        # execution) so test environments that stub these modules
-        # still pass the preflight without us actually importing them.
+        # Round 30 P1 #11: also preflight transformers BEFORE any
+        # destructive unload. Diffusers can expose stub pipeline
+        # classes when transformers is missing or broken, so the load
+        # would otherwise tear down chat first and fail later inside
+        # from_pretrained. Use find_spec (no module execution) so test
+        # environments that stub these modules still pass the preflight
+        # without us actually importing them.
+        # Round 34: accelerate is only needed for the CPU-offload path
+        # (``enable_model_cpu_offload`` / ``device_map="auto"`` /
+        # offload hooks); gate the preflight on the offload flag so
+        # tests and offload=False inference paths do not require it.
         import importlib.util as _ilu
 
-        for _mod in ("transformers", "accelerate"):
+        _required = ["transformers"]
+        if enable_model_cpu_offload:
+            _required.append("accelerate")
+        for _mod in _required:
             if _ilu.find_spec(_mod) is None:
                 raise RuntimeError(
                     "Diffusion image generation requires the Studio torch "
