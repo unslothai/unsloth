@@ -43,11 +43,14 @@ export function hashArtifactCode(code: string): string {
 
 export function createArtifactId(input: ChatArtifactInput): string {
   const threadSegment = input.threadId || "no-thread";
-  const sourceId =
-    input.sourceToolCallId || input.sourceMessageId || "transient";
-  const parts = [input.source, threadSegment, sourceId];
+  const messageSegment = input.sourceMessageId || "transient";
+  // Backend tool call IDs (call_0, call_1, …) reset per request, so
+  // the message ID is needed to scope them to a specific turn.
+  const parts = [input.source, threadSegment, messageSegment];
 
-  if (input.source !== "tool" || !input.sourceToolCallId) {
+  if (input.source === "tool" && input.sourceToolCallId) {
+    parts.push(input.sourceToolCallId);
+  } else {
     parts.push(hashArtifactCode(input.code));
   }
 
