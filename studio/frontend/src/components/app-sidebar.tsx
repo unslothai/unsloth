@@ -823,7 +823,7 @@ export function AppSidebar() {
         {!isStudioRoute && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
                 Recents
                 <ChevronDown className="size-4 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />

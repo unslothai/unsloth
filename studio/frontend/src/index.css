@@ -537,8 +537,11 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
+		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		letter-spacing: 0.015em;
+	}
+	.sidebar-sticky-label-following {
+		@apply pt-4;
 	}
 	.dark .sidebar-sticky-label {
 		letter-spacing: 0.03em;
