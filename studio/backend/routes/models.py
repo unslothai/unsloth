@@ -2826,14 +2826,10 @@ async def delete_cached_model(
         )
         raise HTTPException(
             status_code = 503,
-            detail = (
-                "Could not verify cache ownership before deleting. Try again."
-            ),
+            detail = ("Could not verify cache ownership before deleting. Try again."),
         ) from cache_scan_exc
 
-    def _owned_cache_path_matches(
-        value: Optional[str], roots: list[Path]
-    ) -> bool:
+    def _owned_cache_path_matches(value: Optional[str], roots: list[Path]) -> bool:
         """Return True if ``value`` resolves to (or contains, or is a
         child of) any of the HF cache repo roots for the target repo.
         Used by the llama / safetensors guards to catch local snapshot
