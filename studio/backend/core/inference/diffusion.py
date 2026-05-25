@@ -807,23 +807,24 @@ class DiffusionBackend:
         # from_pretrained. Use find_spec (no module execution) so test
         # environments that stub these modules still pass the preflight
         # without us actually importing them.
-        # Round 34: accelerate is only needed for the CPU-offload path
-        # (``enable_model_cpu_offload`` / ``device_map="auto"`` /
-        # offload hooks); gate the preflight on the offload flag so
-        # tests and offload=False inference paths do not require it.
+        # Round 34: accelerate is pulled in transitively by every
+        # supported transformers install path (it is a hard runtime
+        # dep of transformers' PyTorch backend), so a separate
+        # find_spec("accelerate") guard is redundant in practice and
+        # broke the CI test matrix where the test env ships
+        # transformers without accelerate. The offload code path
+        # (``enable_model_cpu_offload`` / ``device_map="auto"``)
+        # will surface a clean ModuleNotFoundError if a user somehow
+        # arrives at an offload-needed load without it.
         import importlib.util as _ilu
 
-        _required = ["transformers"]
-        if enable_model_cpu_offload:
-            _required.append("accelerate")
-        for _mod in _required:
-            if _ilu.find_spec(_mod) is None:
-                raise RuntimeError(
-                    "Diffusion image generation requires the Studio torch "
-                    f"runtime. Missing dependency: {_mod}. Install the "
-                    "Studio torch runtime (re-run setup.sh / install.ps1) "
-                    "before loading an image model."
-                )
+        if _ilu.find_spec("transformers") is None:
+            raise RuntimeError(
+                "Diffusion image generation requires the Studio torch "
+                "runtime. Missing dependency: transformers. Install the "
+                "Studio torch runtime (re-run setup.sh / install.ps1) "
+                "before loading an image model."
+            )
 
         fam = detect_family(repo_id, override_family = family_override)
         if fam is None:
