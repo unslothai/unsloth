@@ -334,9 +334,10 @@ class DiffusionBackend:
         for VAE / text encoders. ``family_override`` short-circuits the
         substring matcher when an exotic repo name confuses it.
 
-        Raises ``RuntimeError`` on failure with a user-facing message;
-        the previous pipeline (if any) stays loaded so a failed swap
-        does not leave Studio in an unusable state.
+        Raises ``RuntimeError`` on failure with a user-facing message.
+        On a failed swap the previous pipeline is also released to
+        keep peak VRAM bounded; status() reports is_loaded=false with
+        last_error set so the caller can react.
         """
         from huggingface_hub import hf_hub_download
         import diffusers
@@ -469,7 +470,19 @@ class DiffusionBackend:
                 old = self._pipe
                 if old is not None:
                     with self._lock:
+                        # Clear ALL metadata together so a failed swap
+                        # cannot leave status() reporting the previous
+                        # repo / family / base_repo on top of an empty
+                        # pipe. The except block below will restore
+                        # last_error so the caller knows what happened.
                         self._pipe = None
+                        self._family = None
+                        self._repo_id = None
+                        self._gguf_path = None
+                        self._base_repo = None
+                        self._device = None
+                        self._dtype = None
+                        self._loaded_at = None
                     _release(old)
                     old = None
 

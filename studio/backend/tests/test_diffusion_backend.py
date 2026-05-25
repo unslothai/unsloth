@@ -417,6 +417,49 @@ def test_load_model_recovers_after_failure(monkeypatch):
     assert s["last_error"] and "simulated load failure" in s["last_error"]
 
 
+def test_failed_swap_clears_previous_metadata(monkeypatch):
+    """After a successful load, a subsequent failing load must NOT
+    leave status() reporting the OLD repo/family/base_repo on top of
+    is_loaded=false. The clear must be atomic with the pipe drop."""
+    import sys
+
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    # First load succeeds.
+    backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+    )
+    s_before = backend.status()
+    assert s_before["is_loaded"] is True
+    assert s_before["repo_id"] == "unsloth/FLUX.2-klein-4B-GGUF"
+
+    # Replace from_pretrained on the SAME fake module with a raising one
+    # without re-installing the rest of the fakes.
+    fake = sys.modules["diffusers"]
+    def _boom(cls, *a, **kw):
+        raise RuntimeError("simulated swap failure")
+    fake.Flux2KleinPipeline.from_pretrained = classmethod(_boom)
+
+    with pytest.raises(RuntimeError, match = "Failed to load diffusion model"):
+        backend.load_model(
+            "unsloth/FLUX.2-dev-GGUF",
+            gguf_filename = "flux2-dev-Q4_K_S.gguf",
+        )
+
+    s_after = backend.status()
+    assert s_after["is_loaded"] is False
+    # Critically: stale metadata from the previous successful load
+    # must be cleared, not just the pipe.
+    assert s_after["repo_id"] is None
+    assert s_after["family"] is None
+    assert s_after["base_repo"] is None
+    assert s_after["gguf_filename"] is None
+    assert s_after["last_error"] and "simulated swap failure" in s_after["last_error"]
+
+
 def test_load_model_swap_drops_previous(monkeypatch):
     _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
