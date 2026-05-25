@@ -162,3 +162,49 @@ def test_is_same_origin_request_127_vs_localhost_is_cross_origin():
 
     req = _build_request("localhost:8902", origin = "http://127.0.0.1:8902")
     assert _is_same_origin_request(req) is False
+
+
+# ── urlparse ValueError robustness ─────────────────────────────────
+
+
+def test_is_same_origin_request_malformed_ipv6_bracket_is_cross_origin():
+    """``urlparse`` raises ``ValueError('Invalid IPv6 URL')`` on
+    unclosed brackets and similar bracketed-host garbage (CVE-2024-11168
+    hardening). A malicious caller sending ``Origin: http://[malformed``
+    must not crash ``_build_index_response`` into HTTP 500; the gate
+    swallows the parse error and falls to cross-origin.
+    """
+    from main import _is_same_origin_request
+
+    req = _build_request("127.0.0.1:8902", origin = "http://[malformed")
+    assert _is_same_origin_request(req) is False
+
+
+def test_is_same_origin_request_invalid_ipv6_address_is_cross_origin():
+    """Bracketed but invalid IPv6 (e.g. ``[::g]``) also raises
+    ``ValueError`` inside ``urlparse``."""
+    from main import _is_same_origin_request
+
+    req = _build_request("127.0.0.1:8902", origin = "http://[::g]:8902")
+    assert _is_same_origin_request(req) is False
+
+
+def test_is_same_origin_request_bracket_with_trailing_garbage_is_cross_origin():
+    """Text after the closing bracket also raises inside ``urlparse``."""
+    from main import _is_same_origin_request
+
+    req = _build_request(
+        "127.0.0.1:8902", origin = "http://[2001:db8::1]extra:8902"
+    )
+    assert _is_same_origin_request(req) is False
+
+
+def test_is_same_origin_request_empty_origin_header_is_cross_origin():
+    """An explicit empty ``Origin:`` value is not a valid serialised
+    origin (no scheme + host) and must not be conflated with a missing
+    header. Treat as cross-origin so the bootstrap is withheld.
+    """
+    from main import _is_same_origin_request
+
+    req = _build_request("127.0.0.1:8902", origin = "")
+    assert _is_same_origin_request(req) is False

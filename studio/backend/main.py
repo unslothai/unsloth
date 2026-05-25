@@ -816,18 +816,32 @@ def _is_same_origin_request(request: Request) -> bool:
     can't auto-fill the change-password form).
     """
     origin = request.headers.get("origin")
-    if not origin:
+    if origin is None:
+        # Missing header: top-level same-document GETs omit Origin.
         return True
+    # An empty string is not a valid serialised origin (RFC 6454 §6.1
+    # requires scheme + host); treat as cross-origin.
+    if not origin:
+        return False
     # Origin is ``scheme://host[:port]`` per RFC 6454 §6.1. Reject the
     # special token "null" (sandboxed iframes, file:// pages) and any
     # value that doesn't parse as a URL.
     if origin == "null":
         return False
-    parsed = urlparse(origin)
+    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets and
+    # a few NFKC edge cases (Py 3.8+). A garbage Origin must not crash
+    # the SPA handler into a 500, so swallow and fall to cross-origin.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
     origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
     if origin_canon is None:
         return False
-    self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    try:
+        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    except ValueError:
+        return False
     if self_canon is None:
         return False
     return origin_canon == self_canon
