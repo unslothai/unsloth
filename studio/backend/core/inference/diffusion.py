@@ -375,12 +375,15 @@ def detect_family(
             # ``qwenimage-gguf`` -> qwenimage-compact in needle_compact.
             # Use word boundary on the compact form too: the compact
             # ``flux2`` must not match inside ``flux20``.
-            return bool(
-                re.search(
-                    rf"(^|[^0-9a-z]){re.escape(term_compact)}([^0-9a-z]|$)",
-                    needle_compact,
+            return (
+                bool(
+                    re.search(
+                        rf"(^|[^0-9a-z]){re.escape(term_compact)}([^0-9a-z]|$)",
+                        needle_compact,
+                    )
                 )
-            ) or term_compact == needle_compact
+                or term_compact == needle_compact
+            )
         return False
 
     # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES

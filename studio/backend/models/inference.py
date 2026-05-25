@@ -1455,9 +1455,7 @@ import re as _re
 _EMBEDDED_HF_TOKEN_RE = _re.compile(r"hf_[A-Za-z0-9]{20,}")
 
 
-def _reject_embedded_hf_token(
-    value: Optional[str], field_name: str
-) -> Optional[str]:
+def _reject_embedded_hf_token(value: Optional[str], field_name: str) -> Optional[str]:
     """Refuse identifiers that contain an embedded ``hf_xxx`` token.
 
     Round 15 P1 #5: ``repo_id`` and ``base_repo`` accept URL-style
