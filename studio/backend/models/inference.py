@@ -73,7 +73,12 @@ class LoadRequest(BaseModel):
     def _no_identifier_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("model_path")
+    # Round 21 P1 #1: also reject embedded HF tokens in
+    # ``gguf_variant``. A caller can pass a variant string like
+    # ``Q4_K_M-hf_xxxxxxxx`` that flows into log sinks via the
+    # GGUF resolver path; without this only ``model_path`` was
+    # protected.
+    @field_validator("model_path", "gguf_variant")
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):
         return _reject_embedded_hf_token(v, info.field_name)
@@ -171,7 +176,9 @@ class ValidateModelRequest(BaseModel):
     def _no_identifier_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("model_path")
+    # Round 21 P1 #2: extend embedded-token rejection to
+    # ``gguf_variant`` here too (mirrors LoadRequest).
+    @field_validator("model_path", "gguf_variant")
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):
         return _reject_embedded_hf_token(v, info.field_name)

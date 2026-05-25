@@ -393,10 +393,15 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     monkeypatch.setitem(sys.modules, "diffusers", fake)
 
     # Pretend HF Hub gave us a local file without actually fetching.
+    # Round 21: accept arbitrary kwargs (round 20 preflight adds
+    # ``filename="model_index.json"`` and round 21 preflight adds
+    # ``subfolder="transformer"``) so existing tests that exercise
+    # the GGUF path do not hit a TypeError from the fake signature.
     fake_hub = types.ModuleType("huggingface_hub")
-    fake_hub.hf_hub_download = (
-        lambda repo_id, filename, token = None: f"/fake/{repo_id}/{filename}"
-    )
+    def _fake_download(repo_id, filename, token = None, subfolder = None, **_kwargs):
+        sub = f"{subfolder}/" if subfolder else ""
+        return f"/fake/{repo_id}/{sub}{filename}"
+    fake_hub.hf_hub_download = _fake_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
 
     # Force CPU dtype so the test does not need CUDA.
@@ -1308,12 +1313,13 @@ def test_load_model_accepts_relative_local_dir(monkeypatch, tmp_path):
     def _boom(**kwargs):
         # Round 20 P1 #1 added a base-repo preflight that downloads
         # the diffusers ``model_index.json`` of the auto-picked
-        # companion repo BEFORE the chat unload. Allow that call
-        # through (it would otherwise hit the network) but still
-        # reject any attempt to download the GGUF itself, which is
-        # what this test guards.
-        if kwargs.get("filename") == "model_index.json":
-            return "/tmp/model_index.json"
+        # companion repo BEFORE the chat unload. Round 21 P2 #6
+        # added a second preflight for ``transformer/config.json``
+        # on that same companion. Allow both preflight kinds through
+        # but still reject any attempt to download the GGUF itself,
+        # which is what this test guards.
+        if kwargs.get("filename") in ("model_index.json", "config.json"):
+            return "/tmp/preflight"
         raise AssertionError("hf_hub_download must not run for a local dir")
 
     fake_hub = SimpleNamespace(hf_hub_download = _boom)

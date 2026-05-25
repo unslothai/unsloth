@@ -333,7 +333,15 @@ def _scrub_validation_obj(value):
     if isinstance(value, list):
         return [_scrub_validation_obj(v) for v in value]
     if isinstance(value, dict):
-        return {k: _scrub_validation_obj(v) for k, v in value.items()}
+        # Round 21 P2 #7: pydantic surfaces ``input`` for ``string_type``
+        # validation errors verbatim, including dict KEYS like
+        # ``{"hf_xxxxx": "owner/repo"}``. Scrub string keys too so the
+        # token does not leak through the 422 response body.
+        return {
+            (_scrub_validation_obj(k) if isinstance(k, str) else k):
+            _scrub_validation_obj(v)
+            for k, v in value.items()
+        }
     return value
 
 

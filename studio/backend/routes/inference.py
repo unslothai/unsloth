@@ -502,19 +502,20 @@ async def _release_safetensors_chat_for(workload: str) -> None:
         )
         await _unload_required(loading)
 
-    # Round 19 P1 #1: final sweep using the set of names that were
-    # initially present. Catches races where a model name we did not
-    # explicitly unload (because it appeared between the snapshot and
-    # the unload calls) is still in the owned set after the loop.
-    remaining_loading = (
-        set(getattr(inf, "loading_models", set()) or set()) & owned_names
-    )
+    # Round 21 P1 #4: final sweep without the owned_names filter.
+    # A concurrent ``/load`` that appeared AFTER the initial
+    # snapshot was previously ignored here, so a chat model that
+    # started loading during the unload window let the surrounding
+    # training / export / GGUF / diffusion start anyway. Treat ANY
+    # surviving active / loading entry as a failure so the caller
+    # retries rather than racing the new chat load for VRAM.
+    remaining_loading = set(getattr(inf, "loading_models", set()) or set())
     remaining_active = getattr(inf, "active_model_name", None)
-    if remaining_loading or (remaining_active in owned_names):
+    if remaining_loading or remaining_active:
         raise HTTPException(
             status_code = 503,
             detail = (
-                "The existing safetensors chat model is still active or loading "
+                "A safetensors chat model is still active or loading "
                 f"after unload; retry before starting {workload}."
             ),
         )
@@ -1667,12 +1668,32 @@ async def unload_model(
     try:
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and (
-            llama_backend.model_identifier == request.model_path
+        loaded_identifier = getattr(llama_backend, "model_identifier", None)
+        loading_identifier = getattr(llama_backend, "loading_model_identifier", None)
+        # Round 21 P1 #3: a GGUF download that has not yet flipped
+        # ``is_active`` to True (model_identifier still None,
+        # ``loading_model_identifier`` populated) used to fall
+        # through to the safetensors branch, which silently
+        # responded ``status="unloaded"`` while llama-server kept
+        # downloading. Match on either the loaded OR loading
+        # identifier so the explicit unload route can actually
+        # cancel a pending GGUF load.
+        llama_matches_request = (
+            loaded_identifier == request.model_path
+            or loading_identifier == request.model_path
             or is_registered_native_path_label(
-                llama_backend.model_identifier, request.model_path
+                loaded_identifier, request.model_path
             )
-            or not llama_backend.is_loaded
+            or is_registered_native_path_label(
+                loading_identifier, request.model_path
+            )
+        )
+        if (
+            getattr(llama_backend, "is_active", False)
+            or loading_identifier
+        ) and (
+            llama_matches_request
+            or not getattr(llama_backend, "is_loaded", False)
         ):
             # Round 19 P1 #6: previously this called
             # ``llama_backend.unload_model()`` and unconditionally

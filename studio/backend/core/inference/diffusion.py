@@ -201,6 +201,60 @@ def _expand_existing_local_path(value: str) -> str:
     return value
 
 
+def _preflight_diffusers_subfolder_config(
+    repo: str,
+    subfolder: str,
+    hf_token: Optional[str],
+) -> None:
+    """Round 21 P2 #6: also probe ``{subfolder}/config.json``.
+
+    The full-repo preflight at ``_preflight_full_diffusers_repo``
+    only proves ``model_index.json`` exists. For GGUF loads the
+    follow-up ``from_single_file(..., config=effective_base,
+    subfolder="transformer")`` still needs a matching
+    ``transformer/config.json`` on the base companion. Without
+    this second probe a base that has model_index.json but no
+    transformer config would still unload chat before the load
+    failed.
+    """
+    if not repo or not subfolder:
+        return
+    try:
+        local = Path(repo).expanduser()
+    except (OSError, ValueError):
+        local = None
+    if local is not None and local.exists():
+        config_path = local / subfolder / "config.json"
+        if not config_path.is_file():
+            raise RuntimeError(
+                f"Diffusion repo '{_display_repo_id(repo)}' is missing "
+                f"{subfolder}/config.json."
+            )
+        return
+    if (local is not None and local.is_absolute()) or repo.startswith("~"):
+        # Local-only path that does not exist -- _preflight_full_diffusers_repo
+        # already raised for the absent directory, so reaching here means the
+        # caller is loading a Hub id that just looks like a path. Fall through
+        # to the network probe.
+        pass
+    try:
+        from huggingface_hub import hf_hub_download as _hf_hub_download
+    except Exception:
+        return
+    try:
+        _hf_hub_download(
+            repo_id = repo,
+            filename = "config.json",
+            subfolder = subfolder,
+            token = hf_token,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not access diffusion repo '{_display_repo_id(repo)}' "
+            f"{subfolder}/config.json before unloading the current model."
+        ) from exc
+
+
 def _preflight_full_diffusers_repo(repo: str, hf_token: Optional[str]) -> None:
     """Prove a full diffusers repo is accessible before any unloads.
 
@@ -904,6 +958,21 @@ class DiffusionBackend:
                 # ``effective_base`` so a bad companion repo is
                 # caught BEFORE chat / export are released.
                 _preflight_full_diffusers_repo(effective_base, hf_token)
+                # Round 21 P2 #6: the GGUF transformer path also
+                # consumes ``effective_base`` via
+                # ``from_single_file(config=effective_base,
+                # subfolder="transformer")``. A base that has
+                # ``model_index.json`` but lacks
+                # ``transformer/config.json`` would pass the
+                # round-19 preflight and only fail AFTER the chat
+                # unload. Run the subfolder probe too so the
+                # second cheap failure mode is also caught early.
+                if gguf_filename and fam.transformer_class:
+                    _preflight_diffusers_subfolder_config(
+                        effective_base,
+                        "transformer",
+                        hf_token,
+                    )
 
                 # Round 20 P1 #2: ``diffusers.GGUFQuantizationConfig``
                 # imports the ``gguf`` package lazily at construction
@@ -1536,17 +1605,18 @@ def _release_chat_backend_for_diffusion() -> None:
         )
         _require_unload(loading)
 
-    # Round 19 P1 #2: final sweep using the initial snapshot of
-    # owned names. Catches races where a name we did not explicitly
-    # unload (because it appeared in loading_models between the
-    # snapshot and the unload calls) is still owned after the loop.
-    remaining_loading = (
-        set(getattr(backend, "loading_models", set()) or set()) & owned_names
-    )
+    # Round 21 P1 #5: final sweep without the owned_names filter.
+    # A concurrent ``/load`` that appeared AFTER the initial
+    # snapshot was previously ignored, so a chat model that started
+    # loading during the diffusion handoff slipped through and
+    # raced the diffusion allocation for VRAM. Treat ANY surviving
+    # active / loading entry as a failure so the surrounding
+    # load_model raises and the caller retries.
+    remaining_loading = set(getattr(backend, "loading_models", set()) or set())
     remaining_active = getattr(backend, "active_model_name", None)
-    if remaining_loading or (remaining_active in owned_names):
+    if remaining_loading or remaining_active:
         raise RuntimeError(
-            "The existing safetensors chat model is still active or loading "
+            "A safetensors chat model is still active or loading "
             "after unload; retry before loading a diffusion image model."
         )
 
