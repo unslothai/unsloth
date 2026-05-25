@@ -126,3 +126,40 @@ class EvalJobManager:
             else prog.get("avg_score", 0.0),
             "last_result": prog.get("last_result"),
         }
+
+
+def build_eval_run_fn() -> RunFn:
+    """Production run_fn: loads model + dataset, scores via the real inference path."""
+    from core.inference import get_inference_backend
+    from .dataset import DatasetRef, load_eval_examples
+    from .inference_adapter import ensure_model_loaded, make_generate
+    from .metrics.registry import make_scorer
+    from .runner import run_eval
+
+    def run_fn(req, *, on_result, should_cancel):
+        backend = get_inference_backend()
+        ensure_model_loaded(backend, req.model_identifier)
+        ref = DatasetRef(
+            is_local=req.dataset.is_local, path=req.dataset.path,
+            name=req.dataset.name, split=req.dataset.split, subset=req.dataset.subset,
+        )
+        examples = load_eval_examples(
+            ref, input_col=req.input_column,
+            reference_col=req.reference_column, limit=req.limit,
+        )
+        generate = make_generate(backend, max_new_tokens=req.max_new_tokens,
+                                 temperature=req.temperature)
+        scorer = make_scorer(req.metric_name, req.metric_config)
+
+        def _on_result(idx, result, prediction, input_text, reference):
+            # bridge run_eval's 5-arg callback to the manager's 7-arg on_result
+            on_result(idx, result.score, prediction, input_text, reference,
+                      result.breakdown, result.error)
+
+        return run_eval(
+            examples=examples, generate=generate, scorer=scorer,
+            system_prompt=req.system_prompt, template=req.template,
+            gen_params={}, should_cancel=should_cancel, on_result=_on_result,
+        )
+
+    return run_fn
