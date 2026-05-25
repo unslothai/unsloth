@@ -113,7 +113,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "StableDiffusion3Pipeline",
         transformer_class = "SD3Transformer2DModel",
         base_repo = "stabilityai/stable-diffusion-3-medium-diffusers",
-        aliases = ("sd3-medium", "stable-diffusion-3-medium", "sd3.5"),
+        # Intentionally NOT including "sd3.5" / "stable-diffusion-3.5"
+        # here: the SD3.5 family uses a different transformer config and
+        # base repo than SD3 Medium, and silently pairing SD3.5 GGUFs
+        # with the Medium base produces a misleading load. Add a
+        # dedicated SD3.5 family with its own base_repo when we ship
+        # smoke coverage for it.
+        aliases = ("sd3-medium", "stable-diffusion-3-medium"),
     ),
     # SDXL: full diffusers path only (no GGUF). SDXL uses a UNet (not a
     # transformer) and wiring UNet2DConditionModel.from_single_file +

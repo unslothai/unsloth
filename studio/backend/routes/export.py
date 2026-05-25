@@ -81,6 +81,20 @@ async def load_checkpoint(
         except Exception as e:
             logger.warning("Could not unload inference model: %s", e)
 
+        # Also unload any active diffusion pipeline (Images page); it
+        # competes for the same GPU and would survive the inference
+        # shutdown above. Best effort; silently skip if the module is
+        # absent.
+        try:
+            from core.inference.diffusion import get_diffusion_backend
+
+            diff = get_diffusion_backend()
+            if diff.is_loaded:
+                logger.info("Unloading diffusion model to free GPU memory for export")
+                diff.unload_model()
+        except Exception as e:
+            logger.debug("diffusion unload skipped for export: %s", e)
+
         try:
             from core.training import get_training_backend
 
