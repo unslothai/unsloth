@@ -256,14 +256,17 @@ function SvgPreview({ source }: { source: string }) {
 const HTML_PREVIEW_HEIGHT_REPORTER =
   '<script>(()=>{const post=()=>parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");window.addEventListener("load",post);new ResizeObserver(post).observe(document.documentElement);})();</script>';
 
-// Meta-CSP enforced INSIDE the srcdoc iframe. The iframe inherits the host
-// Studio CSP (every srcdoc / data: / blob: scheme does, per CSP3 § Initialize
-// document CSP), so the host's ``script-src 'self'`` already blocks inline
-// <script> and on* handlers inside the preview. We layer a more restrictive
-// meta-CSP here so a future host-CSP relaxation does not silently turn this
-// iframe into an exfiltration channel: ``connect-src 'none'`` keeps a
-// future ``script-src 'unsafe-inline'`` from being able to beacon out, and
-// ``frame-src 'none'`` stops nested iframe-loaded ad/tracking content.
+// Meta-CSP enforced INSIDE the srcdoc iframe. Chromium inherits the
+// embedder CSP into srcdoc, data:, AND blob: iframes per HTML / CSP3
+// § initialize-document-csp, so the host Studio ``script-src 'self'``
+// already blocks assistant inline scripts and on* handlers here --
+// confirmed empirically on the live Studio with a click-to-alert demo.
+// Until a same-origin backend route is added (response-header CSPs
+// do NOT inherit), the preview deliberately ships as a static-render
+// surface. The meta-CSP below is defense in depth: it adds
+// ``connect-src 'none'`` + ``frame-src 'none'`` so even if the host
+// CSP ever loosens enough to let inline scripts run, the preview
+// still cannot beacon out or nest tracking iframes.
 const HTML_IFRAME_CSP = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",
@@ -283,8 +286,8 @@ function buildHtmlSrcDoc(source: string): string {
   return [
     "<!doctype html>",
     `<meta http-equiv="Content-Security-Policy" content="${HTML_IFRAME_CSP}">`,
-    // Outbound links open in a new tab rather than no-op-navigating the
-    // sandboxed frame itself.
+    // Outbound links open in a new tab rather than navigating the
+    // sandboxed frame itself away from the preview.
     '<base target="_blank">',
     source,
     HTML_PREVIEW_HEIGHT_REPORTER,
@@ -301,19 +304,20 @@ function HtmlPreview({
   onHeightChange?: (h: number | null) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // srcdoc keeps the assistant HTML rendering same-origin-blocked while
-  // still showing layout, images, styles, and Streamdown-syntax-highlighted
-  // source in the Code tab. Inline <script> / on* handlers inside the
-  // assistant's HTML do NOT execute because srcdoc iframes inherit the
-  // host Studio CSP (``script-src 'self'``); follow-up work tracked in
-  // PR #5717 to add an opt-in backend-hosted preview route for the "play
-  // JS games inline" use case.
+  // srcdoc, blob:, and data: all inherit the host CSP in Chromium, so
+  // the choice between them does not affect script execution today.
+  // srcdoc is the simplest and avoids URL.createObjectURL churn, so
+  // that is what we use. Inline <script> / on* handlers in the
+  // assistant HTML do NOT execute under the current host CSP; the
+  // preview is for layout, images, and styles. The auto-height
+  // postMessage reporter is appended for the future state where the
+  // host CSP is relaxed via a backend-served preview route.
   const srcDoc = useMemo(() => buildHtmlSrcDoc(source), [source]);
 
   const [autoHeight, setAutoHeight] = useState<number | null>(null);
   // Reset auto-sizing whenever the source changes so we never show the
-  // previous message's iframe size during the gap before the new doc loads
-  // and posts its first height.
+  // previous message's iframe size during the gap before the new doc
+  // loads and posts its first height.
   useEffect(() => {
     setAutoHeight(null);
     onHeightChange?.(null);
@@ -347,20 +351,16 @@ function HtmlPreview({
       title="HTML preview"
       srcDoc={srcDoc}
       // SECURITY:
-      //   allow-scripts        -- in case the host CSP ever loosens
-      //                           to permit inline (today it does not)
-      //   allow-modals         -- so alert/confirm/prompt do not no-op
-      //                           when scripts do run
-      //   allow-popups +       -- so the ``<base target="_blank">`` we
-      //   allow-popups-to-        set above can open a new tab without
-      //   escape-sandbox          being silently dropped; escape-
-      //                           sandbox makes the popup a regular
-      //                           browser tab rather than an opaque-
-      //                           origin sandboxed one (the popup is
-      //                           equivalent to the user clicking the
-      //                           same URL in any other web app)
-      // We do NOT grant allow-same-origin or allow-top-navigation,
-      // so the iframe cannot read parent.document, navigate the host
+      //   allow-scripts        -- ready for the day the host CSP
+      //                           gives the preview a script-src
+      //                           that includes 'unsafe-inline'
+      //   allow-modals         -- alert/confirm/prompt are not no-ops
+      //                           when scripts do fire
+      //   allow-popups +       -- a ``<base target="_blank">`` link
+      //   allow-popups-to-        opens a regular browser tab rather
+      //   escape-sandbox          than an opaque-origin sandboxed one
+      // We do NOT grant allow-same-origin or allow-top-navigation, so
+      // the iframe cannot read parent.document, navigate the host
       // page, or escape its origin.
       sandbox="allow-scripts allow-modals allow-popups allow-popups-to-escape-sandbox"
       style={{

@@ -197,11 +197,12 @@ class TestSecurityHeadersMiddleware:
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
     def test_frame_src_is_explicitly_self_only(self, main_module):
-        # The assistant HTML/SVG preview iframe uses srcdoc (no URL fetch),
-        # so frame-src does not need to permit data: / blob:. Pinning to
-        # 'self' explicitly is the strictest setting CSP allows here, and
-        # leaves a visible directive a reviewer can grep for if a future
-        # change tries to relax it without an audit.
+        # The assistant HTML/SVG preview iframe uses srcdoc (no URL
+        # fetch). Allowing data: / blob: here would not unlock inline
+        # scripts anyway -- Chromium inherits the embedder CSP for
+        # srcdoc, data:, AND blob: iframes per HTML / CSP3. The
+        # explicit 'self' here leaves a visible directive any future
+        # change has to deliberately broaden.
         csp = main_module._build_csp()
         frame_src = next(
             chunk.strip()
