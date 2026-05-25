@@ -2389,6 +2389,231 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
     assert params["required"] == ["key"]
 
 
+def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch):
+    """Round 25: Pydantic-generated tool schemas hoist nested object
+    shapes into `$defs` and reference them with `{"$ref": "#/$defs/..."}`.
+    Gemini's OpenAPI subset has no $ref, so a naive allowlist sanitizer
+    drops the reference and reduces the nested property to `{}`, losing
+    its type, fields, and required keys. The sanitizer must resolve
+    local `#/...` pointers and inline the referenced schema."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_user",
+                    "description": "Persist a user.",
+                    "parameters": {
+                        "type": "object",
+                        "$defs": {
+                            "Address": {
+                                "type": "object",
+                                "properties": {
+                                    "street": {"type": "string"},
+                                    "zip": {"type": "string"},
+                                },
+                                "required": ["street", "zip"],
+                            },
+                        },
+                        "properties": {
+                            "name": {"type": "string"},
+                            "address": {"$ref": "#/$defs/Address"},
+                        },
+                        "required": ["name", "address"],
+                    },
+                },
+            }
+        ],
+    )
+    tools_arr = captured["body"].get("tools") or []
+    decls = next(
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
+        None,
+    )
+    assert decls is not None, captured["body"]
+    params = decls[0]["parameters"]
+    assert "$defs" not in params
+    address = params["properties"]["address"]
+    assert address.get("type") == "object", address
+    assert address.get("properties", {}).get("street", {}).get("type") == "string"
+    assert address.get("properties", {}).get("zip", {}).get("type") == "string"
+    assert address.get("required") == ["street", "zip"]
+
+
+def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch):
+    """The recursive inliner must reach through `anyOf` branches and
+    `items` (array element schemas) as well, not just top-level
+    property refs."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "bulk_set",
+                    "parameters": {
+                        "type": "object",
+                        "$defs": {
+                            "Address": {
+                                "type": "object",
+                                "properties": {"zip": {"type": "string"}},
+                                "required": ["zip"],
+                            },
+                        },
+                        "properties": {
+                            "primary": {
+                                "anyOf": [
+                                    {"$ref": "#/$defs/Address"},
+                                    {"type": "null"},
+                                ],
+                            },
+                            "extras": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/Address"},
+                            },
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    tools_arr = captured["body"].get("tools") or []
+    decls = next(
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
+        None,
+    )
+    assert decls is not None
+    params = decls[0]["parameters"]
+    primary = params["properties"]["primary"]
+    # anyOf with single non-null branch + null collapses to inline +
+    # nullable: true, and the inlined branch must contain the resolved
+    # Address shape.
+    assert primary.get("nullable") is True
+    assert primary.get("type") == "object"
+    assert primary.get("properties", {}).get("zip", {}).get("type") == "string"
+    extras = params["properties"]["extras"]
+    assert extras.get("type") == "array"
+    assert extras.get("items", {}).get("type") == "object"
+    assert (
+        extras.get("items", {}).get("properties", {}).get("zip", {}).get("type")
+        == "string"
+    )
+
+
+def test_function_declarations_self_referential_schema_terminates(monkeypatch):
+    """Self-referential / cyclic JSON Schemas (a `Node` that contains
+    `children: [Node]`) must not infinite-loop. The inliner tracks the
+    set of refs in flight and short-circuits to `{}` on a cycle."""
+    captured = _capture_body(
+        monkeypatch,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_tree",
+                    "parameters": {
+                        "type": "object",
+                        "$defs": {
+                            "Node": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "string"},
+                                    "children": {
+                                        "type": "array",
+                                        "items": {"$ref": "#/$defs/Node"},
+                                    },
+                                },
+                            },
+                        },
+                        "properties": {
+                            "root": {"$ref": "#/$defs/Node"},
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    tools_arr = captured["body"].get("tools") or []
+    decls = next(
+        (
+            t.get("functionDeclarations")
+            for t in tools_arr
+            if "functionDeclarations" in t
+        ),
+        None,
+    )
+    assert decls is not None
+    root = decls[0]["parameters"]["properties"]["root"]
+    assert root.get("type") == "object"
+    assert root.get("properties", {}).get("value", {}).get("type") == "string"
+
+
+def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
+    """Round 25: Marked server-side builtin tool_calls (web_search /
+    web_fetch with `_server_tool` or `args.google.native_part`) must
+    not fall through to the generic Gemini `functionCall` replay path
+    when no replayable native part exists. Without this guard the
+    outbound body contains a fake `functionCall` whose name is not a
+    declared user function, and the Gemini turn 400s."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": "search please"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_s",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": (
+                                    '{"_server_tool": true, "query": "x"}'
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_s",
+                    "content": "[search result]",
+                },
+                {"role": "user", "content": "again"},
+            ],
+            "max_tokens": 64,
+            "stream": True,
+        }
+    )
+    built = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    captured = _capture_body(monkeypatch, messages = built)
+    contents = captured["body"].get("contents") or []
+    for entry in contents:
+        for part in entry.get("parts", []):
+            fc = part.get("functionCall")
+            if isinstance(fc, dict):
+                assert fc.get("name") != "web_search", contents
+
+
 def test_chat_message_extra_content_round_trips_through_validation():
     """Round 9: ChatMessage was missing `extra_content`, so Pydantic
     discarded the field during request validation and the text-part
