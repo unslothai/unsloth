@@ -458,15 +458,32 @@ def _pin_floor_args(*, include_unsloth: bool = True) -> list[str]:
     historical unpinned behaviour. ``include_unsloth=False`` is used by the
     no-torch branch when ``--package`` overrides the default package name
     (test builds publish to side packages that may not exist on PyPI).
+
+    A single warning is printed when any lookup fails so the user knows
+    the upgrade has degraded to the pre-fix resolver semantics (e.g.
+    behind a corporate proxy / captive portal / firewalled PyPI mirror).
     """
     args: list[str] = []
+    pypi_unreachable = False
     if include_unsloth:
         latest_unsloth = _resolve_latest_pypi_version("unsloth")
         if latest_unsloth:
             args.append(f"unsloth>={latest_unsloth}")
+        else:
+            pypi_unreachable = True
     latest_zoo = _resolve_latest_pypi_version("unsloth-zoo")
     if latest_zoo:
         args.append(f"unsloth-zoo>={latest_zoo}")
+    else:
+        pypi_unreachable = True
+    if pypi_unreachable:
+        _step(
+            "warning",
+            "PyPI unreachable; skipping latest-version floor pin "
+            "(resolver may pick an older release on platforms where a "
+            "transitive dep restricts wheel availability)",
+            _cyan,
+        )
     return args
 
 
