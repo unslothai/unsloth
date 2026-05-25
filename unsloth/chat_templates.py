@@ -2461,7 +2461,12 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
-        ending = chat_template[chat_template.find("{OUTPUT}") + len("{OUTPUT}"):]
+        output_pos = chat_template.find("{OUTPUT}")
+        if output_pos == -1:
+            raise RuntimeError(
+                "Unsloth: chat_template must contain a '{OUTPUT}' placeholder."
+            )
+        ending = chat_template[output_pos + len("{OUTPUT}"):]
 
         ending = re.escape(ending)
         find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
@@ -2607,8 +2612,18 @@ extra_eos_tokens = None,
             jinja_template = "{{ bos_token }}" + jinja_template
 
     # Get instruction and output parts for train_on_inputs = False
-    input_part  = input_part [:input_part .find("{INPUT}")]
-    output_part = output_part[:output_part.find("{OUTPUT}")]
+    input_idx  = input_part .find("{INPUT}")
+    output_idx = output_part.find("{OUTPUT}")
+    if input_idx == -1:
+        raise RuntimeError(
+            "Unsloth: input_part must contain '{INPUT}' placeholder."
+        )
+    if output_idx == -1:
+        raise RuntimeError(
+            "Unsloth: output_part must contain '{OUTPUT}' placeholder."
+        )
+    input_part  = input_part [:input_idx ]
+    output_part = output_part[:output_idx]
     return modelfile, jinja_template, input_part, output_part
 
 
