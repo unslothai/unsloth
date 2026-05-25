@@ -57,6 +57,12 @@ gguf
 regex
 typing_extensions
 filelock
+# `requests` and its urllib3/charset chain are required by huggingface_hub's
+# blob downloader; diffusers + GGUFQuantizationConfig 500 on first
+# /api/inference/images/load otherwise.
+requests
+urllib3
+charset_normalizer
 httpx
 httpcore
 certifi
