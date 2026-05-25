@@ -199,15 +199,36 @@ def _resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     (round 13 P1 #2). ``hf_hub_download`` already enforces the same
     invariant for Hub repos.
     """
-    if Path(gguf_filename).is_absolute() or "\\" in gguf_filename:
-        raise RuntimeError("gguf_filename must be a relative file path inside repo_id.")
+    # ``Path("/etc/passwd").is_absolute()`` is False on Windows (POSIX
+    # absolute paths read as drive-relative), so check both pathlib
+    # flavours plus a leading separator so the rejection is portable.
+    if (
+        Path(gguf_filename).is_absolute()
+        or PurePosixPath(gguf_filename).is_absolute()
+        or gguf_filename.startswith(("/", "\\"))
+        or "\\" in gguf_filename
+    ):
+        raise RuntimeError(
+            "gguf_filename must be a relative file path inside repo_id."
+        )
     rel = PurePosixPath(gguf_filename)
     if any(part in ("", ".", "..") for part in rel.parts):
         raise RuntimeError(
             "gguf_filename must not contain empty, '.', or '..' segments."
         )
     root = repo_root.expanduser().resolve(strict = True)
-    candidate = (root / Path(*rel.parts)).resolve(strict = True)
+    try:
+        candidate = (root / Path(*rel.parts)).resolve(strict = True)
+    except (OSError, FileNotFoundError) as exc:
+        # strict=True raises FileNotFoundError on a missing leaf or
+        # parent component, and OSError on a malformed Windows path
+        # (e.g. drive letters injected through the user-supplied
+        # string). Either way the candidate does not exist inside the
+        # chosen repo, which is exactly the "file not in repo" failure
+        # mode the caller cares about.
+        raise RuntimeError(
+            f"Local repo path '{repo_root}' does not contain '{gguf_filename}'."
+        ) from exc
     try:
         candidate.relative_to(root)
     except ValueError as exc:
