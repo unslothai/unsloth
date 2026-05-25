@@ -193,9 +193,7 @@ def test_is_same_origin_request_bracket_with_trailing_garbage_is_cross_origin():
     """Text after the closing bracket also raises inside ``urlparse``."""
     from main import _is_same_origin_request
 
-    req = _build_request(
-        "127.0.0.1:8902", origin = "http://[2001:db8::1]extra:8902"
-    )
+    req = _build_request("127.0.0.1:8902", origin = "http://[2001:db8::1]extra:8902")
     assert _is_same_origin_request(req) is False
 
 
