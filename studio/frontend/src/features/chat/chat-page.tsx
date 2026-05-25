@@ -970,8 +970,12 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
+    // view intentionally excludes __LOCALID_ threads (they fall through to
+    // { mode: "single" } with no threadId/nonce).  Don't close an artifact
+    // whose thread is the currently active local thread.
+    if (selectedArtifact.threadId && selectedArtifact.threadId === activeThreadId) return;
     closeArtifactSurface();
-  }, [closeArtifactSurface, selectedArtifact, view]);
+  }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
@@ -1645,8 +1649,8 @@ export function ChatPage(): ReactElement {
 
         {view.mode === "single" ? (
           <SingleContent
-            key={view.threadId ?? "single"}
-            threadId={view.threadId}
+            key={view.threadId ?? activeThreadId ?? "single"}
+            threadId={view.threadId ?? activeThreadId ?? undefined}
             newThreadNonce={view.newThreadNonce}
             artifact={selectedArtifact}
             artifactSurface={artifactSurface}

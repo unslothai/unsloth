@@ -21,6 +21,7 @@ type RenderHtmlArgs = Record<string, unknown> & {
 
 const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   args,
+  result,
   status,
   toolCallId,
 }) => {
@@ -46,6 +47,16 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     );
   }
 
+  // Surface the backend error when the tool call completed with invalid
+  // args.  Backend success results start with "Rendered HTML artifact";
+  // error results start with "Error:".
+  const errorText =
+    status?.type === "complete" &&
+    typeof result === "string" &&
+    result.startsWith("Error:")
+      ? result
+      : null;
+
   return (
     <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
@@ -56,15 +67,17 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         />
         <span className="grid min-w-0 flex-1 gap-1">
           <span className="truncate text-sm font-medium leading-tight text-foreground">
-            Generating artifact
+            {errorText ? "Artifact error" : "Generating artifact"}
           </span>
           <span className="truncate text-[11px] leading-none text-muted-foreground">
-            HTML artifact
+            {errorText ?? "HTML artifact"}
           </span>
         </span>
-        <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
-          Generating
-        </span>
+        {errorText ? null : (
+          <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
+            Generating
+          </span>
+        )}
       </div>
     </div>
   );
