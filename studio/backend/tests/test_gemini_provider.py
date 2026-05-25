@@ -4049,7 +4049,7 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
         ):
             if not line.startswith("data: "):
                 continue
-            payload = line[len("data: "):].strip()
+            payload = line[len("data: ") :].strip()
             if not payload or payload == "[DONE]":
                 continue
             try:
@@ -4058,7 +4058,7 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
                 continue
             choices = obj.get("choices") or []
             for ch in choices:
-                delta = (ch.get("delta") or {})
+                delta = ch.get("delta") or {}
                 evt = delta.get("_toolEvent")
                 if isinstance(evt, dict):
                     captured_events.append(evt)
@@ -4066,9 +4066,9 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
 
     _drive(run())
     # No synthetic web_search tool_start / tool_end emitted.
-    assert all(e.get("tool_name") != "web_search" for e in captured_events), (
-        captured_events
-    )
+    assert all(
+        e.get("tool_name") != "web_search" for e in captured_events
+    ), captured_events
 
 
 def test_anthropic_role_tool_list_content_translates_to_tool_result(
@@ -4261,9 +4261,7 @@ def test_openai_responses_assistant_text_serialized_before_function_call(
     _drive(run())
 
     items = captured["input_items"] or []
-    types = [
-        i.get("type") or i.get("role") for i in items
-    ]
+    types = [i.get("type") or i.get("role") for i in items]
     # Expected order:
     #   user ("weather?")
     #   assistant ("Let me check that.")

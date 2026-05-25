@@ -1962,10 +1962,9 @@ def _build_external_messages(
                         # skip if there's no surviving content either.
                         _entry_content = entry.get("content")
                         _has_text = (
-                            (isinstance(_entry_content, str)
-                                and _entry_content.strip())
-                            or (isinstance(_entry_content, list)
-                                and len(_entry_content) > 0)
+                            isinstance(_entry_content, str) and _entry_content.strip()
+                        ) or (
+                            isinstance(_entry_content, list) and len(_entry_content) > 0
                         )
                         if not _has_text:
                             continue
