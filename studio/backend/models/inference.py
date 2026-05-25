@@ -1491,8 +1491,8 @@ class DiffusionLoadRequest(BaseModel):
 # in the C++ layer. uint64 is also routinely cited online so accept
 # any value the underlying RNG could store and bounce the rest at the
 # Pydantic layer with a clean error.
-_SEED_MIN = -(2 ** 63)
-_SEED_MAX = (2 ** 64) - 1
+_SEED_MIN = -(2**63)
+_SEED_MAX = (2**64) - 1
 
 
 class DiffusionGenerateRequest(BaseModel):

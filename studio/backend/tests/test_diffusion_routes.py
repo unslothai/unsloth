@@ -217,7 +217,7 @@ def test_generate_rejects_oversize_seed(app_with_stub):
     )
     r = c.post(
         "/api/inference/images/generate",
-        json = {"prompt": "x", "seed": 2 ** 100},
+        json = {"prompt": "x", "seed": 2**100},
     )
     assert r.status_code == 422, r.text
 
@@ -234,7 +234,7 @@ def test_generate_accepts_uint64_max_seed(app_with_stub):
     )
     r = c.post(
         "/api/inference/images/generate",
-        json = {"prompt": "x", "seed": (2 ** 64) - 1},
+        json = {"prompt": "x", "seed": (2**64) - 1},
     )
     # The fake backend returns 200 on success; we only care that the
     # request did NOT 422 on seed bounds.

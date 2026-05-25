@@ -292,9 +292,7 @@ async def start_training(
 
             llama_backend = get_llama_cpp_backend()
             if getattr(llama_backend, "is_loaded", False):
-                logger.info(
-                    "Unloading GGUF chat model to free GPU memory for training"
-                )
+                logger.info("Unloading GGUF chat model to free GPU memory for training")
                 llama_backend.unload_model()
         except Exception as e:
             logger.warning("Could not unload GGUF chat model: %s", e)
