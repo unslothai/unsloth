@@ -1737,15 +1737,28 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    $InstalledZooVer = try { (& python -c "from importlib.metadata import version; print(version('unsloth-zoo'))" 2>$null | Out-String).Trim() } catch { "" }
+    # Only probe public unsloth-zoo when the package being managed IS unsloth.
+    # Custom side packages (e.g. $env:STUDIO_PACKAGE_NAME=roland-sloth) ship
+    # their own zoo fork via dependency metadata and may not install public
+    # unsloth-zoo at all; checking it would force a no-op update.
+    $CheckZoo = ($_PkgName -eq "unsloth")
+
+    $InstalledZooVer = ""
     $LatestZooVer = ""
-    try {
-        $zooJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/unsloth-zoo/json" -TimeoutSec 5 -ErrorAction Stop
-        $LatestZooVer = "$($zooJson.info.version)".Trim()
-    } catch { }
+    if ($CheckZoo) {
+        $InstalledZooVer = try { (& python -c "from importlib.metadata import version; print(version('unsloth-zoo'))" 2>$null | Out-String).Trim() } catch { "" }
+        try {
+            $zooJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/unsloth-zoo/json" -TimeoutSec 5 -ErrorAction Stop
+            $LatestZooVer = "$($zooJson.info.version)".Trim()
+        } catch { }
+    }
 
     $UnslothUpToDate = ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer))
-    $ZooUpToDate     = ($InstalledZooVer -and $LatestZooVer -and ($InstalledZooVer -eq $LatestZooVer))
+    if ($CheckZoo) {
+        $ZooUpToDate = ($InstalledZooVer -and $LatestZooVer -and ($InstalledZooVer -eq $LatestZooVer))
+    } else {
+        $ZooUpToDate = $true
+    }
 
     if ($UnslothUpToDate -and $ZooUpToDate) {
         step "python" "$_PkgName $InstalledVer + unsloth-zoo $InstalledZooVer are up to date"

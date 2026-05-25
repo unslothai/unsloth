@@ -550,19 +550,33 @@ print(version(sys.argv[1]))
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
-    INSTALLED_ZOO_VER=$("$VENV_DIR/bin/python" -c "
-import sys; from importlib.metadata import version
+    # Only probe public unsloth-zoo when the package being managed IS unsloth.
+    # Custom side packages (e.g. STUDIO_PACKAGE_NAME=roland-sloth) ship their
+    # own zoo fork via dependency metadata and may not install public
+    # unsloth-zoo at all; checking it would force a no-op update.
+    _CHECK_ZOO=false
+    [ "$_PKG_NAME" = "unsloth" ] && _CHECK_ZOO=true
+
+    INSTALLED_ZOO_VER=""
+    LATEST_ZOO_VER=""
+    if [ "$_CHECK_ZOO" = true ]; then
+        INSTALLED_ZOO_VER=$("$VENV_DIR/bin/python" -c "
+from importlib.metadata import version
 print(version('unsloth-zoo'))
 " 2>/dev/null || echo "")
 
-    LATEST_ZOO_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/unsloth-zoo/json" 2>/dev/null \
-        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
-        || echo "")
+        LATEST_ZOO_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/unsloth-zoo/json" 2>/dev/null \
+            | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+            || echo "")
+    fi
 
     _UNSLOTH_UP_TO_DATE=false
-    _ZOO_UP_TO_DATE=false
+    _ZOO_UP_TO_DATE=true
     [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ] && _UNSLOTH_UP_TO_DATE=true
-    [ -n "$INSTALLED_ZOO_VER" ] && [ -n "$LATEST_ZOO_VER" ] && [ "$INSTALLED_ZOO_VER" = "$LATEST_ZOO_VER" ] && _ZOO_UP_TO_DATE=true
+    if [ "$_CHECK_ZOO" = true ]; then
+        _ZOO_UP_TO_DATE=false
+        [ -n "$INSTALLED_ZOO_VER" ] && [ -n "$LATEST_ZOO_VER" ] && [ "$INSTALLED_ZOO_VER" = "$LATEST_ZOO_VER" ] && _ZOO_UP_TO_DATE=true
+    fi
 
     if [ "$_UNSLOTH_UP_TO_DATE" = true ] && [ "$_ZOO_UP_TO_DATE" = true ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER + unsloth-zoo $INSTALLED_ZOO_VER are up to date"
