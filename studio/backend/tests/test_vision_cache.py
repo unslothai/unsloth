@@ -129,7 +129,9 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_qwen36_gguf_with_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
+    def test_qwen36_gguf_with_mmproj_skips_transformers(
+        self, mock_subprocess, tmp_path
+    ):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
         model.write_bytes(b"")
         (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
