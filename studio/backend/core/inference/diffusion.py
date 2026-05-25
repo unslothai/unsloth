@@ -664,7 +664,9 @@ class DiffusionBackend:
                 with self._lock:
                     self._last_error = exc_msg
                 logger.exception("Diffusion load failed for %s", repo_id)
-                raise RuntimeError(f"Failed to load diffusion model: {exc_msg}") from exc
+                raise RuntimeError(
+                    f"Failed to load diffusion model: {exc_msg}"
+                ) from exc
             finally:
                 with self._lock:
                     self._loading = False
