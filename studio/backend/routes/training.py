@@ -314,12 +314,19 @@ async def start_training(
 
         # Also unload any loaded diffusion pipeline (Images page); it
         # holds the same GPU and would survive the inference shutdown.
+        # is_loading=True is also handled (unload_model takes
+        # _load_lock + _generate_lock and waits the in-flight load out).
         try:
             from core.inference.diffusion import get_diffusion_backend
 
             diff_backend = get_diffusion_backend()
-            if diff_backend.is_loaded:
-                logger.info("Unloading diffusion model to free GPU memory for training")
+            diff_status = diff_backend.status()
+            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+                logger.info(
+                    "Unloading diffusion (loaded=%s loading=%s) for training",
+                    diff_status.get("is_loaded"),
+                    diff_status.get("is_loading"),
+                )
                 diff_backend.unload_model()
         except Exception as e:
             logger.warning("Could not unload diffusion model: %s", e)

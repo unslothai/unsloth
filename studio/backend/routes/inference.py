@@ -784,13 +784,21 @@ async def load_model(
 
             # Symmetric with /images/load: drop any active diffusion
             # pipeline so the GGUF chat load does not race the FLUX VAE
-            # for VRAM. Best effort; silently continue on failure.
+            # for VRAM. Also handles is_loading: unload_model takes
+            # _load_lock + _generate_lock and will wait out an
+            # in-flight load before clearing state. Best effort;
+            # silently continue on failure.
             try:
                 from core.inference.diffusion import get_diffusion_backend
 
                 diff_backend = get_diffusion_backend()
-                if diff_backend.is_loaded:
-                    logger.info("Unloading diffusion pipeline before GGUF load")
+                diff_status = diff_backend.status()
+                if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+                    logger.info(
+                        "Unloading diffusion (loaded=%s loading=%s) before GGUF load",
+                        diff_status.get("is_loaded"),
+                        diff_status.get("is_loading"),
+                    )
                     diff_backend.unload_model()
             except Exception as e:
                 logger.debug("diffusion unload skipped (GGUF path): %s", e)
@@ -977,14 +985,19 @@ async def load_model(
             llama_backend.unload_model()
 
         # Unload any active diffusion pipeline so the new chat model is
-        # not racing the FLUX VAE for VRAM on a 16-24 GB card.
+        # not racing the FLUX VAE for VRAM on a 16-24 GB card. is_loading
+        # is treated like is_loaded; unload waits behind _load_lock +
+        # _generate_lock so the in-flight load completes first.
         try:
             from core.inference.diffusion import get_diffusion_backend
 
             diff_backend = get_diffusion_backend()
-            if diff_backend.is_loaded:
+            diff_status = diff_backend.status()
+            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
                 logger.info(
-                    "Unloading diffusion pipeline before loading Unsloth chat model"
+                    "Unloading diffusion (loaded=%s loading=%s) before chat load",
+                    diff_status.get("is_loaded"),
+                    diff_status.get("is_loading"),
                 )
                 diff_backend.unload_model()
         except Exception as e:

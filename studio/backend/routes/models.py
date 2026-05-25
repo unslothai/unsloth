@@ -1973,6 +1973,12 @@ async def delete_finetuned_model(
     # the merged repo locally, then loaded it via /images/load with a
     # local path as repo_id). Without this guard /delete-finetuned
     # could rmtree the directory the diffusion backend is reading from.
+    # is_loading is also blocked: status() exposes _pending_repo_id /
+    # _pending_base_repo during the load window so deletes during a
+    # mid-flight from_pretrained are refused.
+    # Fail-CLOSED on exception (503) like the llama.cpp / safetensors
+    # guards above: an unverifiable diffusion state means we cannot
+    # confirm the target is safe to rmtree.
     try:
         from core.inference.diffusion import get_diffusion_backend
 
@@ -2010,6 +2016,10 @@ async def delete_finetuned_model(
         logger.warning(
             "Could not check diffusion backend loaded model before delete: %s", e
         )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify diffusion load status before deleting",
+        ) from e
 
     try:
         if export_type == "gguf" and gguf_variant:
@@ -2684,6 +2694,10 @@ async def delete_cached_model(
     # Match exactly on repo_id (case-insensitive) instead of prefix to
     # avoid blocking unrelated deletes like "org/model" while
     # "org/model-v2" is loaded.
+    # Fail-CLOSED on exception (return 503) like the neighboring
+    # llama.cpp / safetensors guards: we cannot verify whether the
+    # delete is safe, so refuse rather than risk corrupting the
+    # pipeline's mmap.
     try:
         from core.inference.diffusion import get_diffusion_backend
 
@@ -2700,8 +2714,15 @@ async def delete_cached_model(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Could not check diffusion backend status before cache delete: %s",
+            e,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify diffusion load status before deleting cache",
+        ) from e
 
     try:
         cache_scans = _all_hf_cache_scans()

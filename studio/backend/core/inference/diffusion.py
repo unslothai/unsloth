@@ -290,6 +290,15 @@ class DiffusionBackend:
         self._loaded_at: Optional[float] = None
         self._loading: bool = False
         self._last_error: Optional[str] = None
+        # `_pending_*` fields advertise the target of an in-flight load
+        # so cache- and finetuned-delete guards can refuse to rmtree a
+        # repo while it is being downloaded / read. They are set under
+        # _lock at the start of load_model and cleared on success or
+        # in the finally block. The route layer reads them via
+        # status() under _lock.
+        self._pending_repo_id: Optional[str] = None
+        self._pending_base_repo: Optional[str] = None
+        self._pending_gguf_filename: Optional[str] = None
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -311,16 +320,24 @@ class DiffusionBackend:
         # POSIX layouts) to any authenticated Studio session.
         with self._lock:
             gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
+            # During an in-flight load, expose _pending_* so cache /
+            # finetuned delete guards can refuse to wipe the repo
+            # that is mid-download. After the load completes (success
+            # or failure), the pending fields are cleared so status()
+            # reverts to publishing only the resident pipeline's id.
+            effective_repo = self._repo_id or self._pending_repo_id
+            effective_base = self._base_repo or self._pending_base_repo
+            effective_gguf = gguf_basename or self._pending_gguf_filename
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
-                "repo_id": self._repo_id,
+                "repo_id": effective_repo,
                 "family": self._family.name if self._family else None,
                 "pipeline_class": (
                     self._family.pipeline_class if self._family else None
                 ),
-                "base_repo": self._base_repo,
-                "gguf_filename": gguf_basename,
+                "base_repo": effective_base,
+                "gguf_filename": effective_gguf,
                 "device": self._device,
                 "dtype": self._dtype,
                 "loaded_at": self._loaded_at,
@@ -406,10 +423,26 @@ class DiffusionBackend:
         # cannot both kick off a multi-GB download + GPU upload at once.
         # The second caller waits behind the first and then loads on top
         # of the now-populated state via the normal swap path.
-        with self._load_lock:
+        # _generate_lock is also taken so we do not start swapping the
+        # pipeline (release old + allocate new) while a previous
+        # generation is still iterating denoising steps; releasing the
+        # pipe out from under an in-flight forward corrupts scheduler
+        # state. Order: _load_lock -> _generate_lock -> _lock so a
+        # forward (which only takes _generate_lock + briefly _lock)
+        # cannot block a queued load forever.
+        with self._load_lock, self._generate_lock:
             with self._lock:
                 self._loading = True
                 self._last_error = None
+                # Publish the pending target so cache / finetuned
+                # delete guards can see what is mid-download even
+                # before _repo_id / _base_repo are populated on
+                # success.
+                self._pending_repo_id = repo_id
+                self._pending_base_repo = base_repo
+                self._pending_gguf_filename = (
+                    Path(gguf_filename).name if gguf_filename else None
+                )
             try:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
@@ -433,6 +466,10 @@ class DiffusionBackend:
                 #      9B GGUF picks the 9B base, not the 4B fallback
                 if base_repo:
                     effective_base = base_repo
+                    # Refresh pending so delete guards see the actual
+                    # base, not just caller-supplied None.
+                    with self._lock:
+                        self._pending_base_repo = effective_base
                 elif not gguf_filename:
                     # Guard: a repo that ends in "-GGUF" (the unsloth
                     # convention) is GGUF-only and will 500 on
@@ -447,8 +484,12 @@ class DiffusionBackend:
                             "load target."
                         )
                     effective_base = repo_id
+                    with self._lock:
+                        self._pending_base_repo = effective_base
                 else:
                     effective_base = _smart_base_repo(fam, repo_id)
+                    with self._lock:
+                        self._pending_base_repo = effective_base
                 logger.info(
                     "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
                     repo_id,
@@ -476,16 +517,40 @@ class DiffusionBackend:
                 # pipeline / transformer class, gated download token,
                 # transient Hub error on the GGUF download) have now
                 # been validated. Anything past this line allocates
-                # GPU memory, so release competing GPU owners before
-                # we touch from_single_file or from_pretrained:
-                #   * Chat backends (llama-server + safetensors) so the
-                #     diffusion transformer does not race them for VRAM.
-                #   * Export subprocess (also holds GB on the same GPU).
+                # GPU memory, so:
+                #   1. Release competing GPU owners (chat + export).
+                #   2. Release any *previous* diffusion pipeline so the
+                #      new transformer / new from_pretrained does not
+                #      race the old pipe for VRAM. Switching between
+                #      FLUX.2 klein 4B and 9B on a 16-24 GB GPU OOMs
+                #      otherwise: from_single_file allocates the new
+                #      transformer while the old pipeline still owns
+                #      its weights.
+                #   3. THEN call from_single_file / from_pretrained.
                 # Training is *not* unloaded here: the route layer
                 # refuses /images/load with HTTP 409 when training is
                 # active so the user keeps their long run.
                 _release_chat_backend_for_diffusion()
                 _release_other_gpu_owners_for_diffusion()
+
+                old = self._pipe
+                if old is not None:
+                    with self._lock:
+                        # Clear ALL metadata together so a failed swap
+                        # cannot leave status() reporting the previous
+                        # repo / family / base_repo on top of an empty
+                        # pipe. The except block below will restore
+                        # last_error so the caller knows what happened.
+                        self._pipe = None
+                        self._family = None
+                        self._repo_id = None
+                        self._gguf_path = None
+                        self._base_repo = None
+                        self._device = None
+                        self._dtype = None
+                        self._loaded_at = None
+                    _release(old)
+                    old = None
 
                 if gguf_filename:
                     quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
@@ -523,26 +588,19 @@ class DiffusionBackend:
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
 
-                old = self._pipe
-                if old is not None:
-                    with self._lock:
-                        # Clear ALL metadata together so a failed swap
-                        # cannot leave status() reporting the previous
-                        # repo / family / base_repo on top of an empty
-                        # pipe. The except block below will restore
-                        # last_error so the caller knows what happened.
-                        self._pipe = None
-                        self._family = None
-                        self._repo_id = None
-                        self._gguf_path = None
-                        self._base_repo = None
-                        self._device = None
-                        self._dtype = None
-                        self._loaded_at = None
-                    _release(old)
-                    old = None
-
-                pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                try:
+                    pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                except Exception:
+                    # If from_pretrained fails after the transformer was
+                    # already loaded, the transformer object holds GPU
+                    # weights that would only be freed at GC. Drop the
+                    # local reference and force a collect so the next
+                    # load attempt does not stack VRAM with a phantom
+                    # transformer.
+                    if transformer is not None:
+                        _release(transformer)
+                        transformer = None
+                    raise
                 if enable_model_cpu_offload and device == "cuda":
                     pipe.enable_model_cpu_offload()
                 else:
@@ -557,8 +615,6 @@ class DiffusionBackend:
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
                     self._loaded_at = time.time()
-                # ``old`` was released above before the new allocation;
-                # nothing left to free here.
 
                 return self.status()
             except Exception as exc:
@@ -577,12 +633,25 @@ class DiffusionBackend:
             finally:
                 with self._lock:
                     self._loading = False
+                    # Clear pending so status() falls back to publishing
+                    # the resident pipeline (or nothing, on a failed
+                    # swap). Keeping pending alive after the load
+                    # finishes would falsely block deletes forever.
+                    self._pending_repo_id = None
+                    self._pending_base_repo = None
+                    self._pending_gguf_filename = None
 
     def unload_model(self) -> dict[str, Any]:
-        # Take the load lock too so unload cannot race with an in-flight
-        # load_model and have the load thread overwrite the cleared state
-        # after we already returned {"is_loaded": false}.
-        with self._load_lock:
+        # Take the load lock and the generate lock so unload cannot:
+        #   * race with an in-flight load_model and have the load
+        #     thread overwrite the cleared state after we already
+        #     returned {"is_loaded": false}.
+        #   * return is_loaded=false while a forward pass is still
+        #     iterating denoising steps on the soon-to-be-freed pipe.
+        # The generate forward only holds _generate_lock (briefly
+        # _lock), so acquiring _generate_lock here blocks until any
+        # in-flight generation completes.
+        with self._load_lock, self._generate_lock:
             with self._lock:
                 old = self._pipe
                 self._pipe = None

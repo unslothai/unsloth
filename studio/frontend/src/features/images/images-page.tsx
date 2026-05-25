@@ -214,28 +214,44 @@ export function ImagesPage() {
     }
     setBusy("generating");
     try {
-      // Reject non-integer or out-of-safe-integer-range seeds rather
-      // than silently rounding via Number(). The backend takes an int
-      // and a precision loss here would yield a different image than
-      // the seed the user typed.
+      // Reject non-integer seeds and clamp to the [-2^63, 2^64 - 1]
+      // range the backend's torch.Generator can actually pack. JSON
+      // serialises BigInts as plain integers, so we keep the wire
+      // format compatible and avoid the Number(seed) precision loss
+      // (>= 2^53 silently rounds, producing a different image than
+      // the seed the user typed). When the seed fits a safe integer
+      // it goes through unchanged; larger seeds ride along as their
+      // BigInt-derived string via the wire-format BigInt JSON helper
+      // in the api layer.
       const seedStr = seed.trim();
-      let parsedSeed: number | undefined;
+      let parsedSeed: number | bigint | undefined;
       if (seedStr) {
         if (!/^-?\d+$/.test(seedStr)) {
           toast.error("Seed must be an integer");
           return;
         }
-        const candidate = Number(seedStr);
-        if (
-          !Number.isFinite(candidate) ||
-          !Number.isSafeInteger(candidate)
-        ) {
+        let big: bigint;
+        try {
+          big = BigInt(seedStr);
+        } catch {
+          toast.error("Seed must be an integer");
+          return;
+        }
+        const SEED_MIN = -(BigInt(2) ** BigInt(63));
+        const SEED_MAX = BigInt(2) ** BigInt(64) - BigInt(1);
+        if (big < SEED_MIN || big > SEED_MAX) {
           toast.error(
-            "Seed must fit in a JavaScript safe integer (<= 2^53 - 1)",
+            "Seed must be in [-2^63, 2^64 - 1] (the torch.Generator range)",
           );
           return;
         }
-        parsedSeed = candidate;
+        // Use a plain Number when it fits a safe integer so the
+        // existing api.ts JSON serialiser does not break on BigInt;
+        // otherwise pass the BigInt and let api.ts emit it as a JSON
+        // number via a custom replacer.
+        const SAFE_MAX = BigInt(Number.MAX_SAFE_INTEGER);
+        const SAFE_MIN = -SAFE_MAX;
+        parsedSeed = big >= SAFE_MIN && big <= SAFE_MAX ? Number(big) : big;
       }
       const out = await generateDiffusionImage({
         prompt,

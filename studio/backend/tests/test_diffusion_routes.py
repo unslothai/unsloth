@@ -7,10 +7,17 @@ Mounts the actual ``inference_router`` on a fresh FastAPI app with the
 auth dependency replaced by a stub so we exercise the same FastAPI
 handlers Studio ships in production. The diffusion backend is replaced
 with an in-memory stub so we don't need diffusers / GPUs to run these.
+
+To stay runnable in a minimal CPU-only env, ``routes/inference.py``
+is loaded directly via ``importlib`` so we do NOT trigger
+``routes/__init__.py`` -- that file eagerly imports training /
+datasets / data_recipe / export and would drag in heavy deps
+(matplotlib, etc.) that the diffusion tests do not need.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -23,6 +30,35 @@ from PIL import Image
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
+
+
+def _import_inference_module():
+    """Load ``routes/inference.py`` without executing ``routes/__init__``.
+
+    The package init imports training / datasets / data_recipe / export
+    routers, which pull in matplotlib / pandas / training stack. The
+    diffusion tests only need the inference module so we side-step the
+    package import via importlib.spec_from_file_location.
+    """
+    # If a previous test already imported routes the normal way, reuse
+    # the cached module instead of re-loading.
+    cached = sys.modules.get("routes.inference")
+    if cached is not None:
+        return cached
+    target = _BACKEND_ROOT / "routes" / "inference.py"
+    spec = importlib.util.spec_from_file_location(
+        "routes.inference",
+        target,
+        # We do NOT set submodule_search_locations for routes itself
+        # because that would re-trigger routes/__init__.py. The module
+        # uses relative imports sparingly; absolute imports resolve via
+        # sys.path[0] = backend root.
+    )
+    assert spec and spec.loader, "could not build spec for routes/inference.py"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["routes.inference"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class _FakeBackend:
@@ -71,7 +107,7 @@ class _FakeBackend:
 def app_with_stub(monkeypatch):
     """Build a FastAPI app that mounts the real inference router with
     auth disabled and the diffusion backend swapped for a stub."""
-    from routes import inference as inf
+    inf = _import_inference_module()
     import core.inference.diffusion as d
 
     stub = _FakeBackend()

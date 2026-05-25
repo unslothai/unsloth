@@ -1018,6 +1018,137 @@ def test_generate_image_does_not_block_status(monkeypatch):
         t.join(timeout = 5)
 
 
+def test_load_publishes_pending_target_during_loading(monkeypatch):
+    """status() must expose the pending repo_id / base_repo / gguf
+    file while is_loading=True so cache- and finetuned-delete guards
+    can refuse to rmtree the repo being downloaded right now."""
+    import threading
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    fake = _install_fake_diffusers(monkeypatch)
+
+    pending_seen: dict = {}
+    pretrained_blocked = threading.Event()
+    pretrained_release = threading.Event()
+
+    class _SlowPipeline:
+        @classmethod
+        def from_pretrained(cls, base_repo, **kwargs):
+            pretrained_blocked.set()
+            # Capture status() output while the load is blocked.
+            backend = d.get_diffusion_backend()
+            pending_seen.update(backend.status())
+            pretrained_release.wait(timeout = 5)
+            inst = cls()
+            inst.base_repo = base_repo
+            return inst
+
+        def __call__(self, **kwargs):
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (kwargs["width"], kwargs["height"]))]
+            return o
+
+        def enable_model_cpu_offload(self):
+            pass
+
+        def to(self, device):
+            return self
+
+    fake.Flux2KleinPipeline = _SlowPipeline
+
+    backend = d.get_diffusion_backend()
+    backend.unload_model()
+
+    def do_load():
+        try:
+            backend.load_model(
+                "unsloth/FLUX.2-klein-4B-GGUF",
+                gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+            )
+        except Exception:
+            pass
+
+    t = threading.Thread(target = do_load)
+    t.start()
+    try:
+        assert pretrained_blocked.wait(timeout = 5)
+        # While blocked inside from_pretrained, status reads should
+        # already see the pending repo so deletes can be refused.
+        assert pending_seen.get("is_loading") is True
+        assert pending_seen.get("repo_id") == "unsloth/FLUX.2-klein-4B-GGUF"
+        assert pending_seen.get("base_repo") == "black-forest-labs/FLUX.2-klein-4B"
+    finally:
+        pretrained_release.set()
+        t.join(timeout = 5)
+
+
+def test_unload_waits_for_in_flight_generation(monkeypatch):
+    """unload_model() must not return is_loaded=False while a
+    generate_image forward is still iterating; otherwise routes/...
+    callers see the pipe as freed while it still owns GPU memory and
+    can race a subsequent load."""
+    import threading
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    started = threading.Event()
+    release = threading.Event()
+    generation_finished = threading.Event()
+
+    class _SlowPipe:
+        def __call__(self, **kw):
+            started.set()
+            release.wait(timeout = 5)
+
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (kw["width"], kw["height"]))]
+            return o
+
+    backend._pipe = _SlowPipe()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[0]
+    backend._repo_id = "stub/stub"
+
+    def do_generate():
+        try:
+            backend.generate_image(prompt = "x", num_inference_steps = 1,
+                                   guidance_scale = 1.0, width = 64, height = 64)
+        finally:
+            generation_finished.set()
+
+    gen_thread = threading.Thread(target = do_generate)
+    gen_thread.start()
+    try:
+        assert started.wait(timeout = 5)
+        unload_returned = threading.Event()
+
+        def do_unload():
+            backend.unload_model()
+            unload_returned.set()
+
+        unload_thread = threading.Thread(target = do_unload)
+        unload_thread.start()
+        # unload should block until release sets, NOT return early.
+        unload_thread.join(timeout = 0.5)
+        assert not unload_returned.is_set(), \
+            "unload_model returned while generation was still running"
+        release.set()
+        unload_thread.join(timeout = 5)
+        assert unload_returned.is_set()
+        assert generation_finished.is_set()
+    finally:
+        release.set()
+        gen_thread.join(timeout = 5)
+
+
 def test_bf16_falls_back_to_fp16_on_old_cuda(monkeypatch):
     """CUDA availability does not imply BF16 support; old GPUs report
     is_available()=True and is_bf16_supported()=False. The backend

@@ -1,6 +1,11 @@
 # Studio UI backend dependencies
 typer
 fastapi
+# Required by FastAPI's multipart upload route validation
+# (routes/datasets.py uploads files via UploadFile/File). Without
+# this, importing the routes package raises RuntimeError on startup
+# and CPU-only test environments fail before any test runs.
+python-multipart
 uvicorn
 pydantic
 packaging

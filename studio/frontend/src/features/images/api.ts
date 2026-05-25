@@ -47,7 +47,10 @@ export interface DiffusionGenerateRequest {
   guidance_scale?: number;
   width?: number;
   height?: number;
-  seed?: number;
+  // bigint when the seed exceeds Number.MAX_SAFE_INTEGER, otherwise
+  // number. The wire format is always a JSON integer; see
+  // ``stringifyWithBigInt`` below.
+  seed?: number | bigint;
 }
 
 export interface DiffusionGenerateResponse {
@@ -92,6 +95,16 @@ export async function unloadDiffusionModel(): Promise<{ is_loaded: boolean }> {
   );
 }
 
+/** JSON.stringify cannot serialise BigInt directly. We only ever
+ * have BigInts in the seed field, which is an integer; emit the
+ * literal digits so the server receives a JSON integer rather than
+ * a string. Pydantic v2 accepts arbitrarily large ints. */
+function stringifyWithBigInt(value: unknown): string {
+  return JSON.stringify(value, (_, v) =>
+    typeof v === "bigint" ? `__bigint__:${v.toString()}` : v,
+  ).replace(/"__bigint__:(-?\d+)"/g, "$1");
+}
+
 export async function generateDiffusionImage(
   payload: DiffusionGenerateRequest,
 ): Promise<DiffusionGenerateResponse> {
@@ -99,7 +112,7 @@ export async function generateDiffusionImage(
     await authFetch("/api/inference/images/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: stringifyWithBigInt(payload),
     }),
   );
 }

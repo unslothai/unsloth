@@ -94,41 +94,51 @@ async def load_checkpoint(
         except Exception as e:
             logger.debug("llama-server unload skipped for export: %s", e)
 
+        # Symmetric lifecycle guard: refuse to load an export
+        # checkpoint while training is active so we do not silently
+        # terminate someone's long-running training job and possibly
+        # fail the export load on top of that. Mirrors the
+        # _raise_if_training_active checks in routes/inference.py for
+        # chat and /images/load. Fail-closed (503) when the training
+        # backend can be imported but its status check raises.
+        try:
+            from core.training import get_training_backend  # type: ignore
+
+            trn = get_training_backend()
+            if trn.is_training_active():
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Training is currently active. Stop the training "
+                        "run before loading an export checkpoint."
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.debug("training activity check skipped for export: %s", e)
+
         # Also unload any active diffusion pipeline (Images page); it
         # competes for the same GPU and would survive the inference
-        # shutdown above. Best effort; silently skip if the module is
-        # absent.
+        # shutdown above. is_loading is treated like is_loaded so an
+        # in-flight load is also waited out (the diffusion unload
+        # acquires _load_lock + _generate_lock and blocks until the
+        # current load completes, then unloads). Best effort; silently
+        # skip if the module is absent.
         try:
             from core.inference.diffusion import get_diffusion_backend
 
             diff = get_diffusion_backend()
-            if diff.is_loaded:
-                logger.info("Unloading diffusion model to free GPU memory for export")
+            diff_status = diff.status()
+            if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+                logger.info(
+                    "Unloading diffusion model (loaded=%s loading=%s) for export",
+                    diff_status.get("is_loaded"),
+                    diff_status.get("is_loading"),
+                )
                 diff.unload_model()
         except Exception as e:
             logger.debug("diffusion unload skipped for export: %s", e)
-
-        try:
-            from core.training import get_training_backend
-
-            trn = get_training_backend()
-            if trn.is_training_active():
-                logger.info("Stopping active training to free GPU memory for export")
-                trn.stop_training()
-                # Wait for training subprocess to actually exit before proceeding,
-                # otherwise it may still hold GPU memory when export tries to load.
-                for _ in range(60):  # up to 30s
-                    if not trn.is_training_active():
-                        break
-                    import time
-
-                    time.sleep(0.5)
-                else:
-                    logger.warning(
-                        "Training subprocess did not exit within 30s, proceeding anyway"
-                    )
-        except Exception as e:
-            logger.warning("Could not stop training: %s", e)
 
         backend = get_export_backend()
         # load_checkpoint spawns and waits on a subprocess and can take
