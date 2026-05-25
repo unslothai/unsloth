@@ -245,9 +245,18 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        # Round 25 P1 #4: use the GLOBAL llama backend instead of a
+        # private ``LlamaCppBackend()`` instance. The private instance
+        # was invisible to ``DELETE /api/models/delete-cached`` and the
+        # other global delete guards because they inspect the singleton
+        # returned by ``get_llama_cpp_backend()``. A concurrent cache
+        # delete could rmtree the helper's mid-flight download or
+        # mmap'd snapshot. ``_gpu_workload_busy_for_helper`` above
+        # already ensures the global backend is idle before we reach
+        # here, so taking it over is safe.
+        from routes.inference import get_llama_cpp_backend
 
-        backend = LlamaCppBackend()
+        backend = get_llama_cpp_backend()
         logger.info(f"Loading helper model: {repo} ({variant})")
 
         ok = backend.load_model(
@@ -641,9 +650,15 @@ def _run_multi_pass_advisor(
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        # Round 25 P1 #4: mirror ``_run_with_helper`` and acquire the
+        # GLOBAL llama backend so cache-delete and unload guards see
+        # this advisor load via the singleton's
+        # ``loading_model_identifier`` / ``model_identifier``. The
+        # round 23/24 ``_gpu_workload_busy_for_helper`` already
+        # blocks reach here unless the global llama backend is idle.
+        from routes.inference import get_llama_cpp_backend
 
-        backend = LlamaCppBackend()
+        backend = get_llama_cpp_backend()
         logger.info(f"Loading advisor model: {repo} ({variant})")
         t0 = time.monotonic()
 

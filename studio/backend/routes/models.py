@@ -2790,6 +2790,73 @@ async def delete_cached_model(
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
+    # Round 25 P1 #2 / #3: round 15 added a path-ownership check to
+    # the diffusion guard below, but the llama.cpp and safetensors
+    # guards still only compared logical ``owner/repo`` strings to
+    # the loaded/loading identifier. If a chat or safetensors model
+    # was loaded via a LOCAL HF snapshot path (e.g. through the
+    # ``/load-local-path`` flow), the loaded identifier is the
+    # absolute snapshot path -- ``owner/repo`` never appears there,
+    # the guards passed, and ``DELETE /api/models/delete-cached``
+    # could rmtree an actively mmap'd snapshot.
+    #
+    # Build the HF cache roots for ``repo_id`` ONCE up front and reuse
+    # them in all three guards (llama, safetensors, diffusion). Failure
+    # to scan the cache fails CLOSED on the assumption that we cannot
+    # verify ownership safely; mirrors the diffusion path-scan guard.
+    needle = repo_id.lower()
+    cache_repo_roots: list[Path] = []
+    try:
+        for hf_cache in _all_hf_cache_scans():
+            for repo_info in hf_cache.repos:
+                if (
+                    repo_info.repo_type == "model"
+                    and repo_info.repo_id.lower() == needle
+                ):
+                    try:
+                        cache_repo_roots.append(
+                            Path(repo_info.repo_path).expanduser().resolve()
+                        )
+                    except Exception:
+                        pass
+    except Exception as cache_scan_exc:
+        logger.warning(
+            "Could not scan HF cache during delete guard preflight: %s",
+            cache_scan_exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Could not verify cache ownership before deleting. Try again."
+            ),
+        ) from cache_scan_exc
+
+    def _owned_cache_path_matches(
+        value: Optional[str], roots: list[Path]
+    ) -> bool:
+        """Return True if ``value`` resolves to (or contains, or is a
+        child of) any of the HF cache repo roots for the target repo.
+        Used by the llama / safetensors guards to catch local snapshot
+        paths the same way the diffusion guard already does.
+        """
+        if not value or not roots:
+            return False
+        try:
+            owned = Path(value).expanduser().resolve()
+        except Exception:
+            return False
+        for root in roots:
+            try:
+                if (
+                    owned == root
+                    or _is_path_under(owned, root)
+                    or _is_path_under(root, owned)
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+
     # Check if model is currently loaded OR loading. is_active and
     # not is_loaded means an llama-server download / startup is in
     # flight; the cache delete would race the hf_hub_download / mmap.
@@ -2800,10 +2867,10 @@ async def delete_cached_model(
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        loaded_id = (llama_backend.model_identifier or "").lower()
-        loading_id = (
-            getattr(llama_backend, "loading_model_identifier", None) or ""
-        ).lower()
+        loaded_id_raw = llama_backend.model_identifier or ""
+        loaded_id = loaded_id_raw.lower()
+        loading_id_raw = getattr(llama_backend, "loading_model_identifier", None) or ""
+        loading_id = loading_id_raw.lower()
         loading_variant = (
             getattr(llama_backend, "loading_hf_variant", None) or ""
         ).lower()
@@ -2817,9 +2884,14 @@ async def delete_cached_model(
         # (loading Q4_K_M, deleting cached Q8_0) is allowed; only
         # block when the requested variant matches what is being
         # downloaded. Mirrors the /delete-finetuned pairing.
-        needle = repo_id.lower()
         requested_variant = (variant or "").lower()
-        if loading_id == needle:
+        # Round 25 P1 #2: also match by HF cache snapshot path so
+        # local-path GGUF chat loads block the cache delete that
+        # owns their snapshot.
+        loading_matches_repo = loading_id == needle or _owned_cache_path_matches(
+            loading_id_raw, cache_repo_roots
+        )
+        if loading_matches_repo:
             same_loading_variant = (
                 not requested_variant
                 or not loading_variant
@@ -2836,7 +2908,10 @@ async def delete_cached_model(
         # guard fixed in round 5. Per-variant deletes that target a
         # DIFFERENT quant than the loaded one are allowed so the
         # llama and diffusion paths stay symmetric (round 14 P1 #7).
-        if loaded_id == needle and (
+        loaded_matches_repo = loaded_id == needle or _owned_cache_path_matches(
+            loaded_id_raw, cache_repo_roots
+        )
+        if loaded_matches_repo and (
             llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
             loaded_variant = (getattr(llama_backend, "hf_variant", None) or "").lower()
@@ -2864,22 +2939,27 @@ async def delete_cached_model(
     try:
         inference_backend = get_inference_backend()
         loading_models = getattr(inference_backend, "loading_models", set()) or set()
-        needle = repo_id.lower()
         # Loading set holds model identifiers currently being
         # downloaded / instantiated; treat them like active loads
         # so a delete cannot race a partial mmap.
-        # Exact match only. Prefix matching would block deleting
-        # ``org/model`` while ``org/model-v2`` is loading.
+        # Exact match only on the logical ``owner/repo`` side, but
+        # also match local snapshot paths (round 25 P1 #3) so a
+        # safetensors model loaded from a local HF snapshot path
+        # cannot have its cache rmtree'd out from under it.
         for loading_model in loading_models:
-            ml = (loading_model or "").lower()
-            if ml == needle:
+            ml_raw = loading_model or ""
+            ml = ml_raw.lower()
+            if ml == needle or _owned_cache_path_matches(ml_raw, cache_repo_roots):
                 raise HTTPException(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-        if inference_backend.active_model_name:
-            active = inference_backend.active_model_name.lower()
-            if active == needle:
+        active_model_raw = inference_backend.active_model_name
+        if active_model_raw:
+            active = active_model_raw.lower()
+            if active == needle or _owned_cache_path_matches(
+                active_model_raw, cache_repo_roots
+            ):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -2919,46 +2999,11 @@ async def delete_cached_model(
         # the HF cache snapshot root (round 16 P1 #5).
         diff_status = diff_backend.status(include_internal = True)
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
-            needle = repo_id.lower()
-            # Round 15 P1 #4: ALSO compare owned paths against the HF
-            # cache root for this repo. The user may have loaded the
-            # diffusion model from a local snapshot path under
-            # ``models--owner--model/snapshots/<sha>``; the string
-            # ``owner/model`` then never appears in ``owned_id`` and
-            # the previous string-only check would let the cache
-            # delete proceed while the snapshot was still mmap'd.
-            cache_repo_roots: list[Path] = []
-            try:
-                for hf_cache in _all_hf_cache_scans():
-                    for repo_info in hf_cache.repos:
-                        if (
-                            repo_info.repo_type == "model"
-                            and repo_info.repo_id.lower() == needle
-                        ):
-                            try:
-                                cache_repo_roots.append(
-                                    Path(repo_info.repo_path).expanduser().resolve()
-                                )
-                            except Exception:
-                                pass
-            except Exception as cache_scan_exc:
-                # Round 16 P1 #3: a transient cache-scan failure here
-                # used to silently fall through to repo-id-only
-                # matching, which misses local snapshot paths and
-                # let /delete-cached unlink an actively mmap'd
-                # snapshot. Fail-closed (503) so the user retries.
-                logger.warning(
-                    "Could not scan HF cache during diffusion delete guard: %s",
-                    cache_scan_exc,
-                )
-                raise HTTPException(
-                    status_code = 503,
-                    detail = (
-                        "Could not verify diffusion cache ownership before "
-                        "deleting. Try again."
-                    ),
-                ) from cache_scan_exc
-
+            # ``needle`` and ``cache_repo_roots`` come from the
+            # preflight scan above; round 25 deduplicated the
+            # diffusion-specific rescan and now all three guards
+            # share the same fail-closed cache view.
+            #
             # Pair each owned repo with the GGUF variant it actually
             # owns (active or pending) so a swap in progress does not
             # collapse both quants into the pending one (round 13
@@ -2969,20 +3014,10 @@ async def delete_cached_model(
                 if not owned_id:
                     continue
                 owned_matches_repo = owned_id.lower() == needle
-                if not owned_matches_repo and cache_repo_roots:
-                    try:
-                        owned_path = Path(owned_id).expanduser().resolve()
-                    except Exception:
-                        owned_path = None
-                    if owned_path is not None:
-                        for repo_root in cache_repo_roots:
-                            if (
-                                owned_path == repo_root
-                                or _is_path_under(owned_path, repo_root)
-                                or _is_path_under(repo_root, owned_path)
-                            ):
-                                owned_matches_repo = True
-                                break
+                if not owned_matches_repo and _owned_cache_path_matches(
+                    owned_id, cache_repo_roots
+                ):
+                    owned_matches_repo = True
                 if not owned_matches_repo:
                     continue
                 if _variant_delete_is_safe_for_owned_gguf(variant, owned_gguf):
