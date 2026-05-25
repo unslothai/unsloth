@@ -3134,17 +3134,17 @@ class ExternalProviderClient:
                         out: list[str] = []
                         while pending_citation_segments:
                             seg = pending_citation_segments[0]
-                            rewritten, unresolved = (
-                                _rewrite_citation_markers_partial(
-                                    seg, all_url_citations,
-                                )
+                            rewritten, unresolved = _rewrite_citation_markers_partial(
+                                seg,
+                                all_url_citations,
                             )
                             if unresolved and not force:
                                 pending_citation_segments[0] = rewritten
                                 break
                             if unresolved and force:
                                 rewritten = _replace_openai_citation_markers(
-                                    rewritten, all_url_citations,
+                                    rewritten,
+                                    all_url_citations,
                                 )
                             pending_citation_segments.pop(0)
                             if rewritten:
@@ -3410,7 +3410,8 @@ class ExternalProviderClient:
                                             yield _chunk_with_text(flushed)
                                         head_rewritten, has_unresolved = (
                                             _rewrite_citation_markers_partial(
-                                                head, all_url_citations,
+                                                head,
+                                                all_url_citations,
                                             )
                                         )
                                         if has_unresolved or pending_citation_segments:

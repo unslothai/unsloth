@@ -183,7 +183,6 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
     assert not _has_marker_codepoints(out)
 
 
-
 # ---------------------------------------------------------------------------
 # _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI
 # emits the url_citation annotation on a subsequent SSE event rather
@@ -198,7 +197,8 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
 def test_partial_known_marker_resolves_and_clears_unresolved():
     text = f"Foo {_marker('s1')} bar."
     out, unresolved = _rewrite_citation_markers_partial(
-        text, [{"source_id": "s1", "url": "https://example.com/a"}],
+        text,
+        [{"source_id": "s1", "url": "https://example.com/a"}],
     )
     assert "[[1]](https://example.com/a)" in out
     assert unresolved is False
@@ -258,4 +258,3 @@ def test_partial_mixed_known_and_pending_markers_flags_unresolved():
     assert "[[1]](https://example.com/k)" in out
     # The pending marker stays verbatim for the next pass.
     assert CITE_START in out and "pending" in out
-
