@@ -155,8 +155,12 @@ export function providerSupportsFastMode(
 ): boolean {
   if (providerType !== "anthropic") return false;
   if (!modelId) return false;
-  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some((prefix) =>
-    modelId.startsWith(prefix),
+  // Require the prefix to terminate at a family boundary (end of
+  // string or "-" before a dated snapshot) so the check does not
+  // match unsupported IDs that merely share a prefix, e.g.
+  // "claude-opus-4-70" / "claude-opus-4-7b".
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
+    (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
   );
 }
 

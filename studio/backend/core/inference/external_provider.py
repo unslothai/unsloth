@@ -191,7 +191,15 @@ def _anthropic_supports_compaction(model: str) -> bool:
 
 
 def _anthropic_supports_fast_mode(model: str) -> bool:
-    return model.startswith(_ANTHROPIC_FAST_MODE_PREFIXES)
+    # Require the prefix to terminate at a family boundary (end of
+    # string or a "-" separator before the date snapshot) so the
+    # check does not light up on hypothetical IDs like
+    # "claude-opus-4-70" / "claude-opus-4-7b" that merely share a
+    # prefix with the supported families.
+    return any(
+        model == p or model.startswith(f"{p}-")
+        for p in _ANTHROPIC_FAST_MODE_PREFIXES
+    )
 
 
 class _MistralThinkingSpec(NamedTuple):
@@ -2466,20 +2474,27 @@ class ExternalProviderClient:
                                         "Anthropic refusal stop_reason (model=%s)",
                                         model,
                                     )
-                                    # Trailing HTML comment is a stable
-                                    # sentinel the chat-adapter matches
-                                    # to drop this assistant turn from
-                                    # the next request's outbound
-                                    # history. Anthropic's docs say
-                                    # the refused turn must be removed
-                                    # or updated before continuing or
-                                    # the next call will keep refusing.
+                                    # User-facing notice so the chat bubble
+                                    # is not silently empty after the
+                                    # safety classifier truncates the
+                                    # response. The out-of-band drop
+                                    # signal rides a separate _toolEvent
+                                    # below so assistant text can never
+                                    # spoof a context reset by including
+                                    # a literal marker. Anthropic's docs
+                                    # say the refused turn must be
+                                    # removed or updated before
+                                    # continuing or the next call will
+                                    # keep refusing.
+                                    # https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
                                     yield _content_chunk(
                                         "\n\n_The response was stopped by "
                                         "Anthropic's safety classifier. Edit "
                                         "or remove the previous turn and try "
                                         "again._"
-                                        "\n<!--studio:anthropic-refusal-->"
+                                    )
+                                    yield _emit_tool_event(
+                                        {"type": "anthropic_refusal"}
                                     )
                                 if mapped is not None:
                                     chunk = {
@@ -4010,6 +4025,15 @@ def _build_usage_chunk(
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
+        # Anthropic fast-mode responses include `usage.speed` so callers
+        # can verify whether a premium fast-mode request actually ran
+        # fast (the API silently falls back to "standard" when the
+        # beta is unsupported or rate-limited). Surface it on the
+        # OpenAI-style chunk so the pricing/cost ledger can apply the
+        # 6x multiplier without re-derivation.
+        speed = last_usage.get("speed")
+        if speed in ("fast", "standard"):
+            usage_block["speed"] = speed
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
         cached = 0

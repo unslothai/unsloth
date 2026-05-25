@@ -14,6 +14,7 @@ from core.inference.pricing import (
     ANTHROPIC_CACHE_5M_WRITE_MULT,
     ANTHROPIC_CACHE_1H_WRITE_MULT,
     ANTHROPIC_CACHE_READ_MULT,
+    ANTHROPIC_FAST_MODE_MULT,
     ANTHROPIC_PRICING,
     OPENAI_CACHE_READ_MULT,
     OPENAI_CONTAINER_USD_PER_HOUR,
@@ -55,6 +56,65 @@ def test_anthropic_opus_4_7_input_and_output_math():
     assert _isclose(out["input_usd"], 5.0)
     assert _isclose(out["output_usd"], 25.0)
     assert _isclose(out["total_usd"], 30.0)
+
+
+# ── Anthropic fast-mode 6x multiplier (Opus 4.6 / 4.7 only) ─────────
+
+
+def test_anthropic_fast_mode_charges_6x_standard_opus():
+    """Per https://platform.claude.com/docs/en/build-with-claude/fast-mode
+    fast-mode requests are billed at 6x the standard Opus rates across
+    the full context window. ``usage.speed == "fast"`` is the trigger."""
+    out = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "speed": "fast",
+        },
+    )
+    assert _isclose(out["input_usd"], 5.0 * ANTHROPIC_FAST_MODE_MULT)
+    assert _isclose(out["output_usd"], 25.0 * ANTHROPIC_FAST_MODE_MULT)
+    assert _isclose(out["total_usd"], 30.0 * ANTHROPIC_FAST_MODE_MULT)
+    assert "(fast)" in out["model_priced"], out["model_priced"]
+
+
+def test_anthropic_fast_mode_does_not_affect_standard_speed():
+    """``speed: "standard"`` (or missing) keeps the base rates."""
+    out_standard = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "speed": "standard",
+        },
+    )
+    out_missing = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    assert _isclose(out_standard["total_usd"], out_missing["total_usd"])
+    assert _isclose(out_standard["total_usd"], 30.0)
+
+
+def test_anthropic_fast_mode_stacks_with_cache_read_multiplier():
+    """Cache multipliers apply on top of fast-mode (per docs)."""
+    base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
+    out = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 1_000_000,
+            "speed": "fast",
+        },
+    )
+    expected = base * ANTHROPIC_FAST_MODE_MULT * ANTHROPIC_CACHE_READ_MULT
+    assert _isclose(out["cache_read_usd"], expected)
 
 
 # ── Anthropic cache write 5m + read multipliers ──────────────────────
@@ -412,6 +472,7 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert a["cache_5m_write_mult"] == ANTHROPIC_CACHE_5M_WRITE_MULT
     assert a["cache_1h_write_mult"] == ANTHROPIC_CACHE_1H_WRITE_MULT
     assert a["cache_read_mult"] == ANTHROPIC_CACHE_READ_MULT
+    assert a["fast_mode_mult"] == ANTHROPIC_FAST_MODE_MULT
     assert "web_search_usd_per_1k" in a
     assert "code_execution_usd_per_hour" in a
     assert "models" in o and "gpt-5.5" in o["models"]

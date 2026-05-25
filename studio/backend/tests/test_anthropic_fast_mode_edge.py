@@ -23,14 +23,16 @@ This file fills in the remaining behaviour cliffs:
   duplicates and no truncation.
 * Idempotence: setting ``fast_mode=True`` twice via the same body still
   results in one beta-header entry.
-* Streaming refusal sentinel: emitted exactly once, with the exact
-  ``<!--studio:anthropic-refusal-->`` token the frontend matches on,
-  and the notice always precedes the finish_reason chunk so a UI
+* Streaming refusal signal: a single out-of-band ``_toolEvent`` carrying
+  ``{"type": "anthropic_refusal"}`` rides alongside the visible refusal
+  notice. The frontend latches the tool event into assistant
+  metadata.custom.anthropicRefusal; assistant text never controls the
+  pruner. The notice always precedes the finish_reason chunk so a UI
   reading the SSE in order paints text before flipping to
   ``content_filter``.
 * Refusal on a non-Opus model: refusal handling is provider-side, not
   model-gated, so a refusal mid-stream on Sonnet must still surface the
-  notice + sentinel.
+  notice + tool event.
 * Non-destruction: when ``fast_mode`` is ``None``, the outbound body
   and headers must be byte-identical to the version that omits the
   argument entirely. This guarantees the upgrade path is non-breaking
@@ -328,30 +330,41 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     assert notice_idx < filter_idx, (notice_idx, filter_idx, lines)
 
 
-def test_refusal_sentinel_emitted_exactly_once(monkeypatch):
-    """A single refusal must emit the chat-adapter drop sentinel one time.
+def test_refusal_tool_event_emitted_exactly_once(monkeypatch):
+    """A single refusal must emit the chat-adapter drop signal one time.
 
-    The frontend's ``toOpenAIMessage`` uses ``includes`` for the match,
-    so duplicates wouldn't cause false drops -- but emitting it twice
-    would still inflate the bubble and break the UX guarantee that the
-    sentinel is an invisible HTML comment.
+    The frontend latches the tool event into assistant metadata and
+    uses it to drop the refused pair from the next request. Emitting
+    twice would still be metadata-idempotent but indicates a backend
+    bug, so pin the count.
     """
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
-    count = body.count("<!--studio:anthropic-refusal-->")
+    count = body.count('"_toolEvent": {"type": "anthropic_refusal"}')
     assert count == 1, (count, body)
+
+
+def test_refusal_text_carries_no_html_sentinel(monkeypatch):
+    """Belt-and-braces: ensure the assistant-visible refusal text does
+    not embed any ``studio:anthropic-refusal`` marker. The drop signal
+    must ride the out-of-band ``_toolEvent`` channel only -- otherwise
+    an assistant message that echoes the literal marker would spoof a
+    context reset on the next request."""
+    _, lines = _capture(monkeypatch, sse = _refusal_sse())
+    body = "\n".join(lines)
+    assert "studio:anthropic-refusal" not in body, body
 
 
 def test_refusal_handling_works_on_sonnet_model(monkeypatch):
     """Refusal handling is provider-side, not gated on a fast-mode-capable
     model. If Anthropic's classifier refuses a Sonnet stream it must
-    surface the same notice + sentinel + content_filter mapping."""
+    surface the same notice + tool event + content_filter mapping."""
     _, lines = _capture(
         monkeypatch, sse = _refusal_sse("claude-sonnet-4-6"), model = "claude-sonnet-4-6"
     )
     body = "\n".join(lines)
     assert "stopped by Anthropic's safety classifier" in body, body
-    assert "<!--studio:anthropic-refusal-->" in body, body
+    assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
     assert '"finish_reason": "content_filter"' in body, body
 
 
@@ -369,7 +382,8 @@ def test_refusal_preserves_partial_assistant_text(monkeypatch):
 def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     """The notice rides a normal ``choices[0].delta.content`` chunk, not
     a finish_reason chunk, so OpenAI-spec clients (Aurora, OpenAI SDK)
-    treat it as ordinary streamed text."""
+    treat it as ordinary streamed text. The drop signal arrives on a
+    separate `_toolEvent` chunk (verified below)."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     # Find the chunk that carries the refusal text.
     notice_chunk = None
@@ -383,7 +397,27 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     # Must NOT carry a finish_reason itself -- that comes on the next
     # chunk.
     assert choice.get("finish_reason") in (None,), notice_chunk
-    assert "<!--studio:anthropic-refusal-->" in choice["delta"]["content"]
+    # Refusal text is plain-spoken; no embedded sentinel.
+    assert "studio:anthropic-refusal" not in choice["delta"]["content"]
+
+
+def test_refusal_tool_event_chunk_shape(monkeypatch):
+    """The out-of-band drop signal rides a separate chunk shaped like a
+    Studio `_toolEvent` envelope (choices=[{index:0, delta:{},
+    finish_reason:null}] + `_toolEvent`). The frontend latches on
+    `_toolEvent.type == "anthropic_refusal"` and stamps the assistant
+    message metadata; assistant text never controls the prune."""
+    _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
+    refusal_chunk = None
+    for line in lines:
+        if line.startswith("data: ") and "anthropic_refusal" in line:
+            refusal_chunk = json.loads(line[len("data: ") :])
+            break
+    assert refusal_chunk is not None, lines
+    assert refusal_chunk["_toolEvent"] == {"type": "anthropic_refusal"}, refusal_chunk
+    choice = refusal_chunk["choices"][0]
+    assert choice["delta"] == {}, refusal_chunk
+    assert choice["finish_reason"] is None, refusal_chunk
 
 
 # ──────────────────────────── future-proofing ────────────────────────────
@@ -415,3 +449,85 @@ def test_fast_mode_dropped_on_opus_4_5_dated_snapshot(monkeypatch):
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-5-2025-08-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+
+
+def test_fast_mode_rejects_prefix_collision_4_70(monkeypatch):
+    """The family gate must require a "-" boundary after the supported
+    prefix so hypothetical IDs like ``claude-opus-4-70`` or
+    ``claude-opus-4-7b`` do not get fast-mode on a naive
+    ``startswith`` match."""
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-70")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+
+
+def test_fast_mode_rejects_prefix_collision_4_7b(monkeypatch):
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7b")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+
+
+def test_fast_mode_rejects_prefix_collision_4_6_extra(monkeypatch):
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-60")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+
+
+# ──────────────────────────── usage.speed propagation ────────────────────────────
+def _fast_speed_sse(model: str = "claude-opus-4-7", speed: str = "fast") -> bytes:
+    return (
+        b'event: message_start\ndata: {"type":"message_start","message":'
+        b'{"id":"m1","content":[],"model":"' + model.encode() + b'",'
+        b'"role":"assistant","stop_reason":null,"usage":'
+        b'{"input_tokens":4,"output_tokens":1}}}\n\n'
+        b'event: content_block_start\ndata: {"type":"content_block_start",'
+        b'"index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+        b'"index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+        b'event: message_delta\ndata: {"type":"message_delta",'
+        b'"delta":{"stop_reason":"end_turn"},'
+        b'"usage":{"output_tokens":5,"speed":"' + speed.encode() + b'"}}\n\n'
+        b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    )
+
+
+def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
+    """When Anthropic returns ``usage.speed == "fast"`` the Studio
+    OpenAI-style usage chunk must carry that field so the cost ledger
+    can apply the 6x multiplier and clients can verify a fast-mode
+    request actually ran fast."""
+    _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "fast"))
+    usage_lines = [
+        l for l in lines if l.startswith("data: ") and '"usage"' in l
+    ]
+    assert usage_lines, lines
+    parsed = [json.loads(l[len("data: ") :]) for l in usage_lines]
+    speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]
+    assert "fast" in speeds, parsed
+
+
+def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
+    _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "standard"))
+    parsed = [
+        json.loads(l[len("data: ") :])
+        for l in lines
+        if l.startswith("data: ") and '"usage"' in l
+    ]
+    speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]
+    assert "standard" in speeds, parsed
+
+
+def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
+    """When the upstream stream omits ``usage.speed`` (pre-fast-mode
+    models / older snapshots), the Studio usage chunk must not invent
+    a value."""
+    _, lines = _capture(monkeypatch)
+    parsed = [
+        json.loads(l[len("data: ") :])
+        for l in lines
+        if l.startswith("data: ") and '"usage"' in l
+    ]
+    for p in parsed:
+        usage = p.get("usage") or {}
+        assert "speed" not in usage, p

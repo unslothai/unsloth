@@ -105,6 +105,10 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
+# Anthropic fast-mode beta (Opus 4.6 / 4.7 only): 6x standard rates on
+# both input and output across the full context window.
+# https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
+ANTHROPIC_FAST_MODE_MULT = 6.0
 
 # OpenAI: cache reads are 0.1x base input, cache writes are not billed
 # separately (the first prefix-write request just pays normal input).
@@ -235,6 +239,17 @@ def calculate_cost(
         base = prices["input_per_mtok"]
         out_per = prices["output_per_mtok"]
 
+    # Anthropic fast-mode beta: 6x standard on both input + output across
+    # the full context window. Prompt-cache multipliers stack on top of
+    # the fast-mode base per the docs, so applying the multiplier once
+    # to (base, out_per) propagates correctly into the cache_*_usd
+    # buckets computed below.
+    if provider == "anthropic" and usage.get("speed") == "fast":
+        base *= ANTHROPIC_FAST_MODE_MULT
+        out_per *= ANTHROPIC_FAST_MODE_MULT
+        if out["model_priced"]:
+            out["model_priced"] = f"{out['model_priced']} (fast)"
+
     out["input_usd"] = (input_tokens / 1_000_000.0) * base
     out["output_usd"] = (output_tokens / 1_000_000.0) * out_per
 
@@ -315,6 +330,7 @@ def pricing_snapshot() -> dict[str, Any]:
             "cache_5m_write_mult": ANTHROPIC_CACHE_5M_WRITE_MULT,
             "cache_1h_write_mult": ANTHROPIC_CACHE_1H_WRITE_MULT,
             "cache_read_mult": ANTHROPIC_CACHE_READ_MULT,
+            "fast_mode_mult": ANTHROPIC_FAST_MODE_MULT,
             "web_search_usd_per_1k": ANTHROPIC_WEB_SEARCH_USD_PER_1K,
             "code_execution_usd_per_hour": ANTHROPIC_CODE_EXEC_USD_PER_HOUR,
         },

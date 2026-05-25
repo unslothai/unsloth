@@ -160,14 +160,20 @@ def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch)
     assert "Hello." in body, body
 
 
-def test_refusal_emits_hidden_sentinel_for_chat_adapter_drop(monkeypatch):
-    """Refused turns embed a hidden sentinel the chat-adapter matches on.
+def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
+    """Refused turns emit an out-of-band `_toolEvent` the chat-adapter
+    latches into assistant `metadata.custom.anthropicRefusal`.
 
-    The frontend drops any assistant message containing this sentinel
+    The frontend drops any assistant message with that metadata flag
     from the next request's outbound history, per Anthropic's docs:
     leaving the refused output in context causes the next call to keep
-    refusing.
+    refusing. Using a tool event (not a text sentinel) means assistant
+    content can never spoof a context reset.
     """
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
-    assert "studio:anthropic-refusal" in body, body
+    assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
+    # The visible refusal notice must NOT carry a text sentinel: an
+    # assistant message that echoes that string would otherwise spoof
+    # a context reset on the next request.
+    assert "studio:anthropic-refusal" not in body, body
