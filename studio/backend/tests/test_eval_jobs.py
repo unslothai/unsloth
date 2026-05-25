@@ -90,3 +90,22 @@ def test_cancel_sets_status(db):
     time.sleep(0.05)
     mgr.cancel(run_id)
     assert _wait(mgr, run_id) == "cancelled"
+
+
+def test_start_validates_metric_and_limit(db):
+    from eval.jobs import EvalJobManager
+    from models import EvalStartRequest
+
+    def never_run(req, *, on_result, should_cancel):  # should not be reached
+        raise AssertionError("run_fn must not start on invalid config")
+
+    mgr = EvalJobManager(run_fn=never_run)
+    base = dict(model_identifier="m", dataset={"is_local": True, "path": "d.jsonl"},
+                input_column="q", reference_column="a")
+
+    with pytest.raises(ValueError, match="Unknown metric"):
+        mgr.start(EvalStartRequest(metric_name="bogus", **base))
+    with pytest.raises(ValueError, match="limit"):
+        mgr.start(EvalStartRequest(metric_name="exact_match", limit=0, **base))
+    # a rejected start must not leave the manager marked busy
+    assert mgr.is_running() is False

@@ -126,3 +126,15 @@ def test_cancel_active_run(db, monkeypatch):
 def test_cancel_unknown_run_404(db, monkeypatch):
     client, _ = _client(monkeypatch)
     assert client.post("/api/eval/cancel/nope").status_code == 404
+
+
+def test_start_unknown_metric_returns_400(db, monkeypatch):
+    client, _ = _client(monkeypatch)
+    body = {**_START_BODY, "metric_name": "not_a_metric"}
+    assert client.post("/api/eval/start", json=body).status_code == 400
+
+
+def test_start_zero_limit_returns_400(db, monkeypatch):
+    client, _ = _client(monkeypatch)
+    body = {**_START_BODY, "limit": 0}
+    assert client.post("/api/eval/start", json=body).status_code == 400

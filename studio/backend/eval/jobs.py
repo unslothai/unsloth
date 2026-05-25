@@ -37,6 +37,14 @@ class EvalJobManager:
         return self._active_run_id is not None
 
     def start(self, req) -> str:
+        # Cheap pre-flight validation so bad config fails fast as a 400 at the
+        # route, rather than as a thread-side 'error' run. (Column existence and
+        # model load need I/O and stay thread-side.)
+        from .metrics.registry import make_scorer
+
+        make_scorer(req.metric_name, req.metric_config)  # raises ValueError if unknown
+        if req.limit is not None and req.limit <= 0:
+            raise ValueError("limit must be >= 1 (or null for all rows)")
         with self._lock:
             if self._active_run_id is not None:
                 raise EvalBusyError("an eval is already running")
