@@ -82,6 +82,8 @@ irm https://unsloth.ai/install.ps1 | iex
 unsloth studio -p 8888
 ```
 For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
+On high core-count systems, use `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`
+to cap native CPU thread pools and reduce idle memory use.
 
 #### Update
 To update, use the same install commands above or use `unsloth studio update`.
