@@ -82,6 +82,7 @@ def test_late_chunk_encode_returns_one_vector_per_span():
     pytest.importorskip("torch")
     # all-MiniLM-L6-v2 is ~80MB and embeds at 384 dims.
     import os
+
     os.environ.setdefault(
         "UNSLOTH_RAG_EMBEDDING_MODEL",
         "sentence-transformers/all-MiniLM-L6-v2",

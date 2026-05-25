@@ -14,8 +14,10 @@ if str(STUDIO_BACKEND) not in sys.path:
 
 def _make_hit(chunk_id: str):
     """Minimal stand-in for retrieval.Hit — just needs .chunk_id."""
+
     class _Hit:
         pass
+
     h = _Hit()
     h.chunk_id = chunk_id
     h.score = 1.0
@@ -55,9 +57,11 @@ def test_kb_takes_precedence_over_thread():
         captured["scope"] = scope
         return []
 
-    with patch.object(tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
-                       "retrieve_hybrid",
-                       _stub_retrieve):
+    with patch.object(
+        tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
+        "retrieve_hybrid",
+        _stub_retrieve,
+    ):
         result = tool.search_knowledge_base(
             query = "x",
             scope_kb_id = "kb-abc",
@@ -78,9 +82,11 @@ def test_thread_scope_when_only_thread_set():
         captured["scope"] = scope
         return []
 
-    with patch.object(tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
-                       "retrieve_hybrid",
-                       _stub_retrieve):
+    with patch.object(
+        tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
+        "retrieve_hybrid",
+        _stub_retrieve,
+    ):
         tool.search_knowledge_base(
             query = "x",
             scope_thread_id = "thread-xyz",
@@ -137,9 +143,17 @@ def test_execute_tool_dispatches_to_search_knowledge_base():
 
     called = {}
 
-    def _stub(*, query, top_k = None, scope_kb_id = None, scope_thread_id = None,
-              enable_rerank = False, reranker_model = None, default_top_k = 5,
-              min_score = 0.0):
+    def _stub(
+        *,
+        query,
+        top_k = None,
+        scope_kb_id = None,
+        scope_thread_id = None,
+        enable_rerank = False,
+        reranker_model = None,
+        default_top_k = 5,
+        min_score = 0.0,
+    ):
         called["query"] = query
         called["top_k"] = top_k
         called["scope_kb_id"] = scope_kb_id

@@ -168,6 +168,6 @@ def test_text_and_image_vectors_share_dimension(monkeypatch):
     image_vectors = embeddings_module.encode_images([buf.getvalue()])
     text_vectors = embeddings_module.encode(["a blue square"])
 
-    assert image_vectors[0].shape == text_vectors[0].shape, (
-        f"text dim {text_vectors[0].shape} != image dim {image_vectors[0].shape}"
-    )
+    assert (
+        image_vectors[0].shape == text_vectors[0].shape
+    ), f"text dim {text_vectors[0].shape} != image dim {image_vectors[0].shape}"

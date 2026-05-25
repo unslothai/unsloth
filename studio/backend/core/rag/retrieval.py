@@ -101,7 +101,9 @@ def _rrf_fuse(
     dense_scores: dict[str, float] = {}
     for ranking in rankings:
         for rank, hit in enumerate(ranking):
-            fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (rrf_k + rank + 1)
+            fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (
+                rrf_k + rank + 1
+            )
             if hit.chunk_id not in seen:
                 seen[hit.chunk_id] = hit
             if hit.dense_score is not None:

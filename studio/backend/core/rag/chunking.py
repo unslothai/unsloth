@@ -57,7 +57,7 @@ def _atomic_split(
             if count(piece) <= max_tokens:
                 out.append(piece)
             else:
-                tail = separators[separators.index(sep) + 1:]
+                tail = separators[separators.index(sep) + 1 :]
                 out.extend(_atomic_split(piece, tail, max_tokens, count))
         return out
     # No separator made progress — hard-slice by characters.

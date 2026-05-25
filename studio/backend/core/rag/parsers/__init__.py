@@ -18,6 +18,7 @@ class ParsedPage:
     pipe-tables, and list bullets survive extraction so the chunker can
     split on them. Parsers MUST emit Markdown, not bare plain text.
     """
+
     text: str
     page_number: int | None = None
 
@@ -32,6 +33,7 @@ class ParsedImage:
     when no caption could be paired (the image still ingests, just
     without the paired-caption chunk).
     """
+
     image_bytes: bytes
     mime_type: str
     page_number: int | None = None
@@ -46,6 +48,7 @@ class ParseResult:
     passed `want_images=True`. Iteration aliases for `pages` so legacy
     code that did `for page in parse(path)` keeps working.
     """
+
     pages: list[ParsedPage] = field(default_factory = list)
     images: list[ParsedImage] = field(default_factory = list)
 

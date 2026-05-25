@@ -27,7 +27,9 @@ def test_rerank_empty_returns_empty():
 @pytest.mark.server
 def test_rerank_reorders_by_relevance(monkeypatch):
     """Hide the relevant chunk at the back of the input and check it bubbles up."""
-    monkeypatch.setenv("UNSLOTH_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    monkeypatch.setenv(
+        "UNSLOTH_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
     from core.rag.reranker import rerank, unload
     from core.rag.retrieval import Hit
 
@@ -35,7 +37,10 @@ def test_rerank_reorders_by_relevance(monkeypatch):
         (Hit("noise1", 0.0), "Cats are small carnivorous mammals."),
         (Hit("noise2", 0.0), "The Eiffel Tower is in Paris, France."),
         (Hit("noise3", 0.0), "Python is a programming language."),
-        (Hit("answer", 0.0), "The speed of light in vacuum is approximately 299792458 meters per second."),
+        (
+            Hit("answer", 0.0),
+            "The speed of light in vacuum is approximately 299792458 meters per second.",
+        ),
     ]
     try:
         ranked = rerank("How fast does light travel?", pairs, top_k = 2)
@@ -47,7 +52,9 @@ def test_rerank_reorders_by_relevance(monkeypatch):
 
 @pytest.mark.server
 def test_unload_clears_singleton(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    monkeypatch.setenv(
+        "UNSLOTH_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
     from core.rag import reranker
     from core.rag.retrieval import Hit
 

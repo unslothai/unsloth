@@ -34,10 +34,10 @@ def test_html_parser_returns_images_when_requested(tmp_path):
     img_path.write_bytes(png_bytes)
     html_path = tmp_path / "sample.html"
     html_path.write_text(
-        f'<html><body><h1>Doc</h1>'
-        f'<p>Body text.</p>'
+        f"<html><body><h1>Doc</h1>"
+        f"<p>Body text.</p>"
         f'<img src="tiny.png" alt="A tiny figure">'
-        f'</body></html>',
+        f"</body></html>",
         encoding = "utf-8",
     )
 

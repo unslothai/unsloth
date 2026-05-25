@@ -62,6 +62,7 @@ def resolve_embedder(mode: str, chunking_strategy: str) -> str:
         RAG_EMBEDDING_MODEL,
     )
 
+
 RAG_CHUNK_SIZE: int = _env_int("UNSLOTH_RAG_CHUNK_SIZE", 512)
 RAG_CHUNK_OVERLAP: int = _env_int("UNSLOTH_RAG_CHUNK_OVERLAP", 64)
 
@@ -79,8 +80,7 @@ RAG_EMBED_BATCH_SIZE: int = _env_int("UNSLOTH_RAG_EMBED_BATCH_SIZE", 32)
 # with the active chat model — callers opt in per-request via
 # `enable_rerank` on SearchRequest.
 RAG_RERANKER_MODEL: str = (
-    os.environ.get("UNSLOTH_RAG_RERANKER_MODEL", "").strip()
-    or "BAAI/bge-reranker-base"
+    os.environ.get("UNSLOTH_RAG_RERANKER_MODEL", "").strip() or "BAAI/bge-reranker-base"
 )
 RAG_RERANK_CANDIDATE_K: int = _env_int("UNSLOTH_RAG_RERANK_CANDIDATE_K", 50)
 RAG_RERANK_BATCH_SIZE: int = _env_int("UNSLOTH_RAG_RERANK_BATCH_SIZE", 16)

@@ -26,7 +26,9 @@ def test_chunk_pages_splits_long_text():
     )
     assert len(chunks) > 1
     for chunk in chunks:
-        assert _wc_counter(chunk.text) <= 55  # max + small slack from atomic split granularity
+        assert (
+            _wc_counter(chunk.text) <= 55
+        )  # max + small slack from atomic split granularity
 
 
 def test_chunk_pages_short_text_is_one_chunk():

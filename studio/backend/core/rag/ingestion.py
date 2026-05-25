@@ -78,7 +78,9 @@ def _subprocess_worker(
         parsed = parse(Path(stored_path), want_images = (mode == "multimodal"))
         pages = parsed.pages
         if not pages and not parsed.images:
-            out_queue.put({"type": "error", "error": "no extractable content in document"})
+            out_queue.put(
+                {"type": "error", "error": "no extractable content in document"}
+            )
             return
 
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
@@ -249,9 +251,7 @@ def _stream_image_chunks(
     image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
 
     # Embed only the non-empty captions; track which images they map to.
-    caption_to_image: list[int] = [
-        i for i, cap in enumerate(captions) if cap.strip()
-    ]
+    caption_to_image: list[int] = [i for i, cap in enumerate(captions) if cap.strip()]
     if caption_to_image:
         caption_vectors_arr = encode(
             [captions[i] for i in caption_to_image],
@@ -368,6 +368,7 @@ def _run_late_chunking(
 # ------------------------------------------------------------------
 # Job manager (parent side)
 # ------------------------------------------------------------------
+
 
 class _JobState:
     def __init__(self, job_id: str, document_id: str, scope: str) -> None:
@@ -531,7 +532,7 @@ def _insert_chunks_and_collect_for_bm25(
 
 def _all_scope_chunks(scope: str) -> list[dict]:
     if scope.startswith("kb_"):
-        kb_id = scope[len("kb_"):]
+        kb_id = scope[len("kb_") :]
         sql = (
             "SELECT c.id, c.text FROM rag_chunks c "
             "JOIN rag_documents d ON d.id = c.document_id "
@@ -539,7 +540,7 @@ def _all_scope_chunks(scope: str) -> list[dict]:
         )
         bind = (kb_id,)
     elif scope.startswith("thread_"):
-        thread_id = scope[len("thread_"):]
+        thread_id = scope[len("thread_") :]
         sql = (
             "SELECT c.id, c.text FROM rag_chunks c "
             "JOIN rag_documents d ON d.id = c.document_id "

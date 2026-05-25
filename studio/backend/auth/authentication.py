@@ -168,7 +168,7 @@ async def get_current_subject_sse(
     """
     raw = token
     if not raw and authorization and authorization.lower().startswith("bearer "):
-        raw = authorization[len("bearer "):].strip()
+        raw = authorization[len("bearer ") :].strip()
     if not raw:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

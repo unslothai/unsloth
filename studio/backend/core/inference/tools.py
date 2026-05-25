@@ -502,6 +502,7 @@ TERMINAL_TOOL = {
     },
 }
 
+
 # Lazy import — keeps studio.db init lazy so tools.py doesn't pull in
 # the whole rag stack on inference paths that never see RAG.
 def _get_rag_tool_spec():

@@ -56,7 +56,9 @@ def _extract_with_pymupdf(path: Path, want_images: bool) -> ParseResult:
 
 def _extract_images_pymupdf(doc, pages: list[ParsedPage]) -> list[ParsedImage]:
     """Pull embedded images and pair each with the nearest text on the same page."""
-    captions_by_page: dict[int, str] = {p.page_number: p.text for p in pages if p.page_number}
+    captions_by_page: dict[int, str] = {
+        p.page_number: p.text for p in pages if p.page_number
+    }
     out: list[ParsedImage] = []
     for page_index in range(len(doc)):
         page_number = page_index + 1

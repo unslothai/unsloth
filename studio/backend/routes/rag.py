@@ -28,7 +28,15 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,6 +48,8 @@ async def _sse_auth(
     authorization: str | None = Header(None),
 ) -> str:
     return await get_current_subject_sse(token, authorization)
+
+
 from core.rag import embeddings, ingestion, reranker, retrieval, vector_store
 from core.rag.vector_store import kb_scope, thread_scope
 from loggers import get_logger
@@ -161,6 +171,7 @@ class SearchResponse(BaseModel):
 # Helpers
 # ------------------------------------------------------------------
 
+
 def _sanitize_filename(filename: str) -> str:
     name = Path(filename).name.strip().replace("\x00", "")
     return name or "document"
@@ -182,7 +193,7 @@ def _resolve_scope_embedder(scope: str) -> str | None:
     from utils.rag.config import resolve_embedder
 
     if scope.startswith("kb_"):
-        kb_id = scope[len("kb_"):]
+        kb_id = scope[len("kb_") :]
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT embedding_model FROM rag_knowledge_bases WHERE id = ?",
@@ -190,7 +201,7 @@ def _resolve_scope_embedder(scope: str) -> str | None:
             ).fetchone()
         return row["embedding_model"] if row else None
     if scope.startswith("thread_"):
-        thread_id = scope[len("thread_"):]
+        thread_id = scope[len("thread_") :]
         settings = _load_thread_settings(thread_id)
         return settings.embedding_model or resolve_embedder(
             settings.mode,
@@ -204,9 +215,7 @@ def _row_to_kb(row: Any) -> KBResponse:
     # pre-Phase-3 connection in tests; fall back to the schema defaults.
     keys = row.keys() if hasattr(row, "keys") else ()
     chunking_strategy = (
-        row["chunking_strategy"]
-        if "chunking_strategy" in keys
-        else "standard"
+        row["chunking_strategy"] if "chunking_strategy" in keys else "standard"
     )
     mode = row["mode"] if "mode" in keys else "text"
     return KBResponse(
@@ -378,6 +387,7 @@ def _unlink_if_under_uploads(path: Path) -> None:
 # Knowledge bases
 # ------------------------------------------------------------------
 
+
 @router.post("/knowledge-bases", response_model = KBResponse)
 def create_knowledge_base(
     payload: CreateKBRequest,
@@ -391,9 +401,8 @@ def create_knowledge_base(
     # If the caller didn't override embedding_model, resolve from the
     # Phase-3 matrix using their (mode, strategy) selection. Unknown
     # combos fall back to the legacy default — see resolve_embedder.
-    embedding_model = (
-        payload.embedding_model
-        or resolve_embedder(payload.mode, payload.chunking_strategy)
+    embedding_model = payload.embedding_model or resolve_embedder(
+        payload.mode, payload.chunking_strategy
     )
     created_at = _now_ms()
     with get_connection() as conn:
@@ -452,6 +461,7 @@ class RagDefaults(BaseModel):
 
 class UpdateRagDefaultsRequest(BaseModel):
     """Patch shape — only fields present overwrite stored values."""
+
     chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
@@ -541,9 +551,7 @@ def _load_thread_settings(thread_id: str) -> ThreadRagSettings:
         raw = {}
     fallback = _load_rag_defaults()
     return ThreadRagSettings(
-        chunking_strategy = (
-            raw.get("chunking_strategy") or fallback.chunking_strategy
-        ),
+        chunking_strategy = (raw.get("chunking_strategy") or fallback.chunking_strategy),
         mode = raw.get("mode") or fallback.mode,
         embedding_model = raw.get("embedding_model") or fallback.embedding_model,
     )
@@ -598,6 +606,7 @@ def set_thread_rag_settings(
 
 class ReingestKBRequest(BaseModel):
     """All fields optional — omitting one keeps the KB's current value."""
+
     chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
@@ -689,9 +698,7 @@ def reingest_knowledge_base(
     kb_row = _kb_or_404(kb_id)
     keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
     current_strategy = (
-        kb_row["chunking_strategy"]
-        if "chunking_strategy" in keys
-        else "standard"
+        kb_row["chunking_strategy"] if "chunking_strategy" in keys else "standard"
     )
     current_mode = kb_row["mode"] if "mode" in keys else "text"
     current_embedder = kb_row["embedding_model"]
@@ -700,13 +707,10 @@ def reingest_knowledge_base(
     new_mode = payload.mode or current_mode
     _validate_mode_combo(new_mode, new_strategy)
 
-    new_embedder = (
-        payload.embedding_model
-        or (
-            current_embedder
-            if (new_strategy == current_strategy and new_mode == current_mode)
-            else resolve_embedder(new_mode, new_strategy)
-        )
+    new_embedder = payload.embedding_model or (
+        current_embedder
+        if (new_strategy == current_strategy and new_mode == current_mode)
+        else resolve_embedder(new_mode, new_strategy)
     )
 
     with get_connection() as conn:
@@ -800,6 +804,7 @@ def delete_knowledge_base(
 # Document upload (KB and per-thread)
 # ------------------------------------------------------------------
 
+
 @router.post("/knowledge-bases/{kb_id}/documents", response_model = UploadResponse)
 async def upload_kb_document(
     kb_id: str,
@@ -813,9 +818,7 @@ async def upload_kb_document(
     # fall back to the same defaults as the column.
     kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
     chunking_strategy = (
-        kb_row["chunking_strategy"]
-        if "chunking_strategy" in kb_keys
-        else "standard"
+        kb_row["chunking_strategy"] if "chunking_strategy" in kb_keys else "standard"
     )
     mode = kb_row["mode"] if "mode" in kb_keys else "text"
     return _start_ingestion(
@@ -867,6 +870,7 @@ async def upload_thread_document(
 # Document list / delete
 # ------------------------------------------------------------------
 
+
 @router.get("/knowledge-bases/{kb_id}/documents", response_model = DocumentListResponse)
 def list_kb_documents(
     kb_id: str,
@@ -910,7 +914,7 @@ def get_rag_image(
     if "/" in filename or "\\" in filename or filename.startswith("."):
         raise HTTPException(status_code = 400, detail = "Invalid filename")
     root = Path(os.path.realpath(rag_uploads_root() / "images"))
-    candidate = (rag_uploads_root() / "images" / document_id / filename)
+    candidate = rag_uploads_root() / "images" / document_id / filename
     try:
         real = Path(os.path.realpath(candidate))
         real.relative_to(root)
@@ -927,9 +931,7 @@ def delete_document(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     row = _document_or_404(document_id)
-    scope = (
-        kb_scope(row["kb_id"]) if row["kb_id"] else thread_scope(row["thread_id"])
-    )
+    scope = kb_scope(row["kb_id"]) if row["kb_id"] else thread_scope(row["thread_id"])
     with get_connection() as conn:
         conn.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
         conn.commit()
@@ -994,6 +996,7 @@ def clear_thread_documents(
 # ------------------------------------------------------------------
 # Ingestion job SSE
 # ------------------------------------------------------------------
+
 
 @router.get("/jobs/{job_id}/events")
 async def job_events(
@@ -1064,6 +1067,7 @@ async def _replay_terminal_state(row: Any):
 # ------------------------------------------------------------------
 # Search
 # ------------------------------------------------------------------
+
 
 @router.post("/search", response_model = SearchResponse)
 def search(

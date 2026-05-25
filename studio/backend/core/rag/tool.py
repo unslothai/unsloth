@@ -114,9 +114,7 @@ def search_knowledge_base(
     from core.rag.vector_store import kb_scope, thread_scope
     from storage.studio_db import get_connection
 
-    scope = (
-        kb_scope(scope_kb_id) if scope_kb_id else thread_scope(scope_thread_id)
-    )
+    scope = kb_scope(scope_kb_id) if scope_kb_id else thread_scope(scope_thread_id)
     k = top_k if top_k is not None else default_top_k
 
     if enable_rerank:

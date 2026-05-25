@@ -109,10 +109,14 @@ class _BGEVLAdapter:
         from PIL import Image
 
         if inputs is None or len(inputs) == 0:
-            return np.zeros((0, self.get_sentence_embedding_dimension()), dtype = np.float32)
+            return np.zeros(
+                (0, self.get_sentence_embedding_dimension()), dtype = np.float32
+            )
 
         sample = inputs[0]
-        is_image = isinstance(sample, Image.Image) or isinstance(sample, (bytes, bytearray))
+        is_image = isinstance(sample, Image.Image) or isinstance(
+            sample, (bytes, bytearray)
+        )
 
         chunks_out = []
         for start in range(0, len(inputs), batch_size):
@@ -513,9 +517,7 @@ def _windowed_late_chunk_encode(
         ws, _we = windows[best_window]
         emb = _window_embeddings(best_window)
         local_indices = [
-            ti - ws
-            for ti in chunk_token_indices
-            if ws <= ti < ws + emb.shape[0]
+            ti - ws for ti in chunk_token_indices if ws <= ti < ws + emb.shape[0]
         ]
         if not local_indices:
             vec = model.encode(
