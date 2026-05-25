@@ -459,41 +459,42 @@ def _pin_floor_args(
     """Build the positional `unsloth>=LATEST` / `unsloth-zoo>=LATEST` args.
 
     Network failures yield an empty list so the caller falls back to the
-    historical unpinned behaviour. ``include_unsloth=False`` is used by the
-    no-torch branch when ``--package`` overrides the default package name
-    (test builds publish to side packages that may not exist on PyPI).
-    ``include_zoo=False`` is used together with ``include_unsloth=False``
-    for the same reason: a custom-package side build often pins its own
-    unsloth-zoo fork via dependency metadata, and the public PyPI floor
-    can conflict with that fork's published version.
+    historical unpinned behaviour. All-or-nothing: if any requested lookup
+    fails, the entire floor is dropped. A half-floor would let the unpinned
+    package backtrack while still requiring the other at latest, which
+    defeats the whole point of pinning both.
+
+    ``include_unsloth=False`` is used by the no-torch branch when
+    ``--package`` overrides the default package name (test builds publish
+    to side packages that may not exist on PyPI). ``include_zoo=False`` is
+    used together with ``include_unsloth=False`` for the same reason: a
+    custom-package side build often pins its own unsloth-zoo fork via
+    dependency metadata, and the public PyPI floor can conflict with that
+    fork's published version.
 
     A single warning is printed when any lookup fails so the user knows
     the upgrade has degraded to the pre-fix resolver semantics (e.g.
     behind a corporate proxy / captive portal / firewalled PyPI mirror).
     """
-    args: list[str] = []
-    pypi_unreachable = False
+    requested: list[str] = []
     if include_unsloth:
-        latest_unsloth = _resolve_latest_pypi_version("unsloth")
-        if latest_unsloth:
-            args.append(f"unsloth>={latest_unsloth}")
-        else:
-            pypi_unreachable = True
+        requested.append("unsloth")
     if include_zoo:
-        latest_zoo = _resolve_latest_pypi_version("unsloth-zoo")
-        if latest_zoo:
-            args.append(f"unsloth-zoo>={latest_zoo}")
-        else:
-            pypi_unreachable = True
-    if pypi_unreachable:
-        _step(
-            "warning",
-            "PyPI unreachable; skipping latest-version floor pin "
-            "(resolver may pick an older release on platforms where a "
-            "transitive dep restricts wheel availability)",
-            _cyan,
-        )
-    return args
+        requested.append("unsloth-zoo")
+    versions: dict[str, str] = {}
+    for package in requested:
+        latest = _resolve_latest_pypi_version(package)
+        if not latest:
+            _step(
+                "warning",
+                "PyPI unreachable; skipping latest-version floor pin "
+                "(resolver may pick an older release on platforms where a "
+                "transitive dep restricts wheel availability)",
+                _cyan,
+            )
+            return []
+        versions[package] = latest
+    return [f"{pkg}>={version}" for pkg, version in versions.items()]
 
 
 # -- Verbosity control ----------------------------------------------------------
@@ -881,15 +882,27 @@ def pip_install_try(
         req_args_uv = ["-r", _uv_safe_path(actual_req)]
 
     try:
-        if USE_UV:
-            cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
-        else:
-            cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
-
         if VERBOSE:
             _step(_LABEL, f"{label}...", _dim)
+        if USE_UV:
+            uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            result = subprocess.run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0:
+                return True
+            if VERBOSE and result.stdout:
+                print(result.stdout.decode(errors = "replace"))
+            # fall through to pip retry: mirrors pip_install()'s uv-to-pip
+            # fallback so a uv-specific failure (e.g. torch-backend probe,
+            # transient resolver bug) does not abandon the floor pin when
+            # pip itself could have applied it.
+        pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         result = subprocess.run(
-            cmd,
+            pip_cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             **_windows_hidden_subprocess_kwargs(),
