@@ -266,6 +266,27 @@ def _types_module(name):
     return _types.ModuleType(name)
 
 
+def test_studio_default_exposes_parallel_option():
+    """Plain `unsloth studio` (no `run`) must also expose --parallel so
+    the API-only / bare-server path has a way to raise concurrency
+    (since pass-through --parallel via llama_extra_args is denied)."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.studio_default)
+    assert "parallel" in sig.parameters, (
+        "studio_default missing `parallel` parameter; API-only path "
+        "has no first-class way to set llama_parallel_slots"
+    )
+    opt = sig.parameters["parallel"].default
+    decls = set(getattr(opt, "param_decls", []) or [])
+    assert "--parallel" in decls
+    assert "--n-parallel" in decls
+    assert getattr(opt, "default", None) == 4
+    assert getattr(opt, "min", None) == 1
+    assert getattr(opt, "max", None) == 64
+
+
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
 def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     """When already in the studio venv, run() must forward --parallel to

@@ -514,6 +514,19 @@ def studio_default(
         "--api-only",
         help = "Run API server only, no frontend serving (for Tauri desktop app)",
     ),
+    parallel: int = typer.Option(
+        4,
+        "--parallel",
+        "--n-parallel",
+        min = 1,
+        max = 64,
+        help = (
+            "llama-server parallel decode slots. Mirrors the same flag on "
+            "`unsloth studio run`; without it the API-only / plain-server "
+            "path has no way to raise concurrency since --parallel is "
+            "managed (denied as a llama_extra_args pass-through)."
+        ),
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Runs before any subcommand; covers run/setup/update/etc in one place.
@@ -538,6 +551,8 @@ def studio_default(
                 host,
                 "--port",
                 str(port),
+                "--parallel",
+                str(parallel),
             ]
             if frontend:
                 args.extend(["--frontend", str(frontend)])
@@ -582,7 +597,13 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_kwargs = dict(host = host, port = port, silent = silent, api_only = api_only)
+    run_kwargs = dict(
+        host = host,
+        port = port,
+        silent = silent,
+        api_only = api_only,
+        llama_parallel_slots = parallel,
+    )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)

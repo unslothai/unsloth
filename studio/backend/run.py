@@ -727,11 +727,24 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    parser.add_argument(
+        "--parallel",
+        "--n-parallel",
+        type = int,
+        default = 4,
+        help = "llama-server parallel decode slots (1..64). Default 4.",
+    )
 
     args = parser.parse_args()
+    if not 1 <= args.parallel <= 64:
+        parser.error("--parallel must be between 1 and 64")
 
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        llama_parallel_slots = args.parallel,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
