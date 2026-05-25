@@ -51,10 +51,15 @@ fi
 
 # Forward common secrets only if they're set in the host environment.
 # Empty strings would shadow whatever is already inside the image.
+# IMPORTANT: use the dash-only form `-e VAR` (no `=VALUE`). Docker reads
+# the value from the parent shell, so the literal secret never lands in
+# argv where it would be visible to any user on the host via
+# `ps auxe` / `/proc/<pid>/cmdline` for the lifetime of the docker CLI
+# process.
 declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
-[[ -n "${HF_TOKEN:-}"        ]] && ENV_FORWARD+=(-e "HF_TOKEN=${HF_TOKEN}")
-[[ -n "${WANDB_API_KEY:-}"   ]] && ENV_FORWARD+=(-e "WANDB_API_KEY=${WANDB_API_KEY}")
-[[ -n "${UNSLOTH_LICENSE:-}" ]] && ENV_FORWARD+=(-e "UNSLOTH_LICENSE=${UNSLOTH_LICENSE}")
+[[ -n "${HF_TOKEN:-}"        ]] && ENV_FORWARD+=(-e HF_TOKEN)
+[[ -n "${WANDB_API_KEY:-}"   ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
+[[ -n "${UNSLOTH_LICENSE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 
 # Only attach -t when our own stdin/stdout are a TTY; CI / piped invocations
 # otherwise hit `the input device is not a TTY` and never reach the entrypoint.

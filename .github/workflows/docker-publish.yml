@@ -216,13 +216,20 @@ jobs:
       # Re-compute the tag list deterministically from the same metadata-action
       # config the merge job used, so tag/schedule/SHA runs pull the image
       # they just published instead of an unrelated `:latest` from a prior run.
+      # IMPORTANT: keep this `enable=` expression byte-identical to the merge
+      # job's :latest gate above. The two used to differ
+      # (merge: ref + unsloth_ref guard; smoke: is_default_branch only),
+      # which meant workflow_dispatch with unsloth_ref defaulting to "main"
+      # would skip :latest on merge but still emit :latest as tags[0] on
+      # smoke -- so docker pull would fetch a previously-published :latest
+      # from Docker Hub, not the image just merged.
       - name: Resolve published tag
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short

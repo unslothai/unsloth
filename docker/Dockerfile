@@ -230,8 +230,20 @@ RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
  && head -50 ${VENV}/requirements.lock.txt
 
 # 6) Strip pip cache & __pycache__ to shrink the layer copied to runtime.
+#
+# Note on the `-name tests` strip: numpy 2.4 ships `numpy/_core/tests/`
+# back into the wheel (numpy 2.2.6 had stripped it, which is what the
+# explicit upgrade earlier in this Dockerfile was meant to fix). Blowing
+# away every `tests/` directory under the venv would re-introduce the
+# same `from numpy._core.tests._natype import pd_NA` ImportError on the
+# deployed image. Exclude numpy's tests directories explicitly so the
+# upgrade fix stays in effect; keep stripping the rest.
 RUN find ${VENV} -depth -type d -name __pycache__ -exec rm -rf {} + \
- && find ${VENV} -depth -type d -name tests -exec rm -rf {} + \
+ && find ${VENV} -depth -type d -name tests \
+        ! -path "*numpy/_core/tests*" \
+        ! -path "*numpy/tests*" \
+        ! -path "*numpy/ma/tests*" \
+        -exec rm -rf {} + \
  && rm -rf /root/.cache/pip /root/.cache/uv
 
 # Build-time verification.

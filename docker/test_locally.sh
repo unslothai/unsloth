@@ -362,8 +362,11 @@ INNER
 
     # Only forward HF_TOKEN if the host has one set, so an empty
     # `-e HF_TOKEN=` does not shadow whatever is already inside the image.
+    # Use the dash-only form `-e HF_TOKEN` so the secret value never
+    # lands in argv (visible via /proc/<pid>/cmdline to any user on
+    # the host for the lifetime of the docker CLI process).
     HF_ARGS=()
-    [[ -n "${HF_TOKEN:-}" ]] && HF_ARGS+=(-e "HF_TOKEN=${HF_TOKEN}")
+    [[ -n "${HF_TOKEN:-}" ]] && HF_ARGS+=(-e HF_TOKEN)
     docker run --rm \
         --gpus all \
         --ipc=host \
