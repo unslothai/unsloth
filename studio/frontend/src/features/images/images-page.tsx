@@ -308,15 +308,23 @@ export function ImagesPage() {
   // FLUX.2 / FLUX.2 klein pipelines do NOT accept negative_prompt and
   // would 500 if we sent one through. The backend strips the field
   // defensively but hiding it client-side keeps the UI honest.
+  // Round 29 P2 #12: also honour the user-picked customFamily when no
+  // model is loaded yet, so a Custom HF repo with family flux.2 /
+  // flux.2-klein hides the negative-prompt field correctly.
   const supportsNegativePrompt = useMemo(() => {
     const family = status?.family;
     if (!family) {
-      const candidate = useCustom ? undefined : preset.family;
+      let candidate: string | undefined;
+      if (useCustom) {
+        candidate = customFamily === "auto" ? undefined : customFamily;
+      } else {
+        candidate = preset.family;
+      }
       if (!candidate) return true;
       return !candidate.startsWith("flux.2");
     }
     return !family.startsWith("flux.2");
-  }, [status, useCustom, preset.family]);
+  }, [status, useCustom, customFamily, preset.family]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">

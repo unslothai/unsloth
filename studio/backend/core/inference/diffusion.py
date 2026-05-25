@@ -1035,13 +1035,18 @@ class DiffusionBackend:
                 #      transformer while the old pipeline still owns
                 #      its weights.
                 #   4. THEN call from_single_file / from_pretrained.
-                # Round 28 P1 #4: helper/advisor check must fire BEFORE
-                # _release_other_gpu_owners_for_diffusion. Otherwise a
-                # blocked Images load could first tear down an idle
-                # export checkpoint just to then RuntimeError on the
-                # helper check inside _release_chat_backend_for_diffusion.
-                _release_chat_backend_for_diffusion()
+                # Round 29 P1 #1: do ALL cheap conflict checks BEFORE
+                # any destructive unload, so a training/export conflict
+                # caught inside _release_other_gpu_owners_for_diffusion
+                # does NOT leave the user with no chat model after we
+                # already unloaded it. The helper-busy check is
+                # split out of _release_chat_backend_for_diffusion;
+                # _release_other_gpu_owners_for_diffusion raises
+                # RuntimeError early when training/export is active
+                # without touching the chat backend.
+                _raise_if_helper_advisor_busy_for_diffusion()
                 _release_other_gpu_owners_for_diffusion()
+                _release_chat_backend_for_diffusion(check_helper_advisor = False)
 
                 old = self._pipe
                 if old is not None:
@@ -1505,7 +1510,26 @@ def encode_png_base64(pil_image: "Any") -> str:
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def _release_chat_backend_for_diffusion() -> None:
+def _raise_if_helper_advisor_busy_for_diffusion() -> None:
+    """Round 29 P1 #1: split the helper-busy check out of
+    _release_chat_backend_for_diffusion so the diffusion load can
+    check ALL conflicts (helper, training, export) BEFORE doing ANY
+    destructive unloads. Otherwise a route-precheck race or a direct
+    backend call would unload the user's chat while training was
+    active, then 409 with the user holding no model at all.
+    """
+    try:
+        from utils.datasets.llm_assist import helper_advisor_busy
+    except Exception:
+        return
+    if helper_advisor_busy():
+        raise RuntimeError(
+            "AI Assist (helper / advisor GGUF) is still using the GPU. "
+            "Wait for it to finish before loading a diffusion image model."
+        )
+
+
+def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) -> None:
     """Unload any running chat backend before a diffusion load.
 
     Diffusion pipelines on FLUX-class models can eat 12-24 GB of VRAM,
@@ -1521,20 +1545,15 @@ def _release_chat_backend_for_diffusion() -> None:
     diffusion ``load_model`` bails out instead of double-owning VRAM
     (round 17 P1 #2).
     """
-    # Round 27 P1 #2: helper / advisor GGUF loads run on a PRIVATE
-    # LlamaCppBackend so the global llama check below cannot see them.
-    # Refuse the diffusion handoff while a helper / advisor still owns
-    # its private backend so we do not allocate FLUX VRAM on top.
-    try:
-        from utils.datasets.llm_assist import helper_advisor_busy
-    except Exception:
-        pass
-    else:
-        if helper_advisor_busy():
-            raise RuntimeError(
-                "AI Assist (helper / advisor GGUF) is still using the GPU. "
-                "Wait for it to finish before loading a diffusion image model."
-            )
+    # Round 27 P1 #2 / round 29 P1 #1: helper / advisor GGUF loads
+    # run on a PRIVATE LlamaCppBackend so the global llama check below
+    # cannot see them. The actual busy check now lives in
+    # _raise_if_helper_advisor_busy_for_diffusion so the caller can do
+    # ALL conflict checks BEFORE any destructive unload. Kept here as
+    # a default-on safety net for callers that did not run the
+    # standalone check.
+    if check_helper_advisor:
+        _raise_if_helper_advisor_busy_for_diffusion()
     # 1. GGUF chat backend (llama-server subprocess). We unload when
     #    EITHER is_loaded is True (resident model) OR is_active is
     #    True (mid-download / startup) OR loading_model_identifier is

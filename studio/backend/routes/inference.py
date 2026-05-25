@@ -2395,11 +2395,16 @@ async def diffusion_generate(
         raise HTTPException(status_code = 500, detail = str(exc))
 
     duration_ms = int((time.time() - start) * 1000)
+    # Round 29 P2 #14: FLUX-family pipelines round (width, height) to
+    # vae_scale_factor * 2 multiples internally, so the actual PNG can
+    # differ from the requested dims. Report the real image size so
+    # the metadata caption matches the bytes on the wire.
+    actual_w, actual_h = (image.size if hasattr(image, "size") else (payload.width, payload.height))
     return DiffusionGenerateResponse(
         image_b64 = encode_png_base64(image),
         image_mime = "image/png",
-        width = payload.width,
-        height = payload.height,
+        width = int(actual_w),
+        height = int(actual_h),
         num_inference_steps = payload.num_inference_steps,
         guidance_scale = payload.guidance_scale,
         seed = payload.seed,
