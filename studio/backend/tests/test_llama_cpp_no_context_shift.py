@@ -80,9 +80,7 @@ def _load_model_source() -> str:
     two load entry points, not the entire module).
     """
     parts = [inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)]
-    impl = getattr(
-        llama_cpp_module.LlamaCppBackend, "_load_model_impl_locked", None
-    )
+    impl = getattr(llama_cpp_module.LlamaCppBackend, "_load_model_impl_locked", None)
     if impl is not None:
         parts.append(inspect.getsource(impl))
     return "\n".join(parts)
