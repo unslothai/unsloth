@@ -394,9 +394,7 @@ async def _release_llama_for(workload: str) -> None:
     try:
         await asyncio.to_thread(llama.unload_model)
     except Exception as exc:
-        logger.warning(
-            "Failed to unload GGUF chat before %s load: %s", workload, exc
-        )
+        logger.warning("Failed to unload GGUF chat before %s load: %s", workload, exc)
         raise HTTPException(
             status_code = 503,
             detail = (

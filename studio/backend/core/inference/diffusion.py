@@ -384,10 +384,7 @@ def detect_family(
         term_compact = re.sub(r"[^a-z0-9]+", "", term.lower())
         if not term_compact:
             return False
-        return (
-            term_compact in needle_compact_tokens
-            or term_compact == needle_compact
-        )
+        return term_compact in needle_compact_tokens or term_compact == needle_compact
 
     # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES
     # so a repo like ``stabilityai/stable-diffusion-xl-base-1.0`` is

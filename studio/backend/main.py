@@ -330,6 +330,7 @@ async def _validation_error_scrubbing_handler(request, exc):
         content = {"detail": _scrub_validation_obj(exc.errors())},
     )
 
+
 # Initialize structured logging
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
