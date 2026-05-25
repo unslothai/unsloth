@@ -27,10 +27,16 @@ describe("HtmlSvgRenderer", () => {
     expect(iframe.tagName).toBe("IFRAME");
     // SECURITY: allow-scripts + allow-modals leave script / alert /
     // confirm operative IF the inherited host CSP ever permits inline;
-    // NEVER allow-same-origin or allow-top-navigation -- those would let
+    // allow-popups + allow-popups-to-escape-sandbox so a `<base
+    // target="_blank">` link does not silently no-op; NEVER
+    // allow-same-origin or allow-top-navigation -- those would let
     // the preview read parent.document and exfiltrate session data.
     const sandbox = iframe.getAttribute("sandbox") ?? "";
-    expect(sandbox.split(/\s+/)).toContain("allow-scripts");
+    const sandboxTokens = sandbox.split(/\s+/);
+    expect(sandboxTokens).toContain("allow-scripts");
+    expect(sandboxTokens).toContain("allow-modals");
+    expect(sandboxTokens).toContain("allow-popups");
+    expect(sandboxTokens).toContain("allow-popups-to-escape-sandbox");
     expect(sandbox).not.toContain("allow-same-origin");
     expect(sandbox).not.toContain("allow-top-navigation");
     // srcdoc carries the assistant HTML plus a defense-in-depth meta CSP

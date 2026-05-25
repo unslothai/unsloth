@@ -346,12 +346,23 @@ function HtmlPreview({
       data-testid="html-svg-renderer-iframe"
       title="HTML preview"
       srcDoc={srcDoc}
-      // SECURITY: allow-scripts (in case the host CSP ever loosens to
-      // permit inline) + allow-modals (so alert/confirm do not silently
-      // no-op when scripts do run). We do NOT grant allow-same-origin or
-      // allow-top-navigation, so the iframe cannot read parent.document,
-      // navigate the host page, or escape its origin.
-      sandbox="allow-scripts allow-modals"
+      // SECURITY:
+      //   allow-scripts        -- in case the host CSP ever loosens
+      //                           to permit inline (today it does not)
+      //   allow-modals         -- so alert/confirm/prompt do not no-op
+      //                           when scripts do run
+      //   allow-popups +       -- so the ``<base target="_blank">`` we
+      //   allow-popups-to-        set above can open a new tab without
+      //   escape-sandbox          being silently dropped; escape-
+      //                           sandbox makes the popup a regular
+      //                           browser tab rather than an opaque-
+      //                           origin sandboxed one (the popup is
+      //                           equivalent to the user clicking the
+      //                           same URL in any other web app)
+      // We do NOT grant allow-same-origin or allow-top-navigation,
+      // so the iframe cannot read parent.document, navigate the host
+      // page, or escape its origin.
+      sandbox="allow-scripts allow-modals allow-popups allow-popups-to-escape-sandbox"
       style={{
         width: "100%",
         height: iframeHeight,
