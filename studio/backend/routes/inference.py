@@ -574,7 +574,6 @@ async def _release_safetensors_chat_for(workload: str) -> None:
 
     active_model_name = getattr(inf, "active_model_name", None)
     loading_models = set(getattr(inf, "loading_models", set()) or set())
-    owned_names = {name for name in ({active_model_name} | loading_models) if name}
     if active_model_name:
         logger.info(
             "Unloading safetensors chat '%s' before %s load",
@@ -691,6 +690,24 @@ async def _release_export_for(workload: str) -> None:
                     f"{workload}. Try again."
                 ),
             ) from exc
+
+    # If an /export/* operation has published its pending window, the
+    # backend may not have flipped is_export_active() = True yet but the
+    # subprocess is mid-handoff. Refuse to tear it down so the in-flight
+    # export sees a stable subprocess.
+    try:
+        from utils.datasets.llm_assist import public_load_pending_for
+        export_pending = public_load_pending_for("export")
+    except Exception:
+        export_pending = False
+    if has_checkpoint and not active and export_pending:
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Another export operation is mid-handoff. Wait for it "
+                f"to finish before starting {workload}."
+            ),
+        )
 
     if has_checkpoint and not active:
         try:

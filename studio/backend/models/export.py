@@ -25,6 +25,10 @@ def _validate_save_directory(value: str) -> str:
     raw = str(value).strip()
     if not raw:
         raise ValueError("save_directory must not be empty")
+    # save_directory is logged verbatim by merged / base / GGUF export
+    # flows after resolution, so reject embedded HF tokens at the same
+    # boundary as the sibling identifier fields on export requests.
+    _reject_embedded_hf_token(raw, "save_directory")
     if "\x00" in raw:
         raise ValueError("save_directory may not contain null bytes")
     # Round 32 P1: reject ALL ASCII control characters (including

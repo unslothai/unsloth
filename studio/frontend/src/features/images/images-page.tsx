@@ -155,11 +155,13 @@ export function ImagesPage() {
   }, [fetchAndUpdateStatus]);
 
   useEffect(() => {
-    // Mount fetch goes through fetchAndUpdateStatus so the lint rule
-    // does not see any synchronous setState in the effect body; the
-    // user-driven Refresh button still calls refreshStatus to flip
-    // the spinner.
-    void fetchAndUpdateStatus();
+    // Defer the mount fetch out of the synchronous effect body so the
+    // setStatus call inside fetchAndUpdateStatus does not trip the
+    // react-hooks/set-state-in-effect rule.
+    const id = window.setTimeout(() => {
+      void fetchAndUpdateStatus();
+    }, 0);
+    return () => window.clearTimeout(id);
   }, [fetchAndUpdateStatus]);
 
   // Round 27 P2: when the backend is mid-load (is_loading=true) the

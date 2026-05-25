@@ -644,12 +644,6 @@ class DiffusionBackend:
         # ``/api/inference/images/status`` route always uses the
         # public payload.
         with self._lock:
-            # UI-facing collapsed basename. Full local path leaks the
-            # HF cache layout + system username; the original caller-
-            # supplied filename (e.g. ``BF16/model.gguf``) is kept
-            # separately as ``active_gguf_filename`` for delete
-            # guards.
-            gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
             # Expose BOTH the resident pipeline's id AND the pending
             # load target. Delete guards must check both: when model A
             # is already loaded and a swap to model B is in flight,
@@ -1732,7 +1726,6 @@ def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) ->
     backend = get_inference_backend()
     active_model_name = getattr(backend, "active_model_name", None)
     loading_models = set(getattr(backend, "loading_models", set()) or set())
-    owned_names = {name for name in ({active_model_name} | loading_models) if name}
 
     def _require_unload(model_name: str) -> None:
         try:

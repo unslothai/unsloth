@@ -154,6 +154,17 @@ def public_load_pending(*, excluding: str | None = None) -> bool:
         )
 
 
+def public_load_pending_for(workload: str) -> bool:
+    """True if a specific public GPU workload is mid-handoff. Used by
+    release helpers to refuse a destructive teardown while the matching
+    /export/* or /chat /load_* route is still in its publish window."""
+    if not workload:
+        return False
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        return _PUBLIC_LOAD_PENDING_COUNT.get(needle, 0) > 0
+
+
 def _strip_think_tags(text: str) -> str:
     """Strip <think>...</think> reasoning blocks emitted by some models.
 

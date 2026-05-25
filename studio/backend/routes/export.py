@@ -50,6 +50,39 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+import contextlib
+
+
+@contextlib.asynccontextmanager
+async def _export_public_window():
+    """Publish the public-load window across an /export/* operation.
+
+    backend.export_*() runs in a worker thread and does not flip
+    ``_export_active = True`` until the worker actually starts; during
+    that gap window another workload that calls ``_release_export_for``
+    would see ``is_export_active() == False`` and tear down the export
+    subprocess. Mirror the load_checkpoint guard so the pending counter
+    is set for the whole export call, and the helper-busy preflight
+    refuses if AI Assist is mid-handoff.
+    """
+    from routes.inference import (
+        _clear_public_load_window,
+        _raise_if_helper_advisor_busy,
+    )
+
+    export_window_published = False
+    try:
+        _raise_if_helper_advisor_busy("export")
+        export_window_published = True
+        yield
+    finally:
+        if export_window_published:
+            try:
+                _clear_public_load_window("export")
+            except Exception:
+                pass
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -296,15 +329,16 @@ async def export_merged_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_merged_model,
-            save_directory = request.save_directory,
-            format_type = request.format_type,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_merged_model,
+                save_directory = request.save_directory,
+                format_type = request.format_type,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -336,15 +370,16 @@ async def export_base_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_base_model,
-            save_directory = request.save_directory,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-            base_model_id = request.base_model_id,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_base_model,
+                save_directory = request.save_directory,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+                base_model_id = request.base_model_id,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -376,14 +411,15 @@ async def export_gguf(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_gguf,
-            save_directory = request.save_directory,
-            quantization_method = request.quantization_method,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_gguf,
+                save_directory = request.save_directory,
+                quantization_method = request.quantization_method,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -415,14 +451,15 @@ async def export_lora_adapter(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_lora_adapter,
-            save_directory = request.save_directory,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_lora_adapter,
+                save_directory = request.save_directory,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
