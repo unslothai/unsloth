@@ -92,15 +92,14 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "rsync",
         "eval",
         "source",
-        # macOS-specific escape vectors. `open URL` uses LaunchServices to
-        # spawn a browser outside the sandbox (bypasses network-deny).
-        # `security` reads Keychain credentials. `osascript` evaluates
-        # AppleScript with the user's normal privileges.
-        "open",
-        "security",
-        "osascript",
     }
 )
+# macOS-only escape vectors. `open URL` uses LaunchServices to spawn a
+# browser outside the sandbox (bypasses network-deny). `security` reads
+# Keychain credentials. `osascript` evaluates AppleScript with the
+# user's normal privileges. On Linux, `open` is an xdg-open alternatives
+# wrapper that legitimate scripts use, so we do not block it there.
+_BLOCKED_COMMANDS_MACOS = frozenset({"open", "security", "osascript"})
 _BLOCKED_COMMANDS_WIN = frozenset(
     {
         "rmdir",
@@ -111,11 +110,12 @@ _BLOCKED_COMMANDS_WIN = frozenset(
         "pwsh",
     }
 )
-_BLOCKED_COMMANDS = (
-    _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
-    if sys.platform == "win32"
-    else _BLOCKED_COMMANDS_COMMON
-)
+if sys.platform == "win32":
+    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
+elif sys.platform == "darwin":
+    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_MACOS
+else:
+    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON
 
 
 _SHELL_SEPARATORS = frozenset(
@@ -280,6 +280,21 @@ def _find_blocked_commands(command: str) -> set[str]:
     return blocked
 
 
+def _normalized_sys_executable() -> str:
+    """Return ``sys.executable`` with redundant ``..`` segments collapsed.
+
+    Studio is sometimes launched as ``../.venv/bin/python``, which puts a
+    literal ``..`` in ``sys.executable``. ``_linux_bwrap_argv`` only
+    bind-mounts the realpath chain of the interpreter, so the bwrap
+    child cannot resolve the unresolved parent segment and fails with
+    ``execvp ... No such file or directory``. ``abspath(normpath(...))``
+    collapses ``..`` while preserving the venv launcher path
+    (``realpath`` would dereference a symlink-launcher venv onto the
+    base interpreter and reintroduce the wrong sys.prefix).
+    """
+    return os.path.abspath(os.path.normpath(sys.executable))
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
@@ -294,7 +309,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Start with the directory containing the running Python interpreter
     # so that subprocess calls to 'python', 'pip', etc. resolve to the
     # same environment the Studio server is running in.
-    exe_dir = os.path.dirname(sys.executable)
+    exe_dir = os.path.dirname(_normalized_sys_executable())
     path_entries = [exe_dir] if exe_dir else []
 
     # If a virtualenv is active, include its bin/Scripts directory.
@@ -455,39 +470,63 @@ def _strict_sandbox_required() -> bool:
 _RESOLVED_BASH_PATH: str | None = None
 
 
+_MACOS_BASH_ALLOWED_PREFIXES = (
+    "/opt/homebrew/",
+    "/usr/local/",
+    "/bin/",
+    "/usr/bin/",
+)
+
+
 def _resolve_bash_path() -> str:
     """Return the bash binary the tool subprocess should exec.
 
-    macOS: prefer ``shutil.which("bash")`` so Homebrew bash 5.x on Intel
-    or Apple Silicon is picked up; the Seatbelt profile allows both
-    ``/usr/local/bin`` and ``/opt/homebrew/bin``. Fall back to
-    ``/bin/bash`` (stock macOS bash 3.2).
+    Both platforms must return a path that is reachable inside the
+    sandbox the tool subprocess will run under, so we prefer canonical
+    locations first and only fall back to ``PATH`` when they are
+    missing.
 
-    Linux and other Unix: prefer ``/bin/bash`` then ``/usr/bin/bash``.
+    macOS: try Homebrew bash (Intel + Apple Silicon) then ``/bin/bash``
+    then ``/usr/bin/bash``. ``shutil.which("bash")`` is accepted only if
+    it lives under a prefix the Seatbelt profile allows; otherwise a
+    Nix/MacPorts bash at ``/nix/store/...`` or ``/opt/local/bin/bash``
+    would be returned and every ``bash_exec`` would fail with
+    ``Operation not permitted`` before the command runs.
+
+    Linux and other Unix: try ``/bin/bash`` then ``/usr/bin/bash``.
     These canonical paths are inside the ``/usr`` and ``/bin`` ro-binds
-    that ``_linux_bwrap_argv`` sets up, so the sandboxed child can exec
-    them. ``shutil.which("bash")`` on Nix/NixOS can resolve to
-    ``/run/current-system/sw/bin/bash`` or ``~/.nix-profile/bin/bash``,
-    which are not bind-mounted and would make ``bash_exec`` fail before
-    the command runs. Only fall back to PATH lookup if neither canonical
-    path exists.
+    that ``_linux_bwrap_argv`` sets up. ``shutil.which`` on Nix/NixOS
+    can resolve to ``/run/current-system/sw/bin/bash`` or
+    ``~/.nix-profile/bin/bash``, neither of which is bind-mounted; only
+    fall back to PATH lookup if neither canonical path exists.
     """
     global _RESOLVED_BASH_PATH
     if _RESOLVED_BASH_PATH is not None:
         return _RESOLVED_BASH_PATH
     if sys.platform == "darwin":
+        for path in (
+            "/opt/homebrew/bin/bash",
+            "/usr/local/bin/bash",
+            "/bin/bash",
+            "/usr/bin/bash",
+        ):
+            if os.path.exists(path):
+                _RESOLVED_BASH_PATH = path
+                return path
         candidate = shutil.which("bash")
-        if not candidate and os.path.exists("/bin/bash"):
-            candidate = "/bin/bash"
+        if candidate and candidate.startswith(_MACOS_BASH_ALLOWED_PREFIXES):
+            _RESOLVED_BASH_PATH = candidate
+            return candidate
     else:
-        candidate = None
         for path in ("/bin/bash", "/usr/bin/bash"):
             if os.path.exists(path):
-                candidate = path
-                break
-        if not candidate:
-            candidate = shutil.which("bash")
-    _RESOLVED_BASH_PATH = candidate or "bash"
+                _RESOLVED_BASH_PATH = path
+                return path
+        candidate = shutil.which("bash")
+        if candidate:
+            _RESOLVED_BASH_PATH = candidate
+            return candidate
+    _RESOLVED_BASH_PATH = "bash"
     return _RESOLVED_BASH_PATH
 
 
@@ -2002,7 +2041,7 @@ def _python_exec(
             env = safe_env,
         )
 
-        inner_argv = [sys.executable, tmp_path]
+        inner_argv = [_normalized_sys_executable(), tmp_path]
         sandboxed = sandbox_available()
         # Strict mode covers every platform: an operator who explicitly asked
         # for fail-closed should not get an unsandboxed shell on Windows or a

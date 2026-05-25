@@ -398,12 +398,59 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 """
 
 
+_LINUX_NPROC_WRAPPER_TEMPLATE = (
+    "import os, resource, sys\n"
+    "try:\n"
+    "    nproc = {nproc}\n"
+    "    _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)\n"
+    "    target = nproc if hard == resource.RLIM_INFINITY else min(nproc, hard)\n"
+    "    resource.setrlimit(resource.RLIMIT_NPROC, (target, target))\n"
+    "except (ValueError, OSError, AttributeError):\n"
+    "    pass\n"
+    "os.execvp(sys.argv[1], sys.argv[1:])\n"
+)
+
+
+def _resolve_nproc_limit() -> int:
+    """Read UNSLOTH_STUDIO_SANDBOX_NPROC on the host; default 10000.
+
+    ``_build_safe_env`` is a strict whitelist, so the env var is not
+    propagated into the sandbox. Bake the value into the wrapper at
+    argv-build time so the operator's override still takes effect
+    inside the namespace.
+    """
+    try:
+        return int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+    except ValueError:
+        return 10000
+
+
+def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:
+    """Wrap ``inner_argv`` with a tiny Python that sets RLIMIT_NPROC.
+
+    Why: ``_sandbox_preexec_for_bwrap`` cannot call ``setrlimit(NPROC)``
+    on the parent because that limit is per-real-UID and bwrap's setuid
+    helper would EAGAIN on busy multi-tenant hosts where the operator
+    already runs many processes. Inside the bwrap user namespace the
+    counter is per-mapped-UID (typically ``nobody``), so applying NPROC
+    there does not collide with the host UID's process count. The
+    wrapper runs in the namespace, clamps NPROC to the configured value
+    (or the inherited hard cap, whichever is smaller), then ``execvp``s
+    the original argv so the LLM-controlled command runs with the cap.
+    """
+    exe = os.path.abspath(os.path.normpath(sys.executable))
+    script = _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = _resolve_nproc_limit())
+    return [exe, "-c", script, *inner_argv]
+
+
 def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     """Build a ``bwrap`` argv for the Linux sandbox.
 
     Deny by omission: the child sees only what we bind-mount. ``net``
     is unshared without loopback, so all network is denied. ``/tmp``
-    is a fresh tmpfs so writes don't leak to the host.
+    is a fresh tmpfs so writes don't leak to the host. The inner argv
+    is wrapped with a small Python that re-applies RLIMIT_NPROC inside
+    the userns (see :func:`_linux_inner_rlimit_wrapper`).
     """
     wd = os.path.realpath(workdir)
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
@@ -463,7 +510,12 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     ]
 
     bound_links: set[str] = set()
-    for sym in _exec_chain_symlinks(sys.executable):
+    # Normalize sys.executable so a launcher path containing `..` (e.g.
+    # `../.venv/bin/python`) is resolved before walking the symlink
+    # chain; an unresolved `..` segment would land outside the bind set
+    # and the bwrap child would fail to exec.
+    exe = os.path.abspath(os.path.normpath(sys.executable))
+    for sym in _exec_chain_symlinks(exe):
         if sym in bound_links or _is_under_top_ro(sym):
             continue
         parent = os.path.dirname(sym)
@@ -475,7 +527,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     args.extend(["--bind", wd, wd])
 
     args.append("--")
-    args.extend(inner_argv)
+    args.extend(_linux_inner_rlimit_wrapper(inner_argv))
     return args
 
 

@@ -472,6 +472,105 @@ def test_resolve_bash_prefers_sandbox_visible_paths_on_linux(monkeypatch):
     assert tools._resolve_bash_path() in ("/bin/bash", "/usr/bin/bash")
 
 
+def test_resolve_bash_rejects_disallowed_macos_prefix(monkeypatch):
+    """The Darwin branch of _resolve_bash_path must NOT return a bash
+    whose prefix is outside the Seatbelt allowlist (Homebrew + /bin +
+    /usr/bin). Without this check, Nix or MacPorts users (/nix/store,
+    /opt/local/bin) would see every bash_exec fail with Operation not
+    permitted inside the sandbox."""
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "_RESOLVED_BASH_PATH", None)
+    monkeypatch.setattr(tools.sys, "platform", "darwin")
+    # Simulate a Nix-only macOS environment: no canonical bash anywhere,
+    # shutil.which returns the Nix path that Seatbelt would reject.
+    monkeypatch.setattr(tools.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(
+        tools.shutil,
+        "which",
+        lambda name: "/nix/store/abc-bash/bin/bash" if name == "bash" else None,
+    )
+    # Resolver must fall back to bare "bash" rather than returning a path
+    # the Seatbelt allowlist will reject.
+    assert tools._resolve_bash_path() == "bash"
+
+
+def test_normalized_sys_executable_collapses_dotdot(monkeypatch):
+    """A launcher path with `..` in sys.executable must be resolved
+    before passing to bwrap, which cannot execvp through `unsloth/..`
+    when the parent directory is not bind-mounted."""
+    from core.inference import tools
+
+    monkeypatch.setattr(
+        tools.sys,
+        "executable",
+        "/mnt/disks/unsloth/../.venv/bin/python",
+    )
+    assert tools._normalized_sys_executable() == "/mnt/disks/.venv/bin/python"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch):
+    """The bwrap argv must wrap inner_argv with a small Python that
+    re-applies RLIMIT_NPROC inside the userns. Without this, the
+    LLM-controlled child inherits the host's unlimited NPROC because
+    _sandbox_preexec_for_bwrap skips NPROC on the host parent."""
+    sandbox = _load_sandbox_module()
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "77")
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "print(1)"], "/tmp")
+    sep = argv.index("--")
+    inner = argv[sep + 1 :]
+    # Inner argv now starts with a python wrapper, not the user's argv.
+    assert inner[0].endswith("python") or inner[0].endswith("python3")
+    assert inner[1] == "-c"
+    assert "RLIMIT_NPROC" in inner[2]
+    assert "execvp" in inner[2]
+    # The override must be baked into the script: _build_safe_env strips
+    # env vars, so reading UNSLOTH_STUDIO_SANDBOX_NPROC at runtime inside
+    # the namespace would always see the default.
+    assert "nproc = 77" in inner[2]
+    # Original argv is appended after the wrapper.
+    assert inner[-3:] == ["/usr/bin/python3", "-c", "print(1)"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_bwrap_nproc_falls_back_to_default_when_env_invalid(monkeypatch):
+    sandbox = _load_sandbox_module()
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "not-a-number")
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "1"], "/tmp")
+    inner = argv[argv.index("--") + 1 :]
+    assert "nproc = 10000" in inner[2]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux command blocklist only")
+def test_macos_only_blocked_commands_not_blocked_on_linux():
+    """`open`, `security`, `osascript` are macOS escape vectors and
+    should be blocked there; on Linux, `open` is the xdg-open
+    alternatives wrapper used by legitimate scripts."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "open" not in _find_blocked_commands("open README.md")
+    assert "security" not in _find_blocked_commands("security ls")
+    assert "osascript" not in _find_blocked_commands("osascript -e 1")
+    # Sanity: real dangerous commands still blocked.
+    assert "rm" in _find_blocked_commands("rm -rf /")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "macOS command blocklist only")
+def test_macos_only_blocked_commands_blocked_on_macos():
+    from core.inference.tools import _find_blocked_commands
+
+    assert "open" in _find_blocked_commands("open https://example.com")
+    assert "security" in _find_blocked_commands(
+        "security find-generic-password -s foo",
+    )
+    assert "osascript" in _find_blocked_commands("osascript -e 1")
+
+
 # ---------------------------------------------------------------------------
 # macOS Seatbelt symmetry: workdir must appear in process-exec and
 # file-map-executable so tools can run / dlopen a freshly written file in
