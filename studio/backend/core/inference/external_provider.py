@@ -1521,13 +1521,18 @@ class ExternalProviderClient:
         # mirror the web_search wiring: max_uses cap, opt in via
         # `enabled_tools=["web_fetch"]`, citations off by default
         # because the frontend already paints source pills from the
-        # generic tool_end payload.
+        # generic tool_end payload. The tool type is date-pinned per
+        # model family; `_anthropic_web_fetch_version` picks
+        # `web_fetch_20260209` (dynamic filtering) on Opus 4.6/4.7 and
+        # Sonnet 4.6 and falls back to `web_fetch_20250910` everywhere
+        # else. Sending the new variant to an older model returns 400
+        # "tool not supported", so the picker is required.
         web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "web_fetch_20250910",
+                    "type": _anthropic_web_fetch_version(model),
                     "name": "web_fetch",
                     "max_uses": 5,
                 }

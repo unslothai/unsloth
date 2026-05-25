@@ -2,13 +2,17 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Unit tests for Anthropic's server-side `web_fetch_20250910` tool
+Unit tests for Anthropic's server-side `web_fetch_20250910` /
+`web_fetch_20260209` tool
 translation in `_stream_anthropic`.
 
 Covers:
 - Request body: when ``enabled_tools=["web_fetch"]``, the outbound
-  ``tools`` array carries ``{"type":"web_fetch_20250910",
-  "name":"web_fetch", "max_uses":5}``. No beta header is required.
+  ``tools`` array carries ``{"type":"web_fetch_<version>",
+  "name":"web_fetch", "max_uses":5}`` where the version is picked per
+  model by ``_anthropic_web_fetch_version`` (``_20260209`` for Opus
+  4.6/4.7 + Sonnet 4.6, ``_20250910`` otherwise). No beta header is
+  required.
 - Combined request: ``enabled_tools=["web_search","web_fetch",
   "code_execution"]`` sends all three tool entries.
 - Disabled by default: with ``enabled_tools=["web_search"]`` (or None),
@@ -117,8 +121,11 @@ def test_web_fetch_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
+    # claude-opus-4-7 routes web_fetch to the _20260209 variant (dynamic
+    # filtering); older models fall back to _20250910 via
+    # _anthropic_web_fetch_version.
     assert {
-        "type": "web_fetch_20250910",
+        "type": "web_fetch_20260209",
         "name": "web_fetch",
         "max_uses": 5,
     } in tools
@@ -158,12 +165,11 @@ def test_web_fetch_combined_with_web_search_and_code_execution(monkeypatch):
     tools = captured["body"].get("tools") or []
     tool_types = [t.get("type") for t in tools]
     # After PR 5679's per-model tool version dispatch landed,
-    # claude-opus-4-7 routes web_search to the _20260209 variant and
-    # code_execution to _20260120. web_fetch still hardcodes
-    # _20250910 today; see follow-up to thread it through
-    # _anthropic_web_fetch_version.
+    # claude-opus-4-7 routes web_search to the _20260209 variant,
+    # web_fetch to _20260209 (dynamic filtering), and code_execution
+    # to _20260120.
     assert "web_search_20260209" in tool_types, tool_types
-    assert "web_fetch_20250910" in tool_types, tool_types
+    assert "web_fetch_20260209" in tool_types, tool_types
     assert "code_execution_20260120" in tool_types, tool_types
     # Code-execution still adds its beta flag; web_fetch must not
     # have accidentally stripped it.
@@ -199,7 +205,10 @@ def test_no_web_fetch_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert all(t.get("type") != "web_fetch_20250910" for t in tools)
+    assert all(
+        t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209")
+        for t in tools
+    )
 
 
 # ── SSE translation ─────────────────────────────────────────────────
