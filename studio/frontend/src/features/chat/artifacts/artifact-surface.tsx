@@ -4,6 +4,7 @@
 "use client";
 
 import { createCodePlugin } from "@/components/assistant-ui/code-plugin";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import {
   unslothDarkTheme,
   unslothLightTheme,
@@ -15,7 +16,7 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
-  FileTextIcon,
+  EyeIcon,
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
@@ -176,19 +177,42 @@ export function ArtifactSurface({
       )}
       aria-label={`${artifact.title} artifact`}
     >
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-3 py-2">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <FileTextIcon className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-foreground">
-            {artifact.title}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            HTML artifact ·{" "}
-            {artifact.source === "tool" ? "tool call" : "fenced fallback"}
-            {artifact.isStreaming ? " · streaming" : ""}
-          </p>
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-2.5 py-2">
+        <div
+          className="flex items-center gap-1 rounded-md bg-muted/40 p-0.5"
+          role="tablist"
+          aria-label="Artifact view"
+        >
+          {(["preview", "source"] as const).map((mode) => {
+            const isPreview = mode === "preview";
+            const Icon = isPreview ? EyeIcon : CodeToggleIcon;
+            return (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                disabled={artifact.isStreaming && isPreview}
+                onClick={() => setViewMode(mode)}
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-[4px] text-muted-foreground transition-colors",
+                  effectiveViewMode === mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "hover:bg-background/70 hover:text-foreground",
+                  artifact.isStreaming &&
+                    isPreview &&
+                    "cursor-not-allowed opacity-50",
+                )}
+                aria-label={
+                  isPreview ? "Preview artifact" : "View artifact source"
+                }
+                aria-selected={effectiveViewMode === mode}
+                aria-pressed={effectiveViewMode === mode}
+                title={isPreview ? "Preview" : "Source"}
+              >
+                <Icon className="size-4" />
+              </button>
+            );
+          })}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button
@@ -239,29 +263,6 @@ export function ArtifactSurface({
           </Button>
         </div>
       </header>
-
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
-        {(["preview", "source"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            disabled={artifact.isStreaming && mode === "preview"}
-            onClick={() => setViewMode(mode)}
-            className={cn(
-              "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-              effectiveViewMode === mode
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              artifact.isStreaming &&
-                mode === "preview" &&
-                "cursor-not-allowed opacity-50",
-            )}
-            aria-pressed={effectiveViewMode === mode}
-          >
-            {mode === "preview" ? "Preview" : "Source"}
-          </button>
-        ))}
-      </div>
 
       <div className="min-h-0 flex-1 overflow-hidden bg-background">
         {effectiveViewMode === "preview" ? (

@@ -4,6 +4,8 @@
 "use client";
 
 import { ArtifactCard } from "@/features/chat";
+import { BrowserIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ToolCallMessagePartComponent,
   useToolArgsStatus,
@@ -17,19 +19,8 @@ type RenderHtmlArgs = Record<string, unknown> & {
   title?: string;
 };
 
-function formatToolResult(result: unknown): string {
-  if (typeof result === "string") return result;
-  if (result == null) return "";
-  try {
-    return JSON.stringify(result, null, 2);
-  } catch {
-    return String(result);
-  }
-}
-
 const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   args,
-  result,
   status,
   toolCallId,
 }) => {
@@ -39,7 +30,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const hasCode = code.trim().length > 0;
   const title =
     typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML artifact";
-  const resultText = formatToolResult(result);
   const isRunning = status?.type === "running";
   const codeIsStreaming = propStatus.code === "streaming";
 
@@ -57,25 +47,24 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-border/80 bg-background/80 px-3 py-2.5 shadow-sm shadow-black/5 dark:bg-muted/10 dark:shadow-black/20">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-foreground">
-            Generating artifact…
-          </p>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {resultText || "Waiting for HTML source"}
-          </p>
-        </div>
-        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+    <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
+      <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
+        <HugeiconsIcon
+          icon={BrowserIcon}
+          strokeWidth={1.75}
+          className="size-5 shrink-0 text-muted-foreground"
+        />
+        <span className="grid min-w-0 flex-1 gap-1">
+          <span className="truncate text-sm font-medium leading-tight text-foreground">
+            Generating artifact
+          </span>
+          <span className="truncate text-[11px] leading-none text-muted-foreground">
+            HTML artifact
+          </span>
+        </span>
+        <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
           Generating
         </span>
-      </div>
-      <div
-        className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
-        aria-hidden={true}
-      >
-        <div className="h-full w-1/2 rounded-full bg-primary/25 shimmer motion-reduce:animate-none" />
       </div>
     </div>
   );
