@@ -32,23 +32,23 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   // preserve a stale one. Same-model defaults reloads (which also flow
   // through the model-config mapper) skip the reset via Object.hasOwn
   // in model-defaults.ts; here we forge the key so import always wins.
-  // This also covers configs with no training section at all (lora-only
-  // exports), which otherwise would not trigger the mapper's vision
-  // patch and would leak the previously selected image size.
-  let trainingObj: unknown =
-    raw.training != null &&
-    typeof raw.training === "object" &&
-    !Array.isArray(raw.training)
-      ? { ...(raw.training as Record<string, unknown>) }
-      : raw.training;
-  if (trainingObj == null) {
+  // This also covers configs where the training section is missing,
+  // null, an array, or any non-mapping scalar - in all such cases the
+  // mapper would otherwise emit no vision patch and the previously
+  // selected image size would silently persist.
+  const rawTraining = raw.training;
+  const isPlainTrainingObject =
+    rawTraining != null &&
+    typeof rawTraining === "object" &&
+    !Array.isArray(rawTraining);
+  let trainingObj: Record<string, unknown>;
+  if (!isPlainTrainingObject) {
     trainingObj = { vision_image_size: null };
-  } else if (
-    typeof trainingObj === "object" &&
-    !Array.isArray(trainingObj) &&
-    !Object.hasOwn(trainingObj, "vision_image_size")
-  ) {
-    (trainingObj as Record<string, unknown>).vision_image_size = null;
+  } else {
+    trainingObj = { ...(rawTraining as Record<string, unknown>) };
+    if (!Object.hasOwn(trainingObj, "vision_image_size")) {
+      trainingObj.vision_image_size = null;
+    }
   }
 
   return {
