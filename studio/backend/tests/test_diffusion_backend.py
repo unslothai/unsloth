@@ -439,8 +439,10 @@ def test_failed_swap_clears_previous_metadata(monkeypatch):
     # Replace from_pretrained on the SAME fake module with a raising one
     # without re-installing the rest of the fakes.
     fake = sys.modules["diffusers"]
+
     def _boom(cls, *a, **kw):
         raise RuntimeError("simulated swap failure")
+
     fake.Flux2KleinPipeline.from_pretrained = classmethod(_boom)
 
     with pytest.raises(RuntimeError, match = "Failed to load diffusion model"):
