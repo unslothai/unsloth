@@ -257,8 +257,27 @@ class AnthropicStreamEmitter:
         elif etype == "metadata":
             self._usage = event.get("usage", {})
             return []
-        # status events — no Anthropic equivalent
+        elif etype == "status" and event.get("boundary"):
+            # Iteration-boundary marker (auto-continue reprompt). Close
+            # the open text block + reset _prev_text so the next content
+            # event diffs against zero. Non-boundary status events (UI
+            # badge clears) don't reach this branch.
+            return self._handle_boundary()
+        # Other status events have no Anthropic equivalent.
         return []
+
+    def _handle_boundary(self) -> list[str]:
+        # Close the current text block + reset the cumulative cursor.
+        # Do NOT pre-open a new text block here -- if the next event is
+        # a tool_start (not text), the eager-open would emit a zero-length
+        # text content block between intent text and the tool_use.
+        # _handle_content lazy-opens when real text arrives.
+        events = []
+        if self._text_block_open:
+            events.append(self._close_block())
+            self.block_index += 1
+        self._prev_text = ""
+        return events
 
     def finish(self, stop_reason: str = "end_turn") -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
