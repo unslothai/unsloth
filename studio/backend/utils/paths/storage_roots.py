@@ -128,10 +128,6 @@ def rag_uploads_root() -> Path:
     return rag_root() / "uploads"
 
 
-def rag_vectordb_root() -> Path:
-    return rag_root() / "qdrant"
-
-
 def rag_bm25_root() -> Path:
     return rag_root() / "bm25"
 
@@ -279,7 +275,6 @@ def ensure_studio_directories() -> None:
         tensorboard_root,
         rag_root,
         rag_uploads_root,
-        rag_vectordb_root,
         rag_bm25_root,
     ):
         ensure_dir(dir_fn())

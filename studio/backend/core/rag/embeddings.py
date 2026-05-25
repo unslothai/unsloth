@@ -260,8 +260,8 @@ def encode_images(
     Works with CLIP-family models (BGE-VL, openai/clip-*) whose
     `encode` accepts PIL.Image objects in the same call as text. The
     returned vectors live in the same 512-d (or model-specific) space
-    as text vectors from this model, so a single Qdrant collection
-    holds both kinds.
+    as text vectors from this model, so a single scope's vector rows
+    hold both kinds.
     """
     from io import BytesIO
 

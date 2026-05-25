@@ -8,11 +8,12 @@ spawn a fresh subprocess per job with ``mp.get_context("spawn")`` and stream
 progress events back over a queue. The subprocess does the heavy work
 (parse → chunk → load embedder → embed in batches) and ships
 ``(chunks, vectors)`` batches back. The parent persists everything:
-sqlite rows, Qdrant points, and (at job completion) a rebuilt BM25 index.
+sqlite rows, vector_store rows in rag.db, and (at job completion) a
+rebuilt BM25 index.
 
-Only the parent process holds the Qdrant local-mode file lock — the
-subprocess never opens it directly. This keeps search available
-throughout the lifetime of an ingestion job.
+Only the parent process owns the rag.db connection (sqlite-vec loaded
+there); subprocesses never open it directly. This keeps search
+available throughout the lifetime of an ingestion job.
 """
 
 from __future__ import annotations
@@ -449,7 +450,7 @@ def _insert_chunks_and_collect_for_bm25(
     chunks_meta: list[dict],
     vectors: list[list[float]],
 ) -> list[dict]:
-    """Insert chunks into sqlite + Qdrant; return [{id, text}] for BM25.
+    """Insert chunks into sqlite + vector_store; return [{id, text}] for BM25.
 
     Image-kind chunks ship a stable image_path and skip BM25 (no text
     body to tokenise). Paired image/caption chunks share a pair_group

@@ -3,11 +3,15 @@
 # path. Skipped in NO_TORCH (Intel Mac GGUF-only) mode because RAG
 # embedding relies on sentence-transformers, which requires torch.
 
-# Vector store + lexical index. qdrant-client supports a pure-Python
-# local mode (QdrantClient(path=...)) that we use to keep the studio
-# install self-contained — no separate server. bm25s persists per-scope
-# indices to disk.
-qdrant-client>=1.12
+# Vector store + lexical index.
+#
+# sqlite-vec is an Apache-2.0 SQLite extension (asg017/sqlite-vec) that
+# adds vector functions (vec_distance_cosine, serialize_float32, vec0
+# virtual tables). The studio loads it into a dedicated rag.db file and
+# stores vectors as BLOB columns alongside the RAG metadata — no separate
+# vector server, no second client library. bm25s persists per-scope
+# lexical indexes to disk.
+sqlite-vec>=0.1.5
 bm25s>=0.2
 
 # Image preprocessing helpers required by Qwen3-VL-Embedding-2B (the

@@ -182,7 +182,7 @@ def _now_ms() -> int:
 
 
 def _resolve_scope_embedder(scope: str) -> str | None:
-    """Look up the embedder that populated `scope`'s Qdrant collection.
+    """Look up the embedder that populated `scope`'s vector rows.
 
     Returns the model name to use for query-side embedding so the
     similarity math doesn't mix vector spaces (Qwen3-VL 2048-d
@@ -985,7 +985,7 @@ def clear_thread_documents(
 ) -> dict:
     """Purge every RAG document attached to ``thread_id``.
 
-    Removes the per-thread Qdrant collection, the bm25 index, the
+    Removes the per-thread vector rows, the bm25 index, the
     rag_documents/rag_chunks rows, and the uploaded files. The chat
     thread itself is untouched.
     """
