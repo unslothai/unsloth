@@ -4753,6 +4753,73 @@ def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
     assert not routed_to_helper["called"]
 
 
+def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
+    """Round 23: forced-function tool_choice on the OpenAI Responses
+    path must suppress hosted builtins (web_search, shell,
+    image_generation) the same way it does for Gemini / Anthropic /
+    OpenRouter / Kimi. User-defined function tools still flow through
+    so the pinned function can resolve."""
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"event: response.completed\ndata: {}\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_search", "code_execution", "image_generation"],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_record",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ],
+            tool_choice = {
+                "type": "function",
+                "function": {"name": "lookup_record"},
+            },
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"] or {}
+    tools = body.get("tools") or []
+    hosted_types = {"web_search", "shell", "image_generation"}
+    hosted_seen = {t.get("type") for t in tools if isinstance(t, dict)}
+    assert not (hosted_seen & hosted_types), body
+    # The user function declaration must still be present so the pin
+    # has something to target.
+    user_function_seen = any(
+        isinstance(t, dict) and t.get("type") == "function" for t in tools
+    )
+    assert user_function_seen, body
+    # And the forced-function tool_choice must be forwarded in Responses
+    # shape: `{type:"function", name:"..."}`.
+    tc = body.get("tool_choice")
+    assert isinstance(tc, dict) and tc.get("type") == "function", body
+    assert tc.get("name") == "lookup_record", body
+
+
 def test_strip_provider_synthetic_tool_history_drops_synthetic_only():
     """Round 22: switching a thread from native Gemini (code_execution
     / image_generation tool_cards in history) to a local GGUF backend

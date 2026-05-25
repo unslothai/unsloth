@@ -5268,14 +5268,35 @@ class ExternalProviderClient:
                 responses_tool_choice = {"type": "function", "name": _name}
 
         _responses_tool_choice_none = _responses_tc_string == "none"
+        # Forced-function tool_choice must also suppress hosted Responses
+        # builtins (web_search, shell, image_generation) on this path,
+        # matching the Gemini / Anthropic / OpenRouter / Kimi gates
+        # applied elsewhere. The caller pinned a specific user function,
+        # so OpenAI must not also fire server-side search / code exec /
+        # image gen for privacy + billing reasons. User-defined function
+        # declarations stay available so the pinned function can resolve.
+        _responses_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _responses_hosted_builtins_allowed = (
+            not _responses_tool_choice_none
+            and not _responses_tool_choice_forced_function
+        )
 
         if (
             enabled_tools or responses_user_function_tools
         ) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
-            if enabled_tools and "web_search" in enabled_tools:
+            if (
+                _responses_hosted_builtins_allowed
+                and enabled_tools
+                and "web_search" in enabled_tools
+            ):
                 tools_array.append({"type": "web_search"})
-            if code_execution_enabled_openai:
+            if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
                 # `container_auto` lets OpenAI auto-create a fresh
                 # container per request; we capture the resulting
                 # container_id off the SSE stream and the chat-adapter
@@ -5297,7 +5318,7 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
-            if image_generation_enabled_openai:
+            if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
                 tools_array.append({"type": "image_generation"})
             if tools_array:
                 body["tools"] = tools_array
@@ -5322,9 +5343,13 @@ class ExternalProviderClient:
                 tools_array_attempt: list[dict[str, Any]] = list(
                     responses_user_function_tools
                 )
-                if enabled_tools and "web_search" in enabled_tools:
+                if (
+                    _responses_hosted_builtins_allowed
+                    and enabled_tools
+                    and "web_search" in enabled_tools
+                ):
                     tools_array_attempt.append({"type": "web_search"})
-                if code_execution_enabled_openai:
+                if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
                     if container_id_for_this_attempt:
                         env_attempt: dict[str, Any] = {
                             "type": "container_reference",
@@ -5335,7 +5360,10 @@ class ExternalProviderClient:
                     tools_array_attempt.append(
                         {"type": "shell", "environment": env_attempt}
                     )
-                if image_generation_enabled_openai:
+                if (
+                    _responses_hosted_builtins_allowed
+                    and image_generation_enabled_openai
+                ):
                     tools_array_attempt.append({"type": "image_generation"})
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
