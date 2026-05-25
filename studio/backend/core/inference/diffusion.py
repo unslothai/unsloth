@@ -1035,8 +1035,13 @@ class DiffusionBackend:
                 #      transformer while the old pipeline still owns
                 #      its weights.
                 #   4. THEN call from_single_file / from_pretrained.
-                _release_other_gpu_owners_for_diffusion()
+                # Round 28 P1 #4: helper/advisor check must fire BEFORE
+                # _release_other_gpu_owners_for_diffusion. Otherwise a
+                # blocked Images load could first tear down an idle
+                # export checkpoint just to then RuntimeError on the
+                # helper check inside _release_chat_backend_for_diffusion.
                 _release_chat_backend_for_diffusion()
+                _release_other_gpu_owners_for_diffusion()
 
                 old = self._pipe
                 if old is not None:
@@ -1558,6 +1563,16 @@ def _release_chat_backend_for_diffusion() -> None:
                     "Could not unload the existing GGUF chat model before "
                     "loading a diffusion image model."
                 ) from exc
+            # Round 28 P1 #12: a cancelled pending GGUF download takes
+            # up to a few seconds to clear loading_model_identifier in
+            # its finally block. Wait briefly so the same retryable
+            # cancel path used by the unload route does not 503 us.
+            deadline = time.monotonic() + 5.0
+            while (
+                getattr(backend, "loading_model_identifier", None)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.1)
             # Round 18 P1 #4: also reject when ``loading_model_identifier``
             # is still set after the unload call. Without this, a GGUF
             # download / startup that was already in flight before the

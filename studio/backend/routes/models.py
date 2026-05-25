@@ -2440,6 +2440,13 @@ async def get_gguf_download_progress(
     Tracks completed shard downloads in snapshots and in-progress downloads
     in the blobs directory (incomplete files).
     """
+    # Round 28 P1 #14: mirror the hardening on the generic
+    # /download-progress route. Both repo_id and variant are echoed
+    # into the cache-scan path and can reach logs on the failure
+    # branch via the surrounding try/except.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
+    if variant:
+        variant = _validate_logged_identifier(variant, "variant")
     try:
         if not _is_valid_repo_id(repo_id):
             return {

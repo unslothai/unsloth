@@ -273,12 +273,16 @@ async def start_training(
         # stops the export and re-submits.
         from routes.inference import (
             _raise_if_export_active,
+            _raise_if_helper_advisor_busy,
             _release_chat_for,
             _release_diffusion_for,
             _release_export_for,
         )
 
         _raise_if_export_active("training")
+        # Round 28 P1 #5: refuse before any release fires so AI Assist
+        # busy does not first tear down idle diffusion/export.
+        _raise_if_helper_advisor_busy("training")
         # Round 18 P1 #8: release settled export FIRST so an export
         # cleanup failure preserves the user's currently loaded chat
         # model. The previous order (chat -> export) would drop chat

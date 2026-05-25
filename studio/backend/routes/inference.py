@@ -357,6 +357,42 @@ def _raise_if_export_active(workload: str) -> None:
         )
 
 
+def _raise_if_helper_advisor_busy(workload: str) -> None:
+    """Round 28 P1 #1 / #4 / #5 / #6: refuse a new GPU workload while
+    AI Assist helper / advisor still owns its PRIVATE LlamaCppBackend.
+
+    Called early so callers do NOT first tear down idle export /
+    diffusion / chat owners just to fail on the helper check.
+    """
+    try:
+        from utils.datasets.llm_assist import helper_advisor_busy
+    except Exception:
+        return
+    try:
+        busy = helper_advisor_busy()
+    except Exception as exc:
+        logger.warning(
+            "Could not verify helper/advisor status before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify AI Assist status before starting {workload}. "
+                f"Try again."
+            ),
+        ) from exc
+    if busy:
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"AI Assist (helper / advisor GGUF) is still using the GPU. "
+                f"Wait for it to finish before starting {workload}."
+            ),
+        )
+
+
 async def _release_llama_for(workload: str) -> None:
     """Unload the llama-server (GGUF) chat backend if it owns the
     GPU. Treats ``is_loaded`` OR ``is_active`` OR
@@ -402,6 +438,18 @@ async def _release_llama_for(workload: str) -> None:
                 f"starting {workload}."
             ),
         ) from exc
+
+    # Round 28 P1 #11: a pending HF GGUF download cancelled by
+    # unload_model() takes up to a few seconds to settle (the load
+    # thread observes _cancel_event in its finally and clears
+    # loading_model_identifier). Wait briefly so a legitimate cancel
+    # does not 503. Mirrors the /api/inference/unload settling wait.
+    deadline = time.monotonic() + 5.0
+    while (
+        bool(getattr(llama, "loading_model_identifier", None))
+        and time.monotonic() < deadline
+    ):
+        await asyncio.sleep(0.1)
 
     # Round 18 P1 #1: previously only the raised-exception path was
     # treated as failure. ``llama.unload_model()`` returning ``False``
@@ -1210,6 +1258,10 @@ async def load_model(
             # corrupt the user's exported artifact).
             _raise_if_training_active("chat")
             _raise_if_export_active("chat")
+            # Round 28 P1 #1: refuse before the release helpers fire
+            # so we do not tear down an idle export / diffusion just to
+            # then 503 on the helper check.
+            _raise_if_helper_advisor_busy("GGUF chat")
             # Round 24 P1 #4: release order is now
             # export -> diffusion -> safetensors chat (was
             # export -> safetensors chat -> diffusion). A wedged
@@ -1409,6 +1461,9 @@ async def load_model(
         # and so we do not silently corrupt an in-flight export.
         _raise_if_training_active("chat")
         _raise_if_export_active("chat")
+        # Round 28 P1 #1: refuse before the release helpers tear down
+        # idle GPU owners.
+        _raise_if_helper_advisor_busy("safetensors chat")
         # Round 24 P1 #5: release order is now
         # export -> diffusion -> llama-chat (was
         # export -> llama-chat -> diffusion). A wedged diffusion
@@ -2196,6 +2251,12 @@ async def diffusion_load(
     # the request is refused with 409 instead of silently killing it.
     _raise_if_training_active("diffusion")
     _raise_if_export_active("diffusion")
+    # Round 28 P1 #4: AI Assist helper/advisor owns a private llama
+    # backend invisible to _release_chat_backend_for_diffusion's
+    # global checks. Refuse early so we do not first tear down an
+    # idle export checkpoint just to fail on the helper check inside
+    # load_model.
+    _raise_if_helper_advisor_busy("diffusion")
     # Round 18 P1 #3 + P1 #7: the route used to drop chat and idle
     # export BEFORE ``backend.load_model`` ran its cheap validation
     # (family inference, GGUF filename checks, gated-token failures,
@@ -2243,6 +2304,9 @@ async def diffusion_load(
             # to the user instead of 503. Match both wordings.
             or "still active or loading after unload" in detail
             or "still loading after unload" in detail
+            # Round 28 P2 #15: AI Assist running (raised by
+            # _release_chat_backend_for_diffusion) is retryable.
+            or "AI Assist" in detail
         ):
             # Round 17 P1 #2: chat unload failures raised by the
             # backend helper map to 503 (retryable infra issue),

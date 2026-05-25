@@ -34,57 +34,69 @@ DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 README_MAX_CHARS = 1500
 
 # Round 26 P1 #13 / #14: helper/advisor run on PRIVATE LlamaCppBackend
-# instances (round 25 P1 #4 briefly used the global singleton, which
-# caused chat-evict races and finally-eviction bugs and still left
-# delete-cache blind because helper/advisor publish prefixed
-# identifiers the guard could not match). Expose loading repo ids
-# through a thread-safe Counter so DELETE /api/models/delete-cached
-# can block while a helper or advisor still owns the cache.
+# instances. Expose loading repo ids through thread-safe Counters so
+# DELETE /api/models/delete-cached can block while a helper or
+# advisor still owns the cache.
 #
-# Round 27 P1 #1: must refcount, not a plain set. A helper and an
-# advisor (or two concurrent helpers) often share the default repo
-# unsloth/gemma-4-E2B-it-GGUF. With a set, the first finally call
-# discarded the repo while the second invocation was still loading,
-# and the delete-cache guard then let rmtree race the live mmap.
-_HELPER_ADVISOR_REFCOUNT: Counter[str] = Counter()
+# Round 28 P1 #2: split into CACHE vs GPU refcounts. precache_helper_gguf
+# downloads files (cache ownership) without occupying VRAM (GPU
+# ownership), so collapsing them caused the public GPU handoffs to
+# 503 during a background precache that did not need the GPU.
+#   * CACHE: blocks delete-cache for any active downloader / loader
+#   * GPU  : blocks public chat / training / export / diffusion loads
+_HELPER_ADVISOR_CACHE_REFCOUNT: Counter[str] = Counter()
+_HELPER_ADVISOR_GPU_REFCOUNT: Counter[str] = Counter()
 _HELPER_ADVISOR_LOCK = threading.Lock()
+# Round 28 P1 #7 / #8 / #10: serialize helper / advisor STARTS so two
+# concurrent invocations cannot both pass the busy precheck before
+# either registers. Held only across the precheck + register window,
+# not across the full helper run.
+_HELPER_ADVISOR_START_LOCK = threading.Lock()
 
 
 def helper_advisor_owns_repo(repo_id: str) -> bool:
-    """Return True if any helper/advisor load currently owns this
-    HF repo id. Comparison is case-insensitive to match the chat
-    backend's lowercased needle."""
+    """Return True if any helper/advisor activity (precache OR live
+    helper / advisor load) currently owns this HF repo id."""
     if not repo_id:
         return False
     needle = repo_id.lower()
     with _HELPER_ADVISOR_LOCK:
-        return _HELPER_ADVISOR_REFCOUNT.get(needle, 0) > 0
+        return _HELPER_ADVISOR_CACHE_REFCOUNT.get(needle, 0) > 0
 
 
 def helper_advisor_busy() -> bool:
-    """Round 27 P1 #2: True if ANY helper/advisor load is in flight.
-    Used by diffusion / training / export release paths so they do
-    not allocate on top of the helper's VRAM while it owns its
-    private LlamaCppBackend instance."""
+    """True if any helper/advisor load is currently OCCUPYING THE GPU.
+    Round 28 P1 #2: must not return True for a precache-only download
+    (it owns disk cache, not VRAM)."""
     with _HELPER_ADVISOR_LOCK:
-        return sum(_HELPER_ADVISOR_REFCOUNT.values()) > 0
+        return sum(_HELPER_ADVISOR_GPU_REFCOUNT.values()) > 0
 
 
-def _register_helper_advisor_repo(repo_id: str) -> None:
-    if not repo_id:
-        return
-    with _HELPER_ADVISOR_LOCK:
-        _HELPER_ADVISOR_REFCOUNT[repo_id.lower()] += 1
-
-
-def _unregister_helper_advisor_repo(repo_id: str) -> None:
+def _register_helper_advisor_repo(repo_id: str, *, gpu_owner: bool = True) -> None:
+    """Register a helper/advisor activity. Set ``gpu_owner=False`` for
+    precache-only downloads that need cache-delete protection but do
+    not load weights into VRAM."""
     if not repo_id:
         return
     needle = repo_id.lower()
     with _HELPER_ADVISOR_LOCK:
-        _HELPER_ADVISOR_REFCOUNT[needle] -= 1
-        if _HELPER_ADVISOR_REFCOUNT[needle] <= 0:
-            _HELPER_ADVISOR_REFCOUNT.pop(needle, None)
+        _HELPER_ADVISOR_CACHE_REFCOUNT[needle] += 1
+        if gpu_owner:
+            _HELPER_ADVISOR_GPU_REFCOUNT[needle] += 1
+
+
+def _unregister_helper_advisor_repo(repo_id: str, *, gpu_owner: bool = True) -> None:
+    if not repo_id:
+        return
+    needle = repo_id.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _HELPER_ADVISOR_CACHE_REFCOUNT[needle] -= 1
+        if _HELPER_ADVISOR_CACHE_REFCOUNT[needle] <= 0:
+            _HELPER_ADVISOR_CACHE_REFCOUNT.pop(needle, None)
+        if gpu_owner:
+            _HELPER_ADVISOR_GPU_REFCOUNT[needle] -= 1
+            if _HELPER_ADVISOR_GPU_REFCOUNT[needle] <= 0:
+                _HELPER_ADVISOR_GPU_REFCOUNT.pop(needle, None)
 
 
 def _strip_think_tags(text: str) -> str:
@@ -128,10 +140,11 @@ def precache_helper_gguf():
     )
 
     # Round 27 P1 #4: register the repo so DELETE /api/models/delete-cached
-    # cannot rmtree the cache directory while we are mid-download. Helper
-    # / advisor runtime calls already register, but the startup precache
-    # was the asymmetric gap that let cache delete race the first download.
-    _register_helper_advisor_repo(repo)
+    # cannot rmtree the cache directory while we are mid-download.
+    # Round 28 P1 #2: precache only downloads files; it does NOT occupy
+    # VRAM. Use gpu_owner=False so helper_advisor_busy() does not block
+    # public GPU workloads during a background pre-cache.
+    _register_helper_advisor_repo(repo, gpu_owner = False)
     try:
         from huggingface_hub import HfApi, hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
@@ -163,7 +176,7 @@ def precache_helper_gguf():
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
-        _unregister_helper_advisor_repo(repo)
+        _unregister_helper_advisor_repo(repo, gpu_owner = False)
         try:
             enable_progress_bars()
         except Exception as e:
@@ -207,7 +220,14 @@ def _gpu_workload_busy_for_helper() -> bool:
     GPU; mirror the diffusion check by inspecting llama
     ``is_loaded`` / ``is_active`` / ``loading_model_identifier`` and
     safetensors ``active_model_name`` / ``loading_models``.
+
+    Round 28 P1 #9: also catch another helper / advisor that already
+    owns a private LlamaCppBackend. Without this two concurrent
+    helpers could both pass the precheck and OOM each other.
     """
+    if helper_advisor_busy():
+        logger.info("Skipping helper GGUF while another helper/advisor is using the GPU")
+        return True
     if _diffusion_image_model_busy():
         return True
 
@@ -296,16 +316,18 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     # Round 23 P1 #3: round 22 only guarded against a busy
     # diffusion pipeline. Training / export own the same GPU too,
     # so use the broader helper that gates on all three workloads.
-    if _gpu_workload_busy_for_helper():
-        return None
-
+    # Round 28 P1 #7 / #10: serialize the busy check + register pair
+    # so two concurrent helper invocations cannot both pass the
+    # precheck before either registers and then OOM each other.
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get(
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
-
+    with _HELPER_ADVISOR_START_LOCK:
+        if _gpu_workload_busy_for_helper():
+            return None
+        _register_helper_advisor_repo(repo)
     backend = None
-    _register_helper_advisor_repo(repo)
     try:
         # Round 26 P1 #1 / #3 / #13 / #14: use a PRIVATE backend so the
         # helper can never preempt or be preempted by the user's
@@ -700,16 +722,18 @@ def _run_multi_pass_advisor(
     # Round 23 P1 #4: extend the round 22 diffusion-only check to
     # training + export so the advisor cannot race the user's
     # active workload for GPU memory.
-    if _gpu_workload_busy_for_helper():
-        return None
-
+    # Round 28 P1 #8 / #10: serialize the precheck + register pair so
+    # two concurrent advisor invocations cannot both pass before
+    # either registers and then OOM each other.
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get(
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
-
+    with _HELPER_ADVISOR_START_LOCK:
+        if _gpu_workload_busy_for_helper():
+            return None
+        _register_helper_advisor_repo(repo)
     backend = None
-    _register_helper_advisor_repo(repo)
     try:
         # Round 26 P1 #2 / #4 / #13 / #14: mirror ``_run_with_helper``
         # and use a PRIVATE backend. Round 25's global-backend swap

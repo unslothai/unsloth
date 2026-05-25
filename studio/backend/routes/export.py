@@ -148,8 +148,15 @@ async def load_checkpoint(
         # helper so we cover llama-server is_active=True and
         # safetensors loading_models -- the asymmetries round 9
         # reviews #1, #8, #9 flagged.
-        from routes.inference import _release_chat_for, _release_diffusion_for
+        from routes.inference import (
+            _raise_if_helper_advisor_busy,
+            _release_chat_for,
+            _release_diffusion_for,
+        )
 
+        # Round 28 P1 #6: refuse before any release fires so AI Assist
+        # busy does not first tear down idle diffusion.
+        _raise_if_helper_advisor_busy("export")
         # Round 24 P1 #3: release diffusion BEFORE chat so a failing
         # diffusion unload does not leave the user with no chat
         # model loaded. Same reasoning as the training-start flow

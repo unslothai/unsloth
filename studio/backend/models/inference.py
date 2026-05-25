@@ -127,6 +127,27 @@ class LoadRequest(BaseModel):
         ),
     )
 
+    # Round 28 P1 #13: each entry is forwarded verbatim to a logged
+    # subprocess command line and reflected in errors. Reject control
+    # chars and embedded HF tokens for every list entry; allow None.
+    @field_validator("llama_extra_args")
+    @classmethod
+    def _no_extra_args_control_chars(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _no_control_chars(entry, f"llama_extra_args[{i}]")
+        return v
+
+    @field_validator("llama_extra_args")
+    @classmethod
+    def _no_extra_args_embedded_hf_tokens(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _reject_embedded_hf_token(entry, f"llama_extra_args[{i}]")
+        return v
+
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
