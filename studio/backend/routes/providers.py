@@ -336,9 +336,7 @@ async def list_provider_models(
                 _host = (_urlparse(base_url).hostname or "").lower()
             except Exception:
                 _host = ""
-            apply_registry_model_filters = (
-                _host == "generativelanguage.googleapis.com"
-            )
+            apply_registry_model_filters = _host == "generativelanguage.googleapis.com"
 
         if apply_registry_model_filters:
             allow_prefixes = info.get("model_id_allow_prefixes")
