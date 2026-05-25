@@ -344,9 +344,7 @@ async def _validation_error_scrubbing_handler(request, exc):
     # Path objects, Url instances, etc.) into JSON-safe primitives.
     return _JSONResponse(
         status_code = 422,
-        content = _jsonable_encoder(
-            {"detail": _scrub_validation_obj(exc.errors())}
-        ),
+        content = _jsonable_encoder({"detail": _scrub_validation_obj(exc.errors())}),
     )
 
 

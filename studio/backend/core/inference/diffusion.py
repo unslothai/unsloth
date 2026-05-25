@@ -1006,6 +1006,7 @@ class DiffusionBackend:
                 import re
 
                 exc_msg = re.sub(r"hf_[A-Za-z0-9]{20,}", "<redacted>", exc_msg)
+
                 # Round 17 P2 #9: diffusers / safetensors raise errors
                 # like ``FileNotFoundError: /home/alice/models/foo.gguf``
                 # or ``OSError: Error while loading state dict from

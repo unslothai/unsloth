@@ -501,9 +501,7 @@ async def _release_export_for(workload: str) -> None:
     try:
         exp = get_export_backend()
     except Exception as exc:
-        logger.warning(
-            "Could not access export backend before %s: %s", workload, exc
-        )
+        logger.warning("Could not access export backend before %s: %s", workload, exc)
         raise HTTPException(
             status_code = 503,
             detail = (
@@ -537,9 +535,7 @@ async def _release_export_for(workload: str) -> None:
             )
             await asyncio.to_thread(exp._shutdown_subprocess)
         except Exception as exc:
-            logger.warning(
-                "Could not shut down export for %s: %s", workload, exc
-            )
+            logger.warning("Could not shut down export for %s: %s", workload, exc)
             raise HTTPException(
                 status_code = 503,
                 detail = (
@@ -573,9 +569,7 @@ async def _release_diffusion_for(workload: str) -> None:
     try:
         diff_status = diff_backend.status()
     except Exception as exc:
-        logger.warning(
-            "Could not verify diffusion status before %s: %s", workload, exc
-        )
+        logger.warning("Could not verify diffusion status before %s: %s", workload, exc)
         raise HTTPException(
             status_code = 503,
             detail = (
