@@ -226,7 +226,9 @@ def _gpu_workload_busy_for_helper() -> bool:
     helpers could both pass the precheck and OOM each other.
     """
     if helper_advisor_busy():
-        logger.info("Skipping helper GGUF while another helper/advisor is using the GPU")
+        logger.info(
+            "Skipping helper GGUF while another helper/advisor is using the GPU"
+        )
         return True
     if _diffusion_image_model_busy():
         return True
