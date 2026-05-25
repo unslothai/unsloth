@@ -533,6 +533,12 @@ export function AppSidebar() {
                       data-thread-type={item.type}
                       data-thread-id={item.id}
                       isActive={activeThreadId === item.id}
+                      // Expose full title via the native browser tooltip so
+                      // sighted users can read titles that the inner span's
+                      // `truncate` clips. The truncated span still carries
+                      // the full text content, so screen readers already
+                      // announce the full title without an explicit aria-label.
+                      title={item.title}
                       className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
                       onClick={() => {
                         navigate({
@@ -612,6 +618,13 @@ export function AppSidebar() {
                         <SidebarMenuButton
                           isActive={isActiveRun}
                           className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
+                          // Expose full run/dataset name via native tooltip
+                          // so long titles aren't lost to CSS truncation.
+                          title={
+                            run.dataset_name
+                              ? `${run.display_name ?? run.model_name} — ${run.dataset_name}`
+                              : (run.display_name ?? run.model_name)
+                          }
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
