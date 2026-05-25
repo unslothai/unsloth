@@ -165,9 +165,7 @@ def _ensure_selected_local_model_loaded(
         return
 
     target, gguf_variant = selection
-    variant_matches = active_variant == gguf_variant or (
-        target.lower().endswith(".gguf") and not gguf_variant
-    )
+    variant_matches = not gguf_variant or active_variant == gguf_variant
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = (
