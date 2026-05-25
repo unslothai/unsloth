@@ -731,8 +731,8 @@ if __name__ == "__main__":
         "--parallel",
         "--n-parallel",
         type = int,
-        default = 4,
-        help = "llama-server parallel decode slots (1..64). Default 4.",
+        default = 1,
+        help = "llama-server parallel decode slots (1..64). Default 1 matches pre-PR behaviour.",
     )
 
     args = parser.parse_args()

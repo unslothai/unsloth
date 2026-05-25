@@ -463,6 +463,45 @@ def test_consume_helper_rejects_empty_inline_value():
         helper(["-m="], ("-m",), None, "--model")
 
 
+# Entry-point gate isolation: importing unsloth_cli from a third-party
+# script (e.g. an unrelated `myproj/cli.py` that happens to import the
+# package) must not mutate that script's sys.argv. Pin the gate's
+# narrow basename set so re-broadening doesn't slip back in.
+
+
+@pytest.mark.parametrize(
+    "third_party_argv0",
+    [
+        "/home/user/myproj/cli.py",
+        "cli.py",
+        "/usr/bin/some-tool",
+        "pytest",
+        "/opt/wrapper/launch.py",
+        "unsloth-cli",
+        "unsloth-cli.py",
+    ],
+)
+def test_third_party_importers_do_not_trigger_np_rewrite(
+    monkeypatch, third_party_argv0
+):
+    """A third-party script importing unsloth_cli must keep its argv
+    intact. Only the pyproject-declared `unsloth` / `unsloth.exe`
+    console-script may run the canonicaliser."""
+    import os as _os
+    import importlib
+
+    starting_argv = [third_party_argv0, "subcmd", "-np8", "--input", "foo"]
+    monkeypatch.setattr(sys, "argv", list(starting_argv))
+    # Force a fresh import so the import-time gate actually runs.
+    monkeypatch.delitem(sys.modules, "unsloth_cli", raising = False)
+    importlib.import_module("unsloth_cli")
+    assert sys.argv == starting_argv, (
+        f"third-party argv[0]={third_party_argv0!r} triggered the "
+        f"unsloth -np canonicaliser; sys.argv was mutated to {sys.argv}"
+    )
+    _ = _os  # silence unused-import linters when monkeypatch lazy-binds
+
+
 def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
     """Behavioural pin: after _expand_attached_np_short runs in the
     entry-point gate, `-np8` produces --parallel=8 (not --port=8)."""

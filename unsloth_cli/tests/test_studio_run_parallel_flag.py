@@ -84,21 +84,12 @@ def test_parallel_range_guards_are_set():
     assert getattr(opt, "max", None) == 64, "max must be 64 (KV split sanity cap)"
 
 
-def test_run_kwargs_use_parallel_value(monkeypatch):
-    """run_kwargs passed to run_server must reflect the --parallel value
-    (no hardcoded 4 remaining after the flag was added)."""
-    studio_mod = _load_run_command()
-    import textwrap
-
-    src = textwrap.dedent(Path(studio_mod.__file__).read_text())
-    # Pre-fix line was: run_kwargs = dict(... llama_parallel_slots = 4)
-    assert "llama_parallel_slots = 4" not in src, (
-        "found hardcoded `llama_parallel_slots = 4` after the parallel "
-        "flag landed -- run_kwargs must pull from the typer option"
-    )
-    assert (
-        "llama_parallel_slots = parallel" in src
-    ), "run_kwargs must use the parallel variable from the typer option"
+# Runtime equivalent of the old source-text guard lives in
+# test_in_venv_path_passes_parallel_to_run_server below: that test fakes
+# the in-venv branch and asserts run_server actually receives the typer
+# value as llama_parallel_slots. A grep for "llama_parallel_slots = 4"
+# is brittle against innocuous formatting refactors, so the static
+# check has been retired in favour of the behaviour assertion.
 
 
 # Re-exec arg-builder coverage. `unsloth studio run` is normally invoked
@@ -269,7 +260,9 @@ def _types_module(name):
 def test_studio_default_exposes_parallel_option():
     """Plain `unsloth studio` (no `run`) must also expose --parallel so
     the API-only / bare-server path has a way to raise concurrency
-    (since pass-through --parallel via llama_extra_args is denied)."""
+    (since pass-through --parallel via llama_extra_args is denied).
+    Default stays at 1 to match pre-PR behaviour for this entry point;
+    `unsloth studio run` keeps its own default of 4."""
     studio_mod = _load_run_command()
     import inspect
 
@@ -282,7 +275,10 @@ def test_studio_default_exposes_parallel_option():
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--parallel" in decls
     assert "--n-parallel" in decls
-    assert getattr(opt, "default", None) == 4
+    assert getattr(opt, "default", None) == 1, (
+        "studio_default --parallel must default to 1 (pre-PR behaviour); "
+        "`unsloth studio run` keeps its hardcoded default of 4"
+    )
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 

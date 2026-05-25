@@ -515,16 +515,15 @@ def studio_default(
         help = "Run API server only, no frontend serving (for Tauri desktop app)",
     ),
     parallel: int = typer.Option(
-        4,
+        1,
         "--parallel",
         "--n-parallel",
         min = 1,
         max = 64,
         help = (
-            "llama-server parallel decode slots. Mirrors the same flag on "
-            "`unsloth studio run`; without it the API-only / plain-server "
-            "path has no way to raise concurrency since --parallel is "
-            "managed (denied as a llama_extra_args pass-through)."
+            "llama-server parallel decode slots (1..64). Default 1 matches "
+            "pre-PR behaviour for the plain-server path; `unsloth studio "
+            "run` defaults to 4."
         ),
     ),
 ):
