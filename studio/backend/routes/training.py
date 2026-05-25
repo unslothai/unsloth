@@ -265,14 +265,19 @@ async def start_training(
                 )
                 training_kwargs["trust_remote_code"] = True
 
-        # Free GPU memory: shut down any chat backend (llama-server
-        # subprocess OR safetensors orchestrator) and any settled
-        # export checkpoint before training starts. The shared
-        # helpers handle the asymmetric cases (llama is_active,
-        # safetensors loading_models, export is_export_active) so
-        # this path stays in sync with /images/load and chat.
-        from routes.inference import _release_chat_for, _release_export_for
+        # Symmetric lifecycle guard: refuse to start training while
+        # an export job is in flight. Round 10 review #1 -- the
+        # previous code went straight to ``_release_export_for``,
+        # which would terminate the in-flight export and corrupt
+        # the user's output artifact. Now we 409 first; the user
+        # stops the export and re-submits.
+        from routes.inference import (
+            _raise_if_export_active,
+            _release_chat_for,
+            _release_export_for,
+        )
 
+        _raise_if_export_active("training")
         await _release_chat_for("training")
         await _release_export_for("training")
 
