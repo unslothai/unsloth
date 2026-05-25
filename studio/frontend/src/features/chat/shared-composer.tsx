@@ -436,11 +436,24 @@ export function SharedComposer({
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
   const imageModeDisablesCode =
     isExternalGemini && imageToolsEnabled && !imageDisabled;
+  // Image-tier Gemini models always reject codeExecution and reject
+  // web_search on older ids (Gemini 3.x Pro/Flash allow it -- encoded
+  // in supportsBuiltinWebSearch). Don't let the local `supportsTools`
+  // runtime flag re-enable a pill the Gemini backend will silently
+  // drop. Detect "external provider is Gemini AND model is image-tier"
+  // and gate strictly on the provider builtin support.
+  const isGeminiImageTier =
+    isExternalGemini && supportsBuiltinImageGeneration;
   const searchDisabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+    !modelLoaded ||
+    (isGeminiImageTier
+      ? !supportsBuiltinWebSearch
+      : !(supportsTools || supportsBuiltinWebSearch));
   const codeDisabled =
     !modelLoaded ||
-    !(supportsTools || supportsBuiltinCodeExecution) ||
+    (isGeminiImageTier
+      ? true
+      : !(supportsTools || supportsBuiltinCodeExecution)) ||
     imageModeDisablesCode;
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
