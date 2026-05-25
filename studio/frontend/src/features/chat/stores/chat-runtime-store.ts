@@ -706,12 +706,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // mount, and a stale persisted local id would race against the
       // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      // Clear any stale per-turn usage when the active model changes.
+      // The context bar render gate was relaxed for external providers
+      // (no longer requires ggufContextLength), so leaving a previous
+      // turn's counters around would visibly show old token / cache
+      // stats from a different model until the next completion
+      // overwrites them. setActiveThreadId / clearCheckpoint already
+      // do this; keep the invariant on the most-traveled transition
+      // path too.
+      const checkpointChanged = state.params.checkpoint !== modelId;
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
         },
         activeGgufVariant: ggufVariant ?? null,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>

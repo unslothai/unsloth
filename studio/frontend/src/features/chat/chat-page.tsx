@@ -1037,6 +1037,11 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          // External selection arrives mid-session: also clear any
+          // pre-existing per-turn usage from the previous model so the
+          // relaxed external-provider render gate does not show stale
+          // counts until the next completion overwrites them.
+          contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -1161,7 +1166,11 @@ export function ChatPage(): ReactElement {
     if (!saved) return;
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore context usage from the active thread's last assistant message.
+    // Restore context usage from the active thread's last assistant
+    // message, but only if it was produced by the SAME checkpoint the
+    // user is now sitting on. Without this guard the relaxed render
+    // gate would show stale token / cache stats from a different
+    // provider or a local turn that exceeds the active GGUF window.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1175,7 +1184,35 @@ export function ChatPage(): ReactElement {
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
-          if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+          if (!usage) return;
+          const store = useChatRuntimeStore.getState();
+          const activeCheckpoint = store.params.checkpoint;
+          const usageModelId =
+            (usage as { modelId?: unknown }).modelId;
+          // Scope by modelId when the saved usage carries one (the
+          // chat-adapter stamps it on every external + local turn).
+          if (
+            typeof usageModelId === "string" &&
+            usageModelId &&
+            activeCheckpoint &&
+            usageModelId !== activeCheckpoint
+          ) {
+            return;
+          }
+          // For local llama-server turns, also require that the
+          // restored prompt count fits inside the active context
+          // window. Skip the check when the window is unknown (e.g.
+          // external provider, no ggufContextLength) so the existing
+          // external-provider rendering path stays intact.
+          const limit = store.ggufContextLength;
+          if (
+            typeof limit === "number" &&
+            limit > 0 &&
+            (usage.totalTokens ?? 0) > limit
+          ) {
+            return;
+          }
+          store.setContextUsage(usage);
         })
         .catch((error) => {
           if (!isExpectedBackgroundChatStorageError(error)) {
