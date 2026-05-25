@@ -1736,7 +1736,9 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
-                    elif part.type == "reasoning" and openai and msg.role == "assistant":
+                    elif (
+                        part.type == "reasoning" and openai and msg.role == "assistant"
+                    ):
                         reasoning: dict[str, Any] = {
                             "type": "reasoning",
                             "id": part.id,
