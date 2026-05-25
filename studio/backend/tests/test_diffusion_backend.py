@@ -1119,8 +1119,13 @@ def test_unload_waits_for_in_flight_generation(monkeypatch):
 
     def do_generate():
         try:
-            backend.generate_image(prompt = "x", num_inference_steps = 1,
-                                   guidance_scale = 1.0, width = 64, height = 64)
+            backend.generate_image(
+                prompt = "x",
+                num_inference_steps = 1,
+                guidance_scale = 1.0,
+                width = 64,
+                height = 64,
+            )
         finally:
             generation_finished.set()
 
@@ -1138,8 +1143,9 @@ def test_unload_waits_for_in_flight_generation(monkeypatch):
         unload_thread.start()
         # unload should block until release sets, NOT return early.
         unload_thread.join(timeout = 0.5)
-        assert not unload_returned.is_set(), \
-            "unload_model returned while generation was still running"
+        assert (
+            not unload_returned.is_set()
+        ), "unload_model returned while generation was still running"
         release.set()
         unload_thread.join(timeout = 5)
         assert unload_returned.is_set()
