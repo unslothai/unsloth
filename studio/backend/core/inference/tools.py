@@ -41,7 +41,7 @@ if sys.platform == "linux":
 
         _libc_name = ctypes.util.find_library("c")
         if _libc_name:
-            _libc = ctypes.CDLL(_libc_name, use_errno=True)
+            _libc = ctypes.CDLL(_libc_name, use_errno = True)
     except (OSError, AttributeError):
         pass
 
@@ -159,9 +159,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # position after the `;` separator).
     try:
         if sys.platform == "win32":
-            tokens = shlex.split(command, posix=False)
+            tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()`")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
@@ -428,7 +428,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = os.path.join(sandbox_root, "_invalid")
         else:
             workdir = os.path.join(sandbox_root, "_default")
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         try:
             os.chmod(sandbox_root, 0o700)
         except OSError:
@@ -548,7 +548,7 @@ def _render_html_result(arguments: dict) -> str:
 def execute_tool(
     name: str,
     arguments: dict,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
 ) -> str:
@@ -567,8 +567,8 @@ def execute_tool(
     if name == "web_search":
         return _web_search(
             arguments.get("query", ""),
-            url=arguments.get("url"),
-            timeout=effective_timeout,
+            url = arguments.get("url"),
+            timeout = effective_timeout,
         )
     if name == "python":
         return _python_exec(
@@ -627,7 +627,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
             self.sock,
-            server_hostname=self._sni_hostname,
+            server_hostname = self._sni_hostname,
         )
 
 
@@ -640,7 +640,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """
 
     def __init__(self, hostname: str):
-        super().__init__(context=_tls_ctx)
+        super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
@@ -648,7 +648,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        return _PinnedHTTPSConnection(host, sni_hostname=self._sni_hostname, **kwargs)
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
@@ -662,7 +662,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except OSError as e:
         return False, f"Failed to resolve host: {e}", ""
 
@@ -723,7 +723,7 @@ def _fetch_page_text(
             # Bracket IPv6 addresses so the netloc is valid in a URL.
             ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
             ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-            pinned_url = urlunparse(cp._replace(netloc=ip_netloc))
+            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             opener = urllib.request.build_opener(
                 _NoRedirect,
@@ -732,13 +732,13 @@ def _fetch_page_text(
 
             req = urllib.request.Request(
                 pinned_url,
-                headers={
+                headers = {
                     "User-Agent": ua,
                     "Host": current_host,
                 },
             )
             try:
-                resp = opener.open(req, timeout=timeout)
+                resp = opener.open(req, timeout = timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     return (
@@ -767,7 +767,7 @@ def _fetch_page_text(
             return "Failed to fetch URL: too many redirects."
 
         charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors="replace")
+        raw_html = raw_bytes.decode(charset, errors = "replace")
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
@@ -798,14 +798,14 @@ def _web_search(
     # Direct URL fetch mode
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout=fetch_timeout)
+        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
 
     if not query or not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
 
-        results = DDGS(timeout=timeout).text(query, max_results=max_results)
+        results = DDGS(timeout = timeout).text(query, max_results = max_results)
         if not results:
             return "No results found."
         parts = []
@@ -1883,7 +1883,7 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
-def _cancel_watcher(proc, cancel_event, poll_interval=0.2):
+def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
@@ -1900,7 +1900,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 
 def _python_exec(
     code: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
 ) -> str:
@@ -1928,18 +1928,18 @@ def _python_exec(
                         pass
     try:
         fd, tmp_path = tempfile.mkstemp(
-            suffix=".py", prefix="studio_exec_", dir=workdir
+            suffix = ".py", prefix = "studio_exec_", dir = workdir
         )
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
         safe_env = _build_safe_env(workdir)
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=workdir,
-            env=safe_env,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _sandbox_preexec
@@ -1951,16 +1951,16 @@ def _python_exec(
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout=timeout)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
             try:
-                proc.communicate(timeout=5)
+                proc.communicate(timeout = 5)
             except subprocess.TimeoutExpired:
                 pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
@@ -2007,7 +2007,7 @@ def _python_exec(
 
 def _bash_exec(
     command: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
 ) -> str:
@@ -2024,11 +2024,11 @@ def _bash_exec(
         workdir = _get_workdir(session_id)
         safe_env = _build_safe_env(workdir)
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=workdir,
-            env=safe_env,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _sandbox_preexec
@@ -2039,16 +2039,16 @@ def _bash_exec(
 
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout=timeout)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
             try:
-                proc.communicate(timeout=5)
+                proc.communicate(timeout = 5)
             except subprocess.TimeoutExpired:
                 pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
