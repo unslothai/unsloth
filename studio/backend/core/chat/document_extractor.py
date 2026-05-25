@@ -835,14 +835,29 @@ def _run_extract_process_sync(
     if not acquired:
         raise DocumentExtractionBusy("document extraction is busy")
 
-    ctx = multiprocessing.get_context("spawn" if os.name == "nt" else "fork")
-    result_queue = ctx.Queue(maxsize = 1)
-    proc = ctx.Process(
-        target = _run_extract_worker,
-        args = (result_queue, file_bytes, filename, options, content_type),
-        daemon = True,
-    )
+    # Everything past the semaphore acquisition must live inside the
+    # try/finally so the slot is released even if multiprocessing
+    # context creation / Queue allocation / Process construction
+    # itself raises (e.g. OSError on fork-resource exhaustion, EAGAIN
+    # on Windows under load).
+    result_queue = None
+    proc = None
     try:
+        ctx = multiprocessing.get_context(
+            "spawn" if os.name == "nt" else "fork"
+        )
+        result_queue = ctx.Queue(maxsize = 1)
+        proc = ctx.Process(
+            target = _run_extract_worker,
+            args = (
+                result_queue,
+                file_bytes,
+                filename,
+                options,
+                content_type,
+            ),
+            daemon = True,
+        )
         if cancel_event is not None and cancel_event.is_set():
             raise DocumentExtractionCancelled("document extraction was cancelled")
         proc.start()
@@ -889,11 +904,17 @@ def _run_extract_process_sync(
             raise RuntimeError(f"{message[1]}: {message[2]}")
         raise RuntimeError(f"unexpected document worker result: {kind!r}")
     finally:
-        try:
-            result_queue.close()
-            result_queue.join_thread()
-        except Exception:
-            pass
+        if proc is not None:
+            try:
+                _terminate_extract_process(proc)
+            except Exception:
+                pass
+        if result_queue is not None:
+            try:
+                result_queue.close()
+                result_queue.join_thread()
+            except Exception:
+                pass
         _EXTRACT_SEMAPHORE.release()
 
 

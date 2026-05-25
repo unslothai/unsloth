@@ -427,12 +427,12 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server)
-_llama_cpp_backend = LlamaCppBackend()
-
-
-def get_llama_cpp_backend() -> LlamaCppBackend:
-    return _llama_cpp_backend
+# GGUF inference backend (llama-server) singleton lives in
+# ``core.inference.llama_cpp``. ``get_llama_cpp_backend`` is already
+# imported above and re-exported from this module so external callers
+# that do ``from routes.inference import get_llama_cpp_backend`` keep
+# resolving to the same process-wide instance that load/list/delete/
+# shutdown all consult.
 
 
 @router.post("/load", response_model = LoadResponse)
