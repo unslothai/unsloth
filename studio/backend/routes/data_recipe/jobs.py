@@ -95,6 +95,88 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     return aliases
 
 
+def _used_local_model_selections(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> dict[tuple[str, str], list[str]]:
+    used_aliases = _used_llm_model_aliases(recipe)
+    selections: dict[tuple[str, str], list[str]] = {}
+    for mc in recipe.get("model_configs", []):
+        if not isinstance(mc, dict):
+            continue
+        alias = mc.get("alias")
+        if not isinstance(alias, str) or alias not in used_aliases:
+            continue
+        provider = mc.get("provider")
+        if not isinstance(provider, str) or provider not in local_provider_names:
+            continue
+        model = mc.get("model")
+        target = model.strip() if isinstance(model, str) else ""
+        if not target or target.lower() == "local":
+            continue
+        variant = mc.get("gguf_variant")
+        gguf_variant = variant.strip() if isinstance(variant, str) else ""
+        selections.setdefault((target, gguf_variant), []).append(alias)
+    return selections
+
+
+def _single_used_local_model_selection(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> tuple[str, str] | None:
+    selections = _used_local_model_selections(recipe, local_provider_names)
+    if not selections:
+        return None
+    if len(selections) > 1:
+        aliases = ", ".join(alias for values in selections.values() for alias in values)
+        raise ValueError(
+            "Recipes supports one active local model per run. "
+            f"Select the same local model and GGUF variant for: {aliases}."
+        )
+    return next(iter(selections))
+
+
+def _loaded_local_model_identity() -> tuple[bool, str, str]:
+    from routes.inference import get_llama_cpp_backend
+    from core.inference import get_inference_backend
+
+    llama = get_llama_cpp_backend()
+    if llama.is_loaded:
+        model = str(getattr(llama, "model_identifier", "") or "").strip()
+        variant = str(getattr(llama, "hf_variant", "") or "").strip()
+        return True, model, variant
+
+    backend = get_inference_backend()
+    active_model = str(getattr(backend, "active_model_name", "") or "").strip()
+    if active_model:
+        return True, active_model, ""
+    return False, "", ""
+
+
+def _ensure_selected_local_model_loaded(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> None:
+    model_loaded, active_model, active_variant = _loaded_local_model_identity()
+    if not model_loaded:
+        raise ValueError(
+            "No model loaded in Chat. Load a model first, then run the recipe."
+        )
+
+    selection = _single_used_local_model_selection(recipe, local_provider_names)
+    if selection is None:
+        return
+
+    target, gguf_variant = selection
+    if active_model.lower() != target.lower() or active_variant != gguf_variant:
+        selected = f"{target} ({gguf_variant})" if gguf_variant else target
+        active = (
+            f"{active_model} ({active_variant})" if active_variant else active_model
+        )
+        raise ValueError(
+            "Selected local model is not loaded. "
+            f"Selected {selected}; active {active or 'none'}. "
+            "Load the selected model again, then run the recipe."
+        )
+
+
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
@@ -238,24 +320,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
     token = ""
     internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
-        # Verify a model is loaded.
-        # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
-        # or swapped after this check but before the recipe subprocess calls /v1.
-        # The inference endpoint returns a clear 400 in that case.
-        #
-        # Imports are deferred to avoid circular dependencies with inference modules.
-        from routes.inference import get_llama_cpp_backend
-        from core.inference import get_inference_backend
-
-        llama = get_llama_cpp_backend()
-        model_loaded = llama.is_loaded
-        if not model_loaded:
-            backend = get_inference_backend()
-            model_loaded = bool(backend.active_model_name)
-        if not model_loaded:
-            raise ValueError(
-                "No model loaded in Chat. Load a model first, then run the recipe."
-            )
+        # Verify the selected local model is loaded before minting a workflow
+        # key. This still remains a point-in-time singleton-backend check
+        # (TOCTOU): a future generation token should bind frontend load and
+        # job creation, and the inference endpoint returns a clear 400 if the
+        # model is later unloaded or swapped before the subprocess calls /v1.
+        _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage  # deferred: avoids circular import
 
@@ -264,12 +334,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         # surface instead of a second JWT code path). The key is marked
         # internal so it is hidden from the user's API-key list, and the
         # caller revokes it when the job terminates.
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
-            name = "data-recipe workflow",
-            expires_at = expires_at,
-            internal = True,
+            username="unsloth",
+            name="data-recipe workflow",
+            expires_at=expires_at,
+            internal=True,
         )
         internal_key_id = int(row["id"])
 
@@ -287,12 +357,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         providers[i].pop("extra_body", None)
 
     # Force skip_health_check on any model_config that references a local
-    # provider. The local /v1/models endpoint only lists the real loaded
-    # model (e.g. "unsloth/llama-3.2-1b") and not the placeholder "local"
-    # that the recipe sends as the model id, so data_designer's pre-flight
-    # health check would otherwise fail before the first completion call.
-    # The backend route ignores the model id field in chat completions, so
-    # skipping the check is safe.
+    # provider. The frontend now sends the explicit selected local model id,
+    # but llama-server's /v1/models response can still differ from that id
+    # for local paths, cache aliases, and GGUF variant loads. The recipe run
+    # has already gated on a loaded local inference backend above, so the
+    # data_designer model-list health check would be redundant and can reject
+    # valid local selections.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
@@ -319,7 +389,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}
-            tpl_kwargs.setdefault("enable_thinking", False)
+            tpl_kwargs["enable_thinking"] = False
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
@@ -336,7 +406,7 @@ def _normalize_run_name(value: Any) -> str | None:
         return None
     if not isinstance(value, str):
         raise HTTPException(
-            status_code = 400, detail = "invalid run_name: must be a string"
+            status_code=400, detail="invalid run_name: must be a string"
         )
     trimmed = value.strip()
     if not trimmed:
@@ -344,11 +414,11 @@ def _normalize_run_name(value: Any) -> str | None:
     return trimmed[:120]
 
 
-@router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
+@router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)
 def create_job(payload: RecipePayload, request: Request):
     recipe = payload.recipe
     if not recipe.get("columns"):
-        raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+        raise HTTPException(status_code=400, detail="Recipe must include columns.")
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -356,8 +426,8 @@ def create_job(payload: RecipePayload, request: Request):
     execution_type = str(run.get("execution_type") or "full").strip().lower()
     if execution_type not in {"preview", "full"}:
         raise HTTPException(
-            status_code = 400,
-            detail = "invalid execution_type: must be 'preview' or 'full'",
+            status_code=400,
+            detail="invalid execution_type: must be 'preview' or 'full'",
         )
     run["execution_type"] = execution_type
     run["run_name"] = _normalize_run_name(run.get("run_name"))
@@ -369,13 +439,13 @@ def create_job(payload: RecipePayload, request: Request):
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
             raise HTTPException(
-                status_code = 400, detail = f"invalid run_config: {exc}"
+                status_code=400, detail=f"invalid run_config: {exc}"
             ) from exc
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Single try block covers get_job_manager() AND mgr.start() so a workflow
     # key minted above never outlives the request even when an unexpected
@@ -385,18 +455,18 @@ def create_job(payload: RecipePayload, request: Request):
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
-            recipe = recipe,
-            run = run,
-            internal_api_key_id = internal_api_key_id,
+            recipe=recipe,
+            run=run,
+            internal_api_key_id=internal_api_key_id,
         )
     except RuntimeError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
@@ -421,7 +491,7 @@ def job_status(job_id: str):
     mgr = get_job_manager()
     state = mgr.get_status(job_id)
     if state is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return state
 
 
@@ -430,7 +500,7 @@ def current_job():
     mgr = get_job_manager()
     state = mgr.get_current_status()
     if state is None:
-        raise HTTPException(status_code = 404, detail = "no job")
+        raise HTTPException(status_code=404, detail="no job")
     return state
 
 
@@ -439,7 +509,7 @@ def cancel_job(job_id: str):
     mgr = get_job_manager()
     ok = mgr.cancel(job_id)
     if not ok:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return mgr.get_status(job_id)
 
 
@@ -448,22 +518,22 @@ def job_analysis(job_id: str):
     mgr = get_job_manager()
     analysis = mgr.get_analysis(job_id)
     if analysis is None:
-        raise HTTPException(status_code = 404, detail = "analysis not ready")
+        raise HTTPException(status_code=404, detail="analysis not ready")
     return analysis
 
 
 @router.get("/jobs/{job_id}/dataset")
 def job_dataset(
     job_id: str,
-    limit: int = Query(default = 20, ge = 1, le = 500),
-    offset: int = Query(default = 0, ge = 0),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     mgr = get_job_manager()
-    result = mgr.get_dataset(job_id, limit = limit, offset = offset)
+    result = mgr.get_dataset(job_id, limit=limit, offset=offset)
     if result is None:
-        raise HTTPException(status_code = 404, detail = "dataset not ready")
+        raise HTTPException(status_code=404, detail="dataset not ready")
     if "error" in result:
-        raise HTTPException(status_code = 422, detail = result["error"])
+        raise HTTPException(status_code=422, detail=result["error"])
     return {
         "dataset": result["dataset"],
         "total": result["total"],
@@ -474,8 +544,8 @@ def job_dataset(
 
 @router.post(
     "/jobs/{job_id}/publish",
-    response_class = JSONResponse,
-    response_model = PublishDatasetResponse,
+    response_class=JSONResponse,
+    response_model=PublishDatasetResponse,
 )
 def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     repo_id = payload.repo_id.strip()
@@ -488,9 +558,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     )
 
     if not repo_id:
-        raise HTTPException(status_code = 400, detail = "repo_id is required")
+        raise HTTPException(status_code=400, detail="repo_id is required")
     if not description:
-        raise HTTPException(status_code = 400, detail = "description is required")
+        raise HTTPException(status_code=400, detail="description is required")
 
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
@@ -500,8 +570,8 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             or status.get("execution_type") != "full"
         ):
             raise HTTPException(
-                status_code = 409,
-                detail = "Only completed full runs can be published.",
+                status_code=409,
+                detail="Only completed full runs can be published.",
             )
         status_artifact = status.get("artifact_path")
         if isinstance(status_artifact, str) and status_artifact.strip():
@@ -509,22 +579,22 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
 
     if not artifact_path:
         raise HTTPException(
-            status_code = 400,
-            detail = "This execution does not have publishable dataset artifacts.",
+            status_code=400,
+            detail="This execution does not have publishable dataset artifacts.",
         )
 
     try:
         url = publish_recipe_dataset(
-            artifact_path = artifact_path,
-            repo_id = repo_id,
-            description = description,
-            hf_token = hf_token or None,
-            private = payload.private,
+            artifact_path=artifact_path,
+            repo_id=repo_id,
+            description=description,
+            hf_token=hf_token or None,
+            private=payload.private,
         )
     except RecipeDatasetPublishError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code = 500, detail = str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {
         "success": True,
@@ -551,9 +621,9 @@ async def job_events(request: Request, job_id: str):
         except (TypeError, ValueError):
             pass
 
-    sub = mgr.subscribe(job_id, after_seq = after_seq)
+    sub = mgr.subscribe(job_id, after_seq=after_seq)
     if sub is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
 
     async def gen():
         try:
@@ -563,11 +633,11 @@ async def job_events(request: Request, job_id: str):
             while True:
                 if await request.is_disconnected():
                     break
-                event = await sub.next_event(timeout_sec = 1.0)
+                event = await sub.next_event(timeout_sec=1.0)
                 if event is None:
                     continue
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream")
