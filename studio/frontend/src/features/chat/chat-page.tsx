@@ -17,13 +17,15 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
-import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
-import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
-import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
-import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import {
+  NativeModelChip,
+  NativeModelDropOverlay,
+  type NativeIntent,
+  useChooseNativeModel,
+  useNativeIntentStore,
+  useNativeModelDrop,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
@@ -179,7 +181,9 @@ const SingleContent = memo(function SingleContent({
   const showArtifactPanel = Boolean(
     artifact &&
       artifactSurface === "panel" &&
-      (!artifact.threadId || !threadId || artifact.threadId === threadId),
+      (threadId
+        ? !artifact.threadId || artifact.threadId === threadId
+        : Boolean(newThreadNonce)),
   );
 
   const threadPane = (
@@ -197,21 +201,36 @@ const SingleContent = memo(function SingleContent({
       {showArtifactPanel && artifact ? (
         <ResizablePanelGroup
           orientation="horizontal"
-          className="min-h-0 min-w-0 flex-1 basis-0"
+          className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
         >
-          <ResizablePanel defaultSize={64} minSize={38}>
-            {threadPane}
+          <ResizablePanel
+            id="chat-thread"
+            defaultSize="62%"
+            minSize="42%"
+            className="h-full min-h-0 min-w-0 overflow-hidden"
+          >
+            <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+              {threadPane}
+            </div>
           </ResizablePanel>
           <ResizableHandle withHandle={true} />
-          <ResizablePanel defaultSize={36} minSize={24} maxSize={55}>
-            <ArtifactSurface
-              artifact={artifact}
-              variant="panel"
-              onClose={onCloseArtifact}
-              onOpenFullscreen={() =>
-                openArtifact(artifact, { surface: "overlay" })
-              }
-            />
+          <ResizablePanel
+            id="chat-artifact"
+            defaultSize="38%"
+            minSize="30%"
+            maxSize="58%"
+            className="h-full min-h-0 min-w-0 overflow-hidden"
+          >
+            <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+              <ArtifactSurface
+                artifact={artifact}
+                variant="panel"
+                onClose={onCloseArtifact}
+                onOpenFullscreen={() =>
+                  openArtifact(artifact, { surface: "overlay" })
+                }
+              />
+            </div>
           </ResizablePanel>
         </ResizablePanelGroup>
       ) : (
@@ -689,6 +708,7 @@ export function ChatPage(): ReactElement {
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
+  const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
@@ -706,6 +726,7 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
+      resetArtifacts();
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -714,7 +735,12 @@ export function ChatPage(): ReactElement {
       }
     }
     prevConnectionsEnabledRef.current = connectionsEnabled;
-  }, [clearCheckpoint, connectionsEnabled, inferenceParams.checkpoint]);
+  }, [
+    clearCheckpoint,
+    connectionsEnabled,
+    inferenceParams.checkpoint,
+    resetArtifacts,
+  ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
   );
@@ -938,6 +964,12 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     closeArtifactSurface();
   }, [artifactViewKey, closeArtifactSurface]);
+
+  useEffect(() => {
+    if (view.mode !== "single") return;
+    if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
+    closeArtifactSurface();
+  }, [closeArtifactSurface, selectedArtifact, view]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
@@ -1190,8 +1222,9 @@ export function ChatPage(): ReactElement {
     ],
   );
   const handleEject = useCallback(() => {
+    resetArtifacts();
     void ejectModel();
-  }, [ejectModel]);
+  }, [ejectModel, resetArtifacts]);
 
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
@@ -1451,6 +1484,7 @@ export function ChatPage(): ReactElement {
 
   const tourSteps = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
       buildChatTourSteps({
         canCompare,
         openModelSelector,

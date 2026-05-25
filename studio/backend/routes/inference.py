@@ -239,6 +239,58 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+_ARTIFACT_PREVIEW_FRAME_CSP = (
+    "default-src 'none'; "
+    "script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; "
+    "img-src data: blob:; "
+    "font-src data:; "
+    "media-src data: blob:; "
+    "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "sandbox allow-scripts"
+)
+_ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
+<html>
+  <head><meta charset=\"utf-8\" /></head>
+  <body>
+    <script>
+      (() => {
+        const render = (html) => {
+          document.open();
+          document.write(html);
+          document.close();
+        };
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
+          render(data.html);
+        });
+        parent.postMessage({ chatArtifactReady: true }, "*");
+      })();
+    </script>
+  </body>
+</html>"""
+
+
+@studio_router.get("/artifact-preview-frame", include_in_schema=False)
+async def artifact_preview_frame():
+    """Serve the opaque sandbox shell used for client-side HTML artifacts."""
+
+    return Response(
+        content=_ARTIFACT_PREVIEW_FRAME_HTML,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": _ARTIFACT_PREVIEW_FRAME_CSP,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so
     flags match across backends. gpt-oss is overridden because Harmony
@@ -419,15 +471,23 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
         return
 
 
-# Appended to tool-use nudge to discourage plan-without-action
+# Appended to tool-use nudge to discourage plan-without-action.
+# Keep render_html guidance gated to turns where the artifact tool is actually
+# present in the tool schema; otherwise small local models can hallucinate a
+# missing tool call instead of following the fenced-HTML fallback prompt.
 _TOOL_ACTION_NUDGE = (
     " IMPORTANT: Always call tools directly -- never write code yourself."
     " Never describe what you plan to do -- just call the tool immediately."
-    " For HTML, CSS, or JavaScript artifact requests, call render_html when it is available."
     " For non-artifact code requests, call the python tool when it is available."
     " For factual questions that require current information, call web_search when it is available."
     " Do NOT output raw code blocks when an enabled tool can satisfy the request."
 )
+_ARTIFACT_TOOL_ACTION_NUDGE = " For HTML, CSS, or JavaScript artifact requests, call render_html when it is available."
+
+
+def _tool_action_nudge(has_artifact: bool) -> str:
+    return _TOOL_ACTION_NUDGE + (_ARTIFACT_TOOL_ACTION_NUDGE if has_artifact else "")
+
 
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
@@ -2447,7 +2507,7 @@ async def openai_chat_completions(
                 _nudge = ""
 
             if _nudge:
-                _nudge += _TOOL_ACTION_NUDGE
+                _nudge += _tool_action_nudge(_has_artifact)
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
@@ -2935,7 +2995,7 @@ async def openai_chat_completions(
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
-            _sf_nudge += _TOOL_ACTION_NUDGE
+            _sf_nudge += _tool_action_nudge(_sf_has_artifact)
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
             else:
@@ -4614,7 +4674,7 @@ async def anthropic_messages(
             _nudge = ""
 
         if _nudge:
-            _nudge += _TOOL_ACTION_NUDGE
+            _nudge += _tool_action_nudge(_has_artifact)
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
                 openai_messages[0]["content"] = (

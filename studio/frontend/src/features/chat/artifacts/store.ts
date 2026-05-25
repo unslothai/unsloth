@@ -12,6 +12,7 @@ type ChatArtifactsState = {
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface },
   ) => void;
+  updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
   resetArtifacts: () => void;
@@ -29,8 +30,14 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       selectedArtifactId: artifact.id,
       surface: options?.surface ?? state.surface,
     })),
+  updateArtifact: (artifact) =>
+    set((state) =>
+      state.artifactsById[artifact.id]
+        ? { artifactsById: { [artifact.id]: artifact } }
+        : state,
+    ),
   closeArtifactSurface: () =>
-    set({ artifactsById: {}, selectedArtifactId: null }),
+    set({ artifactsById: {}, selectedArtifactId: null, surface: "panel" }),
   clearArtifactsForThread: (threadId) =>
     set((state) => {
       if (!threadId) return state;

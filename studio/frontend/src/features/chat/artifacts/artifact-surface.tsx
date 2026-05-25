@@ -3,6 +3,11 @@
 
 "use client";
 
+import { createCodePlugin } from "@/components/assistant-ui/code-plugin";
+import {
+  unslothDarkTheme,
+  unslothLightTheme,
+} from "@/components/assistant-ui/code-themes";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -14,12 +19,35 @@ import {
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import type { ChatArtifact } from "./types";
 import { getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
+const artifactSourceCodePlugin = createCodePlugin({
+  themes: [unslothLightTheme, unslothDarkTheme],
+});
+
+function buildHtmlFence(source: string): string {
+  const longestBacktickRun = Math.max(
+    2,
+    ...(source.match(/`+/g) ?? []).map((match) => match.length),
+  );
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence}html\n${source}\n${fence}`;
+}
+// Sandboxed artifact iframes are intentionally excluded from the overlay focus
+// trap. Granting same-origin sandbox privileges would weaken isolation, so
+// keyboard users can reach Studio controls here while fully interactive artifact
+// content remains a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -57,12 +85,20 @@ export function ArtifactSurface({
   onClose: () => void;
   onOpenFullscreen?: () => void;
 }) {
-  const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  const [viewMode, setViewMode] = useState<ArtifactViewMode>(
+    artifact.isStreaming ? "source" : "preview",
+  );
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
+  const sourceMarkdown = useMemo(
+    () => buildHtmlFence(artifact.code),
+    [artifact.code],
+  );
+  const effectiveViewMode =
+    artifact.isStreaming && viewMode === "preview" ? "source" : viewMode;
 
   useEffect(() => {
     return () => {
@@ -135,7 +171,7 @@ export function ArtifactSurface({
       className={cn(
         "flex min-h-0 flex-col overflow-hidden border border-border bg-background shadow-xl",
         variant === "panel"
-          ? "h-full w-full rounded-none border-y-0 border-r-0"
+          ? "mt-[48px] h-[calc(100%_-_48px)] w-full rounded-none border-y-0 border-r-0"
           : "h-[min(92vh,900px)] w-[min(96vw,1200px)] rounded-2xl",
       )}
       aria-label={`${artifact.title} artifact`}
@@ -151,6 +187,7 @@ export function ArtifactSurface({
           <p className="text-xs text-muted-foreground">
             HTML artifact ·{" "}
             {artifact.source === "tool" ? "tool call" : "fenced fallback"}
+            {artifact.isStreaming ? " · streaming" : ""}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -208,14 +245,18 @@ export function ArtifactSurface({
           <button
             key={mode}
             type="button"
+            disabled={artifact.isStreaming && mode === "preview"}
             onClick={() => setViewMode(mode)}
             className={cn(
               "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-              viewMode === mode
+              effectiveViewMode === mode
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              artifact.isStreaming &&
+                mode === "preview" &&
+                "cursor-not-allowed opacity-50",
             )}
-            aria-pressed={viewMode === mode}
+            aria-pressed={effectiveViewMode === mode}
           >
             {mode === "preview" ? "Preview" : "Source"}
           </button>
@@ -223,7 +264,7 @@ export function ArtifactSurface({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden bg-background">
-        {viewMode === "preview" ? (
+        {effectiveViewMode === "preview" ? (
           <ArtifactHtmlFrame
             key={artifact.id}
             code={artifact.code}
@@ -232,9 +273,16 @@ export function ArtifactSurface({
             className="h-full"
           />
         ) : (
-          <pre className="h-full overflow-auto p-4 text-xs leading-relaxed text-foreground whitespace-pre">
-            <code>{artifact.code}</code>
-          </pre>
+          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!rounded-none [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+            <Streamdown
+              mode="streaming"
+              plugins={{ code: artifactSourceCodePlugin }}
+              controls={{ code: false }}
+              shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+            >
+              {sourceMarkdown}
+            </Streamdown>
+          </div>
         )}
       </div>
     </section>

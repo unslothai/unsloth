@@ -3,8 +3,10 @@
 
 "use client";
 
+import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
@@ -40,11 +42,27 @@ export function ArtifactHtmlFrame({
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
-  const srcDoc = useMemo(() => buildArtifactSrcDoc(code), [code]);
+  const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
+  const src = useMemo(
+    () =>
+      apiUrl(
+        `/api/inference/artifact-preview-frame?v=${encodeURIComponent(hashArtifactCode(code))}`,
+      ),
+    [code],
+  );
+  const postArtifactHtml = useCallback(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "unsloth:artifact-html", html: artifactHtml },
+      "*",
+    );
+  }, [artifactHtml]);
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.data?.chatArtifactReady === true) {
+        postArtifactHtml();
+      }
       if (typeof event.data?.chatArtifactHeight !== "number") return;
       setHeight(
         Math.min(
@@ -55,14 +73,15 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, []);
+  }, [postArtifactHtml]);
 
   return (
     <iframe
       ref={iframeRef}
-      srcDoc={srcDoc}
+      src={src}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
+      onLoad={postArtifactHtml}
       className={cn("block w-full border-0 bg-background", className)}
       style={{ height: fill ? "100%" : height }}
       title={title}

@@ -312,6 +312,7 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
+_ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
@@ -327,6 +328,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
+        "frame-src 'self'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "
         "base-uri 'self'"
@@ -343,7 +345,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if nonce is not None:
             del response.headers[_CSP_SCRIPT_NONCE_HEADER]
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        response.headers.setdefault("X-Frame-Options", "DENY")
+        if request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
+            response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(

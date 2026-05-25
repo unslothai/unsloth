@@ -6,16 +6,9 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
-import {
-  CheckIcon,
-  CopyIcon,
-  DownloadIcon,
-  ExternalLinkIcon,
-  FileTextIcon,
-} from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { ArtifactHtmlFrame } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import {
   type ChatArtifact,
@@ -25,6 +18,7 @@ import {
 } from "./types";
 
 const COPY_RESET_MS = 2000;
+const autoOpenedArtifactIds = new Set<string>();
 
 function downloadTextFile(filename: string, text: string): void {
   const blob = new Blob([text], { type: "text/html;charset=utf-8" });
@@ -60,6 +54,10 @@ function useCopiedState() {
   return { copied, showCopied };
 }
 
+function artifactDisplayTitle(title: string): string {
+  return /artifact/i.test(title) ? title : `${title} Artifact`;
+}
+
 export function ArtifactCard({
   code,
   title,
@@ -67,7 +65,8 @@ export function ArtifactCard({
   sourceToolCallId,
   sourceMessageId,
   className,
-  preview = true,
+  autoOpen = false,
+  isStreaming = false,
 }: {
   code: string;
   title?: string | null;
@@ -76,6 +75,8 @@ export function ArtifactCard({
   sourceMessageId?: string | null;
   className?: string;
   preview?: boolean;
+  autoOpen?: boolean;
+  isStreaming?: boolean;
 }) {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const messageIdFromContext = useAuiState(({ message }) => message.id);
@@ -84,6 +85,10 @@ export function ArtifactCard({
   );
   const artifactThreadId = threadIdFromContext ?? activeThreadId ?? null;
   const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
+  const updateArtifact = useChatArtifactsStore((state) => state.updateArtifact);
+  const selectedArtifactId = useChatArtifactsStore(
+    (state) => state.selectedArtifactId,
+  );
   const { copied, showCopied } = useCopiedState();
   const artifact = useMemo<ChatArtifact>(
     () =>
@@ -94,10 +99,12 @@ export function ArtifactCard({
         sourceMessageId: sourceMessageId ?? messageIdFromContext ?? null,
         sourceToolCallId: sourceToolCallId ?? null,
         threadId: artifactThreadId,
+        isStreaming,
       }),
     [
       artifactThreadId,
       code,
+      isStreaming,
       messageIdFromContext,
       source,
       sourceMessageId,
@@ -107,43 +114,71 @@ export function ArtifactCard({
   );
   const filename = getArtifactFilename(artifact);
   const surface = artifactThreadId ? "panel" : "overlay";
+  const lineCount = artifact.code.split("\n").length;
+  const displayTitle = artifactDisplayTitle(artifact.title);
+
+  useEffect(() => {
+    if (!autoOpen) return;
+    if (!autoOpenedArtifactIds.has(artifact.id)) {
+      autoOpenedArtifactIds.add(artifact.id);
+      openArtifact(artifact, { surface });
+      return;
+    }
+    if (selectedArtifactId === artifact.id) {
+      updateArtifact(artifact);
+    }
+  }, [
+    artifact,
+    autoOpen,
+    openArtifact,
+    selectedArtifactId,
+    surface,
+    updateArtifact,
+  ]);
 
   return (
     <div
       className={cn(
-        "my-3 overflow-hidden rounded-xl border border-border bg-card/70 shadow-sm",
+        "my-3 cursor-pointer overflow-hidden rounded-xl border border-border/80 bg-background/80 shadow-sm shadow-black/5 transition-colors hover:bg-muted/30",
+        "dark:bg-muted/10 dark:shadow-black/20 dark:hover:bg-muted/20",
         className,
       )}
+      onClick={() => openArtifact(artifact, { surface })}
     >
-      <div className="flex items-center gap-3 border-b border-border/70 px-3 py-2">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <FileTextIcon className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">
-            {artifact.title}
-          </p>
-          <p className="text-xs text-muted-foreground">
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          onClick={(event) => {
+            event.stopPropagation();
+            openArtifact(artifact, { surface });
+          }}
+          aria-label={`Open ${displayTitle}`}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <p className="truncate text-sm font-semibold text-foreground">
+              {displayTitle}
+            </p>
+            {isStreaming ? (
+              <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                Generating
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
             HTML artifact ·{" "}
-            {source === "tool" ? "tool call" : "fenced fallback"}
+            {source === "tool" ? "tool call" : "fenced fallback"} · {lineCount}{" "}
+            lines
           </p>
-        </div>
+        </button>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="Open artifact"
-            aria-label="Open artifact"
-            onClick={() => openArtifact(artifact, { surface })}
-          >
-            <ExternalLinkIcon className="size-4" />
-          </button>
           <button
             type="button"
             className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Copy HTML"
             aria-label="Copy artifact HTML"
-            onClick={async () => {
+            onClick={async (event) => {
+              event.stopPropagation();
               if (await copyToClipboard(artifact.code)) showCopied();
             }}
           >
@@ -158,17 +193,15 @@ export function ArtifactCard({
             className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Download HTML"
             aria-label="Download artifact HTML"
-            onClick={() => downloadTextFile(filename, artifact.code)}
+            onClick={(event) => {
+              event.stopPropagation();
+              downloadTextFile(filename, artifact.code);
+            }}
           >
             <DownloadIcon className="size-4" />
           </button>
         </div>
       </div>
-      {preview ? (
-        <div className="max-h-[320px] overflow-auto bg-background">
-          <ArtifactHtmlFrame code={artifact.code} title={artifact.title} />
-        </div>
-      ) : null}
     </div>
   );
 }

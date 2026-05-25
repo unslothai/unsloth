@@ -12,6 +12,7 @@ export interface ChatArtifact {
   sourceMessageId?: string | null;
   sourceToolCallId?: string | null;
   threadId?: string | null;
+  isStreaming?: boolean;
   createdAt: number;
 }
 
@@ -22,6 +23,7 @@ export interface ChatArtifactInput {
   sourceMessageId?: string | null;
   sourceToolCallId?: string | null;
   threadId?: string | null;
+  isStreaming?: boolean;
 }
 
 const DEFAULT_ARTIFACT_TITLE = "HTML artifact";
@@ -61,6 +63,7 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
     sourceMessageId: input.sourceMessageId ?? null,
     sourceToolCallId: input.sourceToolCallId ?? null,
     threadId: input.threadId ?? null,
+    isStreaming: input.isStreaming,
     createdAt: Date.now(),
   };
 }
