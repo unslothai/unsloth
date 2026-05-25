@@ -696,8 +696,8 @@ export function useRecipeExecutions({
           onSetPreviewErrors: setRunErrors,
           onPreviewSuccess,
         });
-        shouldRestorePrevious = true;
-        return tracked;
+        shouldRestorePrevious = tracked.terminal;
+        return tracked.success;
       } catch (error) {
         const message = toErrorMessage(error, `${label} request failed.`);
         upsertAndPersist({
