@@ -3,6 +3,9 @@
 
 """Tests for Studio's early CPU thread-pool configuration."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,3 +61,22 @@ def test_cpu_thread_configuration_runs_before_backend_imports():
     assert source.index("configure_cpu_threads()") < source.index(
         "import _platform_compat"
     )
+
+
+def test_invalid_cpu_thread_cap_exits_without_traceback():
+    env = os.environ.copy()
+    env["UNSLOTH_CPU_THREADS"] = "not-a-count"
+
+    result = subprocess.run(
+        [sys.executable, str(_RUN_PY)],
+        env = env,
+        capture_output = True,
+        text = True,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "Error: Invalid UNSLOTH_CPU_THREADS value 'not-a-count': "
+        "UNSLOTH_CPU_THREADS must be a positive integer"
+    ) in result.stderr
+    assert "Traceback" not in result.stderr
