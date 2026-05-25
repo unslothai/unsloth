@@ -17,15 +17,15 @@ replacing the import in ``_load``.
 from __future__ import annotations
 
 import gc
-import logging
 import threading
 from typing import Any
 
+from loggers import get_logger
 from utils.rag.config import RAG_RERANK_BATCH_SIZE, RAG_RERANKER_MODEL
 
 from .retrieval import Hit
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _model: Any | None = None

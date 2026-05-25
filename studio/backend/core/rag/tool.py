@@ -16,10 +16,11 @@ LLM doesn't need to know about KB UUIDs.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 
 SEARCH_KNOWLEDGE_BASE_TOOL = {

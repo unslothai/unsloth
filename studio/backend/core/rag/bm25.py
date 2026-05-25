@@ -17,15 +17,15 @@ A scope is ``kb_<uuid>`` or ``thread_<uuid>``. Each scope stores:
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 import threading
 from pathlib import Path
 from typing import Any
 
+from loggers import get_logger
 from utils.paths.storage_roots import ensure_dir, rag_bm25_root
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _load_lock = threading.Lock()
 _cache: dict[str, tuple[Any, list[str]]] = {}

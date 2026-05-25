@@ -11,14 +11,14 @@ to the RAG code path only — chat code keeps its plain sqlite handle.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 import threading
 from pathlib import Path
 
+from loggers import get_logger
 from utils.paths.storage_roots import ensure_dir, rag_root
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _conn: sqlite3.Connection | None = None
 _conn_lock = threading.Lock()
@@ -96,7 +96,7 @@ def get_rag_connection() -> sqlite3.Connection:
             _load_sqlite_vec(conn)
             _ensure_schema(conn)
             _conn = conn
-            logger.info("RAG vector store: opened %s", rag_db_path())
+            logger.info("RAG vector store opened", path = str(rag_db_path()))
         return _conn
 
 

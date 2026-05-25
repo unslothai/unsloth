@@ -20,10 +20,11 @@ scope, so dims within a scope are always consistent.
 from __future__ import annotations
 
 import json
-import logging
 from typing import Iterable
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 
 def kb_scope(kb_id: str) -> str:
