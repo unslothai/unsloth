@@ -133,13 +133,25 @@ def _release_public_load_pending(workload: str) -> None:
             _PUBLIC_LOAD_PENDING_COUNT.pop(needle, None)
 
 
-def public_load_pending() -> bool:
+def public_load_pending(*, excluding: str | None = None) -> bool:
     """True if any public GPU workload has passed its helper-busy
     snapshot but not yet flipped its public ownership flags. Helper /
     advisor starts treat this as busy so they cannot race a public
-    load mid-handoff."""
+    load mid-handoff.
+
+    Round 38 P1: ``excluding`` lets a route-wrapped backend call
+    skip the marker its own route layer already published (e.g. the
+    diffusion route publishes ``diffusion`` before calling into
+    ``backend.load_model``, which publishes ``diffusion-backend`` --
+    the backend should ignore its own ``diffusion`` marker so the
+    parity check does not self-block) while still seeing every
+    OTHER in-flight public workload."""
+    ignored = excluding.lower() if excluding else None
     with _HELPER_ADVISOR_LOCK:
-        return sum(_PUBLIC_LOAD_PENDING_COUNT.values()) > 0
+        return any(
+            count > 0 and workload != ignored
+            for workload, count in _PUBLIC_LOAD_PENDING_COUNT.items()
+        )
 
 
 def _strip_think_tags(text: str) -> str:

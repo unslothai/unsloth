@@ -2462,6 +2462,12 @@ async def diffusion_load(
                     family_override = payload.family,
                     hf_token = payload.hf_token,
                     enable_model_cpu_offload = payload.enable_model_cpu_offload,
+                    # Round 38 P1: this route already published the
+                    # "diffusion" pending marker above; tell the
+                    # backend to ignore it so the parity check it
+                    # now applies does not self-block on our own
+                    # publication.
+                    ignore_public_load_pending_workload = "diffusion",
                 ),
             )
             return JSONResponse(content = status)
