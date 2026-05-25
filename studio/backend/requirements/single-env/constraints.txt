@@ -2,7 +2,12 @@
 # Keep compatible with unsloth transformers bounds.
 transformers==4.57.6
 trl==0.23.1
-huggingface-hub==0.36.2
+# Round 25 P1 #5 follow-up: bumped from 0.36.2 because studio.txt now
+# requires >=1.3.0,<2.0 (Flux2KleinPipeline transitively imports
+# transformers 5.x which needs huggingface_hub.is_offline_mode,
+# introduced in hub 1.x). 1.8.0 matches the explicit pin used by
+# studio/setup.sh / setup.ps1 for the t5 sub-envs.
+huggingface-hub==1.8.0
 
 # Studio stack
 datasets==4.3.0
