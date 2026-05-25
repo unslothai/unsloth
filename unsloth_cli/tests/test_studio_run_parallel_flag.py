@@ -345,9 +345,9 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     )
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--parallel" in combined, combined
-    assert "run --parallel 8" in combined, (
-        f"error message must show the corrected invocation; got: {combined}"
-    )
+    assert (
+        "run --parallel 8" in combined
+    ), f"error message must show the corrected invocation; got: {combined}"
 
 
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
