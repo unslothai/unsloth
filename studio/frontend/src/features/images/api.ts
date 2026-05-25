@@ -23,7 +23,7 @@ export interface DiffusionStatus {
   family: string | null;
   pipeline_class: string | null;
   base_repo: string | null;
-  gguf_path: string | null;
+  gguf_filename: string | null;
   device: string | null;
   dtype: string | null;
   loaded_at: number | null;

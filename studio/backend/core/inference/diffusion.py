@@ -141,6 +141,31 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
 )
 
 
+def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
+    """Pick the best matching base diffusers repo for a given GGUF repo
+    when the caller did not pass an explicit base_repo.
+
+    Currently only specialises the flux.2-klein family: a repo name
+    containing "9b" gets the 9B base, "base-4b" / "base-9b" map to the
+    Base variants, everything else falls back to the family default
+    (Apache 2.0 4B Base).
+    """
+    if fam.name != "flux.2-klein":
+        return fam.base_repo
+    lower = (repo_id or "").lower()
+    is_9b = "9b" in lower
+    is_base = "base" in lower
+    if is_9b and is_base:
+        return "black-forest-labs/FLUX.2-klein-base-9B"
+    if is_9b:
+        return "black-forest-labs/FLUX.2-klein-9B"
+    if is_base:
+        return "black-forest-labs/FLUX.2-klein-base-4B"
+    # Distilled 4B is the default for any flux-2-klein GGUF that does
+    # not advertise 9B or "base".
+    return "black-forest-labs/FLUX.2-klein-4B"
+
+
 def detect_family(
     repo_id: str, *, override_family: Optional[str] = None
 ) -> Optional[DiffusionFamily]:
@@ -225,6 +250,12 @@ class DiffusionBackend:
         return self._repo_id
 
     def status(self) -> dict[str, Any]:
+        # Only echo the GGUF basename; full absolute path leaks the
+        # local HF cache layout (and the system username on default
+        # POSIX layouts) to any authenticated Studio session.
+        gguf_basename = (
+            Path(self._gguf_path).name if self._gguf_path else None
+        )
         return {
             "is_loaded": self.is_loaded,
             "is_loading": self._loading,
@@ -232,7 +263,7 @@ class DiffusionBackend:
             "family": self._family.name if self._family else None,
             "pipeline_class": self._family.pipeline_class if self._family else None,
             "base_repo": self._base_repo,
-            "gguf_path": self._gguf_path,
+            "gguf_filename": gguf_basename,
             "device": self._device,
             "dtype": self._dtype,
             "loaded_at": self._loaded_at,
@@ -334,13 +365,26 @@ class DiffusionBackend:
                 #   2. if no GGUF file was requested the user is loading a
                 #      full diffusers repo; use repo_id directly so we do
                 #      not silently substitute the family default
-                #   3. otherwise fall back to the family default
+                #   3. otherwise use the family + repo_id heuristic so a
+                #      9B GGUF picks the 9B base, not the 4B fallback
                 if base_repo:
                     effective_base = base_repo
                 elif not gguf_filename:
+                    # Guard: a repo that ends in "-GGUF" (the unsloth
+                    # convention) is GGUF-only and will 500 on
+                    # from_pretrained; surface a clear error instead of
+                    # letting diffusers raise a confusing model-index
+                    # failure deep in the loader.
+                    if repo_id.lower().endswith("-gguf"):
+                        raise RuntimeError(
+                            f"'{repo_id}' looks like a GGUF-only repo. "
+                            "Either provide gguf_filename to pick a quant, "
+                            "or pass base_repo to override the full-repo "
+                            "load target."
+                        )
                     effective_base = repo_id
                 else:
-                    effective_base = fam.base_repo
+                    effective_base = _smart_base_repo(fam, repo_id)
                 logger.info(
                     "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
                     repo_id,
@@ -370,11 +414,31 @@ class DiffusionBackend:
                         torch_dtype = dtype,
                     )
 
-                pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                pipe_kwargs: dict[str, Any] = {
+                    "torch_dtype": dtype,
+                    # use_safetensors=True refuses pickle-backed .bin
+                    # weights at load time. Diffusers will fall back to
+                    # safetensors variants on repos that publish both,
+                    # and hard-error on repos that only ship .bin (which
+                    # is the threat model we want to block since pickle
+                    # files can execute arbitrary code in this process).
+                    "use_safetensors": True,
+                }
                 if transformer is not None:
                     pipe_kwargs["transformer"] = transformer
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
+
+                # Release the previous pipeline BEFORE allocating the
+                # new one so peak VRAM stays at one model's worth, not
+                # two. This matters on 16-24 GB consumer GPUs where the
+                # combined footprint would OOM the from_pretrained call.
+                old = self._pipe
+                if old is not None:
+                    with self._lock:
+                        self._pipe = None
+                    _release(old)
+                    old = None
 
                 pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
                 if enable_model_cpu_offload and device == "cuda":
@@ -382,8 +446,6 @@ class DiffusionBackend:
                 else:
                     pipe.to(device)
 
-                # Drop the old pipeline only after the new one is in place.
-                old = self._pipe
                 with self._lock:
                     self._pipe = pipe
                     self._family = fam
@@ -393,7 +455,8 @@ class DiffusionBackend:
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
                     self._loaded_at = time.time()
-                _release(old)
+                # ``old`` was released above before the new allocation;
+                # nothing left to free here.
 
                 return self.status()
             except Exception as exc:

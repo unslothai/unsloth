@@ -45,9 +45,11 @@ accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
 huggingface_hub>=0.34.0
 hf_transfer
-diffusers
+# Floor 0.37.0 introduces Flux2KleinPipeline + Flux2Pipeline which the
+# Studio Images page imports for the default curated picker.
+diffusers>=0.37.0
 # Required by diffusers.GGUFQuantizationConfig (used by the Images page
-# to load FLUX.2 / FLUX.1 / Qwen-Image / SDXL GGUFs from the Hub).
+# to load FLUX.2 / FLUX.1 / Qwen-Image GGUFs from the Hub).
 gguf
 
 # Transitive deps required because this file is installed with --no-deps.

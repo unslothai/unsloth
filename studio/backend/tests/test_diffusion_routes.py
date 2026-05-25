@@ -43,7 +43,7 @@ class _FakeBackend:
             "family": "flux.2-klein" if self._loaded else None,
             "pipeline_class": "Flux2KleinPipeline" if self._loaded else None,
             "base_repo": "black-forest-labs/FLUX.2-klein" if self._loaded else None,
-            "gguf_path": None,
+            "gguf_filename": None,
             "device": "cpu",
             "dtype": "torch.bfloat16",
             "loaded_at": 0,

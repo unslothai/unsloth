@@ -59,17 +59,20 @@ const CURATED_MODELS: Array<{
     label: "FLUX.2 klein 4B (Q4_K_S, distilled)",
     repo_id: "unsloth/FLUX.2-klein-4B-GGUF",
     default_gguf: "flux-2-klein-4b-Q4_K_S.gguf",
-    base_repo: "black-forest-labs/FLUX.2-klein-base-4B",
+    // Distilled GGUF must pair with the distilled base, not the Base
+    // checkpoint. The Hub model card for the GGUF lists
+    // base_model: black-forest-labs/FLUX.2-klein-4B.
+    base_repo: "black-forest-labs/FLUX.2-klein-4B",
     family: "flux.2-klein",
-    notes: "13 GB VRAM. Distilled klein 4B with the Apache base.",
+    notes: "13 GB VRAM. Distilled klein 4B. Requires HF access to FLUX.2 klein 4B.",
   },
   {
     label: "FLUX.2 klein 9B (Q4_K_S, gated)",
     repo_id: "unsloth/FLUX.2-klein-9B-GGUF",
     default_gguf: "flux-2-klein-9b-Q4_K_S.gguf",
-    base_repo: "black-forest-labs/FLUX.2-klein-base-9B",
+    base_repo: "black-forest-labs/FLUX.2-klein-9B",
     family: "flux.2-klein",
-    notes: "17 GB VRAM. Higher quality. Requires HF access to FLUX.2 klein base 9B.",
+    notes: "17 GB VRAM. Higher quality distilled. Requires HF access to FLUX.2 klein 9B.",
   },
   {
     label: "FLUX.2 dev (Q4_K_S, gated)",

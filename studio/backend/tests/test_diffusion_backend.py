@@ -146,7 +146,7 @@ def test_status_shape_unloaded():
         "family",
         "pipeline_class",
         "base_repo",
-        "gguf_path",
+        "gguf_filename",
         "device",
         "dtype",
         "loaded_at",
@@ -373,10 +373,11 @@ def test_load_model_gguf_path_happy(monkeypatch):
     assert status["is_loaded"] is True
     assert status["family"] == "flux.2-klein"
     assert status["pipeline_class"] == "Flux2KleinPipeline"
-    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
-    assert status["gguf_path"] == (
-        "/fake/unsloth/FLUX.2-klein-4B-GGUF/flux-2-klein-4b-Q4_K_S.gguf"
-    )
+    # _smart_base_repo picks the distilled 4B (not the Base) for the
+    # "FLUX.2-klein-4B-GGUF" repo name. The Base variant kicks in only
+    # when "base" is part of the repo id.
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert status["gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
 
 
 def test_load_model_recovers_after_failure(monkeypatch):
@@ -424,6 +425,80 @@ def test_load_model_base_repo_override(monkeypatch):
         base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+
+
+def test_load_model_gguf_only_repo_without_filename_errors(monkeypatch):
+    """When the caller points at a -GGUF repo but forgets the filename,
+    surface a clear error instead of calling from_pretrained on the
+    GGUF-only repo (which 500s deep in diffusers)."""
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "looks like a GGUF-only repo"):
+        backend.load_model("unsloth/FLUX.2-klein-4B-GGUF")
+
+
+def test_smart_base_repo_picks_9b(monkeypatch):
+    """For unsloth/FLUX.2-klein-9B-GGUF without an explicit base_repo,
+    the backend must fall through to FLUX.2-klein-9B, not the 4B base."""
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-9B-GGUF",
+        gguf_filename = "flux-2-klein-9b-Q4_K_S.gguf",
+    )
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-9B"
+
+
+def test_smart_base_repo_picks_base_9b(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-base-9B-GGUF",
+        gguf_filename = "flux-2-klein-base-9b-Q4_K_S.gguf",
+    )
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+
+
+def test_smart_base_repo_picks_base_4b(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-base-4B-GGUF",
+        gguf_filename = "flux-2-klein-base-4b-Q4_K_S.gguf",
+    )
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+
+
+def test_load_model_uses_safetensors_flag(monkeypatch):
+    """The pipeline.from_pretrained call must pass use_safetensors=True
+    so pickle-backed .bin weights are refused at load time."""
+    fake = _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    captured: dict = {}
+
+    original = fake.Flux2KleinPipeline.from_pretrained.__func__
+
+    def _capture(cls, base_repo, **kw):
+        captured.update(kw)
+        return original(cls, base_repo, **kw)
+
+    fake.Flux2KleinPipeline.from_pretrained = classmethod(_capture)
+
+    backend = get_diffusion_backend()
+    backend.load_model(
+        "unsloth/FLUX.2-klein-base-4B-GGUF",
+        gguf_filename = "flux-2-klein-base-4b-Q4_K_S.gguf",
+    )
+    assert captured.get("use_safetensors") is True
 
 
 def test_load_model_full_repo_does_not_substitute(monkeypatch):
