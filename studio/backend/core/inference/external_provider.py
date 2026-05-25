@@ -159,6 +159,49 @@ def _replace_openai_citation_markers(
     return _OPENAI_CITATION_MARKER.sub(_sub, text)
 
 
+def _rewrite_citation_markers_partial(
+    text: str,
+    url_citations: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    """Variant of ``_replace_openai_citation_markers`` that also
+    reports whether any marker in ``text`` referenced a source_id
+    that has not yet been recorded in ``url_citations``.
+
+    OpenAI's ``response.output_text.annotation.added`` event for a
+    ``url_citation`` typically arrives AFTER the delta carrying
+    the inline marker that references it. The stateless rewriter
+    has no way to distinguish a pending annotation from a
+    genuinely bogus source_id, so it silently drops the marker --
+    losing the inline link even though the URL eventually shows
+    up in the sources panel. Callers that own a per-stream buffer
+    can use this helper to defer emission of a segment with an
+    unresolved token until a later event records the annotation.
+    Markers whose tokens did not all resolve are left verbatim so
+    a follow-up pass on the same segment still parses cleanly.
+    """
+    if not text or _OPENAI_CITE_STOP not in text:
+        return text, False
+    by_source = _build_citation_lookup(url_citations)
+    has_unresolved = False
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal has_unresolved
+        tokens = [t for t in match.group(1).split(_OPENAI_CITE_DELIM) if t]
+        rendered: list[str] = []
+        for tok in tokens:
+            hit = by_source.get(tok)
+            if hit is None:
+                continue
+            idx, url = hit
+            rendered.append(f"[[{idx}]]({url})")
+        if not rendered:
+            has_unresolved = True
+            return match.group(0)
+        return "".join(rendered)
+
+    return _OPENAI_CITATION_MARKER.sub(_sub, text), has_unresolved
+
+
 def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     """Split ``text`` into ``(head, pending_tail)`` for streamed deltas.
 
@@ -3071,6 +3114,42 @@ class ExternalProviderClient:
                     # a complete ``cite...`` marker
                     # rather than half of one.
                     pending_marker_tail: str = ""
+                    # Segments whose markers reference a source_id
+                    # we have not seen yet. Held in arrival order
+                    # so output stays in stream order: subsequent
+                    # clean text never leapfrogs an earlier deferred
+                    # segment. Flushed on annotation events and on
+                    # response.completed / incomplete / [DONE] (with
+                    # leftover markers stripped at end-of-stream so
+                    # no private-use codepoint leaks).
+                    pending_citation_segments: list[str] = []
+
+                    def _drain_pending_segments(force: bool) -> str:
+                        """Re-attempt resolution on each buffered
+                        segment in order. Stops at the first segment
+                        that still has an unresolved token unless
+                        ``force`` is true (end-of-stream), in which
+                        case lingering markers are stripped so no
+                        garbled glyph reaches the renderer."""
+                        out: list[str] = []
+                        while pending_citation_segments:
+                            seg = pending_citation_segments[0]
+                            rewritten, unresolved = (
+                                _rewrite_citation_markers_partial(
+                                    seg, all_url_citations,
+                                )
+                            )
+                            if unresolved and not force:
+                                pending_citation_segments[0] = rewritten
+                                break
+                            if unresolved and force:
+                                rewritten = _replace_openai_citation_markers(
+                                    rewritten, all_url_citations,
+                                )
+                            pending_citation_segments.pop(0)
+                            if rewritten:
+                                out.append(rewritten)
+                        return "".join(out)
 
                     def _flush_pending_marker_tail(tail: str) -> str:
                         """Render any leftover citation tail for emission.
@@ -3269,6 +3348,18 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain any segment still
+                                # waiting for an annotation. Lingering
+                                # markers are stripped so no codepoint
+                                # leaks at end of stream.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if not done_emitted:
                                     yield "data: [DONE]"
                                     done_emitted = True
@@ -3307,16 +3398,40 @@ class ExternalProviderClient:
                                         if reasoning_open:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
-                                        head = _replace_openai_citation_markers(
-                                            head, all_url_citations
+                                        # Re-attempt earlier deferred
+                                        # segments first so output stays
+                                        # in order. The annotation we
+                                        # need may have arrived inline
+                                        # on this same event above.
+                                        flushed = _drain_pending_segments(
+                                            force = False,
                                         )
-                                        if head:
-                                            yield _chunk_with_text(head)
+                                        if flushed:
+                                            yield _chunk_with_text(flushed)
+                                        head_rewritten, has_unresolved = (
+                                            _rewrite_citation_markers_partial(
+                                                head, all_url_citations,
+                                            )
+                                        )
+                                        if has_unresolved or pending_citation_segments:
+                                            pending_citation_segments.append(
+                                                head_rewritten
+                                            )
+                                        elif head_rewritten:
+                                            yield _chunk_with_text(head_rewritten)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
                                 if isinstance(ann, dict):
                                     _record_url_citation(ann)
+                                flushed = _drain_pending_segments(
+                                    force = False,
+                                )
+                                if flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(flushed)
 
                             elif event_type == "response.output_item.added":
                                 # Track the call early but do NOT emit tool_start
@@ -3573,6 +3688,18 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain any segment still
+                                # waiting for an annotation. Lingering
+                                # markers are stripped so no codepoint
+                                # leaks at end of stream.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
@@ -3678,6 +3805,18 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain any segment still
+                                # waiting for an annotation. Lingering
+                                # markers are stripped so no codepoint
+                                # leaks at end of stream.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
