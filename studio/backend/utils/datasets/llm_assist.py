@@ -20,6 +20,7 @@ import re
 import textwrap
 import threading
 import time
+from collections import Counter
 from itertools import islice
 from typing import Any, Optional
 
@@ -37,9 +38,15 @@ README_MAX_CHARS = 1500
 # caused chat-evict races and finally-eviction bugs and still left
 # delete-cache blind because helper/advisor publish prefixed
 # identifiers the guard could not match). Expose loading repo ids
-# through a thread-safe set so DELETE /api/models/delete-cached can
-# block while a helper or advisor still owns the cache.
-_HELPER_ADVISOR_ACTIVE_REPOS: set[str] = set()
+# through a thread-safe Counter so DELETE /api/models/delete-cached
+# can block while a helper or advisor still owns the cache.
+#
+# Round 27 P1 #1: must refcount, not a plain set. A helper and an
+# advisor (or two concurrent helpers) often share the default repo
+# unsloth/gemma-4-E2B-it-GGUF. With a set, the first finally call
+# discarded the repo while the second invocation was still loading,
+# and the delete-cache guard then let rmtree race the live mmap.
+_HELPER_ADVISOR_REFCOUNT: Counter[str] = Counter()
 _HELPER_ADVISOR_LOCK = threading.Lock()
 
 
@@ -51,21 +58,33 @@ def helper_advisor_owns_repo(repo_id: str) -> bool:
         return False
     needle = repo_id.lower()
     with _HELPER_ADVISOR_LOCK:
-        return needle in _HELPER_ADVISOR_ACTIVE_REPOS
+        return _HELPER_ADVISOR_REFCOUNT.get(needle, 0) > 0
+
+
+def helper_advisor_busy() -> bool:
+    """Round 27 P1 #2: True if ANY helper/advisor load is in flight.
+    Used by diffusion / training / export release paths so they do
+    not allocate on top of the helper's VRAM while it owns its
+    private LlamaCppBackend instance."""
+    with _HELPER_ADVISOR_LOCK:
+        return sum(_HELPER_ADVISOR_REFCOUNT.values()) > 0
 
 
 def _register_helper_advisor_repo(repo_id: str) -> None:
     if not repo_id:
         return
     with _HELPER_ADVISOR_LOCK:
-        _HELPER_ADVISOR_ACTIVE_REPOS.add(repo_id.lower())
+        _HELPER_ADVISOR_REFCOUNT[repo_id.lower()] += 1
 
 
 def _unregister_helper_advisor_repo(repo_id: str) -> None:
     if not repo_id:
         return
+    needle = repo_id.lower()
     with _HELPER_ADVISOR_LOCK:
-        _HELPER_ADVISOR_ACTIVE_REPOS.discard(repo_id.lower())
+        _HELPER_ADVISOR_REFCOUNT[needle] -= 1
+        if _HELPER_ADVISOR_REFCOUNT[needle] <= 0:
+            _HELPER_ADVISOR_REFCOUNT.pop(needle, None)
 
 
 def _strip_think_tags(text: str) -> str:

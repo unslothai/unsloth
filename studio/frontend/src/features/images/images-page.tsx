@@ -148,6 +148,18 @@ export function ImagesPage() {
     void refreshStatus();
   }, [refreshStatus]);
 
+  // Round 27 P2: when the backend is mid-load (is_loading=true) the
+  // status label froze at "Loading..." until the user clicked
+  // Refresh. Auto-poll every 2 s while a load is in flight so the
+  // UI tracks real backend progress.
+  useEffect(() => {
+    if (!status?.is_loading) return;
+    const id = window.setInterval(() => {
+      void refreshStatus();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [status?.is_loading, refreshStatus]);
+
   const handleLoad = useCallback(async () => {
     setBusy("loading");
     try {
@@ -207,6 +219,12 @@ export function ImagesPage() {
       toast.error("Failed to unload image model", {
         description: err instanceof Error ? err.message : String(err),
       });
+      // Round 27 P2: a partial unload (subprocess refused to terminate,
+      // 503 from the backend) used to leave the UI showing the old
+      // "Loaded:" label even though the backend state was half torn
+      // down. Refresh so the button states match reality (mirrors
+      // handleLoad above which always re-fetches on catch).
+      await refreshStatus();
     } finally {
       setBusy("idle");
     }
@@ -491,6 +509,7 @@ export function ImagesPage() {
             <div className="flex flex-col gap-1">
               <Label>Steps: {steps}</Label>
               <Slider
+                aria-label="Inference steps"
                 min={1}
                 max={60}
                 step={1}
@@ -501,6 +520,7 @@ export function ImagesPage() {
             <div className="flex flex-col gap-1">
               <Label>Guidance: {guidance.toFixed(1)}</Label>
               <Slider
+                aria-label="Guidance scale"
                 min={0}
                 max={15}
                 step={0.1}
@@ -554,7 +574,7 @@ export function ImagesPage() {
                   data-testid="diffusion-result-image"
                 />
                 <figcaption className="text-xs text-muted-foreground">
-                  {r.width}x{r.height} - {r.num_inference_steps} steps - g={r.guidance_scale.toFixed(1)}
+                  {r.width}x{r.height} - {r.num_inference_steps} steps - g={(r.guidance_scale ?? 0).toFixed(1)}
                   {/* Prefer seed_str (full uint64 precision) since the
                        numeric seed gets rounded by JSON.parse above
                        Number.MAX_SAFE_INTEGER and would otherwise

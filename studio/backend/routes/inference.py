@@ -531,6 +531,24 @@ async def _release_chat_for(workload: str) -> None:
     start. Conversely, the standard chat-load path releases only
     the llama side.
     """
+    # Round 27 P1 #2: helper / advisor GGUF loads run on a PRIVATE
+    # LlamaCppBackend (round 26 P1 #1) so the global llama checks
+    # below do not see them. Refuse the handoff while a helper /
+    # advisor still owns its private backend so a new GPU workload
+    # does not allocate on top of helper VRAM and OOM.
+    try:
+        from utils.datasets.llm_assist import helper_advisor_busy
+    except Exception:
+        pass
+    else:
+        if helper_advisor_busy():
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"AI Assist (helper / advisor GGUF) is still using the "
+                    f"GPU. Wait for it to finish before starting {workload}."
+                ),
+            )
     await _release_llama_for(workload)
     await _release_safetensors_chat_for(workload)
 

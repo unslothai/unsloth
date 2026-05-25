@@ -1516,6 +1516,20 @@ def _release_chat_backend_for_diffusion() -> None:
     diffusion ``load_model`` bails out instead of double-owning VRAM
     (round 17 P1 #2).
     """
+    # Round 27 P1 #2: helper / advisor GGUF loads run on a PRIVATE
+    # LlamaCppBackend so the global llama check below cannot see them.
+    # Refuse the diffusion handoff while a helper / advisor still owns
+    # its private backend so we do not allocate FLUX VRAM on top.
+    try:
+        from utils.datasets.llm_assist import helper_advisor_busy
+    except Exception:
+        pass
+    else:
+        if helper_advisor_busy():
+            raise RuntimeError(
+                "AI Assist (helper / advisor GGUF) is still using the GPU. "
+                "Wait for it to finish before loading a diffusion image model."
+            )
     # 1. GGUF chat backend (llama-server subprocess). We unload when
     #    EITHER is_loaded is True (resident model) OR is_active is
     #    True (mid-download / startup) OR loading_model_identifier is
