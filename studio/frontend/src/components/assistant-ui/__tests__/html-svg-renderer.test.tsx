@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HtmlSvgRenderer,
   isHtmlFence,
@@ -12,8 +12,37 @@ import {
   sanitizeSvgSource,
 } from "../html-svg-renderer";
 
+// HtmlPreview POSTs the source to /api/preview/html to obtain a same-origin
+// URL whose response CSP permits inline scripts. Tests fake this round-trip
+// so the iframe enters a deterministic post-load state.
+let _previewIdCounter = 0;
+function installFetchStub(): void {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    if (typeof input === "string" && input === "/api/preview/html") {
+      const url = `/api/preview/html/test-token-${++_previewIdCounter}`;
+      return new Response(JSON.stringify({ url }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("not-found", { status: 404 });
+  }) as typeof fetch;
+}
+function installFailingFetchStub(): void {
+  globalThis.fetch = vi.fn(async () =>
+    new Response("server boom", { status: 500 }),
+  ) as typeof fetch;
+}
+
 describe("HtmlSvgRenderer", () => {
-  it("renders an HTML preview inside a sandboxed iframe by default", () => {
+  beforeEach(() => {
+    installFetchStub();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders an HTML preview inside a sandboxed iframe pointing at the same-origin preview route", async () => {
     const html = "<html><body><h1>hello</h1></body></html>";
     render(<HtmlSvgRenderer language="html" source={html} />);
 
@@ -25,14 +54,16 @@ describe("HtmlSvgRenderer", () => {
       "html-svg-renderer-iframe",
     ) as HTMLIFrameElement;
     expect(iframe.tagName).toBe("IFRAME");
-    // SECURITY: allow-scripts + allow-modals leave script / alert /
-    // confirm operative if the inherited host CSP ever permits inline.
-    // allow-popups lets ``<base target="_blank">`` links open without
-    // being silently dropped, BUT the popups INHERIT the sandbox
-    // (allow-popups-to-escape-sandbox is intentionally absent) so a
-    // tab opened from a malicious assistant link cannot use
+    // SECURITY: allow-scripts + allow-modals let assistant inline scripts
+    // / alert / confirm run in the backend-served preview, which carries
+    // a response CSP wide enough to execute them. allow-popups lets
+    // ``<base target="_blank">`` links open without being silently
+    // dropped; popups INHERIT the sandbox (allow-popups-to-escape-sandbox
+    // is intentionally absent) so an opened tab cannot use
     // window.opener.top.location.* to tabnab the Studio tab.
-    // allow-same-origin and allow-top-navigation are NEVER granted.
+    // allow-same-origin and allow-top-navigation are NEVER granted, so
+    // even though the URL is same-origin the iframe document is treated
+    // as a unique opaque origin and cannot reach window.parent.
     const sandbox = iframe.getAttribute("sandbox") ?? "";
     const sandboxTokens = sandbox.split(/\s+/);
     expect(sandboxTokens).toContain("allow-scripts");
@@ -41,17 +72,34 @@ describe("HtmlSvgRenderer", () => {
     expect(sandboxTokens).not.toContain("allow-popups-to-escape-sandbox");
     expect(sandbox).not.toContain("allow-same-origin");
     expect(sandbox).not.toContain("allow-top-navigation");
-    // srcdoc carries the assistant HTML plus a defense-in-depth meta
-    // CSP (connect-src 'none', frame-src 'none', img-src data: blob:
-    // only). Inline <script> / on* handlers do NOT execute today
-    // because Chromium inherits the host CSP for srcdoc iframes
-    // (also for blob: and data: -- empirically reproduced) and the
-    // host enforces ``script-src 'self'``. The preview is for layout
-    // / styles / images / source viewing; interactive demos are a
-    // documented follow-up that needs a same-origin backend route.
-    expect(iframe.getAttribute("src")).toBeNull();
+
+    // While the preview API call is in-flight the iframe holds
+    // about:blank rather than flashing the previous preview.
+    expect(["about:blank", null]).toContain(iframe.getAttribute("src"));
+
+    // After the POST resolves, the iframe src points at the same-origin
+    // preview URL the backend returned.
+    await waitFor(() => {
+      expect(iframe.getAttribute("data-preview-state")).toBe("ready");
+    });
+    const src = iframe.getAttribute("src") ?? "";
+    expect(src.startsWith("/api/preview/html/")).toBe(true);
+    expect(iframe.getAttribute("srcdoc")).toBeNull();
+  });
+
+  it("falls back to srcdoc with the defense-in-depth meta CSP when the preview API is unreachable", async () => {
+    installFailingFetchStub();
+    const html = "<html><body><h1>fallback</h1></body></html>";
+    render(<HtmlSvgRenderer language="html" source={html} />);
+
+    const iframe = screen.getByTestId(
+      "html-svg-renderer-iframe",
+    ) as HTMLIFrameElement;
+    await waitFor(() => {
+      expect(iframe.getAttribute("data-preview-state")).toBe("error");
+    });
     const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc) ?? "";
-    expect(srcdoc).toContain("hello");
+    expect(srcdoc).toContain("<h1>fallback</h1>");
     expect(srcdoc).toContain('http-equiv="Content-Security-Policy"');
     expect(srcdoc).toContain("connect-src 'none'");
     expect(srcdoc).toContain("frame-src 'none'");
@@ -83,7 +131,7 @@ describe("HtmlSvgRenderer", () => {
     expect(srcdoc).toContain("default-src 'none'");
   });
 
-  it("toggles between Preview and Code tabs", () => {
+  it("toggles between Preview and Code tabs", async () => {
     const html = "<html><body>hi</body></html>";
     render(
       <HtmlSvgRenderer
@@ -94,8 +142,16 @@ describe("HtmlSvgRenderer", () => {
     );
 
     // Default tab is preview.
-    expect(screen.getByTestId("html-svg-renderer-iframe")).toBeTruthy();
+    const iframe = screen.getByTestId(
+      "html-svg-renderer-iframe",
+    ) as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
     expect(screen.queryByTestId("custom-code-view")).toBeNull();
+    // Wait for the preview POST to settle so the act() warning that follows
+    // an async state update outside an act() block does not fire.
+    await waitFor(() => {
+      expect(iframe.getAttribute("data-preview-state")).toBe("ready");
+    });
 
     const codeTab = screen.getByRole("tab", { name: /code/i });
     act(() => {
@@ -130,26 +186,41 @@ describe("HtmlSvgRenderer", () => {
     expect(previewTab.hasAttribute("disabled")).toBe(true);
   });
 
-  it("srcdoc payload carries the defense-in-depth meta CSP", () => {
+  it("HtmlPreview POSTs the assistant source to /api/preview/html before mounting the iframe src", async () => {
     const html = "<button onclick=\"alert('x')\">go</button>";
     render(<HtmlSvgRenderer language="html" source={html} />);
     const iframe = screen.getByTestId(
       "html-svg-renderer-iframe",
     ) as HTMLIFrameElement;
-    const doc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc) ?? "";
-    expect(doc).toContain("<button");
-    expect(doc).toContain('http-equiv="Content-Security-Policy"');
-    // Network egress is blocked regardless of script execution.
-    expect(doc).toContain("connect-src 'none'");
-    expect(doc).toContain("frame-src 'none'");
-    // ``<base target="_blank">`` keeps link clicks from replacing the
-    // iframe content with a navigation away from the preview.
-    expect(doc).toContain('<base target="_blank">');
+    await waitFor(() => {
+      expect(iframe.getAttribute("data-preview-state")).toBe("ready");
+    });
+    // The fetch stub installed in beforeEach captured exactly one call.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/preview/html");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("same-origin");
+    const parsedBody = JSON.parse(init.body as string) as { source: string };
+    expect(parsedBody.source).toBe(html);
+    // After the API returns, the iframe src holds the returned same-origin
+    // path (no srcdoc); the backend response CSP is what unlocks scripts.
+    const src = iframe.getAttribute("src") ?? "";
+    expect(src.startsWith("/api/preview/html/")).toBe(true);
+    expect(iframe.getAttribute("srcdoc")).toBeNull();
   });
 
-  it("wires tabs to their panels with aria-controls / aria-labelledby", () => {
+  it("wires tabs to their panels with aria-controls / aria-labelledby", async () => {
     const html = "<html><body>hi</body></html>";
     render(<HtmlSvgRenderer language="html" source={html} />);
+
+    const iframe = screen.getByTestId(
+      "html-svg-renderer-iframe",
+    ) as HTMLIFrameElement;
+    await waitFor(() => {
+      expect(iframe.getAttribute("data-preview-state")).toBe("ready");
+    });
 
     const previewTab = screen.getByRole("tab", { name: /preview/i });
     const codeTab = screen.getByRole("tab", { name: /code/i });

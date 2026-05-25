@@ -260,17 +260,11 @@ function SvgPreview({ source }: { source: string }) {
 const HTML_PREVIEW_HEIGHT_REPORTER =
   '<script>(()=>{const post=()=>parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");window.addEventListener("load",post);new ResizeObserver(post).observe(document.documentElement);})();</script>';
 
-// Meta-CSP enforced INSIDE the srcdoc iframe. Chromium inherits the
-// embedder CSP into srcdoc, data:, AND blob: iframes per HTML / CSP3
-// § initialize-document-csp, so the host Studio ``script-src 'self'``
-// already blocks assistant inline scripts and on* handlers here --
-// confirmed empirically on the live Studio with a click-to-alert demo.
-// Until a same-origin backend route is added (response-header CSPs
-// do NOT inherit), the preview deliberately ships as a static-render
-// surface. The meta-CSP below is defense in depth: it adds
-// ``connect-src 'none'`` + ``frame-src 'none'`` so even if the host
-// CSP ever loosens enough to let inline scripts run, the preview
-// still cannot beacon out or nest tracking iframes.
+// Fallback for when the same-origin preview route is unreachable (offline,
+// 404, transport error). srcdoc inherits the host page's ``script-src
+// 'self'`` per HTML / CSP3, so this path is static-layout-only -- inline
+// ``<script>`` and ``onclick`` handlers will NOT execute. The interactive
+// surface is the /api/preview/html backend route below.
 const HTML_IFRAME_CSP = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",
@@ -290,13 +284,35 @@ function buildHtmlSrcDoc(source: string): string {
   return [
     "<!doctype html>",
     `<meta http-equiv="Content-Security-Policy" content="${HTML_IFRAME_CSP}">`,
-    // Outbound links open in a new tab rather than navigating the
-    // sandboxed frame itself away from the preview.
     '<base target="_blank">',
     source,
     HTML_PREVIEW_HEIGHT_REPORTER,
   ].join("");
 }
+
+// Backend route that serves the HTML with a response-header CSP wide enough
+// to let ``<script>`` and ``onclick`` fire. Created on every source change
+// via POST; the returned random-token URL becomes the iframe ``src``.
+const HTML_PREVIEW_API = "/api/preview/html";
+
+function getStoredAccessToken(): string | null {
+  // Mirrors the bearer storage used by features/auth/. We avoid the import
+  // cycle by reading sessionStorage / localStorage directly.
+  if (typeof window === "undefined") return null;
+  try {
+    return (
+      window.sessionStorage.getItem("unsloth.access_token") ??
+      window.localStorage.getItem("unsloth.access_token")
+    );
+  } catch {
+    return null;
+  }
+}
+
+type PreviewState =
+  | { kind: "loading" }
+  | { kind: "ready"; url: string }
+  | { kind: "error" };
 
 function HtmlPreview({
   source,
@@ -308,24 +324,57 @@ function HtmlPreview({
   onHeightChange?: (h: number | null) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // srcdoc, blob:, and data: all inherit the host CSP in Chromium, so
-  // the choice between them does not affect script execution today.
-  // srcdoc is the simplest and avoids URL.createObjectURL churn, so
-  // that is what we use. Inline <script> / on* handlers in the
-  // assistant HTML do NOT execute under the current host CSP; the
-  // preview is for layout, images, and styles. The auto-height
-  // postMessage reporter is appended for the future state where the
-  // host CSP is relaxed via a backend-served preview route.
-  const srcDoc = useMemo(() => buildHtmlSrcDoc(source), [source]);
+  // POST the source to the backend preview route. The backend stores it for
+  // 10 minutes and returns a same-origin URL whose ``script-src`` permits
+  // inline execution -- the only way to escape the host CSP for srcdoc /
+  // data: / blob: iframes (which all inherit the embedder policy per
+  // HTML / CSP3).
+  const [previewState, setPreviewState] = useState<PreviewState>({
+    kind: "loading",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewState({ kind: "loading" });
+    onHeightChange?.(null);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    const token = getStoredAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    void fetch(HTML_PREVIEW_API, {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+      body: JSON.stringify({ source }),
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTML preview HTTP ${r.status}`);
+        return (await r.json()) as { url: string };
+      })
+      .then(({ url }) => {
+        if (cancelled) return;
+        if (typeof url !== "string" || !url.startsWith("/api/preview/html/")) {
+          throw new Error("HTML preview returned an unexpected URL shape");
+        }
+        setPreviewState({ kind: "ready", url });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreviewState({ kind: "error" });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [source, onHeightChange]);
 
   const [autoHeight, setAutoHeight] = useState<number | null>(null);
-  // Reset auto-sizing whenever the source changes so we never show the
-  // previous message's iframe size during the gap before the new doc
-  // loads and posts its first height.
   useEffect(() => {
     setAutoHeight(null);
-    onHeightChange?.(null);
-  }, [source, onHeightChange]);
+  }, [previewState]);
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -342,35 +391,39 @@ function HtmlPreview({
     return () => window.removeEventListener("message", handler);
   }, [onHeightChange]);
 
-  // In the docked view we cap at DEFAULT_PREVIEW_HEIGHT; in the popout we
-  // let the iframe fill the modal panel.
   const iframeHeight = popped
     ? "100%"
     : Math.min(autoHeight ?? DEFAULT_PREVIEW_HEIGHT, DEFAULT_PREVIEW_HEIGHT);
+
+  // Error path: fall back to srcdoc so the preview still renders the layout
+  // (static-only -- scripts dead) instead of going blank.
+  const errorSrcDoc = useMemo(
+    () => (previewState.kind === "error" ? buildHtmlSrcDoc(source) : null),
+    [previewState.kind, source],
+  );
 
   return (
     <iframe
       ref={iframeRef}
       data-testid="html-svg-renderer-iframe"
+      data-preview-state={previewState.kind}
       title="HTML preview"
-      srcDoc={srcDoc}
+      src={previewState.kind === "ready" ? previewState.url : "about:blank"}
+      srcDoc={errorSrcDoc ?? undefined}
       // SECURITY:
-      //   allow-scripts        -- ready for the day the host CSP
-      //                           gives the preview a script-src
-      //                           that includes 'unsafe-inline'
-      //   allow-modals         -- alert/confirm/prompt are not no-ops
-      //                           when scripts do fire
-      //   allow-popups         -- the ``<base target="_blank">`` link
-      //                           rule can open a new tab instead of
-      //                           silently dropping the click
+      //   allow-scripts   -- inline <script> / on* handlers run in the
+      //                      backend-served preview, which carries
+      //                      ``script-src 'unsafe-inline'``
+      //   allow-modals    -- alert / confirm / prompt are not no-ops
+      //   allow-popups    -- ``<base target="_blank">`` links can open
+      //                      a new tab instead of silently dropping
       // We do NOT grant:
-      //   allow-same-origin / allow-top-navigation -- the iframe
-      //     cannot read parent.document or navigate the host page
+      //   allow-same-origin / allow-top-navigation -- preview JS cannot
+      //     read parent.document or navigate the host page even though
+      //     the URL is same-origin
       //   allow-popups-to-escape-sandbox -- popups INHERIT the sandbox
       //     so an opened tab cannot use ``window.opener.top.location``
-      //     to tabnab the Studio tab. The opened tab loads with an
-      //     opaque origin (some sites will render degraded) which is
-      //     the deliberate trade-off for tabnabbing safety.
+      //     to tabnab the Studio tab
       sandbox="allow-scripts allow-modals allow-popups"
       style={{
         width: "100%",

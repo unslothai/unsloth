@@ -118,6 +118,7 @@ from routes import (
     data_recipe_router,
     datasets_router,
     export_router,
+    html_preview_router,
     inference_router,
     inference_studio_router,
     models_router,
@@ -327,16 +328,14 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
-        # Restrict iframe sources to same-origin only. The assistant
-        # HTML/SVG previews use srcdoc (no URL fetch), so allowing
-        # data: / blob: here would not unlock interactive scripts
-        # anyway -- Chromium inherits the embedder CSP for srcdoc,
-        # data:, AND blob: iframes per HTML / CSP3, so the only way
-        # to escape ``script-src 'self'`` for the preview would be a
-        # same-origin backend route serving with overriding response
-        # CSP headers. Tracked as a follow-up; for now the explicit
-        # ``'self'`` setting leaves a visible directive that grep
-        # picks up if a future change tries to relax it.
+        # Restrict iframe sources to same-origin only. SVG previews still
+        # use a sandboxed ``srcdoc`` iframe (no URL fetch); interactive
+        # HTML previews go through the same-origin ``/api/preview/html/{id}``
+        # route in routes/html_preview.py, which serves the snippet with
+        # its own overriding ``script-src 'unsafe-inline'`` response CSP.
+        # Without the same-origin route, Chromium would inherit THIS
+        # ``script-src 'self'`` for srcdoc / data: / blob: iframes per
+        # HTML / CSP3 and inline scripts would be silently dead.
         "frame-src 'self'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "
@@ -538,6 +537,9 @@ app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["dat
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
+)
+app.include_router(
+    html_preview_router, prefix = "/api/preview/html", tags = ["html-preview"]
 )
 
 
