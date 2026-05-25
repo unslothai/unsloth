@@ -281,9 +281,7 @@ class DiffusionBackend:
         # local HF cache layout (and the system username on default
         # POSIX layouts) to any authenticated Studio session.
         with self._lock:
-            gguf_basename = (
-                Path(self._gguf_path).name if self._gguf_path else None
-            )
+            gguf_basename = Path(self._gguf_path).name if self._gguf_path else None
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
