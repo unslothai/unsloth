@@ -1769,9 +1769,7 @@ def _build_external_messages(
         if args.get("_server_tool") is True:
             return True
         google = args.get("google")
-        return isinstance(google, dict) and isinstance(
-            google.get("native_part"), dict
-        )
+        return isinstance(google, dict) and isinstance(google.get("native_part"), dict)
 
     def _filter_tool_calls(tool_calls: Any) -> Optional[list]:
         """Sanitize assistant `tool_calls` for non-native-Gemini providers.

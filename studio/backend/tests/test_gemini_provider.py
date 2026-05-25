@@ -3694,9 +3694,7 @@ def test_native_part_code_execution_treated_as_server_side():
         provider_type = "openai",
         base_url = None,
     )
-    assert result == [] or all(
-        not (m.get("tool_calls") or []) for m in result
-    ), result
+    assert result == [] or all(not (m.get("tool_calls") or []) for m in result), result
 
 
 def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
@@ -3852,9 +3850,7 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "either": {
-                                "type": ["string", "integer", "null"]
-                            },
+                            "either": {"type": ["string", "integer", "null"]},
                         },
                     },
                 },

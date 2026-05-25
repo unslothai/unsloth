@@ -661,8 +661,7 @@ class ExternalProviderClient:
         # (privacy + billing) by passing `enabled_tools=[...]` while
         # also setting `tool_choice="none"`.
         tool_choice_disabled = (
-            isinstance(tool_choice, str)
-            and tool_choice.strip().lower() == "none"
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
 
         if not self._is_openai_compatible():
@@ -1936,8 +1935,7 @@ class ExternalProviderClient:
         # privacy/billing opt-out here so a stale UI toggle doesn't
         # accidentally invoke server-side search / code execution.
         _anthropic_tool_choice_disabled = (
-            isinstance(tool_choice, str)
-            and tool_choice.strip().lower() == "none"
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
 
         # Anthropic server-side web_search — see
@@ -3715,9 +3713,7 @@ class ExternalProviderClient:
                         # to the first non-null type silently drops the
                         # other branches and changes the tool contract.
                         _union_any_of = [
-                            {"type": _t}
-                            for _t in _non_null
-                            if isinstance(_t, str)
+                            {"type": _t} for _t in _non_null if isinstance(_t, str)
                         ]
                 for _k, _v in node.items():
                     if _k == "type" and isinstance(_v, list):
