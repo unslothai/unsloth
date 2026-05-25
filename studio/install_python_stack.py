@@ -845,6 +845,7 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
 def pip_install_try(
     label: str,
     *args: str,
+    req: Path | None = None,
     constrain: bool = True,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
@@ -856,23 +857,83 @@ def pip_install_try(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
-    if USE_UV:
-        cmd = _build_uv_cmd(args) + constraint_args_uv
-    else:
-        cmd = _build_pip_cmd(args) + constraint_args_pip
+    actual_req = req
+    temp_reqs: list[Path] = []
+    if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
+        actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    req_args_pip: list[str] = []
+    req_args_uv: list[str] = []
+    if actual_req is not None:
+        req_args_pip = ["-r", str(actual_req)]
+        req_args_uv = ["-r", _uv_safe_path(actual_req)]
 
-    if VERBOSE:
-        _step(_LABEL, f"{label}...", _dim)
-    result = subprocess.run(
-        cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
+    try:
+        if USE_UV:
+            cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+        else:
+            cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+
+        if VERBOSE:
+            _step(_LABEL, f"{label}...", _dim)
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        if result.returncode == 0:
+            return True
+        if VERBOSE and result.stdout:
+            print(result.stdout.decode(errors = "replace"))
+        return False
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
+
+
+def pip_install_with_floor_fallback(
+    label: str,
+    *args: str,
+    floor: list[str],
+    req: Path | None = None,
+    constrain: bool = True,
+) -> None:
+    """Run pip_install with a soft lower-bound floor and fall back unpinned.
+
+    First attempts the install with ``*floor`` appended. If the resolver
+    cannot satisfy the floor (typical case: macOS arm64 host whose macOS
+    version predates the wheel-tag of a transitive ML dep, e.g. mlx
+    0.30+ which only ships ``macosx_14_0_arm64`` wheels), retries the
+    install without the floor and prints a warning. This preserves the
+    pre-fix "succeed but possibly stale" behaviour as a fallback while
+    still attempting the floor on platforms where it is satisfiable
+    (macos-14+, Linux, Windows).
+
+    ``UNSLOTH_NO_PYPI_FLOOR=1`` skips the floor entirely and runs the
+    plain unpinned install. Useful for air-gapped CI / corporate
+    mirrors that do not see PyPI directly.
+    """
+    skip_floor = os.environ.get("UNSLOTH_NO_PYPI_FLOOR", "").strip().lower() in (
+        "1", "true", "yes",
     )
-    if result.returncode == 0:
-        return True
-    if VERBOSE and result.stdout:
-        print(result.stdout.decode(errors = "replace"))
-    return False
+    if skip_floor or not floor:
+        pip_install(label, *args, req = req, constrain = constrain)
+        return
+    if pip_install_try(label, *args, *floor, req = req, constrain = constrain):
+        return
+    _step(
+        "warning",
+        "Floor pin unsatisfiable on this platform; falling back to "
+        "the unpinned resolution (you may end up on an older release "
+        "if a transitive dep restricts wheel availability -- check the "
+        "post-update version with `unsloth --version`)",
+        _cyan,
+    )
+    pip_install(label, *args, req = req, constrain = constrain)
 
 
 def pip_install(
@@ -1032,7 +1093,7 @@ def install_python_stack() -> int:
         # (current PyPI metadata still declares torch as a hard dep), then
         # runtime deps with --no-deps (avoids transitive torch).
         _progress("base packages (no torch)")
-        pip_install(
+        pip_install_with_floor_fallback(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
             "--no-deps",
@@ -1042,7 +1103,7 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             package_name,
             "unsloth-zoo",
-            *_pin_floor_args(include_unsloth = package_name == "unsloth"),
+            floor = _pin_floor_args(include_unsloth = package_name == "unsloth"),
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # exact version pydantic's metadata declares. Under --no-deps
@@ -1084,15 +1145,18 @@ def install_python_stack() -> int:
         # local checkout as an editable install (--no-deps so torch is
         # never re-resolved). Pin a floor at PyPI latest for the same
         # reason the standard update path does -- see comment below.
+        # The local-repo path is for `unsloth studio update --local`,
+        # which always operates against the public unsloth/unsloth-zoo
+        # PyPI distros, so the floor is unconditional here.
         _progress("base packages")
-        pip_install(
+        pip_install_with_floor_fallback(
             "Updating base packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            *_pin_floor_args(),
+            floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
         )
         _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
@@ -1130,15 +1194,21 @@ def install_python_stack() -> int:
         # (e.g. macOS arm64 bitsandbytes wheel availability) makes the
         # unpinned `unsloth` requirement in base.txt satisfiable by a much
         # older version. Mirrors the explicit floor install.sh maintains.
+        # Soft floor: if the resolver cannot satisfy the floor on this
+        # platform (e.g. macOS 13 arm64 where the latest mlx wheel
+        # requires macOS 14+), fall back to the unpinned resolution
+        # rather than erroring out -- preserves the pre-fix
+        # "succeed-but-stale" behaviour as a last resort with a clear
+        # warning to the user.
         _progress("base packages")
-        pip_install(
+        pip_install_with_floor_fallback(
             "Updating base packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            *_pin_floor_args(),
+            floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
         )
 
