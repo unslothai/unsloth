@@ -278,9 +278,7 @@ def _gpu_workload_busy_for_helper() -> bool:
     # public ownership flags is still mid-handoff. Refuse so the helper
     # does not race it for VRAM after the previous owner was torn down.
     if public_load_pending():
-        logger.info(
-            "Skipping helper GGUF while a public GPU load is mid-handoff"
-        )
+        logger.info("Skipping helper GGUF while a public GPU load is mid-handoff")
         return True
     if _diffusion_image_model_busy():
         return True

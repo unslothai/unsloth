@@ -2356,11 +2356,14 @@ async def diffusion_load(
     # Round 30 P1 #4: enforce the signed native_path_lease boundary the
     # chat load path uses so local-path repo_id / base_repo cannot be
     # probed without a frontend-issued grant. Hub ids pass through.
-    resolved_repo_id = _resolve_diffusion_repo_for_request(
-        payload.repo_id,
-        payload.native_path_lease,
-        operation = "load-diffusion-model",
-    ) or payload.repo_id
+    resolved_repo_id = (
+        _resolve_diffusion_repo_for_request(
+            payload.repo_id,
+            payload.native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        or payload.repo_id
+    )
     resolved_base_repo = _resolve_diffusion_repo_for_request(
         payload.base_repo,
         payload.base_repo_native_path_lease,
