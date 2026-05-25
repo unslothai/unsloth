@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-SQLite storage for training run history and metrics.
+SQLite storage for training and eval run history and metrics.
 
 Follows the same pattern as auth/storage.py — module-level functions,
 raw sqlite3, per-function connections. Enhancements over auth:
@@ -208,7 +208,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS eval_runs (
-            id TEXT PRIMARY KEY,
+            id TEXT NOT NULL PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'running',
             model_identifier TEXT NOT NULL,
             dataset_ref TEXT NOT NULL,
@@ -615,8 +615,8 @@ def create_eval_run(
 
 
 def insert_eval_result(
-    run_id: str, idx: int, input_text: str, prediction_text: str,
-    reference_text: str, score: Optional[float], breakdown_json: Optional[str],
+    run_id: str, idx: int, input_text: Optional[str], prediction_text: Optional[str],
+    reference_text: Optional[str], score: Optional[float], breakdown_json: Optional[str],
     error: Optional[str],
 ) -> None:
     conn = get_connection()
@@ -699,6 +699,7 @@ def cleanup_orphaned_runs() -> None:
     """Mark any 'running' rows as errored on startup (server restarted mid-training)."""
     conn = get_connection()
     try:
+        now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             """
             UPDATE training_runs
@@ -707,7 +708,7 @@ def cleanup_orphaned_runs() -> None:
                 ended_at = ?
             WHERE status = 'running'
             """,
-            (datetime.now(timezone.utc).isoformat(),),
+            (now,),
         )
         conn.execute(
             """UPDATE eval_runs
@@ -715,7 +716,7 @@ def cleanup_orphaned_runs() -> None:
                    error_message='Server restarted during eval',
                    ended_at=?
                WHERE status='running'""",
-            (datetime.now(timezone.utc).isoformat(),),
+            (now,),
         )
         conn.commit()
     finally:

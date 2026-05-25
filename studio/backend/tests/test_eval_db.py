@@ -73,3 +73,37 @@ def test_cleanup_marks_running_eval_interrupted(db):
                        started_at="2026-05-26T00:00:00", num_examples=1)
     db.cleanup_orphaned_runs()
     assert db.get_eval_run("stuck")["status"] == "interrupted"
+
+
+def test_insert_eval_result_upserts_same_idx(db):
+    db.create_eval_run(id="up", model_identifier="m", dataset_ref="d",
+                       metric_name="exact_match", config_json="{}",
+                       started_at="2026-05-26T00:00:00", num_examples=1)
+    db.insert_eval_result(run_id="up", idx=0, input_text="i", prediction_text="first",
+                          reference_text="r", score=0.0, breakdown_json=None, error="e")
+    # re-insert same (run_id, idx) -> overwrite, not duplicate
+    db.insert_eval_result(run_id="up", idx=0, input_text="i", prediction_text="second",
+                          reference_text="r", score=1.0, breakdown_json=None, error=None)
+    results = db.get_eval_results("up", limit=10, offset=0)
+    assert results["total"] == 1
+    assert results["results"][0]["prediction_text"] == "second"
+    assert results["results"][0]["score"] == 1.0
+    assert results["results"][0]["error"] is None
+
+
+def test_deleting_eval_run_cascades_results(db):
+    db.create_eval_run(id="cas", model_identifier="m", dataset_ref="d",
+                       metric_name="exact_match", config_json="{}",
+                       started_at="2026-05-26T00:00:00", num_examples=1)
+    db.insert_eval_result(run_id="cas", idx=0, input_text="i", prediction_text="p",
+                          reference_text="r", score=1.0, breakdown_json=None, error=None)
+    conn = db.get_connection()
+    try:
+        conn.execute("DELETE FROM eval_runs WHERE id=?", ("cas",))
+        conn.commit()
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM eval_results WHERE run_id=?", ("cas",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert remaining == 0  # ON DELETE CASCADE removed the child rows
