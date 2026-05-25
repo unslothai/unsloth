@@ -1295,15 +1295,28 @@ def install_python_stack() -> int:
     #     marker carve-out makes most pins inert, but staying constraint-free
     #     here keeps the contract simple).
     if IS_MAC_ARM and not skip_base and package_name == "unsloth":
-        # --force-reinstall is the only flag combination that makes uv (and
-        # pip) ACTUALLY re-resolve mlx-vlm + transformers together. Plain
-        # --upgrade leaves the already-installed transformers 4.57.6 in
-        # place when it happens to satisfy unsloth's own range, even though
-        # it does not satisfy mlx-vlm 0.5.0's stricter `>=5.5.0`. Forcing
-        # reinstallation makes the resolver re-examine the full dep tree
-        # so the venv ends up consistent. Include huggingface_hub because
-        # newer transformers needs hf-hub>=1.5.0 and the resolver will not
-        # touch it otherwise.
+        # Realign mlx-vlm + transformers + huggingface_hub on darwin arm64.
+        # Plain --upgrade / --upgrade-package leaves the already-installed
+        # transformers 4.57.6 in place when it satisfies unsloth's own range,
+        # even though it does not satisfy mlx-vlm 0.5.0's stricter `>=5.5.0`.
+        # Read mlx-vlm's actual installed metadata, pull the transformers
+        # specifier out, and pass it as an EXPLICIT version requirement.
+        # The resolver then has no choice but to upgrade transformers and
+        # huggingface_hub to a mutually-consistent set.
+        try:
+            from importlib.metadata import requires as _md_requires
+
+            specs: list[str] = []
+            for raw in _md_requires("mlx-vlm") or []:
+                from packaging.requirements import Requirement as _Req
+
+                req = _Req(raw)
+                if req.name.lower() == "transformers" and req.specifier:
+                    specs.append(str(req.specifier))
+                    break
+            tf_pin = f"transformers{specs[0]}" if specs else "transformers"
+        except Exception:
+            tf_pin = "transformers"
         _progress("mlx-vlm/transformers realign")
         pip_install(
             "Realigning mlx-vlm + transformers (macOS arm64)",
@@ -1311,7 +1324,7 @@ def install_python_stack() -> int:
             "--upgrade",
             "--force-reinstall",
             "mlx-vlm",
-            "transformers",
+            tf_pin,
             "huggingface_hub",
             constrain = False,
         )
