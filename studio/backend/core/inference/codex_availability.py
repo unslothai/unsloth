@@ -218,7 +218,23 @@ async def _run_cli(args: list[str], *, timeout: float = 4.0) -> tuple[int, str, 
                 proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
             except Exception:
                 pass
-        proc.kill()
+        # proc.kill() can race with the process-group SIGTERM above:
+        # if the child has already been reaped between the killpg and
+        # this line, proc.kill() raises ProcessLookupError on POSIX
+        # and turns /api/codex/status into a 500 during a timeout.
+        # Match the broader exception guard already used in the
+        # device-login cleanup path.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "codex_availability.kill_failed",
+                args = args,
+                exc_type = type(exc).__name__,
+                error = str(exc),
+            )
         try:
             await asyncio.wait_for(proc.wait(), timeout = 1.0)
         except Exception:

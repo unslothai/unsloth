@@ -1425,26 +1425,44 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
     # through Studio's authenticated SSE stream. The URL and code
     # extracted above are emitted separately as `device_url` /
     # `device_code` events and are not affected by this filter.
-    safe_log_patterns: tuple[str, ...] = (
-        "welcome to codex",
-        "initializing",
-        "open this",
-        "open:",
-        "open the",
-        "verification",
-        "enter this one-time code",
-        "enter the code",
-        "waiting",
-        "successfully logged in",
-        "logged in",
-        "signed in",
-        "browser opened",
-        "press ctrl",
+    # Anchored regexes so the line must START with one of the upstream
+    # `codex login --device-auth` phrases. A substring match like the
+    # old "logged in" check is too loose: a malicious shim could print
+    # `Not logged in: refresh_token=rt_LEAK auth.json=/home/u/.codex/`
+    # and the substring `logged in` would let the line through, leaking
+    # auth artefacts into the browser. Start anchors plus a blocklist
+    # of known sensitive substrings close that hole.
+    safe_log_res: tuple[Any, ...] = (
+        re.compile(r"^welcome to codex\b", re.IGNORECASE),
+        re.compile(r"^initializing\b", re.IGNORECASE),
+        re.compile(r"^open (?:this|the verification)", re.IGNORECASE),
+        re.compile(r"^open:\s*https?://", re.IGNORECASE),
+        re.compile(r"^enter (?:this one-time code|the code)\b", re.IGNORECASE),
+        re.compile(r"^waiting\b", re.IGNORECASE),
+        re.compile(r"^successfully (?:logged|signed) in\b", re.IGNORECASE),
+        re.compile(r"^(?:logged|signed) in\b", re.IGNORECASE),
+        re.compile(r"^browser opened\b", re.IGNORECASE),
+        re.compile(r"^press ctrl", re.IGNORECASE),
+    )
+    # Strict blocklist: any of these substrings in the line means the
+    # log entry contains sensitive auth state, a path under the codex
+    # config dir, or an explicit "not logged in" failure -- none of
+    # which the user-facing SSE stream should mirror, regardless of
+    # whether some other prefix matched.
+    unsafe_log_re = re.compile(
+        r"\bnot\s+(?:logged|signed)\s+in\b|"
+        r"\bnot\s+authenticated\b|"
+        r"refresh[_-]?token|access[_-]?token|"
+        r"\bapi[_-]?key\b|\bsecret\b|"
+        r"\bauth\.json\b|"
+        r"/\.codex/|\\\.codex\\",
+        re.IGNORECASE,
     )
 
     def _safe_to_forward(text: str) -> bool:
-        lowered = text.lower()
-        return any(pat in lowered for pat in safe_log_patterns)
+        if unsafe_log_re.search(text):
+            return False
+        return any(pattern.search(text) for pattern in safe_log_res)
 
     try:
         assert proc.stdout is not None
