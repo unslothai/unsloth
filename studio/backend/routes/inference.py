@@ -250,6 +250,7 @@ _ARTIFACT_PREVIEW_FRAME_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
+    "frame-ancestors 'self'; "
     "sandbox allow-scripts"
 )
 _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
@@ -286,6 +287,10 @@ async def artifact_preview_frame():
             "Content-Security-Policy": _ARTIFACT_PREVIEW_FRAME_CSP,
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
+            # SAMEORIGIN for browsers that ignore frame-ancestors; the
+            # SecurityHeadersMiddleware uses setdefault so this takes
+            # precedence over the global DENY.
+            "X-Frame-Options": "SAMEORIGIN",
         },
     )
 
