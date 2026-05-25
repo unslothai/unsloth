@@ -119,9 +119,11 @@ export const Thread: FC<{
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const threadId = targetThreadId ?? activeThreadId ?? null;
 
   return (
-    <GeneratedImageOverlayProvider>
+    <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
@@ -146,10 +148,7 @@ export const Thread: FC<{
               <AuiIf
                 condition={({ thread }) => thread.isEmpty && !thread.isLoading}
               >
-                <ThreadWelcome
-                  hideComposer={hideComposer}
-                  threadId={targetThreadId ?? null}
-                />
+                <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
               </AuiIf>
             )}
 
@@ -190,7 +189,7 @@ export const Thread: FC<{
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
-                threadId={targetThreadId ?? null}
+                threadId={threadId}
               />
             </AuiIf>
           )}
@@ -480,9 +479,17 @@ const Composer: FC<{
           closeOverlay();
           return;
         }
+        if ((overlay.threadId ?? null) !== referenceThreadId) {
+          event.preventDefault();
+          toast.error("This generated image belongs to another chat", {
+            description: "Open the original chat and retry the edit.",
+          });
+          closeOverlay();
+          return;
+        }
         setImageToolsEnabled(true);
         setPendingImageEditReference({
-          threadId: referenceThreadId,
+          threadId: overlay.threadId ?? referenceThreadId,
           openaiImageGenerationCallId: overlay.openaiImageGenerationCallId,
           ...(overlay.openaiResponseId
             ? { openaiResponseId: overlay.openaiResponseId }

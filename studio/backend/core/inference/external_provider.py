@@ -2614,6 +2614,11 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        image_generation_requested = bool(
+            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+        )
+
         # Split system messages out into a single `instructions` string and
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
@@ -2655,11 +2660,19 @@ class ExternalProviderClient:
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
                             )
-                    elif part_type == "reasoning":
+                    elif (
+                        part_type == "reasoning"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
                         replay_item = _sanitize_openai_reasoning_replay_item(part)
                         if replay_item:
                             openai_replay_items.append(replay_item)
-                    elif part_type == "image_generation_call":
+                    elif (
+                        part_type == "image_generation_call"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
                         response_id = (
                             part.get("response_id")
                             or part.get("openai_response_id")
@@ -2731,17 +2744,27 @@ class ExternalProviderClient:
         ):
             filtered_replay_items: list[dict[str, Any]] = []
             has_reasoning_replay = False
+            dropped_image_replay_without_reasoning = False
             for item in openai_replay_items:
                 if item.get("type") == "reasoning":
                     has_reasoning_replay = True
                     filtered_replay_items.append(item)
-                elif (
-                    item.get("type") == "image_generation_call" and has_reasoning_replay
-                ):
-                    filtered_replay_items.append(item)
+                elif item.get("type") == "image_generation_call":
+                    if has_reasoning_replay:
+                        filtered_replay_items.append(item)
+                    else:
+                        dropped_image_replay_without_reasoning = True
                 else:
                     filtered_replay_items.append(item)
             openai_replay_items = filtered_replay_items
+            if dropped_image_replay_without_reasoning:
+                yield _error_sse_line(
+                    400,
+                    "OpenAI image edit reference is missing paired reasoning state. "
+                    "Regenerate the image, then retry the edit.",
+                    self.provider_type,
+                )
+                return
         image_generation_has_reference = bool(
             previous_response_id
             or any(
@@ -2749,7 +2772,13 @@ class ExternalProviderClient:
                 for item in openai_replay_items
             )
         )
-        input_items.extend(openai_replay_items)
+        if openai_replay_items:
+            insert_at = len(input_items)
+            for index in range(len(input_items) - 1, -1, -1):
+                if input_items[index].get("role") == "user":
+                    insert_at = index
+                    break
+            input_items[insert_at:insert_at] = openai_replay_items
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
         # temperature and top_p with `Unsupported parameter` 400s on
@@ -2824,7 +2853,6 @@ class ExternalProviderClient:
         # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
         # without these extensions and would 400 on the unknown body
         # fields, so they intentionally fall outside this gate.
-        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 
@@ -2870,9 +2898,7 @@ class ExternalProviderClient:
         # plus gpt-4.1 / gpt-4o / o3 per the docs; restrict to cloud
         # OpenAI because the local llama.cpp / ollama backends don't
         # implement it and would 400.
-        image_generation_enabled_openai = bool(
-            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
-        )
+        image_generation_enabled_openai = image_generation_requested
 
         def _openai_image_generation_tool() -> dict[str, Any]:
             tool: dict[str, Any] = {"type": "image_generation"}

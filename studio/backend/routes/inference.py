@@ -1736,7 +1736,7 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
-                    elif part.type == "reasoning" and openai:
+                    elif part.type == "reasoning" and openai and msg.role == "assistant":
                         reasoning: dict[str, Any] = {
                             "type": "reasoning",
                             "id": part.id,
@@ -1745,7 +1745,11 @@ def _build_external_messages(
                         if part.status:
                             reasoning["status"] = part.status
                         parts.append(reasoning)
-                    elif part.type == "image_generation_call" and openai:
+                    elif (
+                        part.type == "image_generation_call"
+                        and openai
+                        and msg.role == "assistant"
+                    ):
                         # ExternalProviderClient maps this onto a top-level
                         # Responses input item after the current user prompt,
                         # or onto `previous_response_id` when response_id is
@@ -1788,7 +1792,7 @@ def _build_external_messages(
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
-                    elif p.type == "reasoning" and openai:
+                    elif p.type == "reasoning" and openai and msg.role == "assistant":
                         reasoning: dict[str, Any] = {
                             "type": "reasoning",
                             "id": p.id,
@@ -1797,7 +1801,11 @@ def _build_external_messages(
                         if p.status:
                             reasoning["status"] = p.status
                         preserved.append(reasoning)
-                    elif p.type == "image_generation_call" and openai:
+                    elif (
+                        p.type == "image_generation_call"
+                        and openai
+                        and msg.role == "assistant"
+                    ):
                         image_ref = {"type": "image_generation_call", "id": p.id}
                         if getattr(p, "response_id", None):
                             image_ref["response_id"] = p.response_id

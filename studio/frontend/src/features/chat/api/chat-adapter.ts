@@ -896,13 +896,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
-        await waitForModelReady(abortSignal);
+        try {
+          await waitForModelReady(abortSignal);
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Auto-load the smallest downloaded model
-        const { loaded, blockedByTrustRemoteCode } =
-          await autoLoadSmallestModel();
+        let loaded: boolean;
+        let blockedByTrustRemoteCode: boolean;
+        try {
+          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
@@ -914,6 +925,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 : "Pick a model in the top bar, then retry.",
             },
           );
+          clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }
       }
@@ -937,6 +949,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           description:
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -952,6 +965,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toast.error("Connection not found.", {
           description: "Open Settings → Connections and add it again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connection not found.");
       }
       // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
@@ -962,6 +976,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toast.error("Missing API key for selected connection.", {
           description: "Open Settings → Connections and set the API key again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Missing connection API key.");
       }
 
@@ -1009,6 +1024,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
+        clearSelectedImageEditReference();
         toast.error("Image editing is unavailable", {
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
@@ -1026,6 +1042,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           selectedImageEditReference,
         );
         if (!referenceMessage) {
+          clearSelectedImageEditReference();
           toast.error("This generated image cannot be edited", {
             description:
               "The original image reference is missing. Generate the image again, then retry the edit.",
@@ -1160,6 +1177,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           const gatedThreadKey = resolvedThreadId || "__default";
           runtime.setThreadRunning(gatedThreadKey, true);
           runtime.setThreadRunning(gatedThreadKey, false);
+          clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
       }
@@ -1683,10 +1701,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         let retriedWithRefreshedKey = false;
         while (true) {
           try {
-            const stream = streamChatCompletions(
-              await buildRequestPayload(retriedWithRefreshedKey),
-              abortSignal,
-            );
+            let requestPayload: OpenAIChatCompletionsRequest;
+            try {
+              requestPayload = await buildRequestPayload(retriedWithRefreshedKey);
+            } catch (error) {
+              clearSelectedImageEditReference();
+              throw error;
+            }
+            clearSelectedImageEditReference();
+            const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
               // Handle tool status events
@@ -2050,8 +2073,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             cachedTokens: meta.timings?.cache_n ?? 0,
           });
         }
-
-        clearSelectedImageEditReference();
 
         const finalTiming = buildTiming(
           streamStartTime,

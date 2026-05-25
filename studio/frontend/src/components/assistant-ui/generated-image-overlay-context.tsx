@@ -20,6 +20,7 @@ export type GeneratedImageOverlayState = {
   openaiImageGenerationCallId?: string;
   openaiResponseId?: string;
   openaiReasoningItem?: unknown;
+  threadId?: string | null;
 };
 
 type GeneratedImageOverlayContextValue = {
@@ -33,16 +34,21 @@ const GeneratedImageOverlayContext =
 
 export function GeneratedImageOverlayProvider({
   children,
+  threadId = null,
 }: {
   children: ReactNode;
+  threadId?: string | null;
 }) {
   const [overlay, setOverlay] = useState<GeneratedImageOverlayState | null>(
     null,
   );
 
-  const openOverlay = useCallback((nextOverlay: GeneratedImageOverlayState) => {
-    setOverlay(nextOverlay);
-  }, []);
+  const openOverlay = useCallback(
+    (nextOverlay: GeneratedImageOverlayState) => {
+      setOverlay({ ...nextOverlay, threadId: nextOverlay.threadId ?? threadId });
+    },
+    [threadId],
+  );
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
