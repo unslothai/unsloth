@@ -663,7 +663,15 @@ class DiffusionBackend:
                 exc_msg = re.sub(r"hf_[A-Za-z0-9]{20,}", "<redacted>", exc_msg)
                 with self._lock:
                     self._last_error = exc_msg
-                logger.exception("Diffusion load failed for %s", repo_id)
+                # ``logger.exception`` would emit the raw exception
+                # (including any unredacted ``hf_...`` token inside
+                # the message OR traceback locals on rich loggers).
+                # Use ``logger.error`` with the already-scrubbed
+                # message and exc_info=False so the bearer token
+                # cannot leak through structured logging sinks.
+                logger.error(
+                    "Diffusion load failed for %s: %s", repo_id, exc_msg
+                )
                 raise RuntimeError(
                     f"Failed to load diffusion model: {exc_msg}"
                 ) from exc
@@ -909,27 +917,21 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     """Best-effort: shut down export subprocess + active training before
     a diffusion load. Both can hold multi-GB of VRAM and would OOM the
     diffusion allocation on consumer GPUs."""
-    # Export subprocess. Shut down when EITHER a checkpoint is
-    # resident OR is_export_active() reports work in flight (a
-    # checkpoint load that has been kicked off but not yet completed
-    # the assignment to current_checkpoint). Either case can hold
-    # GPU memory that would OOM the diffusion allocation.
+    # Export resident checkpoint. We tear down a SETTLED export
+    # (current_checkpoint populated) because that means the export
+    # ran to completion and the user can re-load the result, but we
+    # do NOT touch is_export_active() here: an in-flight export job
+    # has unfinished partial output that termination would corrupt.
+    # The route layer rejects /images/load with HTTP 409 via
+    # _raise_if_export_active when is_export_active() is True, so
+    # we only reach this helper when export is either idle or
+    # holding a previously completed checkpoint.
     try:
         from core.export import get_export_backend  # type: ignore
 
         exp = get_export_backend()
-        has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
-        is_active = False
-        try:
-            is_active = bool(exp.is_export_active())
-        except Exception:
-            is_active = False
-        if has_checkpoint or is_active:
-            logger.info(
-                "Shutting down export subprocess (checkpoint=%s active=%s)",
-                has_checkpoint,
-                is_active,
-            )
+        if getattr(exp, "current_checkpoint", None):
+            logger.info("Shutting down idle export subprocess before diffusion load")
             exp._shutdown_subprocess()
             exp.current_checkpoint = None
             exp.is_vision = False

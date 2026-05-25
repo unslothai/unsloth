@@ -2681,7 +2681,11 @@ async def delete_cached_model(
 
         llama_backend = get_llama_cpp_backend()
         loaded_id = (llama_backend.model_identifier or "").lower()
-        wants = loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower())
+        # Exact match only (case-insensitive). Prefix match would
+        # block deleting unrelated ``org/model`` while
+        # ``org/model-v2`` is loaded -- same surface the diffusion
+        # guard fixed in round 5.
+        wants = loaded_id == repo_id.lower()
         if wants and (
             llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
@@ -2707,16 +2711,18 @@ async def delete_cached_model(
         # Loading set holds model identifiers currently being
         # downloaded / instantiated; treat them like active loads
         # so a delete cannot race a partial mmap.
+        # Exact match only. Prefix matching would block deleting
+        # ``org/model`` while ``org/model-v2`` is loading.
         for loading_model in loading_models:
             ml = (loading_model or "").lower()
-            if ml == needle or ml.startswith(needle):
+            if ml == needle:
                 raise HTTPException(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
         if inference_backend.active_model_name:
             active = inference_backend.active_model_name.lower()
-            if active == needle or active.startswith(needle):
+            if active == needle:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",

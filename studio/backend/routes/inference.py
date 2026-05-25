@@ -288,6 +288,145 @@ def _raise_if_training_active(workload: str) -> None:
         )
 
 
+def _raise_if_export_active(workload: str) -> None:
+    """Refuse a chat/diffusion load while an export job is active.
+
+    Symmetric with ``_raise_if_training_active``: export is also a
+    long-running GPU-owning job a user does not want silently killed
+    by a chat / images load. Treat ``current_checkpoint is not None``
+    and ``is_export_active() is True`` as 'export owns the GPU'.
+
+    Same failure-mode split as the training variant: import failure
+    silently skips, runtime failure fails CLOSED with 503.
+    """
+    try:
+        from core.export import get_export_backend  # type: ignore
+    except Exception:
+        return
+    try:
+        exp = get_export_backend()
+        has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
+        try:
+            active = bool(exp.is_export_active())
+        except Exception:
+            active = False
+    except Exception as exc:
+        logger.warning(
+            "Could not verify export status before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify export status before loading the "
+                f"{workload} model. Try again."
+            ),
+        ) from exc
+    if has_checkpoint or active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"An export job is currently active. Stop the export "
+                f"job before loading a {workload} model."
+            ),
+        )
+
+
+async def _release_chat_for(workload: str) -> None:
+    """Shared 'release any GPU-owning chat backend' helper.
+
+    Used by training / export / images / chat handoffs. Treats
+    llama-server as held when EITHER ``is_loaded`` or ``is_active``
+    is true (the latter is mid-download / mid-startup). Treats the
+    safetensors backend as held when ``active_model_name`` is set
+    OR ``loading_models`` is non-empty (mid-download / mid-load).
+    Each unload runs in a worker thread because both backends'
+    unload paths can block for the full duration of a load.
+    """
+    # GGUF chat (llama-server subprocess).
+    try:
+        llama = get_llama_cpp_backend()
+        is_loaded = bool(getattr(llama, "is_loaded", False))
+        is_active = bool(getattr(llama, "is_active", False))
+        if is_loaded or is_active:
+            logger.info(
+                "Unloading GGUF chat (loaded=%s active=%s) before %s load",
+                is_loaded,
+                is_active,
+                workload,
+            )
+            await asyncio.to_thread(llama.unload_model)
+    except Exception as e:
+        logger.debug("llama-server unload skipped for %s: %s", workload, e)
+
+    # Safetensors / Unsloth chat backend.
+    try:
+        from core.inference import get_inference_backend as _gib  # type: ignore
+
+        inf = _gib()
+        active_model_name = getattr(inf, "active_model_name", None)
+        loading_models = set(getattr(inf, "loading_models", set()) or set())
+        if active_model_name:
+            logger.info(
+                "Unloading safetensors chat '%s' before %s load",
+                active_model_name,
+                workload,
+            )
+            await asyncio.to_thread(inf.unload_model, active_model_name)
+        for loading in loading_models:
+            if loading == active_model_name:
+                continue
+            try:
+                logger.info(
+                    "Unloading in-flight safetensors chat '%s' before %s load",
+                    loading,
+                    workload,
+                )
+                await asyncio.to_thread(inf.unload_model, loading)
+            except Exception as inner:
+                logger.debug(
+                    "loading safetensors unload skipped for %s: %s",
+                    loading,
+                    inner,
+                )
+    except Exception as e:
+        logger.debug("safetensors unload skipped for %s: %s", workload, e)
+
+
+async def _release_export_for(workload: str) -> None:
+    """Shared 'shut down export subprocess' helper.
+
+    Treats ``current_checkpoint is not None`` or ``is_export_active()``
+    as 'export owns the GPU'. Used by training / chat handoffs.
+    Diffusion does NOT call this -- it refuses with 409 via
+    ``_raise_if_export_active`` instead, because killing an in-flight
+    export would corrupt the user's exported model.
+    """
+    try:
+        from core.export import get_export_backend  # type: ignore
+
+        exp = get_export_backend()
+        has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
+        try:
+            active = bool(exp.is_export_active())
+        except Exception:
+            active = False
+        if has_checkpoint or active:
+            logger.info(
+                "Shutting down export (checkpoint=%s active=%s) for %s",
+                has_checkpoint,
+                active,
+                workload,
+            )
+            await asyncio.to_thread(exp._shutdown_subprocess)
+            exp.current_checkpoint = None
+            exp.is_vision = False
+            exp.is_peft = False
+    except Exception as e:
+        logger.warning("Could not shut down export for %s: %s", workload, e)
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so
     flags match across backends. gpt-oss is overridden because Harmony
@@ -787,7 +926,14 @@ async def load_model(
             # training is active. Diffusion and export paths refuse;
             # without this the GGUF chat load would start llama-server
             # while training still owned VRAM and double-spend it.
+            # Also refuse when an export job is in flight: same
+            # reasoning as diffusion (terminating a live export would
+            # corrupt the user's exported artifact).
             _raise_if_training_active("chat")
+            _raise_if_export_active("chat")
+            # Drop a settled export checkpoint that is just holding
+            # GPU memory but is not actively producing output.
+            await _release_export_for("GGUF chat")
 
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
@@ -993,17 +1139,29 @@ async def load_model(
 
         # ── Standard path: load via Unsloth/transformers ──────────
         # Symmetric lifecycle guard: refuse a chat load while training
-        # is active so we do not OOM both the training and inference
-        # jobs together.
+        # or an export is active so we do not OOM both jobs together
+        # and so we do not silently corrupt an in-flight export.
         _raise_if_training_active("chat")
+        _raise_if_export_active("chat")
+        # Drop a settled export checkpoint that is just holding GPU
+        # memory but is not actively producing output.
+        await _release_export_for("safetensors chat")
 
         backend = get_inference_backend()
 
-        # Unload any active GGUF model first
+        # Unload any active GGUF model first (handles both is_loaded
+        # and is_active=True so a mid-startup llama-server is also
+        # killed before we allocate safetensors weights).
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded:
-            logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+        llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
+        llama_active = bool(getattr(llama_backend, "is_active", False))
+        if llama_loaded or llama_active:
+            logger.info(
+                "Unloading GGUF model (loaded=%s active=%s) before Unsloth load",
+                llama_loaded,
+                llama_active,
+            )
+            await asyncio.to_thread(llama_backend.unload_model)
 
         # Unload any active diffusion pipeline so the new chat model is
         # not racing the FLUX VAE for VRAM on a 16-24 GB card. is_loading
@@ -1722,7 +1880,11 @@ async def diffusion_load(
     # Refuse before the long download starts: silently stopping a
     # running training run to free VRAM was the previous behavior and
     # left the user with no model loaded plus a dead training job.
+    # Same logic for export: an export subprocess that is mid-flight
+    # cannot be safely terminated without corrupting the output, so
+    # the request is refused with 409 instead of silently killing it.
     _raise_if_training_active("diffusion")
+    _raise_if_export_active("diffusion")
     backend = _get_diffusion_backend()
     try:
         status = await asyncio.get_event_loop().run_in_executor(
