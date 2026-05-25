@@ -979,6 +979,16 @@ def install_python_stack() -> int:
             package_name,
             "unsloth-zoo",
         )
+        # Resolve pydantic WITH deps so pip pins pydantic-core to the
+        # exact version pydantic's metadata declares. Under --no-deps
+        # alone pip picks the latest of each and trips pydantic's
+        # _ensure_pydantic_core_version check. Transitive deps are
+        # torch-free.
+        pip_install(
+            "Installing pydantic (with deps for compatible core)",
+            "--no-cache-dir",
+            "pydantic",
+        )
         pip_install(
             "Installing no-torch runtime deps",
             "--no-cache-dir",

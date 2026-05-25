@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { toast } from "@/lib/toast";
 import {
   Dialog,
   DialogContent,
@@ -13,8 +14,8 @@ import {
 import {
   clearAllChats,
   countAllChats,
-} from "@/features/chat/utils/clear-all-chats";
-import { downloadChatExport } from "@/features/chat/utils/export-chat-history";
+  downloadChatExport,
+} from "@/features/chat";
 import { Delete02Icon, Download02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -43,9 +44,44 @@ export function ChatTab() {
   const handleClear = async () => {
     setClearing(true);
     try {
-      await clearAllChats();
-      setCount(0);
+      const result = await clearAllChats();
+      const clearedCount = result.deletedThreadIds.length;
+      const hasFailedStore =
+        result.backend === "failed" || result.legacy === "failed";
+      if (!hasFailedStore && result.failedThreadIds.length === 0) {
+        setCount(0);
+        setConfirmOpen(false);
+        toast.success(
+          clearedCount === 0
+            ? "Cleared all chats"
+            : `Cleared ${clearedCount} chat${clearedCount === 1 ? "" : "s"}`,
+        );
+        return;
+      }
+
+      const fallbackRemaining =
+        result.failedThreadIds.length > 0
+          ? result.failedThreadIds.length
+          : (count ?? 0);
+      const remaining = await countAllChats().catch(() => fallbackRemaining);
+      setCount(remaining);
       setConfirmOpen(false);
+      toast.warning("Some chats could not be cleared", {
+        description:
+          result.failedThreadIds.length > 0
+            ? `${clearedCount} chat${clearedCount === 1 ? "" : "s"} cleared; ${
+                result.failedThreadIds.length
+              } chat${result.failedThreadIds.length === 1 ? "" : "s"} remain. Please retry.`
+            : `A storage clear failed; ${remaining} chat${
+                remaining === 1 ? "" : "s"
+              } may remain. Please retry.`,
+      });
+    } catch (error) {
+      const remaining = await countAllChats().catch(() => count);
+      setCount(remaining);
+      toast.error("Failed to clear chats", {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setClearing(false);
     }
@@ -107,7 +143,8 @@ export function ChatTab() {
               Clear {count ?? 0} chat{count === 1 ? "" : "s"}?
             </DialogTitle>
             <DialogDescription>
-              This permanently deletes every chat and message stored on this device. This cannot be undone.
+              This permanently deletes every chat and message stored on this
+              device. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -119,7 +156,9 @@ export function ChatTab() {
               disabled={clearing}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              {clearing ? "Clearing…" : `Clear ${count ?? 0} chat${count === 1 ? "" : "s"}`}
+              {clearing
+                ? "Clearing…"
+                : `Clear ${count ?? 0} chat${count === 1 ? "" : "s"}`}
             </Button>
           </DialogFooter>
         </DialogContent>

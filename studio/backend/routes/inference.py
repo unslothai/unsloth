@@ -427,9 +427,17 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call XML from assistant messages/stream
+# Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
+# split across the visible/DRAIN boundary. Four leak shapes:
+#   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
+#   2. orphan opening to EOF (close was DRAINED)
+#   3. bare orphan close (open was DRAINED)
+#   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
+#      `\Z` so mid-text `<parameter>` in user code samples survives.
 _TOOL_XML_RE = _re.compile(
-    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
+    r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    r"|</(?:tool_call|function)>"
+    r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
 logger = get_logger(__name__)
@@ -605,9 +613,10 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
-                # Also require runtime settings to match so Apply changes
-                # aren't silently dropped (#5401).
+                # Match runtime settings too so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
+                # Skip if a prior audio probe failed -- let load_model retry.
+                and getattr(llama_backend, "_audio_probed", True)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
@@ -860,21 +869,15 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
-            # GGUF audio input is not wired through the chat path yet, so do not
-            # advertise has_audio_input for GGUF models until uploaded audio is
-            # actually forwarded to llama-server.
-            _gguf_audio = llama_backend.detect_audio_type()
-            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
-            llama_backend._is_audio = _gguf_is_audio
-            llama_backend._audio_type = _gguf_audio
+            # Audio detection moved into load_model under _serial_load_lock (#5642).
+            _gguf_audio = llama_backend._audio_type
+            _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = (
                 model_log_label if native_grant_backed else None
             )
             llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
-                await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
 
             inference_config = load_inference_config(config.identifier)
 
@@ -1679,16 +1682,41 @@ def _extract_content_parts(
 # ── External provider proxy ──────────────────────────────────────
 
 
+# Providers whose stream helper translates `input_document` parts into
+# a native attachment block on the wire. For Anthropic the mapping is
+# `_stream_anthropic` -> {type:"document", source:...}; for OpenAI it
+# is `_stream_openai_responses` -> {type:"input_file", file_data|file_url}.
+# Every other provider (gemini / mistral / kimi / openrouter / deepseek /
+# custom OpenAI-compat) goes through the generic /chat/completions
+# passthrough that forwards messages verbatim, so handing them an
+# `input_document` part would 400 with an unknown content_part type.
+_INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
+    provider_type: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url parts intact).
-    - Non-vision providers: flatten to text-only (images silently dropped).
+    Behaviour per content-part type:
+    - `text`: always preserved.
+    - `image_url`: preserved on vision providers; stripped on non-vision.
+    - `input_document`: preserved ONLY when the provider's stream helper
+      has explicit translation logic for it (Anthropic + OpenAI today,
+      see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
+      part is stripped so the unknown content type doesn't reach generic
+      /chat/completions passthrough and 400 the request.
+    - `compaction`: Anthropic-only synthetic part (round-trips server-side
+      compaction state). Forwarded ONLY when provider_type=="anthropic";
+      stripped for every other provider so the unknown part doesn't
+      reach generic /chat/completions passthrough where it would 400
+      (e.g. DeepSeek, Mistral, Gemini, Kimi, OpenRouter, etc.).
     """
+    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
+    anthropic = provider_type == "anthropic"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1709,11 +1737,46 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "input_document" and document_provider:
+                        # ExternalProviderClient maps this onto
+                        # Anthropic's `document` or OpenAI Responses'
+                        # `input_file` block per provider; every other
+                        # provider would 400 on the unknown part type.
+                        doc: dict[str, Any] = {"type": "input_document"}
+                        if part.file_data:
+                            doc["file_data"] = part.file_data
+                        if part.file_url:
+                            doc["file_url"] = part.file_url
+                        if part.filename:
+                            doc["filename"] = part.filename
+                        if part.media_type:
+                            doc["media_type"] = part.media_type
+                        parts.append(doc)
+                    elif part.type == "compaction" and anthropic:
+                        # Anthropic stream helper forwards this as a
+                        # native `compaction` block; every other
+                        # provider would 400 on the unknown part, so
+                        # gate by provider_type.
+                        parts.append({"type": "compaction", "content": part.content})
                 result.append({"role": msg.role, "content": parts})
             else:
-                # Non-vision provider — strip images, keep text only
-                text = "\n".join(p.text for p in msg.content if p.type == "text")
-                result.append({"role": msg.role, "content": text})
+                # Non-vision provider: strip images / documents, keep
+                # text, optionally keep compaction (Anthropic only --
+                # compaction-capable Anthropic models all report
+                # supports_vision=True today, but the gate is here for
+                # safety).
+                preserved = []
+                for p in msg.content:
+                    if p.type == "text":
+                        preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "compaction" and anthropic:
+                        preserved.append({"type": "compaction", "content": p.content})
+                if len(preserved) == 1 and preserved[0]["type"] == "text":
+                    # Single text part collapses back to a string for
+                    # providers that don't accept content arrays.
+                    result.append({"role": msg.role, "content": preserved[0]["text"]})
+                else:
+                    result.append({"role": msg.role, "content": preserved})
     return result
 
 
@@ -1784,7 +1847,11 @@ async def _proxy_to_external_provider(
 
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
-    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+    chat_messages = _build_external_messages(
+        payload.messages,
+        _supports_vision,
+        provider_type = provider_type,
+    )
 
     client = ExternalProviderClient(
         provider_type = provider_type,
@@ -1807,6 +1874,8 @@ async def _proxy_to_external_provider(
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+            prompt_cache_ttl = payload.prompt_cache_ttl,
+            compaction_threshold = payload.compaction_threshold,
             stream = payload.stream,
         )
         try:
