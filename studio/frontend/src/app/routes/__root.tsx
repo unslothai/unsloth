@@ -110,8 +110,7 @@ function RootLayout() {
         useSettingsDialogStore.getState().openDialog();
         return;
       }
-      // Cmd/Ctrl+Shift+O opens a new chat. Match on code so the binding
-      // keeps working regardless of keyboard layout.
+      // Cmd/Ctrl+Shift+O opens a new chat. 
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
         e.preventDefault();
         useChatRuntimeStore.getState().setActiveThreadId(null);

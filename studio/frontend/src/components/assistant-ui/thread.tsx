@@ -309,10 +309,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
-  // Per-thread draft autosave. Restores any saved draft on mount, then
-  // mirrors composer text into localStorage (debounced) so a half-typed
-  // message survives a navigation away or a reload. Clears the slot once
-  // the field is empty (i.e. after a send).
+  // Per-thread draft autosave. Restores any saved draft on mount
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const draftKey = `chat-draft:${activeThreadId ?? "__new__"}`;
   useEffect(() => {
