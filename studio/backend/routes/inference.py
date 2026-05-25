@@ -366,60 +366,103 @@ async def _release_llama_for(workload: str) -> None:
     /export/load could start while a long ``_download_gguf`` was in
     flight; llama-server would then come up afterwards and double-own
     the GPU.
+
+    Round 16 P1 #4: a missing or unavailable llama backend is a
+    silent no-op (fresh install / no GGUF use), but an unload that
+    actually FAILS raises 503 so the caller does not start a new GPU
+    workload while llama-server is still resident.
     """
     try:
         llama = get_llama_cpp_backend()
-        is_loaded = bool(getattr(llama, "is_loaded", False))
-        is_active = bool(getattr(llama, "is_active", False))
-        is_loading = bool(getattr(llama, "loading_model_identifier", None))
-        if is_loaded or is_active or is_loading:
-            logger.info(
-                "Unloading GGUF chat (loaded=%s active=%s loading=%s) before %s load",
-                is_loaded,
-                is_active,
-                is_loading,
-                workload,
-            )
-            await asyncio.to_thread(llama.unload_model)
-    except Exception as e:
-        logger.debug("llama-server unload skipped for %s: %s", workload, e)
+    except Exception as exc:
+        logger.debug("llama-server unavailable for %s: %s", workload, exc)
+        return
+
+    is_loaded = bool(getattr(llama, "is_loaded", False))
+    is_active = bool(getattr(llama, "is_active", False))
+    is_loading = bool(getattr(llama, "loading_model_identifier", None))
+    if not (is_loaded or is_active or is_loading):
+        return
+
+    logger.info(
+        "Unloading GGUF chat (loaded=%s active=%s loading=%s) before %s load",
+        is_loaded,
+        is_active,
+        is_loading,
+        workload,
+    )
+    try:
+        await asyncio.to_thread(llama.unload_model)
+    except Exception as exc:
+        logger.warning(
+            "Failed to unload GGUF chat before %s load: %s", workload, exc
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not unload the existing GGUF chat model before "
+                f"starting {workload}."
+            ),
+        ) from exc
 
 
 async def _release_safetensors_chat_for(workload: str) -> None:
     """Unload the safetensors / Unsloth chat backend (drains both
     ``active_model_name`` and ``loading_models``) if it owns the GPU.
+
+    Round 16 P1 #4: ``unload_model`` returning ``False`` (subprocess
+    wedged, IPC timeout) used to be silently ignored, leaving the
+    old chat model resident while a new GPU workload started on top.
+    Treat ``False`` as failure and raise 503 so the caller retries
+    instead of double-owning VRAM.
     """
     try:
         from core.inference import get_inference_backend as _gib  # type: ignore
 
         inf = _gib()
-        active_model_name = getattr(inf, "active_model_name", None)
-        loading_models = set(getattr(inf, "loading_models", set()) or set())
-        if active_model_name:
-            logger.info(
-                "Unloading safetensors chat '%s' before %s load",
-                active_model_name,
-                workload,
+    except Exception as exc:
+        logger.debug("safetensors unavailable for %s: %s", workload, exc)
+        return
+
+    async def _unload_required(model_name: str) -> None:
+        try:
+            ok = await asyncio.to_thread(inf.unload_model, model_name)
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not unload safetensors chat model "
+                    f"'{model_name}' before starting {workload}."
+                ),
+            ) from exc
+        if ok is False:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Safetensors backend refused to unload "
+                    f"'{model_name}' before starting {workload}. "
+                    "Try again."
+                ),
             )
-            await asyncio.to_thread(inf.unload_model, active_model_name)
-        for loading in loading_models:
-            if loading == active_model_name:
-                continue
-            try:
-                logger.info(
-                    "Unloading in-flight safetensors chat '%s' before %s load",
-                    loading,
-                    workload,
-                )
-                await asyncio.to_thread(inf.unload_model, loading)
-            except Exception as inner:
-                logger.debug(
-                    "loading safetensors unload skipped for %s: %s",
-                    loading,
-                    inner,
-                )
-    except Exception as e:
-        logger.debug("safetensors unload skipped for %s: %s", workload, e)
+
+    active_model_name = getattr(inf, "active_model_name", None)
+    loading_models = set(getattr(inf, "loading_models", set()) or set())
+    if active_model_name:
+        logger.info(
+            "Unloading safetensors chat '%s' before %s load",
+            active_model_name,
+            workload,
+        )
+        await _unload_required(active_model_name)
+    for loading in loading_models:
+        if loading == active_model_name:
+            continue
+        logger.info(
+            "Unloading in-flight safetensors chat '%s' before %s load",
+            loading,
+            workload,
+        )
+        await _unload_required(loading)
 
 
 async def _release_chat_for(workload: str) -> None:
@@ -1942,18 +1985,21 @@ async def diffusion_load(
         )
         return JSONResponse(content = status)
     except RuntimeError as exc:
-        # Round 15 P2 #7: if a training run / export job starts
-        # between the route-level pre-check and the backend worker,
-        # ``_release_other_gpu_owners_for_diffusion`` raises a
-        # RuntimeError that should surface as a 409 conflict (the
-        # same status the route layer returns), not 400. Match the
-        # known conflict strings the backend raises.
+        # Round 15 P2 #7 / round 16 P2 #7: backend-level conflict
+        # checks raise RuntimeError that surfaces here. Distinguish:
+        # - "Could not verify ..." -> 503 (retryable, status check
+        #   itself failed), matching the route-level pre-check.
+        # - explicit "currently active" -> 409 conflict.
+        # - anything else -> 400 (bad request).
         detail = str(exc)
+        if (
+            "Could not verify training status" in detail
+            or "Could not verify export status" in detail
+        ):
+            raise HTTPException(status_code = 503, detail = detail) from exc
         if (
             "export job is currently active" in detail
             or "Training is currently active" in detail
-            or "Could not verify training status" in detail
-            or "Could not verify export status" in detail
         ):
             raise HTTPException(status_code = 409, detail = detail) from exc
         raise HTTPException(status_code = 400, detail = detail) from exc

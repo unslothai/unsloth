@@ -357,34 +357,37 @@ def detect_family(
     # P2 #8).
     needle_norm = re.sub(r"[^a-z0-9]+", "-", needle).strip("-")
     needle_compact = re.sub(r"[^a-z0-9]+", "", needle)
+    # Per-token compact strings let ``unsloth/Flux2Klein-GGUF`` match
+    # the ``flux2klein`` alias: the whole-needle compact is
+    # ``unslothflux2kleingguf`` and the regex boundary check rejects
+    # the embedded match, but the token ``Flux2Klein`` (between the
+    # ``/`` and the ``-``) compacts to exactly ``flux2klein`` (round
+    # 16 P2 #9).
+    needle_compact_tokens = {
+        re.sub(r"[^a-z0-9]+", "", token)
+        for token in re.split(r"[^a-z0-9]+", needle)
+        if token
+    }
 
     def _matches_family_token(term: str) -> bool:
         """Token-boundary match on the normalised needle. Prevents
         ``owner/flux.20-model`` from matching ``flux.2`` because
         ``flux.20`` does not have a separator after ``flux-2``
-        (round 15 P2 #8). Falls back to compact equality so aliases
-        like ``qwenimage`` still match ``unsloth/QwenImage-GGUF``."""
+        (round 15 P2 #8). Compact spellings (``flux2klein``) match
+        only when they appear as a complete repo-name token, not
+        as a substring of a longer token (round 16 P2 #9)."""
         term_norm = re.sub(r"[^a-z0-9]+", "-", term.lower()).strip("-")
         if not term_norm:
             return False
         if re.search(rf"(^|-){re.escape(term_norm)}($|-)", needle_norm):
             return True
         term_compact = re.sub(r"[^a-z0-9]+", "", term.lower())
-        if term_compact and term_compact in needle_compact:
-            # Compact contiguous match: ``qwenimage`` in
-            # ``qwenimage-gguf`` -> qwenimage-compact in needle_compact.
-            # Use word boundary on the compact form too: the compact
-            # ``flux2`` must not match inside ``flux20``.
-            return (
-                bool(
-                    re.search(
-                        rf"(^|[^0-9a-z]){re.escape(term_compact)}([^0-9a-z]|$)",
-                        needle_compact,
-                    )
-                )
-                or term_compact == needle_compact
-            )
-        return False
+        if not term_compact:
+            return False
+        return (
+            term_compact in needle_compact_tokens
+            or term_compact == needle_compact
+        )
 
     # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES
     # so a repo like ``stabilityai/stable-diffusion-xl-base-1.0`` is
@@ -496,7 +499,7 @@ class DiffusionBackend:
     def repo_id(self) -> Optional[str]:
         return self._repo_id
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, include_internal: bool = False) -> dict[str, Any]:
         # Take _lock so the snapshot cannot observe a torn state where
         # _pipe was already swapped but _family/_repo_id haven't been
         # updated yet (or vice versa). Frontend polling at 1 Hz would
@@ -504,6 +507,14 @@ class DiffusionBackend:
         # Only echo the GGUF basename; full absolute path leaks the
         # local HF cache layout (and the system username on default
         # POSIX layouts) to any authenticated Studio session.
+        #
+        # Round 16 P1 #5: the guard-facing ``active_*`` / ``pending_*``
+        # fields hold the EXACT raw path (so /delete-cached can match
+        # an HF snapshot mmap) but are NOT safe to surface to the
+        # browser. Callers that need the raw path (route-internal
+        # delete guards) pass ``include_internal=True``; the public
+        # ``/api/inference/images/status`` route always uses the
+        # public payload.
         with self._lock:
             # UI-facing collapsed basename. Full local path leaks the
             # HF cache layout + system username; the original caller-
@@ -552,7 +563,7 @@ class DiffusionBackend:
             # guard-facing ``active_*`` / ``pending_*`` fields below
             # preserve the exact value so delete guards still match
             # against the snapshot path.
-            return {
+            payload: dict[str, Any] = {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
                 "repo_id": _display_repo_id(pending_repo or active_repo),
@@ -560,23 +571,30 @@ class DiffusionBackend:
                 "pipeline_class": ui_pipeline_class,
                 "base_repo": _display_repo_id(pending_base or active_base),
                 "gguf_filename": ui_gguf_basename,
-                # Guard-facing fields: every repo / path / GGUF
-                # filename the backend owns RIGHT NOW. Delete routes
-                # iterate both, paired so the variant-filename check
-                # is compared against the SAME repo that owns it
-                # (round 13 P1 #3-5).
-                "active_repo_id": active_repo,
-                "active_base_repo": active_base,
-                "active_gguf_filename": active_gguf,
-                "pending_repo_id": pending_repo,
-                "pending_base_repo": pending_base,
-                "pending_gguf_filename": pending_gguf,
                 "device": self._device,
                 "dtype": self._dtype,
                 "loaded_at": self._loaded_at,
                 "last_error": self._last_error,
                 "supported_families": supported_families(),
             }
+            if include_internal:
+                # Guard-facing fields: every repo / path / GGUF
+                # filename the backend owns RIGHT NOW. Delete routes
+                # iterate both, paired so the variant-filename check
+                # is compared against the SAME repo that owns it
+                # (round 13 P1 #3-5). Round 16 P1 #5: never returned
+                # by the public /images/status route.
+                payload.update(
+                    {
+                        "active_repo_id": active_repo,
+                        "active_base_repo": active_base,
+                        "active_gguf_filename": active_gguf,
+                        "pending_repo_id": pending_repo,
+                        "pending_base_repo": pending_base,
+                        "pending_gguf_filename": pending_gguf,
+                    }
+                )
+            return payload
 
     def _pick_device_and_dtype(self) -> tuple[str, "Any"]:
         """Pick (device, dtype) for the current host.
@@ -808,20 +826,29 @@ class DiffusionBackend:
                 # transient Hub error on the GGUF download) have now
                 # been validated. Anything past this line allocates
                 # GPU memory, so:
-                #   1. Release competing GPU owners (chat + export).
-                #   2. Release any *previous* diffusion pipeline so the
+                #   1. Verify training is idle and the export job (if
+                #      any) is also idle. ``_release_other_gpu_owners
+                #      _for_diffusion`` RAISES on conflict, so it must
+                #      run BEFORE we unload chat (round 16 P1 #2): a
+                #      route precheck -> worker race could otherwise
+                #      drop the user's chat model only to bail out
+                #      because training started in between, and a
+                #      direct ``DiffusionBackend.load_model`` caller
+                #      that did not run the route prechecks would also
+                #      leave chat unloaded for nothing.
+                #   2. Release the chat backend (llama-server + the
+                #      safetensors orchestrator) now that we know the
+                #      load can actually proceed.
+                #   3. Release any *previous* diffusion pipeline so the
                 #      new transformer / new from_pretrained does not
                 #      race the old pipe for VRAM. Switching between
                 #      FLUX.2 klein 4B and 9B on a 16-24 GB GPU OOMs
                 #      otherwise: from_single_file allocates the new
                 #      transformer while the old pipeline still owns
                 #      its weights.
-                #   3. THEN call from_single_file / from_pretrained.
-                # Training is *not* unloaded here: the route layer
-                # refuses /images/load with HTTP 409 when training is
-                # active so the user keeps their long run.
-                _release_chat_backend_for_diffusion()
+                #   4. THEN call from_single_file / from_pretrained.
                 _release_other_gpu_owners_for_diffusion()
+                _release_chat_backend_for_diffusion()
 
                 old = self._pipe
                 if old is not None:
@@ -1172,8 +1199,12 @@ class DiffusionBackend:
         with self._generate_lock:
             image = self._generate_image_unlocked(**kwargs)
             with self._lock:
+                # Round 16 P1 #6: route ``model`` through
+                # _display_repo_id so a generation response for a
+                # locally-loaded model cannot echo back an absolute
+                # filesystem path to the browser.
                 meta = {
-                    "model": self._repo_id,
+                    "model": _display_repo_id(self._repo_id),
                     "family": self._family.name if self._family else None,
                 }
         return image, meta
@@ -1343,12 +1374,16 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     if is_export_active_fn is not None:
         try:
             export_is_active = bool(is_export_active_fn())
-        except Exception:
-            # Unverifiable status -> treat as 'might be active' and
-            # refuse so a direct backend caller (test / script /
-            # future route that forgot the higher-level 409 guard)
-            # cannot still terminate an in-flight export.
-            export_is_active = True
+        except Exception as exc:
+            # Round 16 P2 #8: distinguish unverifiable status from
+            # active export. The previous "treat as active" mapping
+            # surfaced as a misleading 409 conflict; raise a
+            # "Could not verify" RuntimeError so the route layer
+            # maps it to 503 (retryable) instead.
+            raise RuntimeError(
+                "Could not verify export status before loading a "
+                "diffusion image model."
+            ) from exc
         if export_is_active:
             # Round 14 P2 #10: the prior behaviour logged a warning
             # and continued, so direct ``DiffusionBackend.load_model``

@@ -174,6 +174,9 @@ def test_get_diffusion_backend_singleton():
 
 
 def test_status_shape_unloaded():
+    """Public status() (the browser-facing payload) must NOT contain
+    the guard-only ``active_*`` / ``pending_*`` fields (round 16
+    P1 #5)."""
     from core.inference.diffusion import get_diffusion_backend
 
     s = get_diffusion_backend().status()
@@ -185,12 +188,6 @@ def test_status_shape_unloaded():
         "pipeline_class",
         "base_repo",
         "gguf_filename",
-        "active_repo_id",
-        "active_base_repo",
-        "active_gguf_filename",
-        "pending_repo_id",
-        "pending_base_repo",
-        "pending_gguf_filename",
         "device",
         "dtype",
         "loaded_at",
@@ -198,10 +195,23 @@ def test_status_shape_unloaded():
         "supported_families",
     }
     assert expected_keys.issubset(s.keys())
+    # Guard-facing fields are gated behind include_internal=True.
+    for guard_key in (
+        "active_repo_id",
+        "active_base_repo",
+        "active_gguf_filename",
+        "pending_repo_id",
+        "pending_base_repo",
+        "pending_gguf_filename",
+    ):
+        assert guard_key not in s, f"public status() must not expose {guard_key}"
     assert s["is_loaded"] is False
     assert s["repo_id"] is None
-    assert s["active_gguf_filename"] is None
-    assert s["pending_gguf_filename"] is None
+
+    # Internal status() exposes the guard fields for delete/route use.
+    s_internal = get_diffusion_backend().status(include_internal = True)
+    assert s_internal["active_gguf_filename"] is None
+    assert s_internal["pending_gguf_filename"] is None
 
 
 # ── encode_png_base64 ───────────────────────────────────────────
@@ -1413,7 +1423,7 @@ def test_status_preserves_active_gguf_subdir(monkeypatch):
         aliases = (),
     )
 
-    s = backend.status()
+    s = backend.status(include_internal = True)
     assert s["active_gguf_filename"] == "BF16/model.gguf"
     # UI-facing field still collapses to the basename.
     assert s["gguf_filename"] == "model.gguf"
@@ -1502,6 +1512,82 @@ def test_detect_family_rejects_substring_collisions():
     # Legitimate ``flux.2`` still matches.
     fam = detect_family("black-forest-labs/FLUX.2-dev")
     assert fam is not None and fam.name == "flux.2"
+
+
+def test_detect_family_compact_aliases_with_owner_prefix():
+    """Round 16 P2 #9: compact aliases must match when the repo has
+    an owner prefix. ``unsloth/Flux2Klein-GGUF`` -> flux.2-klein
+    via the ``flux2-klein`` alias's compact form. Embedded compact
+    matches (e.g. ``flux2`` inside ``flux20``) must NOT match."""
+    from core.inference.diffusion import detect_family
+
+    fam = detect_family("unsloth/Flux2Klein-GGUF")
+    assert fam is not None and fam.name == "flux.2-klein"
+    # 20 is a different number; must not collide with flux.2.
+    assert detect_family("unsloth/Flux20-GGUF") is None
+
+
+def test_public_status_does_not_leak_local_path_via_active_fields(monkeypatch):
+    """Round 16 P1 #5: even the guard-facing active_*/pending_* keys
+    must be absent from the public status payload."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._repo_id = "/home/alice/private-flux"
+    backend._base_repo = "/home/alice/base-private"
+    backend._family = d.DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = (),
+    )
+
+    public = backend.status()
+    # UI-facing fields collapse to leaf and the guard-only fields are absent.
+    assert public["repo_id"] == "private-flux"
+    assert public["base_repo"] == "base-private"
+    for key in (
+        "active_repo_id",
+        "active_base_repo",
+        "active_gguf_filename",
+        "pending_repo_id",
+        "pending_base_repo",
+        "pending_gguf_filename",
+    ):
+        assert key not in public
+
+    internal = backend.status(include_internal = True)
+    assert internal["active_repo_id"] == "/home/alice/private-flux"
+    assert internal["active_base_repo"] == "/home/alice/base-private"
+
+
+def test_generate_image_with_metadata_redacts_local_path(monkeypatch):
+    """Round 16 P1 #6: the generation response must not echo a raw
+    absolute path back to the browser."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._repo_id = "/home/alice/private/secret-flux"
+    backend._family = d.DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = (),
+    )
+
+    def _fake_unlocked(**kwargs):
+        from PIL import Image as _Image
+
+        return _Image.new("RGB", (8, 8))
+
+    monkeypatch.setattr(backend, "_generate_image_unlocked", _fake_unlocked)
+    _, meta = backend.generate_image_with_metadata(prompt = "x")
+    assert meta["model"] == "secret-flux"
+    assert "/home/alice" not in meta["model"]
 
 
 def test_release_other_gpu_owners_raises_on_active_training(monkeypatch):

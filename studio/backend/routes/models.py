@@ -2062,7 +2062,9 @@ async def delete_finetuned_model(
         from core.inference.diffusion import get_diffusion_backend
 
         diff_backend = get_diffusion_backend()
-        diff_status = diff_backend.status()
+        # include_internal=True so we can iterate active_*/pending_*
+        # raw paths against ``target_path`` (round 16 P1 #5).
+        diff_status = diff_backend.status(include_internal = True)
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
             target_str = str(target_path)
             # Pair each owned repo / path with the GGUF variant it
@@ -2757,17 +2759,32 @@ async def delete_cached_model(
         loading_id = (
             getattr(llama_backend, "loading_model_identifier", None) or ""
         ).lower()
+        loading_variant = (
+            getattr(llama_backend, "loading_hf_variant", None) or ""
+        ).lower()
         # Also consult the pending-load identifier: a multi-GB HF
         # download stays in ``loading_model_identifier`` until the
         # download completes, before ``model_identifier`` is set
         # (round 13 P1 #6). Without this check the cache directory
         # the download was writing into could be rmtree'd mid-flight.
+        # Round 16 P1 #1: pair against ``loading_hf_variant`` so a
+        # delete of a DIFFERENT cached quant from the same repo
+        # (loading Q4_K_M, deleting cached Q8_0) is allowed; only
+        # block when the requested variant matches what is being
+        # downloaded. Mirrors the /delete-finetuned pairing.
         needle = repo_id.lower()
+        requested_variant = (variant or "").lower()
         if loading_id == needle:
-            raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
+            same_loading_variant = (
+                not requested_variant
+                or not loading_variant
+                or requested_variant == loading_variant
             )
+            if same_loading_variant:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
         # Exact match only (case-insensitive). Prefix match would
         # block deleting unrelated ``org/model`` while
         # ``org/model-v2`` is loaded -- same surface the diffusion
@@ -2778,7 +2795,6 @@ async def delete_cached_model(
             llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
         ):
             loaded_variant = (getattr(llama_backend, "hf_variant", None) or "").lower()
-            requested_variant = (variant or "").lower()
             same_variant = (
                 not requested_variant
                 or not loaded_variant
@@ -2854,7 +2870,9 @@ async def delete_cached_model(
         from core.inference.diffusion import get_diffusion_backend
 
         diff_backend = get_diffusion_backend()
-        diff_status = diff_backend.status()
+        # include_internal=True so we can pair owned raw paths against
+        # the HF cache snapshot root (round 16 P1 #5).
+        diff_status = diff_backend.status(include_internal = True)
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
             needle = repo_id.lower()
             # Round 15 P1 #4: ALSO compare owned paths against the HF
@@ -2879,10 +2897,22 @@ async def delete_cached_model(
                             except Exception:
                                 pass
             except Exception as cache_scan_exc:
-                logger.debug(
-                    "HF cache scan failed during diffusion delete guard: %s",
+                # Round 16 P1 #3: a transient cache-scan failure here
+                # used to silently fall through to repo-id-only
+                # matching, which misses local snapshot paths and
+                # let /delete-cached unlink an actively mmap'd
+                # snapshot. Fail-closed (503) so the user retries.
+                logger.warning(
+                    "Could not scan HF cache during diffusion delete guard: %s",
                     cache_scan_exc,
                 )
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "Could not verify diffusion cache ownership before "
+                        "deleting. Try again."
+                    ),
+                ) from cache_scan_exc
 
             # Pair each owned repo with the GGUF variant it actually
             # owns (active or pending) so a swap in progress does not

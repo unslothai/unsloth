@@ -293,6 +293,43 @@ app = FastAPI(
     lifespan = lifespan,
 )
 
+
+# ── Validation error scrubber ────────────────────────────────────
+# Round 16 P2 #10: FastAPI's default RequestValidationError handler
+# echoes the rejected ``input`` value back in the 422 body. A
+# request like
+#   {"repo_id": "https://hf_token@huggingface.co/owner/repo"}
+# is rejected by ``DiffusionLoadRequest._no_embedded_hf_tokens``,
+# but the rejected URL would still appear in the response payload,
+# leaking the token to the browser console / network log. Wrap the
+# handler so any ``hf_xxxxx`` substring is replaced with
+# ``<redacted>`` before serialisation. Scoped to the response body
+# only; the underlying validator behaviour is unchanged.
+from fastapi.exceptions import RequestValidationError as _RequestValidationError  # noqa: E402
+from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
+import re as _re_validation  # noqa: E402
+
+
+_HF_TOKEN_VALIDATION_RE = _re_validation.compile(r"hf_[A-Za-z0-9]{20,}")
+
+
+def _scrub_validation_obj(value):
+    if isinstance(value, str):
+        return _HF_TOKEN_VALIDATION_RE.sub("<redacted>", value)
+    if isinstance(value, list):
+        return [_scrub_validation_obj(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub_validation_obj(v) for k, v in value.items()}
+    return value
+
+
+@app.exception_handler(_RequestValidationError)
+async def _validation_error_scrubbing_handler(request, exc):
+    return _JSONResponse(
+        status_code = 422,
+        content = {"detail": _scrub_validation_obj(exc.errors())},
+    )
+
 # Initialize structured logging
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
