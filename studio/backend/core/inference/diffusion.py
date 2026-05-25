@@ -155,12 +155,17 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     containing "9b" gets the 9B base, "base-4b" / "base-9b" map to the
     Base variants, everything else falls back to the family default
     (Apache 2.0 4B Base).
+
+    Only the LAST segment of the repo id / path is inspected so a
+    namespace or parent directory like ``baseorg/...`` or
+    ``/home/me/.cache/base/...`` does not falsely select the Base
+    variant (round 12 review #9).
     """
     if fam.name != "flux.2-klein":
         return fam.base_repo
-    lower = (repo_id or "").lower()
-    is_9b = "9b" in lower
-    is_base = "base" in lower
+    last_segment = (repo_id or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    is_9b = "9b" in last_segment
+    is_base = "base" in last_segment
     if is_9b and is_base:
         return "black-forest-labs/FLUX.2-klein-base-9B"
     if is_9b:
@@ -529,11 +534,28 @@ class DiffusionBackend:
                             f"Family {fam.name} does not have a GGUF transformer "
                             "path wired in this build; load the full repo instead."
                         )
-                    local_gguf_path = hf_hub_download(
-                        repo_id = repo_id,
-                        filename = gguf_filename,
-                        token = hf_token,
-                    )
+                    # DiffusionLoadRequest.repo_id is documented to
+                    # accept either a Hub repo id OR a local
+                    # absolute path (Studio export, downloaded HF
+                    # snapshot, etc.). Only the Hub case wants
+                    # hf_hub_download -- a local repo path passed
+                    # to it raises HFValidationError because
+                    # "/abs/path" is not "namespace/repo".
+                    repo_id_path = Path(repo_id).expanduser()
+                    if repo_id_path.is_absolute() and repo_id_path.is_dir():
+                        candidate = repo_id_path / gguf_filename
+                        if not candidate.is_file():
+                            raise RuntimeError(
+                                f"Local repo path '{repo_id}' does not contain "
+                                f"'{gguf_filename}'."
+                            )
+                        local_gguf_path = str(candidate)
+                    else:
+                        local_gguf_path = hf_hub_download(
+                            repo_id = repo_id,
+                            filename = gguf_filename,
+                            token = hf_token,
+                        )
 
                 # All cheap failure points (bad gguf_filename, missing
                 # pipeline / transformer class, gated download token,
@@ -1007,17 +1029,32 @@ def _release(obj: Any) -> None:
 
 
 def _drain_cuda_cache() -> None:
-    """Hand freed weights back to the CUDA allocator.
+    """Hand freed weights back to the active accelerator's allocator.
 
     Call this AFTER every reference to the freed object has been
     dropped (caller's local + attribute) and a ``gc.collect()`` has
     fired __del__. Calling earlier would empty an already-pinned
-    cache and not actually release the memory."""
+    cache and not actually release the memory.
+
+    Handles CUDA *and* MPS (Apple Silicon) so a diffusion swap on
+    macOS actually returns VRAM to the Metal allocator.
+    """
     try:
         import torch
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        import torch
+
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            mps_module = getattr(torch, "mps", None)
+            empty_cache = getattr(mps_module, "empty_cache", None) if mps_module else None
+            if empty_cache is not None:
+                empty_cache()
     except Exception:
         pass
 
