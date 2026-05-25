@@ -365,8 +365,18 @@ export function ChatProvidersSettings({
     // providers and local OpenAI-compat presets stay empty until the user
     // clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds([]);
+    const defaults = seedDefaults ? [...entry.default_models] : [];
+    setAvailableModels(defaults);
+    // Codex is a local CLI, not a metered cloud account, so checking all of
+    // the SDK's default model ids by default is safe and avoids the
+    // first-run UX trap where users create the connection, never check any
+    // model, and then the "Connected" tab silently never appears in the
+    // chat model picker. Anthropic / OpenAI / etc. still need explicit
+    // model selection because the choice has billing and capability
+    // consequences.
+    setSelectedModelIds(
+      providerType === CODEX_PROVIDER_TYPE ? defaults : [],
+    );
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
