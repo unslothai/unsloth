@@ -6,10 +6,12 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from .base import MetricSpec, Scorer
-from . import exact_match
+from . import exact_match, text_similarity, json_document
 
 _SPECS: dict[str, MetricSpec] = {
     exact_match.SPEC.name: exact_match.SPEC,
+    text_similarity.SPEC.name: text_similarity.SPEC,
+    json_document.SPEC.name: json_document.SPEC,
 }
 
 
