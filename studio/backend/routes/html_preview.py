@@ -99,39 +99,37 @@ def _build_html_doc(source: str) -> str:
     # ``<base target="_blank">`` mirrors the srcdoc fallback so any ``<a>``
     # without an explicit target opens in a new tab rather than navigating
     # the iframe (which would be UX-confusing).
-    return (
-        "<!doctype html>"
-        '<base target="_blank">'
-        + source
+    return "<!doctype html>" '<base target="_blank">' + source
+
+
+_PREVIEW_CSP = "; ".join(
+    (
+        "default-src 'none'",
+        # ``script-src 'unsafe-inline'`` enables BOTH ``<script>`` blocks and
+        # ``onclick``-style attribute handlers. This is the entire reason the
+        # route exists -- the host page's ``script-src 'self'`` does not.
+        "script-src 'unsafe-inline'",
+        "style-src 'unsafe-inline'",
+        # ``data:`` / ``blob:`` only, NOT remote http(s). Inline JS cannot
+        # exfiltrate by fetching a remote pixel since ``connect-src 'none'``
+        # blocks fetch/XHR, but stripping remote ``img-src`` removes the
+        # other classic beacon vector too.
+        "img-src data: blob:",
+        "media-src data: blob:",
+        "font-src data:",
+        "connect-src 'none'",
+        "worker-src 'none'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        # Restrict who can embed THIS preview. The Studio host page is
+        # same-origin and is the only legitimate embedder. ``frame-ancestors
+        # 'self'`` also overrides any global X-Frame-Options on modern
+        # browsers, so a third-party site cannot iframe a leaked preview URL.
+        "frame-ancestors 'self'",
     )
-
-
-_PREVIEW_CSP = "; ".join((
-    "default-src 'none'",
-    # ``script-src 'unsafe-inline'`` enables BOTH ``<script>`` blocks and
-    # ``onclick``-style attribute handlers. This is the entire reason the
-    # route exists -- the host page's ``script-src 'self'`` does not.
-    "script-src 'unsafe-inline'",
-    "style-src 'unsafe-inline'",
-    # ``data:`` / ``blob:`` only, NOT remote http(s). Inline JS cannot
-    # exfiltrate by fetching a remote pixel since ``connect-src 'none'``
-    # blocks fetch/XHR, but stripping remote ``img-src`` removes the
-    # other classic beacon vector too.
-    "img-src data: blob:",
-    "media-src data: blob:",
-    "font-src data:",
-    "connect-src 'none'",
-    "worker-src 'none'",
-    "frame-src 'none'",
-    "object-src 'none'",
-    "base-uri 'none'",
-    "form-action 'none'",
-    # Restrict who can embed THIS preview. The Studio host page is
-    # same-origin and is the only legitimate embedder. ``frame-ancestors
-    # 'self'`` also overrides any global X-Frame-Options on modern
-    # browsers, so a third-party site cannot iframe a leaked preview URL.
-    "frame-ancestors 'self'",
-))
+)
 
 
 # ---------------------------------------------------------------------------

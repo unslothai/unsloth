@@ -28,6 +28,7 @@ def preview_app(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_bootstrap_password", None)
 
     import secrets as _secrets
+
     storage.create_initial_user(
         username = storage.DEFAULT_ADMIN_USERNAME,
         password = "human-password-123",
@@ -120,7 +121,7 @@ class TestGetHtmlPreview:
         body = r.text
         # The doctype + base + body are present.
         assert "<!doctype html>" in body.lower()
-        assert "<base target=\"_blank\">" in body
+        assert '<base target="_blank">' in body
         assert "<button onclick=\"alert('x')\">go</button>" in body
         # The overriding CSP must permit inline script execution.
         csp = r.headers["content-security-policy"]
@@ -194,6 +195,6 @@ class TestEviction:
             token_id = old.rsplit("/", 1)[-1]
             assert token_id not in mod._PREVIEWS
         # Newer tokens are still present.
-        for fresh in urls[-mod.MAX_LIVE_PREVIEWS:]:
+        for fresh in urls[-mod.MAX_LIVE_PREVIEWS :]:
             token_id = fresh.rsplit("/", 1)[-1]
             assert token_id in mod._PREVIEWS
