@@ -808,6 +808,7 @@ class DiffusionBackend:
         # execution) so test environments that stub these modules
         # still pass the preflight without us actually importing them.
         import importlib.util as _ilu
+
         for _mod in ("transformers", "accelerate"):
             if _ilu.find_spec(_mod) is None:
                 raise RuntimeError(
