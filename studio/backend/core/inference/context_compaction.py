@@ -273,16 +273,20 @@ class SlidingWindowCompact(CompactStrategy):
         # enforce, and llama-server would 400 on the resulting
         # template (a tool message whose tool_call_id has no
         # surviving assistant tool_calls entry).
+        # Assistants whose tool_calls all got orphaned are repaired in
+        # the final pass below: we keep the multimodal content but
+        # strip the dangling tool_calls so OpenAI does not 400 on
+        # "assistant message with tool_calls must be followed by tool
+        # messages".
+        rewrite_strip_tool_calls: set[int] = set()
         for asst_idx, tool_idxs in pair_map.items():
             if asst_idx in dropped:
                 dropped.update(t for t in tool_idxs if t not in anchor_idx)
             elif tool_idxs and tool_idxs <= dropped:
-                # All matching tool messages were dropped: drop the
-                # assistant tool-call message too -- unless it's
-                # anchored, in which case we'd rather leak an
-                # orphan tool_call shape than violate the invariant.
                 if asst_idx not in anchor_idx:
                     dropped.add(asst_idx)
+                else:
+                    rewrite_strip_tool_calls.add(asst_idx)
 
         # Final invariant sweep: drop any surviving tool message whose
         # tool_call_id has no matching assistant ``tool_calls`` earlier
@@ -292,18 +296,54 @@ class SlidingWindowCompact(CompactStrategy):
         # ``_pair_linked_indices`` no longer treats as the pair root.
         # Anchored tool messages (multimodal content) stay regardless,
         # matching the existing leak-rather-than-violate-anchor rule.
+        # Also collect assistant indices whose surviving tool_calls
+        # entries lack a matching tool follow-up so we can strip the
+        # orphan ids from a copy below (same reason: OpenAI 400s on
+        # tool_calls without matching tool responses).
+        responded_ids: set[str] = set()
+        for i, m in enumerate(messages):
+            if i in dropped:
+                continue
+            if m.get("role") == "tool":
+                tcid = m.get("tool_call_id")
+                if isinstance(tcid, str) and tcid:
+                    responded_ids.add(tcid)
         seen_ids: set[str] = set()
         for i, m in enumerate(messages):
             if i in dropped:
                 continue
             if m.get("role") == "assistant":
-                seen_ids |= _assistant_tool_call_ids(m)
+                ids = _assistant_tool_call_ids(m)
+                seen_ids |= ids
+                if ids and not (ids <= responded_ids):
+                    rewrite_strip_tool_calls.add(i)
             elif m.get("role") == "tool" and i not in anchor_idx:
                 tcid = m.get("tool_call_id")
                 if isinstance(tcid, str) and tcid and tcid not in seen_ids:
                     dropped.add(i)
 
-        return [m for i, m in enumerate(messages) if i not in dropped]
+        out: list[dict] = []
+        for i, m in enumerate(messages):
+            if i in dropped:
+                continue
+            if i in rewrite_strip_tool_calls:
+                # Keep the message (multimodal content stays) but strip
+                # tool_calls entries with no surviving tool follow-up.
+                kept_tcs = [
+                    tc for tc in (m.get("tool_calls") or [])
+                    if isinstance(tc, dict)
+                    and isinstance(tc.get("id"), str)
+                    and tc["id"] in responded_ids
+                ]
+                copy = dict(m)
+                if kept_tcs:
+                    copy["tool_calls"] = kept_tcs
+                else:
+                    copy.pop("tool_calls", None)
+                out.append(copy)
+            else:
+                out.append(m)
+        return out
 
 
 _STRATEGIES: dict[str, CompactStrategy] = {

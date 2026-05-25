@@ -728,3 +728,64 @@ def test_compact_does_not_drop_anchored_multimodal_tool():
     out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 1)
     # The anchored tool survives.
     assert any(m.get("role") == "tool" and m.get("tool_call_id") == "t1" for m in out)
+
+
+def test_anchored_multimodal_asst_orphan_tool_calls_stripped():
+    """Multimodal assistant carrying tool_calls whose tool follow-ups
+    all get dropped: the anchor invariant keeps the assistant, but the
+    leftover tool_calls field references ids with no matching tool
+    response and OpenAI 400s on that shape. Strip the orphan tool_calls
+    from a copy so the multimodal content survives and the request
+    stays well-formed.
+    """
+    multimodal_asst = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "x"}},
+        ],
+        "tool_calls": [_tool_call("t1"), _tool_call("t2")],
+    }
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "task"),
+        multimodal_asst,
+        _msg("tool", content = "A" * 50, tool_call_id = "t1"),
+        _msg("tool", content = "B" * 4000, tool_call_id = "t2"),
+        _long("assistant", 50),
+        _long("user", 50),
+    ]
+    out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 100)
+    asst_ids, tool_ids = _surviving_tool_ids(out)
+    assert asst_ids == tool_ids, (asst_ids, tool_ids)
+    # Multimodal content preserved.
+    assert any(isinstance(m.get("content"), list) for m in out)
+    # Original input unchanged (we copy on rewrite).
+    assert multimodal_asst["tool_calls"] == [_tool_call("t1"), _tool_call("t2")]
+
+
+def test_partial_tool_drop_strips_orphan_tool_call_id():
+    """Same shape but a plain-content assistant: the per-index budget
+    loop dropped only one of the two tool follow-ups. The surviving
+    tool_call_id on the assistant points at a dropped tool message --
+    strip it so the chat template stays valid. Plain assistant is not
+    anchored, so the original "drop the assistant when all tools are
+    gone" rule would have caught this if BOTH tools had been dropped.
+    Here only one tool was dropped, which is the gap this guard closes.
+    """
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "task"),
+        _msg(
+            "assistant",
+            content = "thinking",
+            tool_calls = [_tool_call("t1"), _tool_call("t2")],
+        ),
+        _msg("tool", content = "A" * 50, tool_call_id = "t1"),
+        _msg("tool", content = "B" * 4000, tool_call_id = "t2"),
+        _long("assistant", 50),
+        _long("user", 50),
+    ]
+    out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 200)
+    asst_ids, tool_ids = _surviving_tool_ids(out)
+    assert asst_ids == tool_ids, (asst_ids, tool_ids)
