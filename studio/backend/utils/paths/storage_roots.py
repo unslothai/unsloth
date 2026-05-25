@@ -107,7 +107,7 @@ def _xdg_user_dir(key: str) -> Path | None:
         line = line.strip()
         if not line.startswith(prefix):
             continue
-        value = line[len(prefix):].strip().strip('"')
+        value = line[len(prefix) :].strip().strip('"')
         if not value:
             return None
         return Path(value.replace("$HOME", str(Path.home()))).expanduser()

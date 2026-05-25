@@ -415,7 +415,7 @@ _PROJECT_SESSION_PREFIX = "project-"
 def _get_project_workdir(session_id: str) -> str | None:
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
-    project_id = session_id[len(_PROJECT_SESSION_PREFIX):]
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
     if not project_id or not _SESSION_ID_RE.match(project_id):
         return None
     try:
@@ -423,7 +423,9 @@ def _get_project_workdir(session_id: str) -> str | None:
 
         project = ensure_chat_project_workspace(project_id)
     except Exception:
-        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
+        logger.warning(
+            "Failed to resolve project sandbox for %s", session_id, exc_info = True
+        )
         return None
     if not project:
         return None
