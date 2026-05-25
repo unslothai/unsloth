@@ -51,7 +51,7 @@ import {
   DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
-  Folder02Icon,
+  Folder01Icon,
   Globe02Icon,
   HelpCircleIcon,
   Logout01Icon,
@@ -264,7 +264,7 @@ function ProjectSidebarItem({
           disabled={chatDisabled}
         >
           <HugeiconsIcon
-            icon={Folder02Icon}
+            icon={Folder01Icon}
             strokeWidth={1.75}
             className={cn(
               "size-icon shrink-0 text-current opacity-80 transition-opacity",
@@ -687,7 +687,7 @@ export function AppSidebar() {
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                 <span>Move to project</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
@@ -710,7 +710,7 @@ export function AppSidebar() {
                   disabled={!item.projectId}
                   onSelect={() => void moveChatToProject(item, null)}
                 >
-                  <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Recents</span>
                 </DropdownMenuItem>
                 {projects.map((project) => (
@@ -719,7 +719,7 @@ export function AppSidebar() {
                     disabled={item.projectId === project.id}
                     onSelect={() => void moveChatToProject(item, project.id)}
                   >
-                    <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                     <span className="truncate">{project.name}</span>
                   </DropdownMenuItem>
                 ))}

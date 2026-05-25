@@ -18,6 +18,7 @@ from storage.studio_db import (
     count_chat_threads,
     delete_chat_threads,
     delete_chat_project,
+    ensure_chat_project_workspace,
     get_chat_project,
     get_chat_thread,
     get_chat_message,
@@ -80,6 +81,8 @@ class ChatProject(BaseModel):
     id: str
     name: str
     instructions: str = ""
+    rootPath: Optional[str] = None
+    sandboxPath: Optional[str] = None
     archived: bool = False
     createdAt: int
     updatedAt: int
@@ -281,7 +284,7 @@ async def list_projects(
 ):
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**project)
+            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
             for project in list_chat_projects(include_archived = include_archived)
         ]
     )
@@ -300,7 +303,7 @@ async def get_project(
     project_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    project = get_chat_project(project_id)
+    project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -320,6 +323,8 @@ async def patch_project(
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     project = update_chat_project(project_id, patch)
+    if project is not None:
+        project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,

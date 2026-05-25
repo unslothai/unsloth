@@ -20,6 +20,8 @@ export interface ProjectRecord {
   id: string;
   name: string;
   instructions?: string;
+  rootPath?: string | null;
+  sandboxPath?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;

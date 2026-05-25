@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -469,14 +469,7 @@ async function resolveUseAdapter(
 async function resolveProjectInstructions(
   threadId: string | undefined,
 ): Promise<string> {
-  let projectId: string | null | undefined;
-  if (threadId) {
-    const thread = await getStoredChatThread(threadId).catch(() => null);
-    projectId = thread?.projectId ?? null;
-  }
-  if (!projectId) {
-    projectId = useChatRuntimeStore.getState().activeProjectId;
-  }
+  const projectId = await resolveProjectId(threadId);
   if (!projectId) {
     return "";
   }
@@ -486,6 +479,30 @@ async function resolveProjectInstructions(
     return "";
   }
   return project.instructions?.trim() ?? "";
+}
+
+async function resolveProjectId(
+  threadId: string | undefined,
+): Promise<string | null> {
+  let projectId: string | null | undefined;
+  if (threadId) {
+    const thread = await getStoredChatThread(threadId).catch(() => null);
+    projectId = thread?.projectId ?? null;
+  }
+  if (!projectId) {
+    projectId = useChatRuntimeStore.getState().activeProjectId;
+  }
+  if (!projectId) {
+    return null;
+  }
+  return projectId;
+}
+
+async function resolveSandboxSessionId(
+  threadId: string | undefined,
+): Promise<string | undefined> {
+  const projectId = await resolveProjectId(threadId);
+  return projectId ? `project-${projectId}` : threadId;
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -827,6 +844,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
@@ -1185,7 +1203,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
         const body: Record<string, string> = { cancel_id: cancelId };
-        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
@@ -1539,7 +1557,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
-            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
+            ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
@@ -1689,7 +1707,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox directory
                       // used when no session_id is provided (see tools.py _get_workdir).
-                      const sessionId = resolvedThreadId || "_default";
+                      const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),

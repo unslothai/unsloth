@@ -10,6 +10,7 @@ from storage import studio_db
 
 def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
 
@@ -79,7 +80,10 @@ def test_chat_projects_delete_cascades_threads_and_messages(
     monkeypatch,
 ):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_project(_project())
+    project = studio_db.upsert_chat_project(_project())
+    assert project["rootPath"].startswith(str(tmp_path / "Projects"))
+    assert (tmp_path / "Projects" / "Research-project").exists()
+    assert (tmp_path / "Projects" / "Research-project" / "sandbox").is_dir()
     studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
     studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
 

@@ -409,6 +409,33 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+_PROJECT_SESSION_PREFIX = "project-"
+
+
+def _get_project_workdir(session_id: str) -> str | None:
+    if not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX):]
+    if not project_id or not _SESSION_ID_RE.match(project_id):
+        return None
+    try:
+        from storage.studio_db import ensure_chat_project_workspace
+
+        project = ensure_chat_project_workspace(project_id)
+    except Exception:
+        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
+        return None
+    if not project:
+        return None
+    root_path = project.get("rootPath")
+    sandbox_path = project.get("sandboxPath")
+    if not root_path or not sandbox_path:
+        return None
+    root_real = os.path.realpath(root_path)
+    sandbox_real = os.path.realpath(sandbox_path)
+    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+        return None
+    return sandbox_real
 
 
 def _get_workdir(session_id: str | None = None) -> str:
@@ -418,7 +445,14 @@ def _get_workdir(session_id: str | None = None) -> str:
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id and _SESSION_ID_RE.match(session_id):
+        project_workdir = (
+            _get_project_workdir(session_id)
+            if session_id and _SESSION_ID_RE.match(session_id)
+            else None
+        )
+        if project_workdir:
+            workdir = project_workdir
+        elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root, session_id)
             if not os.path.realpath(workdir).startswith(
                 os.path.realpath(sandbox_root) + os.sep
@@ -439,6 +473,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             pass
         _workdirs[key] = workdir
     return _workdirs[key]
+
+
+def get_sandbox_workdir(session_id: str | None = None) -> str:
+    return _get_workdir(session_id)
 
 
 WEB_SEARCH_TOOL = {

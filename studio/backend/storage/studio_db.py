@@ -14,15 +14,17 @@ import json
 import logging
 import os
 import platform
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import studio_db_path, ensure_dir
+from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -55,6 +57,27 @@ def _denied_path_prefixes() -> list[str]:
 _schema_lock = threading.Lock()
 _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
+_PROJECT_WORKSPACE_SUBDIRS = ("sandbox", "chats", "files", "exports")
+
+
+def _project_slug(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip(".-_")
+    return slug[:48] or "project"
+
+
+def _default_project_root(project: dict) -> str:
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    folder_name = f"{_project_slug(str(project.get('name') or 'Project'))}-{suffix}"
+    return str(project_workspaces_root() / folder_name)
+
+
+def _ensure_project_workspace(root_path: str) -> str:
+    root = Path(root_path).expanduser()
+    root_resolved = ensure_dir(root).resolve()
+    for subdir in _PROJECT_WORKSPACE_SUBDIRS:
+        ensure_dir(root_resolved / subdir)
+    return str(root_resolved)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -125,12 +148,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             instructions TEXT,
+            root_path TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )
         """
     )
+    chat_project_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_projects)").fetchall()
+    }
+    if "root_path" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -713,10 +742,13 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
 
 def _chat_project_from_row(row: sqlite3.Row) -> dict:
     data = dict(row)
+    root_path = data.get("root_path")
     return {
         "id": data["id"],
         "name": data["name"],
         "instructions": data.get("instructions") or "",
+        "rootPath": root_path or None,
+        "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -889,16 +921,22 @@ def count_chat_threads() -> int:
 
 
 def upsert_chat_project(project: dict) -> dict:
+    existing = get_chat_project(project["id"])
+    root_path = existing.get("rootPath") if existing else None
+    if not root_path:
+        root_path = _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
     conn = get_connection()
     try:
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (id, name, instructions, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
+                root_path = COALESCE(chat_projects.root_path, excluded.root_path),
                 archived = excluded.archived,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at
@@ -907,6 +945,7 @@ def upsert_chat_project(project: dict) -> dict:
                 project["id"],
                 project["name"],
                 project.get("instructions") or "",
+                root_path,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
                 int(project["updatedAt"]),
@@ -946,6 +985,26 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         return _chat_project_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+def ensure_chat_project_workspace(id: str) -> Optional[dict]:
+    project = get_chat_project(id)
+    if project is None:
+        return None
+    root_path = project.get("rootPath") or _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
+    if project.get("rootPath") == root_path:
+        return project
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = ? WHERE id = ?",
+            (root_path, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_chat_project(id)
 
 
 def get_chat_project(id: str) -> Optional[dict]:

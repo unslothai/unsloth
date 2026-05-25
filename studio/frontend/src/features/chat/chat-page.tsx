@@ -24,7 +24,7 @@ import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { CustomizeIcon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -799,6 +799,8 @@ function ProjectLanding({
 export function ChatPage(): ReactElement {
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isCurrentChatRoute = pathname.startsWith("/chat");
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
@@ -1734,6 +1736,12 @@ export function ChatPage(): ReactElement {
     }, 0);
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
+
+  if (!isCurrentChatRoute) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
+    );
+  }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
