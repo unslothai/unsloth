@@ -2557,6 +2557,132 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
     assert root.get("properties", {}).get("value", {}).get("type") == "string"
 
 
+def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(
+    monkeypatch,
+):
+    """Round 26: when the assistant-side synthetic web_search/web_fetch
+    tool_call is dropped from native Gemini history, the matching
+    role="tool" follow-up must also be dropped. Otherwise the outbound
+    body carries an orphan functionResponse with no preceding
+    functionCall, which 400s the Gemini turn."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": "search please"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_s",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": (
+                                    '{"_server_tool": true, "query": "x"}'
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_s",
+                    "content": "[search result]",
+                },
+                {"role": "user", "content": "again"},
+            ],
+            "max_tokens": 64,
+            "stream": True,
+        }
+    )
+    built = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    captured = _capture_body(monkeypatch, messages = built)
+    contents = captured["body"].get("contents") or []
+    for entry in contents:
+        for part in entry.get("parts", []):
+            fr = part.get("functionResponse")
+            if isinstance(fr, dict):
+                assert fr.get("name") != "web_search", contents
+
+
+def test_gemini_native_skips_orphan_function_response_for_native_part_replay(
+    monkeypatch,
+):
+    """Round 26: code_execution / image_generation tool_calls are
+    replayed as Gemini-native executableCode / codeExecutionResult /
+    inlineData parts. The matching role="tool" follow-up must NOT then
+    be emitted as a functionResponse named code_execution -- there is
+    no declared user function with that name, and Gemini's history
+    rules already attribute the result to the native parts above."""
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "plot something"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": "{}",
+                        },
+                        "extra_content": {
+                            "google": {
+                                "native_part": {
+                                    "parts": [
+                                        {
+                                            "executableCode": {
+                                                "language": "PYTHON",
+                                                "code": "print(2)",
+                                            }
+                                        },
+                                        {
+                                            "codeExecutionResult": {
+                                                "outcome": "OUTCOME_OK",
+                                                "output": "2\n",
+                                            }
+                                        },
+                                    ]
+                                }
+                            }
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_a",
+                "name": "code_execution",
+                "content": "2",
+            },
+            {"role": "user", "content": "next"},
+        ],
+    )
+    contents = captured["body"].get("contents") or []
+    saw_native = False
+    for entry in contents:
+        for part in entry.get("parts", []):
+            if "executableCode" in part or "codeExecutionResult" in part:
+                saw_native = True
+            fr = part.get("functionResponse")
+            if isinstance(fr, dict):
+                assert fr.get("name") != "code_execution", contents
+    assert saw_native, contents
+
+
 def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
     """Round 25: Marked server-side builtin tool_calls (web_search /
     web_fetch with `_server_tool` or `args.google.native_part`) must

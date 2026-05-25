@@ -4628,7 +4628,17 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
-    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
+    # Strip synthetic provider-side builtin tool history (web_search,
+    # web_fetch, code_execution, image_generation cards tagged with
+    # _server_tool or extra_content.google.native_part) before handing
+    # off to local llama-server. The local /v1/chat/completions and
+    # GGUF passthrough builders apply the same strip; without it an
+    # Anthropic /v1/messages caller replaying a prior provider-side
+    # tool_use forwards fake builtin tool history to a backend that
+    # has no matching function declarations.
+    openai_messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(openai_messages)
+    )
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.

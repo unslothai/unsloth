@@ -3189,6 +3189,17 @@ class ExternalProviderClient:
         # can recover its name (Gemini rejects an empty functionResponse
         # name with HTTP 400).
         tool_call_names: dict[str, str] = {}
+        # Track tool_call_ids whose assistant-side card was either
+        # dropped (synthetic web_search/web_fetch with no native part)
+        # or already replayed as Gemini-native parts
+        # (code_execution/image_generation native_part). The matching
+        # role="tool" follow-up must NOT then become a generic
+        # `functionResponse`: dropping it produces an orphan response
+        # with no preceding functionCall, and replaying it duplicates
+        # the executableCode/codeExecutionResult pair we already wrote
+        # while also pointing at a name that has no
+        # `functionDeclarations` entry. Both forms 400 the Gemini turn.
+        _gemini_skip_tool_result_ids: set[str] = set()
         # Per-request aggregate caps for remote image inlining. A
         # single chat request can include many image_url parts; each
         # is independently capped at 10MB but without a request-level
@@ -3518,10 +3529,23 @@ class ExternalProviderClient:
                     ):
                         # No replayable Gemini native part -- skip
                         # entirely rather than send a fake functionCall.
+                        # Also remember this tool_call_id so a matching
+                        # role="tool" follow-up does not become an
+                        # orphan functionResponse below.
+                        if isinstance(tc_id, str) and tc_id:
+                            _gemini_skip_tool_result_ids.add(tc_id)
+                            tool_call_names.pop(tc_id, None)
                         continue
                     if fn_name in ("code_execution", "image_generation") and isinstance(
                         _native_part, dict
                     ):
+                        # code_execution/image_generation history is
+                        # replayed as native parts; the matching
+                        # role="tool" must be skipped or Gemini sees a
+                        # functionResponse with no declared function
+                        # name and 400s the turn.
+                        if isinstance(tc_id, str) and tc_id:
+                            _gemini_skip_tool_result_ids.add(tc_id)
                         # New shape: `native_part.parts` is an ordered list
                         # of full part wrappers, each carrying its own
                         # `thoughtSignature`. This preserves Gemini 3's
@@ -3601,6 +3625,18 @@ class ExternalProviderClient:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
             if role == "tool":
+                # If the matching assistant-side tool_call was either
+                # dropped (synthetic server-tool with no native part)
+                # or already replayed as Gemini-native parts
+                # (code_execution/image_generation native_part), drop
+                # the follow-up too. Emitting it as a functionResponse
+                # would be orphaned or duplicate the native result.
+                _tc_id_for_skip = msg.get("tool_call_id")
+                if (
+                    isinstance(_tc_id_for_skip, str)
+                    and _tc_id_for_skip in _gemini_skip_tool_result_ids
+                ):
+                    continue
                 # OpenAI's role="tool" follow-up carries the function
                 # result. Gemini's matching shape is a role="user" turn
                 # with a functionResponse part. When the caller dropped
