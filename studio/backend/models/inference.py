@@ -1450,6 +1450,32 @@ def _no_control_chars(value: Optional[str], field_name: str) -> Optional[str]:
     return value
 
 
+import re as _re
+
+_EMBEDDED_HF_TOKEN_RE = _re.compile(r"hf_[A-Za-z0-9]{20,}")
+
+
+def _reject_embedded_hf_token(
+    value: Optional[str], field_name: str
+) -> Optional[str]:
+    """Refuse identifiers that contain an embedded ``hf_xxx`` token.
+
+    Round 15 P1 #5: ``repo_id`` and ``base_repo`` accept URL-style
+    strings (``https://hf_token@huggingface.co/owner/repo``). The
+    token would otherwise be stored in ``self._repo_id`` and echoed
+    back through ``status()`` to every authenticated browser session.
+    Log redaction (``_redact_hf_tokens``) covers the logger sink, but
+    the public status payload also needed to refuse the input. Use
+    the dedicated ``hf_token`` field for authentication.
+    """
+    if value is not None and _EMBEDDED_HF_TOKEN_RE.search(value):
+        raise ValueError(
+            f"{field_name} must not embed a Hugging Face token; "
+            "pass it via the dedicated hf_token field instead."
+        )
+    return value
+
+
 class DiffusionLoadRequest(BaseModel):
     """Load a diffusion image-generation model.
 
@@ -1494,6 +1520,11 @@ class DiffusionLoadRequest(BaseModel):
     @classmethod
     def _no_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "base_repo")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 # torch.Generator.manual_seed packs into signed int64; values outside

@@ -1473,6 +1473,62 @@ def test_smart_base_repo_uses_windows_leaf_only_already_set_separator_round14():
     assert _smart_base_repo(fam, repo) == "black-forest-labs/FLUX.2-klein-9B"
 
 
+def test_display_repo_id_collapses_absolute_path():
+    """Round 15 P2 #6: absolute local paths must NOT leak through
+    status(). Hub-style repo ids pass through unchanged."""
+    from core.inference.diffusion import _display_repo_id
+
+    # Hub id passes through.
+    assert (
+        _display_repo_id("black-forest-labs/FLUX.2-klein-4B")
+        == "black-forest-labs/FLUX.2-klein-4B"
+    )
+    # Absolute local path collapses to leaf.
+    assert _display_repo_id("/home/alice/exports/private-flux") == "private-flux"
+    # HF tokens are scrubbed defensively.
+    leaky = "https://hf_abcdefghij0123456789@huggingface.co/owner/repo"
+    out = _display_repo_id(leaky)
+    assert "hf_" not in out
+
+
+def test_detect_family_rejects_substring_collisions():
+    """Round 15 P2 #8: ``flux.20-model`` must NOT match ``flux.2``."""
+    from core.inference.diffusion import detect_family
+
+    # ``flux.20`` is a different number and must not collide with ``flux.2``.
+    assert detect_family("owner/flux.20-model") is None
+    # ``stable-diffusion-30`` must not match ``stable-diffusion-3``.
+    assert detect_family("foo/stable-diffusion-30") is None
+    # Legitimate ``flux.2`` still matches.
+    fam = detect_family("black-forest-labs/FLUX.2-dev")
+    assert fam is not None and fam.name == "flux.2"
+
+
+def test_release_other_gpu_owners_raises_on_active_training(monkeypatch):
+    """Round 15 P1 #3: direct backend callers must not bypass the
+    route layer's training-active 409 guard."""
+    import core.inference.diffusion as d
+
+    fake_training_mod = types.ModuleType("core.training")
+    fake_training_mod.get_training_backend = lambda: SimpleNamespace(
+        is_training_active = lambda: True
+    )
+    monkeypatch.setitem(sys.modules, "core.training", fake_training_mod)
+
+    # Ensure export module import does not fail the test before the
+    # training raise lands.
+    fake_export_mod = types.ModuleType("core.export")
+    fake_export_mod.get_export_backend = lambda: SimpleNamespace(
+        is_export_active = lambda: False,
+        current_checkpoint = None,
+    )
+    monkeypatch.setitem(sys.modules, "core.export", fake_export_mod)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        d._release_other_gpu_owners_for_diffusion()
+    assert "Training is currently active" in str(exc_info.value)
+
+
 def test_generate_image_with_metadata_blocks_concurrent_unload(monkeypatch):
     """Round 13 P2 #9: _generate_lock serialises the forward AND the
     meta snapshot, so a queued unload cannot wipe state in between."""

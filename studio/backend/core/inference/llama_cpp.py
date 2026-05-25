@@ -618,7 +618,12 @@ class LlamaCppBackend:
         # ``loading_model_identifier`` so a multi-GB HF download cannot
         # have its cache rmtree'd or be ignored by /images/load,
         # /training/start, /export/load while it is still resolving.
+        # ``_loading_hf_variant`` mirrors the same lifetime so the
+        # per-variant delete guard at routes/models.py:/delete-finetuned
+        # compares against the NEW variant rather than the previous
+        # loaded ``hf_variant`` (round 15 P1 #2).
         self._loading_model_identifier: Optional[str] = None
+        self._loading_hf_variant: Optional[str] = None
         self._gguf_path: Optional[str] = None
         self._hf_repo: Optional[str] = None
         self._hf_variant: Optional[str] = None
@@ -732,6 +737,20 @@ class LlamaCppBackend:
         cannot have its destination rmtree'd or be ignored by a
         concurrent /images/load that thinks llama-server is idle."""
         return self._loading_model_identifier
+
+    @property
+    def loading_hf_variant(self) -> Optional[str]:
+        """``hf_variant`` of the load currently in progress, or None.
+
+        Mirrors ``loading_model_identifier``'s lifetime so the
+        per-variant delete guards (routes/models.py /delete-cached and
+        /delete-finetuned) can compare against the NEW variant rather
+        than the previously-loaded one (round 15 P1 #2). Without this,
+        a directory with Q4 loaded and Q8 loading would still see the
+        stale Q4 ``hf_variant``, and a Q8 delete would be wrongly
+        allowed even though Q8 is being downloaded into the same
+        directory."""
+        return self._loading_hf_variant
 
     @property
     def is_vision(self) -> bool:
@@ -2616,43 +2635,47 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
-        # Publish ``_loading_model_identifier`` BEFORE any phase of
-        # the load can begin and clear it AFTER the load fully settles
-        # (success or failure, including the duplicate-state fast path
-        # and every internal early ``return False``). Round 14 P1 #2:
-        # the prior inline try/finally only wrapped the download, so
-        # /delete-cached and the cross-workload handoff helpers saw
-        # the backend as idle once the GGUF bytes had landed but the
-        # subprocess had not yet spawned. Mark the load as pending
-        # for the entire duration -- download, metadata read,
-        # VRAM settle, process spawn, health check, audio probe.
-        self._loading_model_identifier = model_identifier
-        try:
-            # Serialise the whole load so concurrent /load calls never
-            # leave two llama-server processes alive (#5401 / #5161).
-            # Does not block /unload, /status, /load-progress.
-            return self._load_model_impl(
-                gguf_path = gguf_path,
-                mmproj_path = mmproj_path,
-                hf_repo = hf_repo,
-                hf_variant = hf_variant,
-                hf_token = hf_token,
-                model_identifier = model_identifier,
-                is_vision = is_vision,
-                n_ctx = n_ctx,
-                chat_template_override = chat_template_override,
-                cache_type_kv = cache_type_kv,
-                speculative_type = speculative_type,
-                spec_draft_n_max = spec_draft_n_max,
-                n_threads = n_threads,
-                n_gpu_layers = n_gpu_layers,
-                n_parallel = n_parallel,
-                extra_args = extra_args,
-            )
-        finally:
-            self._loading_model_identifier = None
+        # Serialise the whole load so concurrent /load calls never
+        # leave two llama-server processes alive (#5401 / #5161). Does
+        # not block /unload, /status, /load-progress.
+        #
+        # Publish ``_loading_model_identifier`` + ``_loading_hf_variant``
+        # AFTER acquiring ``_serial_load_lock``. Round 15 P1 #1: the
+        # previous round 14 version set them outside the lock so a
+        # second queued ``load_model`` would overwrite or clear the
+        # identifier of the load currently holding the lock, breaking
+        # the delete-safety and GPU handoff guards. Cleared in
+        # ``finally`` so failure / cancellation leaves the pending
+        # state empty. Round 15 P1 #2 added ``_loading_hf_variant``
+        # so per-variant delete guards can compare against the
+        # NEW variant rather than the previous loaded one.
+        with self._serial_load_lock:
+            self._loading_model_identifier = model_identifier
+            self._loading_hf_variant = hf_variant
+            try:
+                return self._load_model_impl_locked(
+                    gguf_path = gguf_path,
+                    mmproj_path = mmproj_path,
+                    hf_repo = hf_repo,
+                    hf_variant = hf_variant,
+                    hf_token = hf_token,
+                    model_identifier = model_identifier,
+                    is_vision = is_vision,
+                    n_ctx = n_ctx,
+                    chat_template_override = chat_template_override,
+                    cache_type_kv = cache_type_kv,
+                    speculative_type = speculative_type,
+                    spec_draft_n_max = spec_draft_n_max,
+                    n_threads = n_threads,
+                    n_gpu_layers = n_gpu_layers,
+                    n_parallel = n_parallel,
+                    extra_args = extra_args,
+                )
+            finally:
+                self._loading_model_identifier = None
+                self._loading_hf_variant = None
 
-    def _load_model_impl(
+    def _load_model_impl_locked(
         self,
         *,
         gguf_path: Optional[str] = None,
@@ -2672,11 +2695,11 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
     ) -> bool:
-        """Internal body of ``load_model``. Kept as a separate method
-        so ``load_model`` can wrap it in a single try/finally that
-        publishes ``_loading_model_identifier`` for the WHOLE load
-        instead of only the download window."""
-        with self._serial_load_lock:
+        """Internal body of ``load_model``. The caller is responsible
+        for holding ``_serial_load_lock`` and for publishing /
+        clearing ``_loading_model_identifier`` + ``_loading_hf_variant``
+        in the surrounding try/finally."""
+        if True:
             # Duplicate /load that raced past the route-level check
             # (the first one hadn't published _healthy=True yet). If the
             # live server already satisfies this request, do nothing.

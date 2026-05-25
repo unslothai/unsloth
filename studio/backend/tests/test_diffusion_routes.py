@@ -57,7 +57,15 @@ def _import_inference_module():
     assert spec and spec.loader, "could not build spec for routes/inference.py"
     module = importlib.util.module_from_spec(spec)
     sys.modules["routes.inference"] = module
-    spec.loader.exec_module(module)
+    # Round 15 P3 #9: drop the half-initialised module from
+    # sys.modules if exec_module() raises, otherwise later tests pick
+    # up the poisoned entry and report a misleading AttributeError
+    # instead of the original ImportError.
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("routes.inference", None)
+        raise
     return module
 
 
@@ -247,6 +255,34 @@ def test_unload_clears_state(app_with_stub):
     assert r.json()["is_loaded"] is False
     r = c.get("/api/inference/images/status")
     assert r.json()["is_loaded"] is False
+
+
+def test_load_rejects_embedded_hf_token(app_with_stub):
+    """Round 15 P1 #5: URL-embedded ``hf_xxxxx`` tokens in repo_id /
+    base_repo must be rejected with 422 so they never reach
+    ``self._repo_id`` and get echoed back by ``status()``."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "https://hf_abcdefghij0123456789@huggingface.co/owner/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    text = repr(body).lower()
+    assert "hf_token" in text or "embed" in text
+    # base_repo is also rejected.
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/repo",
+            "gguf_filename": "x.gguf",
+            "base_repo": "https://hf_abcdefghij0123456789@huggingface.co/base/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_load_rejects_control_chars_in_repo_id(app_with_stub):

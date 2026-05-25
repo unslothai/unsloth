@@ -201,6 +201,29 @@ def _expand_existing_local_path(value: str) -> str:
     return value
 
 
+def _display_repo_id(value: Any) -> Any:
+    """Return a public-facing label for a repo_id / base_repo.
+
+    For Hub-style identifiers (``owner/repo``) the value passes
+    through unchanged so the Images panel and result figcaption
+    stay informative. Absolute local paths (``/home/me/exports/...``
+    or ``C:\\Users\\...``) collapse to the leaf name so
+    ``/images/status`` does not leak the user's filesystem layout
+    to other authenticated browser sessions (round 15 P2 #6). HF
+    tokens are scrubbed defensively in case they slipped past the
+    request-side validator.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute() or candidate.exists():
+            return candidate.name or value
+    except (OSError, ValueError):
+        pass
+    return _redact_hf_tokens(value)
+
+
 _HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
 
 
@@ -334,6 +357,32 @@ def detect_family(
     # P2 #8).
     needle_norm = re.sub(r"[^a-z0-9]+", "-", needle).strip("-")
     needle_compact = re.sub(r"[^a-z0-9]+", "", needle)
+
+    def _matches_family_token(term: str) -> bool:
+        """Token-boundary match on the normalised needle. Prevents
+        ``owner/flux.20-model`` from matching ``flux.2`` because
+        ``flux.20`` does not have a separator after ``flux-2``
+        (round 15 P2 #8). Falls back to compact equality so aliases
+        like ``qwenimage`` still match ``unsloth/QwenImage-GGUF``."""
+        term_norm = re.sub(r"[^a-z0-9]+", "-", term.lower()).strip("-")
+        if not term_norm:
+            return False
+        if re.search(rf"(^|-){re.escape(term_norm)}($|-)", needle_norm):
+            return True
+        term_compact = re.sub(r"[^a-z0-9]+", "", term.lower())
+        if term_compact and term_compact in needle_compact:
+            # Compact contiguous match: ``qwenimage`` in
+            # ``qwenimage-gguf`` -> qwenimage-compact in needle_compact.
+            # Use word boundary on the compact form too: the compact
+            # ``flux2`` must not match inside ``flux20``.
+            return bool(
+                re.search(
+                    rf"(^|[^0-9a-z]){re.escape(term_compact)}([^0-9a-z]|$)",
+                    needle_compact,
+                )
+            ) or term_compact == needle_compact
+        return False
+
     # Scan _FAMILIES first (GGUF-supported), then _FULL_REPO_FAMILIES
     # so a repo like ``stabilityai/stable-diffusion-xl-base-1.0`` is
     # auto-detected as SDXL instead of returning None.
@@ -346,10 +395,10 @@ def detect_family(
             for e in excludes
         ):
             continue
-        if fam.name in needle:
+        if _matches_family_token(fam.name):
             return fam
         for alias in fam.aliases:
-            if alias and alias in needle:
+            if alias and _matches_family_token(alias):
                 return fam
     return None
 
@@ -493,13 +542,20 @@ class DiffusionBackend:
             # variants like ``BF16/model.gguf`` (round 14 P1 #4-5).
             ui_gguf = pending_gguf or active_gguf
             ui_gguf_basename = Path(ui_gguf).name if ui_gguf else None
+            # UI-facing ``repo_id`` / ``base_repo`` collapse absolute
+            # local paths to their leaf name so ``/images/status``
+            # does not leak the user's filesystem layout to other
+            # authenticated browser sessions (round 15 P2 #6). The
+            # guard-facing ``active_*`` / ``pending_*`` fields below
+            # preserve the exact value so delete guards still match
+            # against the snapshot path.
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
-                "repo_id": pending_repo or active_repo,
+                "repo_id": _display_repo_id(pending_repo or active_repo),
                 "family": ui_family,
                 "pipeline_class": ui_pipeline_class,
-                "base_repo": pending_base or active_base,
+                "base_repo": _display_repo_id(pending_base or active_base),
                 "gguf_filename": ui_gguf_basename,
                 # Guard-facing fields: every repo / path / GGUF
                 # filename the backend owns RIGHT NOW. Delete routes
@@ -1242,6 +1298,32 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     # helper repeats the local check anyway so that direct backend
     # callers (tests, scripts, future routes that forget the
     # higher-level guard) cannot still kill an active export.
+    # Training-active check runs FIRST so direct backend callers
+    # (tests, scripts, future routes) cannot bypass the route layer's
+    # 409 by calling ``load_model`` directly while a training run is
+    # active (round 15 P1 #3). The route layer's
+    # ``_raise_if_training_active`` still runs ahead of the load to
+    # surface the conflict as 409; this helper re-raises so direct
+    # callers see the same RuntimeError the export-active path raises.
+    try:
+        from core.training import get_training_backend  # type: ignore
+    except Exception as exc:
+        logger.debug("training module not importable: %s", exc)
+    else:
+        try:
+            training_active = bool(get_training_backend().is_training_active())
+        except Exception as exc:
+            # Unverifiable status -> fail closed (might be active).
+            raise RuntimeError(
+                "Could not verify training status before loading a "
+                "diffusion image model."
+            ) from exc
+        if training_active:
+            raise RuntimeError(
+                "Training is currently active. Stop the training run "
+                "before loading a diffusion image model."
+            )
+
     try:
         from core.export import get_export_backend  # type: ignore
     except Exception as exc:

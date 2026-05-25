@@ -1942,7 +1942,21 @@ async def diffusion_load(
         )
         return JSONResponse(content = status)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+        # Round 15 P2 #7: if a training run / export job starts
+        # between the route-level pre-check and the backend worker,
+        # ``_release_other_gpu_owners_for_diffusion`` raises a
+        # RuntimeError that should surface as a 409 conflict (the
+        # same status the route layer returns), not 400. Match the
+        # known conflict strings the backend raises.
+        detail = str(exc)
+        if (
+            "export job is currently active" in detail
+            or "Training is currently active" in detail
+            or "Could not verify training status" in detail
+            or "Could not verify export status" in detail
+        ):
+            raise HTTPException(status_code = 409, detail = detail) from exc
+        raise HTTPException(status_code = 400, detail = detail) from exc
     except Exception as exc:
         logger.exception("Diffusion load failed")
         raise HTTPException(status_code = 500, detail = str(exc))

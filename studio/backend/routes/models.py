@@ -1944,7 +1944,12 @@ async def delete_finetuned_model(
         # ``loading_model_identifier`` is set before the download starts
         # and cleared after the subprocess settles, so the user cannot
         # rmtree the directory llama.cpp is writing into mid-flight.
+        # Round 15 P1 #2: compare against ``loading_hf_variant`` (the
+        # variant being downloaded) rather than ``hf_variant`` (the
+        # PREVIOUS loaded variant, which is stale until the new load
+        # completes its late-metadata update).
         loading_identifier = getattr(llama_backend, "loading_model_identifier", None)
+        loading_variant = getattr(llama_backend, "loading_hf_variant", None)
         if (
             loading_identifier
             and _loaded_model_matches_deleted_path(
@@ -1953,8 +1958,8 @@ async def delete_finetuned_model(
             )
             and (
                 not gguf_variant
-                or not getattr(llama_backend, "hf_variant", None)
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                or not loading_variant
+                or loading_variant.lower() == gguf_variant.lower()
             )
         ):
             raise HTTPException(
@@ -2852,6 +2857,33 @@ async def delete_cached_model(
         diff_status = diff_backend.status()
         if diff_status.get("is_loaded") or diff_status.get("is_loading"):
             needle = repo_id.lower()
+            # Round 15 P1 #4: ALSO compare owned paths against the HF
+            # cache root for this repo. The user may have loaded the
+            # diffusion model from a local snapshot path under
+            # ``models--owner--model/snapshots/<sha>``; the string
+            # ``owner/model`` then never appears in ``owned_id`` and
+            # the previous string-only check would let the cache
+            # delete proceed while the snapshot was still mmap'd.
+            cache_repo_roots: list[Path] = []
+            try:
+                for hf_cache in _all_hf_cache_scans():
+                    for repo_info in hf_cache.repos:
+                        if (
+                            repo_info.repo_type == "model"
+                            and repo_info.repo_id.lower() == needle
+                        ):
+                            try:
+                                cache_repo_roots.append(
+                                    Path(repo_info.repo_path).expanduser().resolve()
+                                )
+                            except Exception:
+                                pass
+            except Exception as cache_scan_exc:
+                logger.debug(
+                    "HF cache scan failed during diffusion delete guard: %s",
+                    cache_scan_exc,
+                )
+
             # Pair each owned repo with the GGUF variant it actually
             # owns (active or pending) so a swap in progress does not
             # collapse both quants into the pending one (round 13
@@ -2859,7 +2891,24 @@ async def delete_cached_model(
             # requested variant differs from the variant that owns
             # the matched repo.
             for owned_id, owned_gguf in _diffusion_owned_targets(diff_status):
-                if not owned_id or owned_id.lower() != needle:
+                if not owned_id:
+                    continue
+                owned_matches_repo = owned_id.lower() == needle
+                if not owned_matches_repo and cache_repo_roots:
+                    try:
+                        owned_path = Path(owned_id).expanduser().resolve()
+                    except Exception:
+                        owned_path = None
+                    if owned_path is not None:
+                        for repo_root in cache_repo_roots:
+                            if (
+                                owned_path == repo_root
+                                or _is_path_under(owned_path, repo_root)
+                                or _is_path_under(repo_root, owned_path)
+                            ):
+                                owned_matches_repo = True
+                                break
+                if not owned_matches_repo:
                     continue
                 if _variant_delete_is_safe_for_owned_gguf(variant, owned_gguf):
                     continue
