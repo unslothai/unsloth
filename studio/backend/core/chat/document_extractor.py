@@ -568,7 +568,12 @@ def _extract_pdf(
 
     doc = pymupdf.open(stream = file_bytes, filetype = "pdf")
     try:
-        if getattr(doc, "is_encrypted", False) or getattr(doc, "needs_pass", False):
+        # ``is_encrypted`` is True for any file with an /Encrypt dict
+        # (very common for Acrobat-distilled PDFs, scanner output, the
+        # classic Orimi test file). ``needs_pass`` is the real "user
+        # password required" signal. Refuse extraction only when an
+        # actual password is missing.
+        if getattr(doc, "needs_pass", False):
             raise DocumentExtractionEncrypted(
                 "Encrypted PDF; provide a password before extracting it."
             )
@@ -843,9 +848,16 @@ def _run_extract_process_sync(
     result_queue = None
     proc = None
     try:
-        ctx = multiprocessing.get_context(
-            "spawn" if os.name == "nt" else "fork"
-        )
+        # Prefer "fork" only on Linux. macOS defaults to "spawn" in
+        # modern Python because Objective-C runtimes (loaded by
+        # PyMuPDF/CoreFoundation/Quartz) crash under fork. Windows has
+        # never supported fork.
+        import sys as _sys
+        if os.name == "nt" or _sys.platform == "darwin":
+            mp_method = "spawn"
+        else:
+            mp_method = "fork"
+        ctx = multiprocessing.get_context(mp_method)
         result_queue = ctx.Queue(maxsize = 1)
         proc = ctx.Process(
             target = _run_extract_worker,
@@ -874,6 +886,14 @@ def _run_extract_process_sync(
                         "document extraction was cancelled"
                     )
                 if not proc.is_alive():
+                    # The worker may have put its result and exited
+                    # between the queue.get timeout and this is_alive
+                    # check. Drain the queue once more before declaring
+                    # failure so a successful extraction is not lost.
+                    try:
+                        message = result_queue.get_nowait()
+                    except queue.Empty:
+                        pass
                     break
                 if time.monotonic() >= deadline:
                     _terminate_extract_process(proc)
@@ -885,6 +905,14 @@ def _run_extract_process_sync(
         if proc.is_alive():
             proc.terminate()
             proc.join(2)
+        if message is None:
+            # One more attempt after the join completes; covers the
+            # case where the worker exited cleanly with a result still
+            # queued.
+            try:
+                message = result_queue.get_nowait()
+            except queue.Empty:
+                pass
         if message is None:
             raise RuntimeError(
                 f"document extraction worker exited without a result "

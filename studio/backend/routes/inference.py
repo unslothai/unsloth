@@ -5067,11 +5067,25 @@ def _preflight_pdf_page_count(
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(file_bytes), strict = False)
+        # Many PDFs report ``is_encrypted=True`` even though they only use a
+        # null/empty user password and open fine (Acrobat-distilled docs,
+        # the classic Orimi test PDF, scanner output). Try the empty
+        # password before refusing; PyMuPDF's ``needs_pass`` is the real
+        # signal in the fallback branch below.
         if getattr(reader, "is_encrypted", False):
-            raise HTTPException(
-                status_code = 422,
-                detail = "Encrypted PDFs are not supported for inline extraction",
-            )
+            try:
+                if reader.decrypt("") == 0:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "Encrypted PDFs are not supported for inline extraction",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                # ``decrypt`` itself failed (corrupt /Encrypt dict, unknown
+                # algorithm). Fall through to the PyMuPDF fallback rather
+                # than declaring the file encrypted.
+                raise RuntimeError("pypdf decrypt probe failed")
         return len(reader.pages)
     except HTTPException:
         raise
@@ -5087,7 +5101,12 @@ def _preflight_pdf_page_count(
 
         doc = _pymupdf.open(stream = file_bytes, filetype = "pdf")
         try:
-            if getattr(doc, "is_encrypted", False) or getattr(doc, "needs_pass", False):
+            # PyMuPDF's ``needs_pass`` is True only when an actual password
+            # is required. ``is_encrypted`` is True for any file with an
+            # /Encrypt dict, which includes the common null-password case
+            # that opens fine. Refuse only when a password is actually
+            # needed.
+            if getattr(doc, "needs_pass", False):
                 raise HTTPException(
                     status_code = 422,
                     detail = "Encrypted PDFs are not supported for inline extraction",
@@ -5488,7 +5507,12 @@ async def extract_document_endpoint(
                             "document extraction was cancelled"
                         )
 
-                    if extract_wait in done or extraction_task.done():
+                    # The shield-wrapper may complete (cancelled) before
+                    # the underlying extraction_task is done; calling
+                    # ``.result()`` in that window raises
+                    # InvalidStateError. Wait for the real task before
+                    # consuming its result.
+                    if extraction_task.done():
                         # Drain any remaining progress events before result.
                         while not progress_queue.empty():
                             try:
@@ -5498,6 +5522,16 @@ async def extract_document_endpoint(
                             yield json.dumps(event) + "\n"
                         result = extraction_task.result()
                         break
+                    if extract_wait in done:
+                        # Shield-wrapper finished but the real task is
+                        # still running. Re-arm the wait on a fresh
+                        # shielded future and loop.
+                        extract_wait = asyncio.ensure_future(
+                            asyncio.shield(extraction_task)
+                        )
+                        extract_wait.add_done_callback(
+                            _drain_doc_future_exception
+                        )
 
                 if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
                     yield (

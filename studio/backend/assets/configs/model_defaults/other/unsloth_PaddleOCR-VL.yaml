@@ -56,6 +56,11 @@ logging:
 
 inference:
   trust_remote_code: true
-  temperature: 1.5
-  min_p: 0.1
+  # OCR is a closed-form transcription task; sibling OCR presets
+  # (DeepSeek-OCR, GLM-OCR) use deterministic decoding so the
+  # transcription is reproducible. Match that convention here.
+  temperature: 0.0
+  min_p: 0.0
+  top_p: 1.0
+  top_k: -1
 

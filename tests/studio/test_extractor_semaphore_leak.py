@@ -22,7 +22,6 @@ after a forced failure for every plausible call site.
 
 from __future__ import annotations
 
-import importlib
 import os
 import sys
 from pathlib import Path
@@ -36,19 +35,23 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-# Force a small concurrency so the test is fast and obvious.
-os.environ.setdefault("UNSLOTH_STUDIO_EXTRACT_CONCURRENCY", "2")
 # Don't park the test waiting for a slot to free.
 os.environ.setdefault("UNSLOTH_STUDIO_EXTRACT_QUEUE_WAIT", "0")
 
 
 @pytest.fixture
 def extractor():
-    # Re-import each test so the env vars above take effect and the
-    # semaphore counter starts at the configured ceiling.
+    """Yield the document_extractor module.
+
+    We avoid ``importlib.reload`` here because reloading swaps the
+    module-level ``_drain_future_exception`` function object out from
+    under ``routes.inference`` (which captured it at import time),
+    and other tests assert identity between the two references.
+    Instead we snapshot ``_EXTRACT_SEMAPHORE._value`` before each
+    test and assert restoration after; no reload required.
+    """
     from core.chat import document_extractor as mod
 
-    importlib.reload(mod)
     yield mod
 
 
