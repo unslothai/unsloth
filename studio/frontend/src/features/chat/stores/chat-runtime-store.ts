@@ -642,7 +642,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      return { params };
+      // Mirror setCheckpoint: the local model load path mutates
+      // params.checkpoint via setParams(mergeBackendRecommendedInference(...))
+      // before refresh() eventually calls setCheckpoint, leaving a window
+      // where the relaxed context-bar render gate would show the previous
+      // model's per-turn counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      return {
+        params,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+      };
     }),
   setCustomPresets: (customPresets) =>
     set(() => {

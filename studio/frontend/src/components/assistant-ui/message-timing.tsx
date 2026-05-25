@@ -46,7 +46,10 @@ export const MessageTiming: FC<{
     | undefined;
   const st = custom?.serverTimings;
   // Prefer llama-server timings, fall back to external usage envelope.
-  const cacheHits = (st?.cache_n ?? 0) || (custom?.contextUsage?.cachedTokens ?? 0);
+  // Use nullish coalescing so an explicit cache_n=0 (local no-cache turn)
+  // does not silently get replaced by a stale contextUsage.cachedTokens.
+  const cacheHits =
+    st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   // Anthropic-only cache-write count.
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
 

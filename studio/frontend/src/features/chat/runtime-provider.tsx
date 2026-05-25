@@ -836,12 +836,15 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const withinLocalLimit =
           !store.ggufContextLength ||
           (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-        if (
-          savedUsage &&
-          withinLocalLimit &&
-          (!savedUsage.modelId ||
-            savedUsage.modelId === store.params.checkpoint)
-        ) {
+        // Legacy unscoped usage (no modelId) predates the chat-adapter's
+        // model stamp. Only trust it when a known local window also
+        // bounds the totals; otherwise we cannot rule out attributing
+        // an old local turn to a newly-selected external provider.
+        const modelMatches = savedUsage?.modelId
+          ? savedUsage.modelId === store.params.checkpoint
+          : typeof store.ggufContextLength === "number" &&
+            store.ggufContextLength > 0;
+        if (savedUsage && withinLocalLimit && modelMatches) {
           store.setContextUsage(savedUsage);
         }
 

@@ -1899,12 +1899,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // Anthropic-only cache-write count (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Update context usage in store if we got valid server data
+        // Update context usage in store if we got valid server data.
+        // Gate on the captured checkpoint still being active so a late
+        // completion from provider A does not populate the context bar
+        // after the user switched to provider B mid-stream.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number"
+          typeof meta.usage.total_tokens === "number" &&
+          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,

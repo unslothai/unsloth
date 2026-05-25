@@ -1191,13 +1191,12 @@ export function ChatPage(): ReactElement {
             (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when the saved usage carries one (the
           // chat-adapter stamps it on every external + local turn).
-          if (
-            typeof usageModelId === "string" &&
-            usageModelId &&
-            activeCheckpoint &&
-            usageModelId !== activeCheckpoint
-          ) {
-            return;
+          // Reject when there is no active checkpoint at all -- model-
+          // scoped usage cannot be safely attributed to "nothing".
+          if (typeof usageModelId === "string" && usageModelId) {
+            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+              return;
+            }
           }
           // For local llama-server turns, also require that the
           // restored prompt count fits inside the active context
