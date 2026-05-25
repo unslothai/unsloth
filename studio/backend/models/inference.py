@@ -1459,16 +1459,23 @@ class DiffusionLoadRequest(BaseModel):
     VAE / text encoders when loading a GGUF-only repo.
     """
 
-    repo_id: str = Field(..., min_length = 1, max_length = 256, description = "HF repo id")
+    # repo_id and base_repo can be absolute local paths (Studio
+    # exports under deeply nested ``outputs/...`` directories,
+    # Windows paths with drive letter, etc.). 1024 chars matches
+    # POSIX PATH_MAX-class limits and Windows long-path support;
+    # the rounds-of-256 cap was rejecting realistic export paths.
+    repo_id: str = Field(
+        ..., min_length = 1, max_length = 1024, description = "HF repo id or local path"
+    )
     gguf_filename: Optional[str] = Field(
         None,
-        max_length = 256,
+        max_length = 512,
         description = "GGUF filename inside repo_id (Q4_K_S, Q8_0, ...)",
     )
     base_repo: Optional[str] = Field(
         None,
-        max_length = 256,
-        description = "Diffusers base repo to source VAE + text encoders from",
+        max_length = 1024,
+        description = "Diffusers base repo (HF id or local path) for VAE + text encoders",
     )
     family: Optional[str] = Field(
         None,

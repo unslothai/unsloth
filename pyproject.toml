@@ -90,11 +90,13 @@ huggingfacenotorch = [
     # curated FLUX.2 klein model loads.
     "diffusers>=0.37.0",
     # diffusers.GGUFQuantizationConfig + from_single_file rely on
-    # the standalone gguf package at runtime. The Studio Images
-    # default curated picker is GGUF-only so this must install
-    # with the public huggingfacenotorch extra; missing it makes
-    # /api/inference/images/load 500 with "gguf>=0.10.0 required".
-    "gguf",
+    # the standalone gguf package at runtime. Floor at 0.10.0 to
+    # match the diffusers requirement; older gguf releases raise
+    # at load time. Studio Images default curated picker is
+    # GGUF-only so this must install with the public
+    # huggingfacenotorch extra; missing / under-pinned it makes
+    # /api/inference/images/load 500.
+    "gguf>=0.10.0",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",

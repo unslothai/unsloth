@@ -1227,21 +1227,13 @@ async def load_model(
         except Exception as e:
             logger.debug("diffusion unload skipped: %s", e)
 
-        # Shut down any export subprocess to free VRAM
-        try:
-            from core.export import get_export_backend
-
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info(
-                    "Shutting down export subprocess to free GPU memory for inference"
-                )
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # Export was already dropped above via the shared
+        # ``await _release_export_for("safetensors chat")`` call
+        # (which checks is_export_active() before the destructive
+        # _shutdown_subprocess). The previous inline block here
+        # repeated the unconditional shutdown and would terminate
+        # an in-flight export job; round 11 review #2 flagged the
+        # asymmetry. The inline block is intentionally removed.
 
         # Auto-detect quantization for LoRA adapters from adapter_config.json
         # The training pipeline patches this file with "unsloth_training_method"

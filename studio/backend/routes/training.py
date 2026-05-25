@@ -325,6 +325,13 @@ async def start_training(
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
+    except HTTPException:
+        # Preserve the intended status code from
+        # _raise_if_training_active / _raise_if_export_active
+        # (409) and the gpu-id 400 raises above. Without this
+        # explicit re-raise the broad ``except Exception`` below
+        # converts a deliberate 409 into a 500.
+        raise
     except Exception as e:
         logger.error(f"Error starting training: {e}", exc_info = True)
         raise HTTPException(

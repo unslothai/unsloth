@@ -333,14 +333,26 @@ class DiffusionBackend:
             pending_repo = self._pending_repo_id if self._loading else None
             pending_base = self._pending_base_repo if self._loading else None
             pending_gguf = self._pending_gguf_filename if self._loading else None
+            # When a swap is in flight, the UI-facing repo_id /
+            # base_repo / gguf_filename advertise the PENDING model
+            # but ``self._family`` still points at the previously
+            # loaded pipeline. Reporting them together produces a
+            # repo/family pair that never existed (round 11 #6).
+            # Null the family / pipeline_class while a swap is in
+            # flight; the frontend can fall back to "unknown".
+            ui_family = self._family.name if self._family else None
+            ui_pipeline_class = (
+                self._family.pipeline_class if self._family else None
+            )
+            if pending_repo and pending_repo != active_repo:
+                ui_family = None
+                ui_pipeline_class = None
             return {
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
                 "repo_id": pending_repo or active_repo,
-                "family": self._family.name if self._family else None,
-                "pipeline_class": (
-                    self._family.pipeline_class if self._family else None
-                ),
+                "family": ui_family,
+                "pipeline_class": ui_pipeline_class,
                 "base_repo": pending_base or active_base,
                 "gguf_filename": pending_gguf or gguf_basename,
                 # Guard-facing fields: every repo / path the backend
@@ -634,6 +646,15 @@ class DiffusionBackend:
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
                     self._loaded_at = time.time()
+                    # Clear loading + pending here, BEFORE returning,
+                    # so the response payload reports the resident
+                    # pipeline cleanly (is_loading=false, no pending_*).
+                    # The ``finally`` block below is idempotent and
+                    # still clears on error / early raise paths.
+                    self._loading = False
+                    self._pending_repo_id = None
+                    self._pending_base_repo = None
+                    self._pending_gguf_filename = None
 
                 return self.status()
             except Exception as exc:
@@ -916,24 +937,45 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     a diffusion load. Both can hold multi-GB of VRAM and would OOM the
     diffusion allocation on consumer GPUs."""
     # Export resident checkpoint. We tear down a SETTLED export
-    # (current_checkpoint populated) because that means the export
-    # ran to completion and the user can re-load the result, but we
-    # do NOT touch is_export_active() here: an in-flight export job
-    # has unfinished partial output that termination would corrupt.
-    # The route layer rejects /images/load with HTTP 409 via
-    # _raise_if_export_active when is_export_active() is True, so
-    # we only reach this helper when export is either idle or
-    # holding a previously completed checkpoint.
+    # (current_checkpoint populated AND is_export_active() False)
+    # because that means the export ran to completion and the user
+    # can re-load the result. An in-flight export job
+    # (is_export_active() True) is NEVER touched here: terminating
+    # it would corrupt the user's partial output artifact.
+    #
+    # The route layer also rejects /images/load with HTTP 409 via
+    # _raise_if_export_active when is_export_active() is True. This
+    # helper repeats the local check anyway so that direct backend
+    # callers (tests, scripts, future routes that forget the
+    # higher-level guard) cannot still kill an active export.
     try:
         from core.export import get_export_backend  # type: ignore
 
         exp = get_export_backend()
         if getattr(exp, "current_checkpoint", None):
-            logger.info("Shutting down idle export subprocess before diffusion load")
-            exp._shutdown_subprocess()
-            exp.current_checkpoint = None
-            exp.is_vision = False
-            exp.is_peft = False
+            is_export_active_fn = getattr(exp, "is_export_active", None)
+            export_is_active = False
+            if is_export_active_fn is not None:
+                try:
+                    export_is_active = bool(is_export_active_fn())
+                except Exception:
+                    # Unverifiable status -> treat as 'might be
+                    # active' and refuse to touch the subprocess.
+                    export_is_active = True
+            if export_is_active:
+                logger.info(
+                    "Skipping export shutdown for diffusion load: "
+                    "is_export_active=True (route layer should have "
+                    "rejected this request with 409)"
+                )
+            else:
+                logger.info(
+                    "Shutting down idle export subprocess before diffusion load"
+                )
+                exp._shutdown_subprocess()
+                exp.current_checkpoint = None
+                exp.is_vision = False
+                exp.is_peft = False
     except Exception as exc:
         logger.debug("export unload skipped: %s", exc)
 
