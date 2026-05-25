@@ -26,6 +26,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -101,7 +104,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 
@@ -195,6 +198,137 @@ function NavItem({
   );
 }
 
+function ProjectSidebarItem({
+  project,
+  isActive,
+  rowActive,
+  chatDisabled,
+  onOpenProject,
+  onNewChat,
+  onRenameProject,
+  onProjectInstructions,
+  onDeleteProject,
+  renderChatItem,
+  items,
+}: {
+  project: ProjectRecord;
+  isActive: boolean;
+  rowActive: boolean;
+  chatDisabled: boolean;
+  onOpenProject: (projectId: string) => void;
+  onNewChat: (projectId: string) => void;
+  onRenameProject: (project: ProjectRecord) => void;
+  onProjectInstructions: (project: ProjectRecord) => void;
+  onDeleteProject: (project: ProjectRecord) => void;
+  renderChatItem: (item: SidebarItem, variant: "project") => React.ReactNode;
+  items: SidebarItem[];
+}) {
+  const [open, setOpen] = useState(isActive);
+  const [iconSwapActive, setIconSwapActive] = useState(false);
+
+  return (
+    <>
+      <SidebarMenuItem key={project.id} className="group/project-item relative">
+        <Tooltip>
+          <TooltipPrimitive.Trigger asChild>
+            <button
+              type="button"
+              disabled={chatDisabled}
+              aria-label={open ? "Hide chats" : "Show chats"}
+              aria-expanded={open}
+              onPointerEnter={() => setIconSwapActive(true)}
+              onPointerLeave={() => setIconSwapActive(false)}
+              onFocus={() => setIconSwapActive(true)}
+              onBlur={() => setIconSwapActive(false)}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (chatDisabled) return;
+                setOpen((value) => !value);
+              }}
+              className="peer/project-toggle absolute left-2.5 top-1/2 z-10 inline-flex size-icon -translate-y-1/2 items-center justify-center rounded-[6px] text-nav-fg-muted opacity-0 transition-colors hover:opacity-100 hover:text-nav-fg focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+            >
+              <ChevronDown
+                className={cn(
+                  "size-3.5 transition-transform duration-200",
+                  !open && "-rotate-90",
+                )}
+              />
+            </button>
+          </TooltipPrimitive.Trigger>
+          <TooltipContent side="right" sideOffset={8} className="tooltip-compact">
+            {open ? "Hide chats" : "Show chats"}
+          </TooltipContent>
+        </Tooltip>
+        <SidebarMenuButton
+          isActive={rowActive}
+          className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 group-hover/project-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-item:pr-10 text-[14.5px] leading-[19px] font-medium tracking-nav"
+          onClick={() => {
+            setOpen(true);
+            onOpenProject(project.id);
+          }}
+          disabled={chatDisabled}
+        >
+          <HugeiconsIcon
+            icon={Folder02Icon}
+            strokeWidth={1.75}
+            className={cn(
+              "size-icon shrink-0 text-current opacity-80 transition-opacity",
+              iconSwapActive && "opacity-0",
+            )}
+          />
+          <span className="truncate">{project.name}</span>
+        </SidebarMenuButton>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              aria-label="Project options"
+              className="sidebar-row-action group-hover/project-item:opacity-100 group-hover/project-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            >
+              <span className="sidebar-row-action-glyph">
+                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+              </span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="bottom"
+            align="end"
+            sideOffset={4}
+            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 py-2 font-heading rounded-[14px] border-0"
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                setOpen(true);
+                onNewChat(project.id);
+              }}
+            >
+              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+              <span>New chat</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onRenameProject(project)}>
+              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Rename</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onProjectInstructions(project)}>
+              <HugeiconsIcon icon={NoteEditIcon} strokeWidth={1.75} className="size-icon" />
+              <span>Instructions</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => onDeleteProject(project)}
+            >
+              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Delete</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+      {open ? items.map((item) => renderChatItem(item, "project")) : null}
+    </>
+  );
+}
+
 export function AppSidebar() {
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const { pathname, search } = useRouterState({
@@ -222,8 +356,14 @@ export function AppSidebar() {
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
-  useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
-  useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
+  useEffect(() => {
+    if (!isChatRoute) return;
+    queueMicrotask(() => setChatOpen(true));
+  }, [isChatRoute]);
+  useEffect(() => {
+    if (!isStudioRoute) return;
+    queueMicrotask(() => setRunsOpen(true));
+  }, [isStudioRoute]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -243,10 +383,28 @@ export function AppSidebar() {
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
-  const { items: recentChatItems } = useChatSidebarItems({
-    projectId: null,
+  const { items: allChatItems } = useChatSidebarItems({
+    enabled: !isStudioRoute,
+    requireMessages: false,
   });
-  const chatItems = recentChatItems;
+  const recentChatItems = useMemo(
+    () => allChatItems.filter((item) => !item.projectId),
+    [allChatItems],
+  );
+  const projectChatItemsByProjectId = useMemo(() => {
+    const byProject = new Map<string, SidebarItem[]>();
+    for (const item of allChatItems) {
+      if (!item.projectId) continue;
+      const group = byProject.get(item.projectId);
+      if (group) {
+        group.push(item);
+      } else {
+        byProject.set(item.projectId, [item]);
+      }
+    }
+    return byProject;
+  }, [allChatItems]);
+  const chatItems = allChatItems;
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -312,10 +470,11 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
+    useState<SidebarItem | null>(null);
   const [editingProjectInstructions, setEditingProjectInstructions] =
     useState<ProjectRecord | null>(null);
   const [projectInstructionsDraft, setProjectInstructionsDraft] = useState("");
-  const [movingChat, setMovingChat] = useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
@@ -434,13 +593,25 @@ export function AppSidebar() {
   async function commitCreateProject() {
     const name = projectNameDraft.trim();
     if (!name) return;
+    const moveTarget = projectCreateMoveTarget;
     try {
       const project = await createChatProject(name);
+      if (moveTarget) {
+        await moveChatItemToProject(moveTarget, project.id);
+        if (activeThreadId === moveTarget.id) {
+          useChatRuntimeStore.getState().setActiveProjectId(project.id);
+        }
+      }
       setCreatingProject(false);
       setProjectNameDraft("");
-      openProject(project.id);
+      setProjectCreateMoveTarget(null);
+      if (moveTarget) {
+        return;
+      } else {
+        openProject(project.id);
+      }
     } catch (err) {
-      toast.error("Failed to create project", {
+      toast.error(moveTarget ? "Failed to create and move chat" : "Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -463,12 +634,10 @@ export function AppSidebar() {
     }
   }
 
-  async function moveActiveChatToProject(projectId: string | null) {
-    const item = movingChat;
-    if (!item) return;
+  async function moveChatToProject(item: SidebarItem, projectId: string | null) {
+    if (item.projectId === projectId) return;
     try {
       await moveChatItemToProject(item, projectId);
-      setMovingChat(null);
       if (activeThreadId === item.id) {
         useChatRuntimeStore.getState().setActiveProjectId(projectId);
       }
@@ -492,7 +661,8 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[32px] rounded-[10px] pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      variant === "project" ? "pl-[37px]" : "pl-2.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-10"
         : "group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10",
@@ -548,12 +718,46 @@ export function AppSidebar() {
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
             </DropdownMenuItem>
-            {projects.length > 0 || item.projectId ? (
-              <DropdownMenuItem onSelect={() => setMovingChat(item)}>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
-                <span>{item.projectId ? "Move" : "Move to project"}</span>
-              </DropdownMenuItem>
-            ) : null}
+                <span>Move to project</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                sideOffset={8}
+                alignOffset={-4}
+                className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-56 py-2 font-heading rounded-[14px] border-0"
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setProjectCreateMoveTarget(item);
+                    setProjectNameDraft("");
+                    setCreatingProject(true);
+                  }}
+                >
+                  <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>New project</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="mx-2.5! my-2! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuItem
+                  disabled={!item.projectId}
+                  onSelect={() => void moveChatToProject(item, null)}
+                >
+                  <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Recents</span>
+                </DropdownMenuItem>
+                {projects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.id}
+                    disabled={item.projectId === project.id}
+                    onSelect={() => void moveChatToProject(item, project.id)}
+                  >
+                    <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                    <span className="truncate">{project.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuItem
               variant="destructive"
               onSelect={() => setConfirmingDelete({ kind: "chat", item })}
@@ -761,56 +965,22 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 {projects.map((project) => (
-                  <SidebarMenuItem key={project.id} className="group/project-item relative">
-                    <SidebarMenuButton
-                      isActive={activeProjectId === project.id}
-                      className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 group-hover/project-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-item:pr-10 text-[14.5px] leading-[19px] font-medium tracking-nav"
-                      onClick={() => openProject(project.id)}
-                    >
-                      <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon shrink-0 text-current opacity-80" />
-                      <span className="truncate">{project.name}</span>
-                    </SidebarMenuButton>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          onClick={(e) => e.stopPropagation()}
-                          aria-label="Project options"
-                          className="sidebar-row-action group-hover/project-item:opacity-100 group-hover/project-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-                        >
-                          <span className="sidebar-row-action-glyph">
-                            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
-                          </span>
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        side="bottom"
-                        align="end"
-                        sideOffset={4}
-                        className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 py-2 font-heading rounded-[14px] border-0"
-                      >
-                        <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
-                          <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>New chat</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => openRenameProject(project)}>
-                          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>Rename</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => openProjectInstructions(project)}>
-                          <HugeiconsIcon icon={NoteEditIcon} strokeWidth={1.75} className="size-icon" />
-                          <span>Instructions</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={() => setConfirmingDelete({ kind: "project", project })}
-                        >
-                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>Delete</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </SidebarMenuItem>
+                  <ProjectSidebarItem
+                    key={project.id}
+                    project={project}
+                    isActive={activeProjectId === project.id}
+                    rowActive={activeProjectId === project.id && !activeThreadId}
+                    chatDisabled={chatDisabled}
+                    onOpenProject={openProject}
+                    onNewChat={openNewChat}
+                    onRenameProject={openRenameProject}
+                    onProjectInstructions={openProjectInstructions}
+                    onDeleteProject={(target) =>
+                      setConfirmingDelete({ kind: "project", project: target })
+                    }
+                    renderChatItem={renderChatSidebarItem}
+                    items={projectChatItemsByProjectId.get(project.id) ?? []}
+                  />
                 ))}
               </SidebarMenu>
             </SidebarGroupContent>
@@ -1161,12 +1331,17 @@ export function AppSidebar() {
       open={creatingProject}
       onOpenChange={(open) => {
         setCreatingProject(open);
-        if (!open) setProjectNameDraft("");
+        if (!open) {
+          setProjectNameDraft("");
+          setProjectCreateMoveTarget(null);
+        }
       }}
     >
       <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New project</DialogTitle>
+          <DialogTitle>
+            {projectCreateMoveTarget ? "Move to new project" : "New project"}
+          </DialogTitle>
         </DialogHeader>
         <Input
           value={projectNameDraft}
@@ -1184,7 +1359,14 @@ export function AppSidebar() {
           className="focus-visible:border-input focus-visible:ring-0"
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button type="button" variant="ghost" onClick={() => setCreatingProject(false)}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setCreatingProject(false);
+              setProjectCreateMoveTarget(null);
+            }}
+          >
             Cancel
           </Button>
           <Button
@@ -1230,41 +1412,6 @@ export function AppSidebar() {
             Save
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
-    <Dialog
-      open={movingChat !== null}
-      onOpenChange={(open) => {
-        if (!open) setMovingChat(null);
-      }}
-    >
-      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Move chat</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-2">
-          <Button
-            type="button"
-            variant={!movingChat?.projectId ? "secondary" : "ghost"}
-            className="justify-start"
-            onClick={() => void moveActiveChatToProject(null)}
-          >
-            Recents
-          </Button>
-          {projects.map((project) => (
-            <Button
-              key={project.id}
-              type="button"
-              variant={
-                movingChat?.projectId === project.id ? "secondary" : "ghost"
-              }
-              className="justify-start"
-              onClick={() => void moveActiveChatToProject(project.id)}
-            >
-              {project.name}
-            </Button>
-          ))}
-        </div>
       </DialogContent>
     </Dialog>
     </>

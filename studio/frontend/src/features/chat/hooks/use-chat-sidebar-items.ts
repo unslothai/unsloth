@@ -67,17 +67,28 @@ const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
 
 export function useChatSidebarItems(options?: {
   projectId?: string | null;
+  enabled?: boolean;
+  requireMessages?: boolean;
 }) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const enabled = options?.enabled ?? true;
+  const requireMessages = options?.requireMessages ?? true;
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     let cancelled = false;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
     let requestSeq = 0;
 
     async function doLoad(seq: number) {
       try {
-        const threads = await listStoredChatThreadsWithMessages({
+        const listThreads = requireMessages
+          ? listStoredChatThreadsWithMessages
+          : listStoredChatThreads;
+        const threads = await listThreads({
           includeArchived: false,
           projectId: options?.projectId,
         });
@@ -112,7 +123,7 @@ export function useChatSidebarItems(options?: {
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
     };
-  }, [options?.projectId]);
+  }, [enabled, options?.projectId, requireMessages]);
 
   const items = groupThreads(allThreads ?? []);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
