@@ -53,6 +53,68 @@ logger = get_logger(__name__)
 import contextlib
 
 
+def _raise_if_training_active_for_export() -> None:
+    """409 if a training run is in flight; 503 if status check itself
+    raises. Mirrors the load_checkpoint guard so /export/* and /cleanup
+    never tear down or alter export state while training is using the
+    GPU. Missing core.training is treated as 'no tracker'."""
+    try:
+        from core.training import get_training_backend  # type: ignore
+    except Exception as e:
+        logger.debug("core.training not importable, skipping training guard: %s", e)
+        return
+    try:
+        trn = get_training_backend()
+        active = trn.is_training_active()
+    except Exception as e:
+        logger.warning("Could not verify training status before export op: %s", e)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Could not verify training status before the export "
+                "operation. Try again."
+            ),
+        ) from e
+    if active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "Training is currently active. Stop the training run "
+                "before starting an export operation."
+            ),
+        )
+
+
+def _raise_if_export_active_for_export() -> None:
+    """409 if another export job is already running; 503 if the status
+    check itself raises. Backends without is_export_active() are
+    treated as 'no tracker available' to stay compatible with mocked
+    backends in tests."""
+    backend = get_export_backend()
+    is_export_active_fn = getattr(backend, "is_export_active", None)
+    if is_export_active_fn is None:
+        return
+    try:
+        export_is_active = bool(is_export_active_fn())
+    except Exception as e:
+        logger.warning("Could not verify export status before export op: %s", e)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Could not verify export status before starting the "
+                "export operation. Try again."
+            ),
+        ) from e
+    if export_is_active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "An export job is currently active. Wait for it to "
+                "finish before starting another export operation."
+            ),
+        )
+
+
 @contextlib.asynccontextmanager
 async def _export_public_window():
     """Publish the public-load window across an /export/* operation.
@@ -64,6 +126,12 @@ async def _export_public_window():
     subprocess. Mirror the load_checkpoint guard so the pending counter
     is set for the whole export call, and the helper-busy preflight
     refuses if AI Assist is mid-handoff.
+
+    Also refuses 409 if training or another export is already active so
+    a queued /export/{merged,base,gguf,lora} or /cleanup cannot
+    double-own the GPU with a running training / export job (round 41
+    consensus: load_checkpoint already runs these checks but /export/*
+    and /cleanup were skipping them).
     """
     from routes.inference import (
         _clear_public_load_window,
@@ -72,6 +140,8 @@ async def _export_public_window():
 
     export_window_published = False
     try:
+        _raise_if_training_active_for_export()
+        _raise_if_export_active_for_export()
         _raise_if_helper_advisor_busy("export")
         export_window_published = True
         yield
@@ -258,7 +328,12 @@ async def cleanup_export_memory(
     """
     try:
         backend = get_export_backend()
-        success = await asyncio.to_thread(backend.cleanup_memory)
+        # Run the cleanup under the same public-load window /export/*
+        # uses so a queued export's handoff gap cannot race a cleanup
+        # call that tears down current_checkpoint. The window also
+        # refuses 409 if training or another export is in flight.
+        async with _export_public_window():
+            success = await asyncio.to_thread(backend.cleanup_memory)
 
         if not success:
             raise HTTPException(

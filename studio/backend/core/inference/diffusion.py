@@ -1349,6 +1349,13 @@ class DiffusionBackend:
         with self._load_lock, self._generate_lock:
             with self._lock:
                 old = self._pipe
+                # Mark the slot as busy BEFORE clearing _pipe so a
+                # concurrent helper-busy check (which treats either
+                # is_loaded OR is_loading as busy) does not see a
+                # ``free`` GPU during the release + cache-drain window.
+                # is_loading is cleared in finally once the VRAM is
+                # actually freed.
+                self._loading = True
                 self._pipe = None
                 self._family = None
                 self._repo_id = None
@@ -1359,9 +1366,13 @@ class DiffusionBackend:
                 self._dtype = None
                 self._cpu_offload_enabled = False
                 self._loaded_at = None
-            _release(old)
-            old = None  # noqa: F841
-            _drain_cuda_cache()
+            try:
+                _release(old)
+                old = None  # noqa: F841
+                _drain_cuda_cache()
+            finally:
+                with self._lock:
+                    self._loading = False
         return {"is_loaded": False}
 
     # ── generation ────────────────────────────────────────────────
