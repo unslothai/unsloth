@@ -295,15 +295,12 @@ function buildHtmlSrcDoc(source: string): string {
 // via POST; the returned random-token URL becomes the iframe ``src``.
 const HTML_PREVIEW_API = "/api/preview/html";
 
+// Read the bearer the same way the rest of the app does. Pulled lazily to
+// avoid any import cycle while keeping the auth-key contract in one place.
 function getStoredAccessToken(): string | null {
-  // Mirrors the bearer storage used by features/auth/. We avoid the import
-  // cycle by reading sessionStorage / localStorage directly.
   if (typeof window === "undefined") return null;
   try {
-    return (
-      window.sessionStorage.getItem("unsloth.access_token") ??
-      window.localStorage.getItem("unsloth.access_token")
-    );
+    return window.localStorage.getItem("unsloth_auth_token");
   } catch {
     return null;
   }
