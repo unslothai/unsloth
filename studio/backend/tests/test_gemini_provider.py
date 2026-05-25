@@ -4479,9 +4479,7 @@ def test_gemini_code_execution_legacy_merged_signature_only_on_executable(
     contents = captured["body"]["contents"]
     assistant_turn = next(c for c in contents if c["role"] == "model")
     exec_parts = [p for p in assistant_turn["parts"] if "executableCode" in p]
-    result_parts = [
-        p for p in assistant_turn["parts"] if "codeExecutionResult" in p
-    ]
+    result_parts = [p for p in assistant_turn["parts"] if "codeExecutionResult" in p]
     assert exec_parts[0].get("thoughtSignature") == "LEGACY-SIG", exec_parts[0]
     assert "thoughtSignature" not in result_parts[0], result_parts[0]
 

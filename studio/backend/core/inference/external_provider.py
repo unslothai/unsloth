@@ -440,11 +440,7 @@ def _safe_fetch_image_for_gemini_sync(
                 )
                 return None
             _hdr_len = resp.headers.get("content-length")
-            if (
-                _hdr_len
-                and _hdr_len.isdigit()
-                and int(_hdr_len) > _byte_limit
-            ):
+            if _hdr_len and _hdr_len.isdigit() and int(_hdr_len) > _byte_limit:
                 logger.info(
                     "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
                     _hdr_len,
@@ -3496,13 +3492,9 @@ class ExternalProviderClient:
                             _replay_part: dict[str, Any] = {_native_key: _sub}
                             if isinstance(_legacy_sig, str) and _legacy_sig:
                                 if len(_legacy_subparts) == 1:
-                                    _replay_part["thoughtSignature"] = (
-                                        _legacy_sig
-                                    )
+                                    _replay_part["thoughtSignature"] = _legacy_sig
                                 elif _native_key == "executableCode":
-                                    _replay_part["thoughtSignature"] = (
-                                        _legacy_sig
-                                    )
+                                    _replay_part["thoughtSignature"] = _legacy_sig
                             parts.append(_replay_part)
                         continue
 
