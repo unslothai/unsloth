@@ -653,3 +653,80 @@ def test_estimate_tokens_counts_compaction_part():
     ]
     # 5 + 4000 chars -> ceil-divided by 4 ~= 1002 tokens.
     assert estimate_tokens(msgs) >= 1000, estimate_tokens(msgs)
+
+
+# ── Anomaly regressions surfaced by sim_pr5710.py fuzzing ────
+
+
+def test_pair_linked_indices_skips_non_dict_tool_call_entries():
+    """``_assistant_tool_call_ids`` ran inside ``_pair_linked_indices``,
+    so a malformed string / None entry in ``tool_calls`` used to crash
+    the compactor mid-call. Mirrors the ``estimate_tokens`` guard.
+    """
+    msgs = [
+        {"role": "assistant", "content": "x", "tool_calls": ["bare-string"]},
+        {"role": "assistant", "content": "y", "tool_calls": [None, {"id": "t1"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+    ]
+    pm = _pair_linked_indices(msgs)
+    assert pm[0] == set()
+    assert pm[1] == {2}
+
+
+def test_compact_drops_orphan_tool_left_by_user_boundary():
+    """Tool message arrives after a user / system boundary, references
+    an assistant tool_call_id that the boundary-clearing logic no
+    longer treats as the pair root. The assistant gets dropped by the
+    main sweep; without the final invariant pass the orphan tool
+    survives into the output and llama-server rejects the template.
+    Repro distilled from sim_pr5710.py fuzz iter 1407.
+    """
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task " * 20},
+        {"role": "assistant", "content": "a", "tool_calls": [_tool_call("t1")]},
+        {"role": "tool", "tool_call_id": "t1", "content": "first"},
+        {"role": "user", "content": "next"},
+        {"role": "user", "content": "again"},
+        {"role": "tool", "tool_call_id": "t1", "content": "stale"},
+    ]
+    out = SlidingWindowCompact(keep_recent=2).compact(msgs, budget_tokens=1)
+    # Any surviving tool message must have its assistant earlier in
+    # the output.
+    seen_ids: set[str] = set()
+    for m in out:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                tcid = tc.get("id") if isinstance(tc, dict) else None
+                if isinstance(tcid, str) and tcid:
+                    seen_ids.add(tcid)
+        elif m.get("role") == "tool":
+            tcid = m.get("tool_call_id")
+            assert isinstance(tcid, str) and tcid in seen_ids, (
+                f"orphan tool {tcid!r} survived; seen={seen_ids}"
+            )
+
+
+def test_compact_does_not_drop_anchored_multimodal_tool():
+    """An anchored tool (multimodal content) still survives even when
+    its matching assistant gets dropped -- the existing
+    leak-rather-than-violate-anchor rule applies in this direction too.
+    """
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task " * 20},
+        {"role": "assistant", "content": "a", "tool_calls": [_tool_call("t1")]},
+        # Multimodal tool message -- anchored.
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": [{"type": "text", "text": "ok"}],
+        },
+        {"role": "user", "content": "more"},
+        {"role": "user", "content": "even more"},
+    ]
+    out = SlidingWindowCompact(keep_recent=2).compact(msgs, budget_tokens=1)
+    # The anchored tool survives.
+    assert any(
+        m.get("role") == "tool" and m.get("tool_call_id") == "t1" for m in out
+    )

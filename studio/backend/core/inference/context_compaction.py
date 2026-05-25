@@ -101,11 +101,16 @@ def _is_tool_message(msg: dict) -> bool:
 def _assistant_tool_call_ids(msg: dict) -> set[str]:
     """Return the set of ``id`` values from an assistant message's
     ``tool_calls``. Empty set when the message has no tool calls.
+    Mirrors ``estimate_tokens``: skip non-dict entries so malformed
+    pre-pydantic inputs (a string or ``None`` in the list) don't crash
+    ``_pair_linked_indices`` mid-compaction.
     """
     out: set[str] = set()
     tcs = msg.get("tool_calls")
     if isinstance(tcs, list):
         for tc in tcs:
+            if not isinstance(tc, dict):
+                continue
             tcid = tc.get("id")
             if isinstance(tcid, str) and tcid:
                 out.add(tcid)
@@ -278,6 +283,25 @@ class SlidingWindowCompact(CompactStrategy):
                 # orphan tool_call shape than violate the invariant.
                 if asst_idx not in anchor_idx:
                     dropped.add(asst_idx)
+
+        # Final invariant sweep: drop any surviving tool message whose
+        # tool_call_id has no matching assistant ``tool_calls`` earlier
+        # in the kept output. This catches orphans pair_map could not
+        # link -- e.g. a tool that arrives after a user boundary and
+        # references an assistant that the boundary-clearing logic in
+        # ``_pair_linked_indices`` no longer treats as the pair root.
+        # Anchored tool messages (multimodal content) stay regardless,
+        # matching the existing leak-rather-than-violate-anchor rule.
+        seen_ids: set[str] = set()
+        for i, m in enumerate(messages):
+            if i in dropped:
+                continue
+            if m.get("role") == "assistant":
+                seen_ids |= _assistant_tool_call_ids(m)
+            elif m.get("role") == "tool" and i not in anchor_idx:
+                tcid = m.get("tool_call_id")
+                if isinstance(tcid, str) and tcid and tcid not in seen_ids:
+                    dropped.add(i)
 
         return [m for i, m in enumerate(messages) if i not in dropped]
 
