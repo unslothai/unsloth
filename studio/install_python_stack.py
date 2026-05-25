@@ -1310,8 +1310,14 @@ def install_python_stack() -> int:
         try:
             subprocess.run(
                 [
-                    sys.executable, "-m", "pip", "uninstall", "-y",
-                    "transformers", "mlx-vlm", "huggingface_hub",
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "uninstall",
+                    "-y",
+                    "transformers",
+                    "mlx-vlm",
+                    "huggingface_hub",
                 ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
