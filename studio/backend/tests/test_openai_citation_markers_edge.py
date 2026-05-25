@@ -79,13 +79,17 @@ def _simulate_delta_stream(
             if head:
                 emitted.append(head)
     if flush and pending:
-        # Mirror `_flush_pending_marker_tail`: try once more in case a
-        # late annotation resolved it, then strip private-use bytes.
-        rendered = _replace_openai_citation_markers(pending, citations)
-        for ch in (CITE_START, CITE_STOP, CITE_DELIM):
-            rendered = rendered.replace(ch, "")
-        if rendered == "cite":
+        # Mirror the FIXED `_flush_pending_marker_tail`: drop the tail
+        # outright if no closing stop byte ever arrived (otherwise the
+        # literal ``cite`` + source id residue leaks as plain text).
+        if CITE_STOP not in pending:
             rendered = ""
+        else:
+            rendered = _replace_openai_citation_markers(pending, citations)
+            for ch in (CITE_START, CITE_STOP, CITE_DELIM):
+                rendered = rendered.replace(ch, "")
+            import re as _re
+            rendered = _re.sub(r"^cite\S*", "", rendered)
         if rendered:
             emitted.append(rendered)
     return "".join(emitted)
@@ -403,3 +407,68 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
     assert "[[1]](https://example.com/a)" in out
     assert "[[2]](https://example.com/b)" in out
     assert _no_private_use(out)
+
+
+
+# ---------------------------------------------------------------------------
+# Regression: unterminated marker tail must NOT leak the residual
+# ``cite``-prefixed source id as plain text. PR #5713 audit P1.
+# Symptom before the fix: a stream ending mid-marker had its codepoints
+# stripped, but the literal "cite" + source id ("citeturn0view0") was
+# emitted to the user as garbage trailing text.
+# ---------------------------------------------------------------------------
+
+
+def test_unterminated_marker_does_not_leak_cite_residue():
+    """Stream ends mid-marker: the entire tail must be dropped, NOT
+    have its codepoints stripped while leaving 'cite<sid>' behind."""
+    # Build a delta that includes user-visible prose followed by an
+    # opener and only HALF a source id -- no closing byte ever
+    # arrives.
+    half = f"Hi there {CITE_START}cite{CITE_DELIM}turn0view0"
+    out = _simulate_delta_stream([half], [], flush = True)
+    # Prose before the marker stays.
+    assert "Hi there" in out
+    # No private-use bytes leak.
+    assert _no_private_use(out)
+    # Crucially: the literal "cite" + source id does NOT leak.
+    assert "citeturn0view0" not in out
+    # ``cite`` standalone (without the marker codepoints) is also
+    # meaningless here -- shouldn't appear.
+    assert "cite" not in out.split("Hi there", 1)[1]
+
+
+def test_unterminated_marker_only_no_prefix_drops_entirely():
+    """A delta that is purely an unterminated marker (no surrounding
+    prose) flushes to the empty string."""
+    half = f"{CITE_START}cite{CITE_DELIM}turn0view0"
+    out = _simulate_delta_stream([half], [], flush = True)
+    assert out == ""
+
+
+def test_unterminated_marker_with_prefix_emits_only_prefix():
+    """A delta with prose then an unterminated marker emits the prose
+    and drops the marker remnant."""
+    half = f"prefix prose {CITE_START}cite{CITE_DELIM}abc"
+    out = _simulate_delta_stream([half], [], flush = True)
+    assert out == "prefix prose "
+
+
+def test_closing_byte_arrives_after_pending_buffered_split():
+    """The marker's closing byte arrives in a later delta after the
+    opener and source id were buffered. The link should resolve and
+    no residue leaks."""
+    cuts = [
+        f"a {CITE_START}cite{CITE_DELIM}",
+        f"sid{CITE_STOP} b",
+    ]
+    out = _simulate_delta_stream(
+        cuts,
+        [{"source_id": "sid", "url": "https://example.com/x"}],
+        flush = True,
+    )
+    assert "[[1]](https://example.com/x)" in out
+    assert "a " in out and "b" in out
+    assert _no_private_use(out)
+    assert "citesid" not in out
+

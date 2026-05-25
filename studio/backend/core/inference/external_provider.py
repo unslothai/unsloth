@@ -3154,33 +3154,48 @@ class ExternalProviderClient:
                     def _flush_pending_marker_tail(tail: str) -> str:
                         """Render any leftover citation tail for emission.
 
-                        Runs the held-over text through the rewriter
-                        one more time (in case a late annotation
-                        resolved it), then strips any leftover private-
-                        use codepoints so a never-closed marker
-                        (truncated stream, upstream error, annotation
-                        never arrived) never leaks garbled glyphs into
-                        the rendered prose. The sources panel is
-                        unaffected -- url_citations are aggregated
-                        separately and applied to the last web_search
-                        call's tool_end.
+                        ``pending_marker_tail`` starts at an unclosed
+                        opener by construction -- the split helper only
+                        buffers the suffix that lacks a closing stop
+                        byte. If the closing byte still has not arrived
+                        by end-of-stream the tail is meaningless
+                        without the annotation it would have referenced,
+                        so drop it. The user-visible prose before the
+                        opener was already emitted as ``head`` on the
+                        originating delta; only the marker fragment is
+                        held back. On the off chance the close arrives
+                        concatenated onto the tail (the stream finishes
+                        with a complete marker still in the buffer),
+                        run the rewriter against it one more time, then
+                        strip any leftover private-use bytes plus the
+                        literal ``cite``-prefixed source id so the
+                        renderer never sees raw markup. The sources
+                        panel is unaffected -- url_citations are
+                        aggregated separately and applied to the last
+                        web_search call's tool_end.
                         """
                         if not tail:
+                            return ""
+                        if _OPENAI_CITE_STOP not in tail:
+                            # Truly unterminated: drop it. The
+                            # codepoints AND the residual "cite" +
+                            # source id would otherwise leak as plain
+                            # text once we stripped the private-use
+                            # bytes.
                             return ""
                         rendered = _replace_openai_citation_markers(
                             tail, all_url_citations
                         )
-                        # Strip every cite open/stop/delim codepoint
-                        # so partial junk like "citetu" doesn't
-                        # render as garbled "E200E202tu" glyphs.
+                        # Belt-and-braces: scrub any residual
+                        # private-use bytes the rewriter chose not to
+                        # touch (e.g. a leading partial opener).
                         for ch in ("", "", ""):
                             rendered = rendered.replace(ch, "")
-                        # If the tail was a pure unterminated marker
-                        # with no surrounding text, the literal "cite"
-                        # prefix leaks through after we strip the
-                        # private-use bytes. Suppress that exact case.
-                        if rendered == "cite":
-                            return ""
+                        # Drop any orphan ``cite<sid>`` literal at the
+                        # head of the buffer -- without its closing
+                        # byte and matching url_citation it is
+                        # meaningless to the user.
+                        rendered = re.sub(r"^cite\S*", "", rendered)
                         return rendered
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
