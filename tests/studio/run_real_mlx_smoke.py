@@ -28,7 +28,7 @@ The `train` subcommand:
          clear reason if save raises; e.g. llama.cpp's
          convert_hf_to_gguf currently asserts on Gemma-3-270m's
          tokenizer vocab. Soft-skipped so the LoRA + merged checks
-         continue to gate the PR.)
+         continue to gate the suite.)
   8. Emits `train_metrics.json` with per-phase timing / peak GPU /
      peak RSS / per-step losses / pre+post grad norms / generations
      / gguf_supported flag, for regression detection across CI runs.

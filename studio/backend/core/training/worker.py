@@ -1156,15 +1156,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
-    # Normalize random_seed so an explicit None from a raw/backend caller
-    # does not propagate through the seed chain. Mirrors the override
-    # handling for model/LoRA seeds below.
+    # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
-    # Treat absent OR explicit None the same way: fall back to random_seed.
-    # `config.get(key, default)` only fills the default when the key is
-    # missing; an explicit `None` would otherwise reach FastMLXModel and
-    # disable deterministic init silently.
+    # `config.get(k, d)` only fills d when key is missing; handle explicit None too.
     _model_seed = config.get("model_random_state")
     model_random_state = random_seed if _model_seed is None else int(_model_seed)
     _lora_seed = config.get("lora_random_state")
@@ -1399,10 +1394,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # MLX Studio uses per-element clipping by default and keeps norm clipping
-    # disabled. Preserve None so the MLX trainer owns its runtime default.
-    # `training.py` already normalizes / validates these; double-check
-    # here for direct worker callers and explicit-None robustness.
+    # Per-element clipping only; trainer owns the None default. Re-validate
+    # for direct worker callers (training.py normalizes the main path).
     max_grad_norm = 0.0
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
@@ -1439,14 +1432,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
-    # Feature-detect optional MLXTrainingConfig fields so this PR does
-    # not require the paired unsloth-zoo change to be merged/released
-    # first. Released zoo trees that predate those fields are still
-    # constructable; once the floor is bumped this guard is a no-op.
+    # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
-        # Explicit None must fall back to the default True; raw / backend
-        # callers can pass None via `kwargs.get(key, True)` upstream.
+        # Explicit None falls back to True (default).
         _raw_cast = config.get("cast_norm_output_to_input_dtype", True)
         mlx_config_kwargs["cast_norm_output_to_input_dtype"] = (
             True if _raw_cast is None else bool(_raw_cast)

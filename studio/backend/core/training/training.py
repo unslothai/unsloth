@@ -42,12 +42,7 @@ logger = get_logger(__name__)
 
 
 def _coerce_seed(value, default = 3407) -> int:
-    """Treat absent / None / non-int values uniformly as `default`.
-
-    transformers.set_seed(None) raises TypeError, and PEFT init with
-    random_state=None disables determinism. Normalize once here so MLX,
-    CUDA, and embedding workers all receive a usable int seed.
-    """
+    """Normalize None / non-int to `default` (transformers.set_seed(None) raises)."""
     if value is None:
         return int(default)
     try:
@@ -70,14 +65,7 @@ def _coerce_optional_bool(value, default: bool) -> bool:
 
 
 def _coerce_optional_nonneg_float(name: str, value):
-    """Reject negative numeric values from raw/backend callers.
-
-    The Pydantic route model already enforces `ge=0` on these fields,
-    but `TrainingBackend.start_training(**kwargs)` accepts arbitrary
-    kwargs; without this guard, a negative value would bypass the HTTP
-    validator and reach the worker, where MLX silently disables the
-    clip (treats non-positive as "off") instead of erroring loudly.
-    """
+    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
     if value is None:
         return None
     try:
@@ -276,10 +264,7 @@ class TrainingBackend:
             "cast_norm_output_to_input_dtype": _coerce_optional_bool(
                 kwargs.get("cast_norm_output_to_input_dtype"), True
             ),
-            # Normalize seed once for every training path. An explicit
-            # None from a raw / backend caller is treated the same as
-            # an absent key, so MLX, CUDA, and embedding workers all
-            # see an int (transformers.set_seed(None) raises TypeError).
+            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
             "random_seed": _coerce_seed(kwargs.get("random_seed")),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
