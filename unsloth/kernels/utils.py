@@ -1014,6 +1014,7 @@ else:
 # (XPU support in unsloth already requires torch >= 2.6, so the legacy path is
 # effectively cuda-only.) Branch at module load to avoid try/except in hot paths.
 if Version(torch.__version__) >= Version("2.4.0"):
+
     def _get_compute_dtype(X: "torch.Tensor") -> "torch.dtype":
         """
         Return the effective compute dtype for LoRA weight casts.
@@ -1033,6 +1034,7 @@ if Version(torch.__version__) >= Version("2.4.0"):
             return torch.get_autocast_dtype(DEVICE_TYPE_TORCH)
         return X.dtype
 else:
+
     def _get_compute_dtype(X: "torch.Tensor") -> "torch.dtype":
         """torch < 2.4 fallback - cuda-only (xpu requires torch >= 2.6)."""
         if torch.is_autocast_enabled():
