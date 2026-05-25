@@ -451,13 +451,19 @@ def _resolve_latest_pypi_version(package: str, *, timeout: float = 10.0) -> str 
     return (data.get("info") or {}).get("version") or None
 
 
-def _pin_floor_args(*, include_unsloth: bool = True) -> list[str]:
+def _pin_floor_args(
+    *, include_unsloth: bool = True, include_zoo: bool = True
+) -> list[str]:
     """Build the positional `unsloth>=LATEST` / `unsloth-zoo>=LATEST` args.
 
     Network failures yield an empty list so the caller falls back to the
     historical unpinned behaviour. ``include_unsloth=False`` is used by the
     no-torch branch when ``--package`` overrides the default package name
     (test builds publish to side packages that may not exist on PyPI).
+    ``include_zoo=False`` is used together with ``include_unsloth=False``
+    for the same reason: a custom-package side build often pins its own
+    unsloth-zoo fork via dependency metadata, and the public PyPI floor
+    can conflict with that fork's published version.
 
     A single warning is printed when any lookup fails so the user knows
     the upgrade has degraded to the pre-fix resolver semantics (e.g.
@@ -471,11 +477,12 @@ def _pin_floor_args(*, include_unsloth: bool = True) -> list[str]:
             args.append(f"unsloth>={latest_unsloth}")
         else:
             pypi_unreachable = True
-    latest_zoo = _resolve_latest_pypi_version("unsloth-zoo")
-    if latest_zoo:
-        args.append(f"unsloth-zoo>={latest_zoo}")
-    else:
-        pypi_unreachable = True
+    if include_zoo:
+        latest_zoo = _resolve_latest_pypi_version("unsloth-zoo")
+        if latest_zoo:
+            args.append(f"unsloth-zoo>={latest_zoo}")
+        else:
+            pypi_unreachable = True
     if pypi_unreachable:
         _step(
             "warning",
@@ -1123,7 +1130,10 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             package_name,
             "unsloth-zoo",
-            floor = _pin_floor_args(include_unsloth = package_name == "unsloth"),
+            floor = _pin_floor_args(
+                include_unsloth = package_name == "unsloth",
+                include_zoo = package_name == "unsloth",
+            ),
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # exact version pydantic's metadata declares. Under --no-deps
