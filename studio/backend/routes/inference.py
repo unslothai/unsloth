@@ -5495,10 +5495,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             m_clean["tool_calls"] = cleaned
         else:
             m_clean.pop("tool_calls", None)
-        if (
-            not m_clean.get("content")
-            and not m_clean.get("tool_calls")
-        ):
+        if not m_clean.get("content") and not m_clean.get("tool_calls"):
             continue  # assistant turn now empty, drop
         sanitized_assistant.append(m_clean)
 
