@@ -44,10 +44,50 @@ import shutil
 import sys
 import time
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import urlparse
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+# Device-auth verification URLs the upstream codex CLI prints during
+# `codex login --device-auth`. Only these hosts are forwarded to the
+# browser as "Open verification page". A shimmed codex earlier on PATH
+# can still print a phishing URL that matches the regex used to fish
+# the verification URL out of stdout (`/device`, `/activate`,
+# `/verify`), but Studio refuses to surface anything not on this list,
+# so the malicious URL never reaches the user.
+_ALLOWED_DEVICE_AUTH_HOSTS: frozenset[str] = frozenset({
+    "auth.openai.com",
+    "chatgpt.com",
+})
+
+
+def _safe_host(url: str) -> Optional[str]:
+    """Return the lower-case host of ``url`` or None if it cannot be parsed."""
+    try:
+        return (urlparse(url).hostname or "").lower() or None
+    except Exception:
+        return None
+
+
+def _is_allowed_device_url(url: str) -> bool:
+    """Return True iff ``url`` looks like a real codex device-auth URL.
+
+    Requires https, a parseable URL, and a host on the allowlist above.
+    Codex login URLs are always https in the wild; downgrade to http
+    is a strong signal of a malicious shim, so we drop both at the
+    same gate.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _ALLOWED_DEVICE_AUTH_HOSTS
 
 
 # Hard cap on parallel Codex fan-out. Picked to match the upper bound
@@ -96,6 +136,14 @@ def _codex_sdk_env_override() -> dict[str, str]:
 
 _SCRUBBED_ENV_LOCK = asyncio.Lock()
 _SCRUBBED_ENV_REFCOUNT: dict[str, int] = {}
+# Saved originals shared across all wrappers. The first wrapper to scrub
+# a key records its pre-scrub value here; later wrappers that pick up the
+# same key while it is already absent from os.environ inherit the same
+# saved value so the very last wrapper to release a key still restores
+# the right thing. Kept module-level (not per-instance) because two
+# concurrent wrappers must agree on what the original was even though
+# only one of them actually saw it in os.environ.
+_SCRUBBED_ENV_ORIGINALS: dict[str, str] = {}
 
 
 class _ScrubbedEnvAsyncCodex:
@@ -111,7 +159,7 @@ class _ScrubbedEnvAsyncCodex:
     enter/exit critical section, and a per-key refcount tracks how
     many concurrent wrappers are currently "holding" the scrub. A
     key is only restored when the last wrapper using it exits. This
-    fixes two issues round 6 caught:
+    fixes three issues:
 
     1. Two concurrent fan-out workers used to race: wrapper A could
        restore `HF_TOKEN` while wrapper B was still inside SDK
@@ -122,6 +170,15 @@ class _ScrubbedEnvAsyncCodex:
        Python never called `__aexit__`, so the deleted keys leaked
        permanently. Construction now happens INSIDE the try/except
        in `__aenter__`, and the scrub is rolled back on failure.
+    3. ``_codex_sdk_env_override()`` only enumerates keys currently
+       in ``os.environ``, so a wrapper B entering AFTER wrapper A
+       already scrubbed (say) ``HF_TOKEN`` would never see that key
+       in its overrides dict, never bump its refcount, and miss the
+       scrub for HF_TOKEN entirely. When A then exited it would
+       restore HF_TOKEN while B was still mid-session. Wrapper B
+       now also picks up every key currently refcounted by an
+       earlier wrapper (read under the lock) so the refcount
+       reflects the true set of holders for every scrubbed key.
     """
 
     def __init__(self, async_codex_cls: Any):
@@ -131,26 +188,32 @@ class _ScrubbedEnvAsyncCodex:
         # __aexit__ knows exactly which counters to decrement (avoids
         # racing with concurrent wrappers that scrub a different set).
         self._held_keys: list[str] = []
-        # Snapshot of the original values at the time of the FIRST
-        # wrapper that scrubbed each key, so restoration uses the
-        # real pre-scrub value.
-        self._restored_via_us: dict[str, str] = {}
 
     async def __aenter__(self) -> Any:
         import os
 
-        overrides = _codex_sdk_env_override()
         async with _SCRUBBED_ENV_LOCK:
-            for key in overrides:
-                if key not in os.environ and _SCRUBBED_ENV_REFCOUNT.get(key, 0) == 0:
-                    continue
-                if _SCRUBBED_ENV_REFCOUNT.get(key, 0) == 0:
+            # Keys this session would scrub if it were entering first.
+            keys_to_scrub = set(_codex_sdk_env_override())
+            # Plus every key still held by an earlier wrapper -- without
+            # this we would miss keys that are already absent from
+            # os.environ but ARE still scrubbed and refcounted.
+            keys_to_scrub.update(
+                key for key, count in _SCRUBBED_ENV_REFCOUNT.items() if count > 0
+            )
+            for key in keys_to_scrub:
+                current = _SCRUBBED_ENV_REFCOUNT.get(key, 0)
+                if current == 0:
                     # First wrapper to scrub this key -- save the
-                    # original so the very last wrapper to release it
-                    # can restore the right value.
-                    self._restored_via_us[key] = os.environ[key]
+                    # original. If the key is somehow not in os.environ
+                    # right now (deleted between override-snapshot and
+                    # here, or simply never set), skip it: nothing to
+                    # scrub and nothing to restore.
+                    if key not in os.environ:
+                        continue
+                    _SCRUBBED_ENV_ORIGINALS[key] = os.environ[key]
                     del os.environ[key]
-                _SCRUBBED_ENV_REFCOUNT[key] = _SCRUBBED_ENV_REFCOUNT.get(key, 0) + 1
+                _SCRUBBED_ENV_REFCOUNT[key] = current + 1
                 self._held_keys.append(key)
         try:
             self._inner = self._async_codex_cls()
@@ -176,15 +239,18 @@ class _ScrubbedEnvAsyncCodex:
                 current = _SCRUBBED_ENV_REFCOUNT.get(key, 0)
                 if current <= 0:
                     continue
-                _SCRUBBED_ENV_REFCOUNT[key] = current - 1
-                if current - 1 == 0:
+                next_count = current - 1
+                if next_count == 0:
                     # Last wrapper holding this key -- restore the
-                    # original value if WE were the first to scrub it,
-                    # or pull from any other wrapper's saved snapshot.
-                    if key in self._restored_via_us:
-                        os.environ.setdefault(key, self._restored_via_us[key])
+                    # original snapshot recorded when it was first
+                    # scrubbed, regardless of which wrapper saved it.
+                    _SCRUBBED_ENV_REFCOUNT.pop(key, None)
+                    original = _SCRUBBED_ENV_ORIGINALS.pop(key, None)
+                    if original is not None:
+                        os.environ.setdefault(key, original)
+                else:
+                    _SCRUBBED_ENV_REFCOUNT[key] = next_count
             self._held_keys.clear()
-            self._restored_via_us.clear()
 
 
 def _resolve_codex_bin() -> Optional[str]:
@@ -1389,8 +1455,22 @@ async def stream_codex_device_login() -> AsyncGenerator[dict[str, Any], None]:
             if not url_emitted:
                 match = url_re.search(line)
                 if match:
-                    yield {"type": "device_url", "url": match.group(0)}
-                    url_emitted = True
+                    candidate = match.group(0)
+                    if _is_allowed_device_url(candidate):
+                        yield {"type": "device_url", "url": candidate}
+                        url_emitted = True
+                    else:
+                        # A shimmed codex on PATH could print a phishing
+                        # URL that matches the regex but points at an
+                        # attacker host (e.g. https://evil.example/activate
+                        # ?code=ABCD). Drop it rather than surfacing
+                        # "Open verification page" to a real user.
+                        logger.warning(
+                            "codex_provider.login_url_rejected",
+                            host = (
+                                _safe_host(candidate) or "<unparsable>"
+                            ),
+                        )
             if not code_emitted:
                 cm = code_re.search(line)
                 if cm:

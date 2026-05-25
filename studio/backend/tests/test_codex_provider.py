@@ -1895,3 +1895,135 @@ async def _consume_first(gen):
     """
     async for _ in gen:
         return
+
+
+# ── Round 7: _ScrubbedEnvAsyncCodex cross-wrapper concurrency ──────
+
+
+class TestScrubbedEnvConcurrency:
+    """Reproduce the cross-wrapper concurrency hole the round 7 review
+    surfaced and lock in the fix: when wrapper B enters AFTER wrapper A
+    has already deleted ``HF_TOKEN`` from ``os.environ``, B must still
+    increment the refcount for that key so A's exit does not restore
+    the secret while B is mid-session.
+    """
+
+    def test_overlapping_wrappers_keep_keys_scrubbed_until_last_release(
+        self, monkeypatch
+    ):
+        import os
+
+        from core.inference.codex_provider import (
+            _SCRUBBED_ENV_REFCOUNT,
+            _ScrubbedEnvAsyncCodex,
+        )
+
+        # Reset module-level state in case prior tests left residue.
+        _SCRUBBED_ENV_REFCOUNT.clear()
+        # _SCRUBBED_ENV_ORIGINALS is the round 7 fix's shared snapshot
+        # store; older codex_provider builds tracked originals per-
+        # instance under _restored_via_us. Reset whichever store the
+        # current build exposes so prior tests cannot leak state in.
+        from core.inference import codex_provider as _cp
+
+        _orig = getattr(_cp, "_SCRUBBED_ENV_ORIGINALS", None)
+        if isinstance(_orig, dict):
+            _orig.clear()
+
+        monkeypatch.setenv("HF_TOKEN", "sekret-hf")
+        monkeypatch.setenv("GH_TOKEN", "sekret-gh")
+        # Keys NOT on the safe-list end up in _codex_sdk_env_override().
+
+        class _FakeInner:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def _fake_async_codex():
+            return _FakeInner()
+
+        async def scenario():
+            wrapper_a = _ScrubbedEnvAsyncCodex(_fake_async_codex)
+            wrapper_b = _ScrubbedEnvAsyncCodex(_fake_async_codex)
+
+            # Wrapper A enters first and scrubs both secrets.
+            await wrapper_a.__aenter__()
+            assert "HF_TOKEN" not in os.environ
+            assert "GH_TOKEN" not in os.environ
+
+            # Wrapper B enters while A is still active. Even though
+            # os.environ no longer contains HF_TOKEN/GH_TOKEN (A already
+            # deleted them), B must pick them up from the live refcount
+            # table so A's later exit does not restore them prematurely.
+            await wrapper_b.__aenter__()
+            assert _SCRUBBED_ENV_REFCOUNT.get("HF_TOKEN") == 2
+            assert _SCRUBBED_ENV_REFCOUNT.get("GH_TOKEN") == 2
+
+            # A exits first -- B is still active so the keys MUST remain
+            # absent from os.environ.
+            await wrapper_a.__aexit__(None, None, None)
+            assert "HF_TOKEN" not in os.environ, (
+                "HF_TOKEN leaked back into os.environ while wrapper B "
+                "is still active"
+            )
+            assert "GH_TOKEN" not in os.environ
+            assert _SCRUBBED_ENV_REFCOUNT.get("HF_TOKEN") == 1
+            assert _SCRUBBED_ENV_REFCOUNT.get("GH_TOKEN") == 1
+
+            # B exits -- now the keys must be restored from the saved
+            # originals.
+            await wrapper_b.__aexit__(None, None, None)
+            assert os.environ.get("HF_TOKEN") == "sekret-hf"
+            assert os.environ.get("GH_TOKEN") == "sekret-gh"
+            assert "HF_TOKEN" not in _SCRUBBED_ENV_REFCOUNT
+
+        asyncio.run(scenario())
+
+
+# ── Round 7: device-auth URL allowlisting ───────────────────────────
+
+
+class TestDeviceUrlAllowlist:
+    """Lock in the device-auth URL allowlist: only `auth.openai.com`
+    and `chatgpt.com` over https are accepted as `device_url` events.
+    A shimmed codex earlier on PATH could otherwise print
+    `https://evil.example/activate?code=ABCD` and Studio would render
+    a phishing CTA.
+    """
+
+    def test_known_good_urls_allowed(self):
+        from core.inference.codex_provider import _is_allowed_device_url
+
+        assert _is_allowed_device_url(
+            "https://auth.openai.com/codex/device?user_code=ABCD-EFGH"
+        )
+        assert _is_allowed_device_url(
+            "https://chatgpt.com/activate?user_code=WXYZ-1234"
+        )
+
+    def test_attacker_hosts_rejected(self):
+        from core.inference.codex_provider import _is_allowed_device_url
+
+        for evil in [
+            "https://evil.example/activate?code=ABCD",
+            "https://auth-openai-com.evil.example/codex/device",
+            "https://chatgpt.com.evil.example/activate",
+            "https://login.openai.com/codex/device",
+        ]:
+            assert not _is_allowed_device_url(evil), evil
+
+    def test_http_downgrade_rejected(self):
+        from core.inference.codex_provider import _is_allowed_device_url
+
+        assert not _is_allowed_device_url(
+            "http://auth.openai.com/codex/device?user_code=ABCD-EFGH"
+        )
+
+    def test_garbage_url_rejected(self):
+        from core.inference.codex_provider import _is_allowed_device_url
+
+        assert not _is_allowed_device_url("not a url")
+        assert not _is_allowed_device_url("")
+        assert not _is_allowed_device_url("javascript:alert(1)")
