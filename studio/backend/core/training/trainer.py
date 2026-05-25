@@ -3057,15 +3057,9 @@ class UnslothTrainer:
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
-                    # DeepSeek OCR's (image_size, base_size, crop_mode) tuple
-                    # is a single preset (Tiny / Small / Base / Large / Gundam).
-                    # Changing image_size in isolation desynchronizes the per-
-                    # crop pixel grid from num_queries downstream, so the
-                    # user-selected vision_image_size is intentionally ignored
-                    # here. Default to the Gundam preset, which is the
-                    # recommended training configuration. Threading the Image
-                    # Size knob through DeepSeek OCR requires patching
-                    # dynamic_preprocess first.
+                    # DeepSeek OCR's (image_size, base_size, crop_mode) is a
+                    # coupled preset; changing image_size alone desyncs the
+                    # per-crop pixel grid from num_queries. Use Gundam.
                     if training_args.get("vision_image_size") is not None:
                         logger.info(
                             "Vision image resize ignored for DeepSeek OCR "

@@ -169,8 +169,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("vision_image_size", mode = "before")
     @classmethod
     def _check_vision_image_size(cls, v: Any) -> Optional[int]:
-        # mode="before" runs ahead of Pydantic's int coercion so True/False
-        # surface as bool (not 1/0) and we can give a precise error.
+        # mode="before" sees True/False as bool (not 1/0) for a precise error.
         if v is None:
             return v
         if isinstance(v, bool):
@@ -182,7 +181,7 @@ class TrainingStartRequest(BaseModel):
         elif isinstance(v, float) and v.is_integer():
             coerced = int(v)
         else:
-            # numpy ints and other Integral subclasses (no hard numpy import).
+            # numpy ints / Integral subclasses, without a hard numpy import.
             try:
                 import numbers
 

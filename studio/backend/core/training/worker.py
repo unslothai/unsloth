@@ -965,10 +965,8 @@ def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int
     largest_side = max(width, height)
     if largest_side <= target:
         return width, height
-    # Mirror UnslothVisionDataCollator's integer formula at
-    # unsloth_zoo/vision_utils.py so MLX and Torch produce the same pixels.
-    # Python's round() uses banker's rounding which can disagree by 1px on
-    # half-pixel cases (e.g. 333x1000 with target 500).
+    # Integer formula matches unsloth_zoo's collator (Python round() differs
+    # by 1px on half-pixel cases). max(1, _) avoids zero-side degenerate output.
     new_w = max(1, (width * target + largest_side // 2) // largest_side)
     new_h = max(1, (height * target + largest_side // 2) // largest_side)
     return new_w, new_h
@@ -989,9 +987,8 @@ def _resize_mlx_vlm_image(image, resize):
     if new_size != image.size:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         image = image.resize(new_size, resampling)
-    # mlx-vlm's internal collator square-resizes PIL images. Return a writable
-    # ndarray so Studio's max-dimension resize is the final one (like
-    # trainer.py) and HF processors don't warn on non-writable views.
+    # Return a writable ndarray so mlx-vlm skips its PIL-path square-resize
+    # and HF processors don't warn on non-writable views.
     return np.array(image, copy = True)
 
 
@@ -1211,9 +1208,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
-    # Mirror the Torch trainer.py exclusion: DeepSeek OCR's preset is a tuple
-    # (image_size, base_size, crop_mode), so resizing dataset images outside
-    # that preset desyncs the token grid. Skip the resize on MLX too.
+    # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
     _is_deepseek_ocr = "deepseek" in _model_name_lower and "ocr" in _model_name_lower
     if is_vlm and vision_image_size is not None and _is_deepseek_ocr:

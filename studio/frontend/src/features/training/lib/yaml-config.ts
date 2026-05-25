@@ -27,15 +27,10 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
-  // YAML import means "use this config as authoritative". An absent
-  // vision_image_size should reset the in-memory value to Default, not
-  // preserve a stale one. Same-model defaults reloads (which also flow
-  // through the model-config mapper) skip the reset via Object.hasOwn
-  // in model-defaults.ts; here we forge the key so import always wins.
-  // This also covers configs where the training section is missing,
-  // null, an array, or any non-mapping scalar - in all such cases the
-  // mapper would otherwise emit no vision patch and the previously
-  // selected image size would silently persist.
+  // File import is authoritative: forge vision_image_size = null when the
+  // training section is missing, malformed, or missing the key, so a stale
+  // store value cannot survive an import. (Same-model defaults reloads
+  // preserve user choice via Object.hasOwn in model-defaults.ts.)
   const rawTraining = raw.training;
   const isPlainTrainingObject =
     rawTraining != null &&

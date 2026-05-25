@@ -390,9 +390,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
-              // Defaults load failed, so we cannot map the new model's
-              // vision_image_size. Reset to the global default so a stale
-              // value from a prior model never silently applies.
+              // Defaults load failed; reset so no prior model's value lingers.
               visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
@@ -502,10 +500,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setSelectedModel: (selectedModel) => {
           const previousModel = get().selectedModel;
-          // True model switch resets the image size sentinel so a stale
-          // value from a previous model does not silently apply to the new
-          // one. We do this here (not in mapBackendModelConfigToTrainingPatch)
-          // so same-model defaults reloads do not wipe the user's choice.
+          // Reset vision_image_size on a true switch only; same-model reloads
+          // go through the mapper, which preserves the user's choice.
           const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
             selectedModel,
             modelDefaultsError: null,

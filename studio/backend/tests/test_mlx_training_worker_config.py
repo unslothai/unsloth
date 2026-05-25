@@ -91,8 +91,6 @@ def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
     assert _mlx_vlm_max_resized_size(1000, 1000, 512) == (512, 512)
     assert _mlx_vlm_max_resized_size(256, 128, 1536) == (256, 128)
     assert _mlx_vlm_max_resized_size(512, 256, 512) == (512, 256)
-    # Half-pixel cases must match the Torch collator's integer formula
-    # (w * size + size_func // 2) // size_func, not Python round() which
-    # uses banker's rounding.
+    # Half-pixel cases must match the Torch collator (not banker's round).
     assert _mlx_vlm_max_resized_size(333, 1000, 500) == (167, 500)
     assert _mlx_vlm_max_resized_size(1000, 333, 500) == (500, 167)

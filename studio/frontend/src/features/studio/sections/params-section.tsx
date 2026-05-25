@@ -133,9 +133,7 @@ export function ParamsSection(): ReactElement {
   const isCpt = store.trainingMethod === "cpt";
   const isRawText = isRawTextDatasetFormat(store.datasetFormat);
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
-  // DeepSeek OCR's preset is a coupled tuple, so the backend ignores any
-  // user-selected image size for it. Hide the control rather than offer a
-  // setting that silently has no effect.
+  // DeepSeek OCR uses a coupled preset; backend ignores user image size.
   const _selectedModelLower = (store.selectedModel ?? "").toLowerCase();
   const isDeepseekOcr =
     _selectedModelLower.includes("deepseek") &&

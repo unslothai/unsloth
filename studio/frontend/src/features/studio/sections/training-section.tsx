@@ -80,16 +80,12 @@ export function TrainingSection() {
   };
 
   const handleSaveConfig = () => {
-    // Save vision fields for any vision-capable model unless we have positive
-    // confirmation the dataset is text-only. isDatasetImage is undetermined
-    // (null) before a dataset check completes, after dataset edits, and on
-    // import; treating that as "don't save" would silently drop the user's
-    // vision_image_size choice in those windows.
+    // isDatasetImage is null during dataset checks; treat that as "save it"
+    // so an in-flight check doesn't silently drop the user's choice.
     const includeVisionFields =
       store.isVisionModel && store.isDatasetImage !== false;
-    // DeepSeek OCR ignores vision_image_size at training time (mappers.ts
-    // sends null), so do not emit it to YAML either; otherwise a stale
-    // value could later apply to a non-DeepSeek vision model.
+    // DeepSeek OCR ignores vision_image_size; don't emit it to YAML either,
+    // or a later import on a non-DeepSeek model would activate the stale value.
     const selectedModelLower = (store.selectedModel ?? "").toLowerCase();
     const isDeepseekOcr =
       selectedModelLower.includes("deepseek") &&
