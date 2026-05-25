@@ -1295,13 +1295,24 @@ def install_python_stack() -> int:
     #     marker carve-out makes most pins inert, but staying constraint-free
     #     here keeps the contract simple).
     if IS_MAC_ARM and not skip_base and package_name == "unsloth":
+        # --force-reinstall is the only flag combination that makes uv (and
+        # pip) ACTUALLY re-resolve mlx-vlm + transformers together. Plain
+        # --upgrade leaves the already-installed transformers 4.57.6 in
+        # place when it happens to satisfy unsloth's own range, even though
+        # it does not satisfy mlx-vlm 0.5.0's stricter `>=5.5.0`. Forcing
+        # reinstallation makes the resolver re-examine the full dep tree
+        # so the venv ends up consistent. Include huggingface_hub because
+        # newer transformers needs hf-hub>=1.5.0 and the resolver will not
+        # touch it otherwise.
         _progress("mlx-vlm/transformers realign")
         pip_install(
             "Realigning mlx-vlm + transformers (macOS arm64)",
             "--no-cache-dir",
             "--upgrade",
+            "--force-reinstall",
             "mlx-vlm",
             "transformers",
+            "huggingface_hub",
             constrain = False,
         )
 
