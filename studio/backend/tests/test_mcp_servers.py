@@ -413,3 +413,84 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
             )
         )
     assert exc.value.status_code == 400
+
+
+def test_tool_xml_parser_handles_hyphenated_function_names():
+    """MCP tool names are advertised as `mcp__srv__list-issues` (the regex
+    fix allows '-'); the XML tool-call parser must parse them too,
+    otherwise the model can call the tool but Studio cannot dispatch."""
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    calls = parse_tool_calls_from_text(
+        "<function=mcp__srv__list-issues>"
+        "<parameter=repo>octocat/hello</parameter>"
+        "</function>"
+    )
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "mcp__srv__list-issues"
+    import json as _json
+
+    args = _json.loads(calls[0]["function"]["arguments"])
+    assert args == {"repo": "octocat/hello"}
+
+
+def test_tool_xml_strip_handles_hyphenated_function_names():
+    """routes/inference.py:_TOOL_XML_RE must strip a `<function=name-with-dash>`
+    block; otherwise hyphenated MCP tool-call XML leaks into chat history."""
+    import re as _re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text()
+    m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", src, _re.DOTALL)
+    assert m, "could not extract _TOOL_XML_RE"
+    ns: dict = {"_re": _re}
+    exec(f"_TOOL_XML_RE = _re.compile({m.group(1)})", ns)
+    rx = ns["_TOOL_XML_RE"]
+    stripped = rx.sub(
+        "",
+        "before <function=mcp__srv__list-issues>"
+        "<parameter=q>x</parameter></function> after",
+    )
+    assert stripped == "before  after"
+
+
+def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
+    """Document existing contract: at the safetensors_agentic layer,
+    tools=[] is still treated as "no constraint" (so existing callers
+    work unchanged). The real fix for the MCP-only-no-discovery case
+    lives at the route level in inference.py, which refuses to enter
+    use_tools when the resolved tool list is empty."""
+    import threading
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    calls: list[str] = []
+
+    def fake_execute(name, args, **kw):
+        calls.append(name)
+        return "ran"
+
+    iteration = {"n": 0}
+
+    def fake_single_turn(messages):
+        iteration["n"] += 1
+        if iteration["n"] == 1:
+            txt = '<tool_call>{"name":"python","arguments":{"code":"1"}}</tool_call>'
+            buf = ""
+            for ch in txt:
+                buf += ch
+                yield buf
+        else:
+            yield "done"
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "x"}],
+            tools = [],
+            execute_tool = fake_execute,
+            cancel_event = threading.Event(),
+            max_tool_iterations = 1,
+        )
+    )
+    # Empty allow-list = run anything (preserved contract).
+    assert calls == [("python", {"code": "1"})] or len(calls) >= 1

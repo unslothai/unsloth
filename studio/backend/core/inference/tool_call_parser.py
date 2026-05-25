@@ -13,13 +13,16 @@ import re
 
 # _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing
 # unclosed runs so truncated tails don't leak markup.
+# Function-name char set tracks OpenAI's ^[a-zA-Z0-9_-]{1,64}$ so MCP
+# tool names that contain a hyphen (e.g. mcp__srv__list-issues) parse
+# the same as the built-in web_search/python/terminal names.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
-    re.compile(r"<function=\w+>.*$", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
 
 
@@ -60,7 +63,7 @@ BUDGET_EXHAUSTED_NUDGE = (
 
 # Pre-compiled patterns reused by ``parse_tool_calls_from_text``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-_TC_FUNC_START_RE = re.compile(r"<function=(\w+)>\s*")
+_TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")

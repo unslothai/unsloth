@@ -435,7 +435,9 @@ _TOOL_ACTION_NUDGE = (
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
 _TOOL_XML_RE = _re.compile(
-    r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # Hyphen in the name char-class matches MCP tool names with dashes
+    # (mcp__srv__list-issues) which would otherwise leak past this strip.
+    r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
@@ -2404,6 +2406,16 @@ async def openai_chat_completions(
             if payload.mcp_enabled:
                 tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
+            # Skip the tool loop when no tool actually survived, so the
+            # safetensors loop's "empty = allow all" semantic cannot reach
+            # built-in tools the caller did not opt into. Existing callers
+            # who omit enabled_tools still get ALL_TOOLS here, so this
+            # only suppresses the loop when discovery + opt-in left it
+            # genuinely empty.
+            if not tools_to_use:
+                use_tools = False
+
+        if use_tools:
             # ── Tool-use system prompt nudge ──────────────────────
             _tool_names = {t["function"]["name"] for t in tools_to_use}
             _has_web = "web_search" in _tool_names
@@ -2904,6 +2916,13 @@ async def openai_chat_completions(
         if payload.mcp_enabled:
             _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
+        # Mirror the GGUF path: refuse to enter the tool loop when nothing
+        # survived, so a model-emitted built-in call cannot piggy-back on
+        # the empty allow-list.
+        if not _sf_tools_to_use:
+            _sf_use_tools = False
+
+    if _sf_use_tools:
         _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
         _sf_has_web = "web_search" in _sf_tool_names
         _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
