@@ -210,7 +210,7 @@ def _find_setup_script() -> Optional[Path]:
 # the backend denylist test; bumping the cap in only one place desyncs.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_RUN = 4    # pre-PR hardcoded for `unsloth studio run`
+_PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
 _PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
 
 

@@ -350,9 +350,9 @@ def test_studio_default_exposes_parallel_option():
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--parallel" in decls
     assert "--n-parallel" in decls
-    assert getattr(opt, "default", None) == 1, (
-        "studio_default --parallel must default to 1 (pre-PR); `run` is 4"
-    )
+    assert (
+        getattr(opt, "default", None) == 1
+    ), "studio_default --parallel must default to 1 (pre-PR); `run` is 4"
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 
