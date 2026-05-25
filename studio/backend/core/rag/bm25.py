@@ -64,6 +64,10 @@ def rebuild_index(scope: str, chunks: list[dict]) -> None:
     tokens = bm25s.tokenize(texts, show_progress = False)
     retriever = bm25s.BM25()
     retriever.index(tokens, show_progress = False)
+    # Drop stale files from any previous build/library version before
+    # writing the new index so we never mix old + new artifacts in the
+    # scope dir (bm25s.BM25.save does not unlink files it does not write).
+    delete_scope(scope)
     ensure_dir(base)
     retriever.save(str(base))
     _ids_path(scope).write_text(json.dumps(ids))
@@ -79,8 +83,21 @@ def _load(scope: str) -> tuple[Any, list[str]] | None:
             return _cache[scope]
         import bm25s
 
-        retriever = bm25s.BM25.load(str(_scope_dir(scope)), load_corpus = False)
-        ids = json.loads(_ids_path(scope).read_text())
+        try:
+            retriever = bm25s.BM25.load(str(_scope_dir(scope)), load_corpus = False)
+            ids = json.loads(_ids_path(scope).read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError) as exc:
+            # Corrupt or partially-written index files: treat as a
+            # missing index so search returns empty and a future
+            # re-ingest can rebuild cleanly. Log so the failure
+            # is visible without crashing the request.
+            logger.warning(
+                "bm25 index unreadable for scope %s (%s: %s); treating as missing",
+                scope,
+                type(exc).__name__,
+                exc,
+            )
+            return None
         _cache[scope] = (retriever, ids)
         return _cache[scope]
 

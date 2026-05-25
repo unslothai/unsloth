@@ -125,12 +125,9 @@ def search_knowledge_base(
     else:
         candidate_k = k
 
-    # Resolve the scope's embedder (the one that populated its
-    # vectors). Inline import to avoid a backend-route → core
-    # dependency cycle at module load.
-    from routes.rag import _resolve_scope_embedder
+    from core.rag.scope import resolve_scope_embedder
 
-    scope_embedder = _resolve_scope_embedder(scope)
+    scope_embedder = resolve_scope_embedder(scope)
 
     logger.info(
         "search_knowledge_base: scope=%s embedder=%s top_k=%d min_score=%.3f rerank=%s query=%r",

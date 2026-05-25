@@ -13,8 +13,8 @@ A "scope" is `kb_<uuid>` for standalone knowledge bases or
 indexed; queries filter by scope before computing distances so
 different scopes can hold vectors of different dimensions without
 breaking the cosine math. The per-scope embedder resolver
-(routes/rag.py:_resolve_scope_embedder) guarantees one embedder per
-scope, so dims within a scope are always consistent.
+(core/rag/scope.py:resolve_scope_embedder) guarantees one embedder
+per scope, so dims within a scope are always consistent.
 """
 
 from __future__ import annotations

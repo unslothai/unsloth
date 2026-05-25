@@ -181,33 +181,10 @@ def _now_ms() -> int:
     return int(time.time())
 
 
-def _resolve_scope_embedder(scope: str) -> str | None:
-    """Look up the embedder that populated `scope`'s vector rows.
-
-    Returns the model name to use for query-side embedding so the
-    similarity math doesn't mix vector spaces (Qwen3-VL 2048-d
-    documents vs. bge-small 384-d query would crash with a shape
-    mismatch). Returns None for unknown scopes; callers should treat
-    None as "fall back to the default embedder".
-    """
-    from utils.rag.config import resolve_embedder
-
-    if scope.startswith("kb_"):
-        kb_id = scope[len("kb_") :]
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT embedding_model FROM rag_knowledge_bases WHERE id = ?",
-                (kb_id,),
-            ).fetchone()
-        return row["embedding_model"] if row else None
-    if scope.startswith("thread_"):
-        thread_id = scope[len("thread_") :]
-        settings = _load_thread_settings(thread_id)
-        return settings.embedding_model or resolve_embedder(
-            settings.mode,
-            settings.chunking_strategy,
-        )
-    return None
+# Per-scope embedder lookup lives in core/rag/scope.py so the
+# inference-side tool handler can use it without a routes-→-core
+# import cycle.
+from core.rag.scope import resolve_scope_embedder as _resolve_scope_embedder  # noqa: E402
 
 
 def _row_to_kb(row: Any) -> KBResponse:
@@ -295,6 +272,8 @@ def _document_or_404(document_id: str) -> Any:
 
 
 async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
+    import anyio
+
     filename = _sanitize_filename(file.filename or "document")
     ext = Path(filename).suffix.lower()
     if ext not in RAG_UPLOAD_EXTS:
@@ -308,20 +287,27 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
     stored_path = upload_dir / stored_name
     max_bytes = RAG_MAX_UPLOAD_MB * 1024 * 1024
     written = 0
-    with open(stored_path, "wb") as f:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            written += len(chunk)
-            if written > max_bytes:
-                f.close()
-                stored_path.unlink(missing_ok = True)
-                raise HTTPException(
-                    status_code = 413,
-                    detail = f"File exceeds {RAG_MAX_UPLOAD_MB} MB limit",
-                )
-            f.write(chunk)
+    # anyio.open_file routes each write through a worker thread so a
+    # multi-MB upload doesn't stall concurrent requests on the event
+    # loop. The async-with handles close on both happy and error
+    # paths; the outer try/except cleans up the partial file after
+    # the file handle is closed (Windows refuses unlink on an open fd).
+    try:
+        async with await anyio.open_file(stored_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code = 413,
+                        detail = f"File exceeds {RAG_MAX_UPLOAD_MB} MB limit",
+                    )
+                await f.write(chunk)
+    except HTTPException:
+        stored_path.unlink(missing_ok = True)
+        raise
     if written == 0:
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
