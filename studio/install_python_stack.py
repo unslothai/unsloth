@@ -446,7 +446,9 @@ def _resolve_latest_pypi_version(package: str, *, timeout: float = 10.0) -> str 
     try:
         with urllib.request.urlopen(url, timeout = timeout) as response:
             data = json.load(response)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+    # OSError covers socket.timeout / TimeoutError on all supported Pythons;
+    # URLError covers DNS / cert / refused; ValueError covers bad JSON.
+    except (urllib.error.URLError, OSError, ValueError):
         return None
     return (data.get("info") or {}).get("version") or None
 
@@ -929,7 +931,9 @@ def pip_install_with_floor_fallback(
 
     ``UNSLOTH_NO_PYPI_FLOOR=1`` jumps straight to step 3 -- useful for
     air-gapped CI / corporate mirrors that intentionally do not expose
-    pypi.org directly.
+    pypi.org directly, or for users on a private index whose mirror
+    lags pypi.org and so cannot serve the floor version yet (step 3
+    also catches this case transparently via the unpinned fallback).
     """
     skip_floor = os.environ.get("UNSLOTH_NO_PYPI_FLOOR", "").strip().lower() in (
         "1",
