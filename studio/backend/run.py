@@ -727,11 +727,9 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
-    # Limits mirrored from unsloth_cli/commands/studio.py
-    # (_PARALLEL_MIN / _PARALLEL_MAX / _PARALLEL_DEFAULT_PLAIN). The
-    # `unsloth studio run` wrapper supplies its own value (4) on every
-    # invocation, so this default only applies when run.py is launched
-    # directly (`python -m studio.backend.run` / dev workflows).
+    # Mirrors unsloth_cli/commands/studio.py's _PARALLEL_*. This default
+    # only applies to direct backend launches; `unsloth studio run`
+    # always passes its own value (4) on every invocation.
     _PARALLEL_MIN = 1
     _PARALLEL_MAX = 64
     _PARALLEL_DEFAULT_PLAIN = 1
@@ -742,8 +740,7 @@ if __name__ == "__main__":
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN} (direct backend launch); the "
-            f"`unsloth studio run` wrapper uses 4 instead."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
         ),
     )
 

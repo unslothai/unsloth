@@ -206,15 +206,12 @@ def _find_setup_script() -> Optional[Path]:
     return None
 
 
-# ── llama-server --parallel limits ──────────────────────────────────
-# Shared by the typer Options on `unsloth studio` and `unsloth studio run`
-# and mirrored by studio/backend/run.py's argparse + the backend denylist
-# in studio/backend/core/inference/llama_server_args.py. Bumping the cap
-# here without updating run.py + the denylist test will desync silently.
+# Shared --parallel limits. Mirror in studio/backend/run.py's argparse and
+# the backend denylist test; bumping the cap in only one place desyncs.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded value for `unsloth studio run`
-_PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective default for plain `unsloth studio`
+_PARALLEL_DEFAULT_RUN = 4    # pre-PR hardcoded for `unsloth studio run`
+_PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
 
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
@@ -533,21 +530,18 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN} matches pre-PR behaviour for the "
-            f"plain-server path; `unsloth studio run` defaults to "
-            f"{_PARALLEL_DEFAULT_RUN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` "
+            f"defaults to {_PARALLEL_DEFAULT_RUN}."
         ),
     ),
 ):
     """Launch the Unsloth Studio server."""
-    # Runs before any subcommand; covers run/setup/update/etc in one place.
+    # Runs before every subcommand; covers run/setup/update/etc in one place.
     _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
-        # `unsloth studio --parallel N run ...` would silently drop the
-        # group-level value because typer doesn't propagate parent
-        # options into subcommand kwargs. Reject explicitly so the
-        # operator gets told where to put the flag instead of getting
-        # the run subcommand's default.
+        # Typer doesn't propagate parent options into subcommand kwargs, so
+        # `unsloth studio --parallel N run ...` would silently drop N.
+        # Reject and point the operator at the right invocation.
         if parallel != _PARALLEL_DEFAULT_PLAIN:
             typer.echo(
                 f"Error: --parallel on `unsloth studio` applies to the "
@@ -560,7 +554,7 @@ def studio_default(
             raise typer.Exit(2)
         return
 
-    # Always use the studio venv if it exists and we're not already in it
+    # Use the studio venv if it exists and we aren't already in it.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
@@ -586,9 +580,8 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # On Windows, os.execvp() spawns a child but the parent lingers,
-            # so Ctrl+C only kills the parent leaving the child orphaned.
-            # Use subprocess.run() on Windows so the parent waits for the child.
+            # On Windows os.execvp leaves the parent alive, so Ctrl+C only
+            # kills the parent and orphans the child. Use Popen+wait instead.
             if sys.platform == "win32":
                 import subprocess as _sp
 
@@ -656,21 +649,19 @@ def studio_default(
 
 
 def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
-    """Split ``org/name:variant`` HF-style identifiers into (repo, variant).
+    """Split ``org/name:variant`` HF-style ids into ``(repo, variant)``.
 
     Mirrors llama.cpp's ``-hf <repo>:<quant>`` convention so users can
     write ``unsloth/gpt-oss-20b-GGUF:UD-Q4_K_XL`` instead of passing
-    ``--gguf-variant`` separately. Local paths (absolute, ``./``,
-    ``~/``, Windows drive letters) and identifiers without a ``:``
-    suffix are returned verbatim.
+    ``--gguf-variant`` separately. Local paths, Windows drive letters,
+    and ids without a ``:`` are returned verbatim.
     """
     s = model_arg.strip()
     if not s:
         return s, None
     if s.startswith(("/", "./", "../", "~")) or s == ".":
         return s, None
-    # Windows drive letter (e.g. "C:\\path" or "C:/path") -- the colon
-    # here is a path separator, not a variant suffix.
+    # Windows drive letter (e.g. "C:\path"): colon is a path separator.
     if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
         return s, None
     if ":" not in s:
@@ -678,25 +669,19 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
     repo, _, variant = s.rpartition(":")
     if not repo or not variant:
         return s, None
-    # A real quant label has no slashes; ``foo:bar/baz`` is not
-    # ``repo:variant`` syntax.
+    # Quant labels never contain a slash; `foo:bar/baz` isn't repo:variant.
     if "/" in variant:
         return s, None
     return repo, variant
 
 
 def _expand_attached_np_short() -> None:
-    # Click clusters `-np8` as `-n -p 8` (because `-p` is the typer short
-    # for `--port`), silently dropping the parallel value. Rewrite to
-    # separated `-np <N>` so the typer alias matches. Space/equals forms
-    # (`-np 8`, `-np=8`) already parse correctly. Stop at `--` so explicit
-    # post-`--` payload tokens are never rewritten. Signed suffixes
-    # (`-np-1`, `-np+1`) are normalised too so this stays in lockstep
-    # with the backend validator's _flag_name; otherwise Click would
-    # cluster them into `-n -p -1` and silently set port=-1. Suffixes
-    # whose first character looks numeric (`-np8x`, `-np-1foo`) are also
-    # rewritten so typer reports a clean "-np takes an int" error rather
-    # than a baffling `--port` complaint about the cluster fallout.
+    # Click would cluster `-np8` as `-n -p 8` (--port short = -p), losing
+    # the parallel value. Rewrite to separated `-np <N>` so typer's alias
+    # matches. Stops at `--`. Accepts signed (`-np-1`) and digit-prefix
+    # junk (`-np8x`) so typer reports a clean "-np needs int" error
+    # rather than the cluster-fallout `--port` complaint. Mirrors the
+    # backend `_flag_name` recogniser.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
@@ -722,21 +707,19 @@ def _consume_legacy_short_aliases(
 ) -> tuple[Optional[str], List[str]]:
     """Pop exact-match legacy short aliases from args; leave clusters alone.
 
-    Pre-PR, `-m` / `-hfr` were typer aliases for `--model` and `-f` was an
-    alias for `--frontend`. They were dropped from typer because Click's
-    1-char short-option clustering silently mis-parsed llama-server tokens
-    like `-fa` / `-mg` / `-fitt` as `--frontend a` / `--model g` /
-    `--frontend itt`. This shim re-accepts the legacy aliases as exact
-    whole tokens (or ``-x=value`` inline form) only -- clustered tokens
-    are left in ``args`` for the llama-server pass-through path.
+    Pre-PR `-m` / `-hfr` aliased ``--model`` and `-f` aliased
+    ``--frontend``. Dropping them from typer was necessary because Click's
+    1-char clustering mis-parsed llama-server tokens like `-fa` / `-mg` /
+    `-fitt`. This shim re-accepts the legacy aliases as exact whole tokens
+    (or `-x=value` inline form) only; clusters stay in ``args`` for the
+    llama-server pass-through path.
     """
     out: List[str] = []
     value = current
     i, n = 0, len(args)
     while i < n:
         tok = args[i]
-        # `--` ends option processing; everything after is raw payload and
-        # must not be promoted, even if it lexically matches an alias.
+        # `--` ends option processing; tail is raw payload.
         if tok == "--":
             out.extend(args[i:])
             break
@@ -750,18 +733,15 @@ def _consume_legacy_short_aliases(
                 f"{name} conflicts with {canonical} already provided"
             )
         if sep:
-            # Reject `-m=` empty inline form so the caller doesn't end
-            # up re-execing with --model '' (which becomes "." for
-            # frontend paths).
+            # Reject `-m=` so we don't re-exec with --model '' (Path('')='.').
             if inline == "":
                 raise typer.BadParameter(f"{name} requires a non-empty value")
             value = inline
             i += 1
         elif i + 1 < n:
             nxt = args[i + 1]
-            # Reject `-m --foo` style usage: a `--long` next-token is
-            # unambiguously a flag, not a value. Single-dash `-x` tokens
-            # may be paths or arbitrary values, so they pass through.
+            # `-m --foo`: `--long` is unambiguously a flag. Single-dash
+            # `-x` could be a path or value, so it passes through.
             if nxt.startswith("--") and nxt != "--":
                 raise typer.BadParameter(
                     f"{name} expects a value but got the flag {nxt}"
@@ -786,11 +766,10 @@ def run(
         "--model",
         "-hf",
         "--hf-repo",
-        # `-m` / `-hfr` removed from typer (Click cluster-ate `-mg`, `-md`,
-        # `-mu`, etc. as pass-through). Legacy exact-match `-m` / `-hfr`
-        # are still recognised via _consume_legacy_short_aliases below.
-        # `-hf` kept (2-char, no clustering). Required-check happens
-        # after the preprocessor so `-m X` still works.
+        # `-m` / `-hfr` removed from typer (Click would cluster-eat
+        # `-mg`, `-md`, `-mu`, ... as pass-through). Exact-match `-m` /
+        # `-hfr` still work via _consume_legacy_short_aliases below.
+        # `-hf` kept (multi-char, doesn't cluster).
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
@@ -809,8 +788,8 @@ def run(
     ),
     port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
-    # `-f` removed: Click clustered `-fa`/`-fit*` (llama-server) into
-    # `--frontend a`/`it*` under pass-through. studio_default keeps `-f`.
+    # `-f` removed: Click clustered llama-server's `-fa`/`-fit*` into
+    # `--frontend a`/`it*`. studio_default keeps `-f` (no pass-through).
     frontend: Optional[Path] = typer.Option(None, "--frontend"),
     silent: bool = typer.Option(False, "--silent", "-q"),
     enable_tools: Optional[bool] = typer.Option(
@@ -835,27 +814,24 @@ def run(
         min = _PARALLEL_MIN,
         max = _PARALLEL_MAX,
         help = (
-            "llama-server parallel decode slots. Lets N requests share "
-            "one loaded model concurrently; each slot gets ctx/N KV "
-            f"cache, so higher N reduces per-call context. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (matches the previous hardcoded value)."
+            "llama-server parallel decode slots. N requests share one "
+            "loaded model; each slot gets ctx/N KV cache. Default "
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
         ),
     ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
-    Any flag this command does not recognize is forwarded verbatim to
-    the underlying llama-server (GGUF only). Studio-managed flags
-    rejected with HTTP 400 are model identity, networking (--host /
-    --port / --path / --api-prefix / --reuse-port), auth/TLS (--api-key
-    / --ssl-*), single-model UI (--ui / --models-* / --webui) and the
-    parallel slot count (--parallel / --n-parallel / -np: use the
-    first-class flag above, not a pass-through, so Studio's KV-fit and
-    app.state.llama_parallel_slots stay in sync with the running
-    process). See studio/backend/core/inference/llama_server_args.py
-    for the full denylist. Other tunables like -c / --ctx-size, -ngl,
-    --jinja, --flash-attn, --no-context-shift, -t / --threads pass
-    through and last-wins-override Studio's auto-set value.
+    Unknown flags are forwarded verbatim to llama-server (GGUF only).
+    Studio-managed flags rejected with HTTP 400: model identity,
+    networking (--host / --port / --path / --api-prefix / --reuse-port),
+    auth/TLS (--api-key / --ssl-*), single-model UI (--ui / --models-* /
+    --webui), and parallel slots (use the typer --parallel above, not a
+    pass-through, so Studio's KV-fit + app.state.llama_parallel_slots
+    stay in sync). Full denylist in
+    studio/backend/core/inference/llama_server_args.py. Other tunables
+    (-c, -ngl, --jinja, --flash-attn, --no-context-shift, -t, ...)
+    pass through and last-wins-override Studio's auto-set value.
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
@@ -864,9 +840,8 @@ def run(
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
-    # Backwards-compat: promote legacy `-m` / `-hfr` / `-f` exact-match
-    # tokens from the pass-through tail back into their typer parameters.
-    # Clustered tokens (`-fa`, `-mg`, `-fitt`, ...) are left as extras.
+    # Promote legacy exact-match `-m` / `-hfr` / `-f` tokens from the
+    # pass-through tail back into typer params; clusters stay as extras.
     model, extra_llama_args = _consume_legacy_short_aliases(
         extra_llama_args,
         ("-m", "-hfr"),
@@ -890,10 +865,9 @@ def run(
         )
         raise typer.Exit(2)
 
-    # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
-    # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
-    # of pairing ``--model`` with ``--gguf-variant``. If both are given
-    # and disagree, fail loudly instead of silently picking one.
+    # 0. Parse llama.cpp-style `repo:variant` syntax in --model. Lets
+    # users write `--model unsloth/foo-GGUF:UD-Q4_K_XL` instead of pairing
+    # --model with --gguf-variant; fail loudly if both are given and disagree.
     parsed_repo, embedded_variant = _split_repo_variant(model)
     if embedded_variant:
         if gguf_variant and gguf_variant != embedded_variant:
@@ -906,8 +880,8 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
-    # ── Resolve the server-side tool policy. The y/N prompt (if any)
-    # runs in the outer process so the re-exec'd child never re-prompts.
+    # Resolve the tool policy in the outer process so the re-exec'd
+    # child inherits a concrete decision and never re-prompts.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -917,7 +891,7 @@ def run(
         silent = silent,
     )
 
-    # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
+    # 1. Venv re-exec (same pattern as studio_default).
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
@@ -926,7 +900,7 @@ def run(
         if not studio_python:
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
-        # Re-exec into the studio venv via its `unsloth` entry point
+        # Re-exec via the studio venv's `unsloth` entry point.
         studio_bin = studio_python.parent / "unsloth"
         if not studio_bin.is_file():
             typer.echo(
@@ -950,34 +924,29 @@ def run(
         ]
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
-        # Forward both polarities explicitly so the child sees the
-        # operator's exact choice; otherwise a future default flip on
-        # one layer would silently invert behaviour for users who
+        # Always forward the explicit polarity so a future default flip
+        # on one layer doesn't silently invert behaviour for users who
         # never typed the flag.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
         if frontend:
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
-        # Forward the resolved tool policy (always concrete True/False
-        # at this point — the resolver above ran before the re-exec).
+        # Tool policy is concrete now; forward to skip the child resolver.
         if enable_tools:
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
         # Forward --yes whenever the parent already cleared the prompt
-        # (either operator passed --yes, or the parent's resolver
-        # accepted the network-bind confirmation). Otherwise the child
-        # re-runs the resolver and prompts a second time.
+        # so the child doesn't re-prompt for the same network-bind confirm.
         if yes or (enable_tools and is_external_host(host)):
             args.append("--yes")
-        # Forward --parallel: typer claims it outside ctx.args, so the
-        # child re-execs at the default 4 without this, silently losing
-        # any user value (including pre-PR `-np N` pass-through users).
+        # Forward --parallel: typer claims it outside ctx.args, so without
+        # this the child re-execs at the default and silently drops the
+        # user's value (including pre-PR `-np N` pass-through users).
         args.extend(["--parallel", str(parallel)])
-        # Forward unknown args (llama-server pass-through) to the
-        # re-exec'd command so the studio venv sees them in ctx.args
-        # and the re-execed run() can include them in the load payload.
+        # Forward llama-server pass-through extras so run() in the child
+        # sees them in ctx.args and includes them in the load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
 
@@ -1000,28 +969,26 @@ def run(
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
 
-    # ── Apply the resolved tool policy as a process-level override.
-    # Must use the same import path the route handlers use --
-    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
-    # routes import this module as top-level `state.tool_policy`. If we
-    # imported via `studio.backend.state.tool_policy` instead, Python
-    # would cache two different module objects with two different
-    # `_tool_policy` globals, and the gates would never see our value.
+    # Apply the resolved tool policy as a process-level override. Must
+    # use the same import path the route handlers use: run.py adds
+    # studio/backend/ to sys.path, so routes import this as top-level
+    # `state.tool_policy`. Importing via `studio.backend.state.tool_policy`
+    # would cache a second module object whose flag the gates can't see.
     from state.tool_policy import set_tool_policy
 
     set_tool_policy(enable_tools)
 
-    # ── 3. Wait for server health ─────────────────────────────────────
+    # 3. Wait for server health.
     if not silent:
         typer.echo("Starting Unsloth Studio...")
     if not _wait_for_server(actual_port):
         typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
         raise typer.Exit(1)
 
-    # ── 4. Create API key in-process ──────────────────────────────────
+    # 4. Create API key in-process.
     api_key = _create_api_key_inprocess(api_key_name)
 
-    # ── 5. Load model via HTTP ────────────────────────────────────────
+    # 5. Load model via HTTP.
     if not silent:
         typer.echo(f"Loading model: {model}...")
     try:
@@ -1041,15 +1008,13 @@ def run(
     loaded_model = result.get("model", model)
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
 
-    # ── 6. Print banner ───────────────────────────────────────────────
+    # 6. Print banner.
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
-    # Claude orange (Claude Code's brand color) for tool-policy notices
-    # so they stand out from the surrounding banner. Always printed --
-    # even under --silent / --yes -- so the operator never misses the
-    # current tool-execution status.
+    # Claude orange so the tool-policy notice stands out; printed even
+    # under --silent / --yes so the operator never misses the current state.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
     if _is_external and enable_tools:
@@ -1107,14 +1072,13 @@ def run(
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
     else:
-        # Silent mode still prints the essentials (URL, API key) plus
-        # the orange tool-status notice so the operator never loses
-        # visibility into the security-relevant policy.
+        # Silent mode still prints URL + API key + tool-status notice
+        # so the operator never loses visibility into the security policy.
         typer.echo(f"URL:     {base_url}")
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
-    # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
+    # 7. Wait for Ctrl+C.
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
 
     try:

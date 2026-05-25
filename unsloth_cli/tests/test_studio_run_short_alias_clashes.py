@@ -1,31 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for `unsloth studio run` short-alias clashes with
-llama-server short flags.
+"""Regression tests for short-alias clashes with llama-server flags.
 
-`unsloth studio run` runs with ``ignore_unknown_options=True`` +
-``allow_extra_args=True`` so unknown flags pass through to llama-server
-(e.g. ``-ngl 32``, ``-c 8192``, ``--top-k 20``).
+`unsloth studio run` passes unknown flags through to llama-server.
+Pre-cleanup it exposed 1-char shorts ``-m`` / ``-f`` plus ``-hfr``;
+Click clustered llama-server tokens against them (``-fa`` -> ``-f a``,
+``-mg 0`` -> ``-m g``, ``-fitt 1024`` -> ``-f itt``, ...), silently
+breaking ~11 pass-through flags.
 
-Before the cleanup it exposed 1-character shorts ``-m`` (--model) and
-``-f`` (--frontend) plus ``-hfr`` (--hf-repo). Click's short-option
-clustering then silently mis-parsed multi-char llama-server tokens:
-``-fa`` -> ``-f a`` (frontend=a), ``-mg 0`` -> ``-m g`` + stray ``0``,
-``-fitt 1024`` -> ``-f itt`` + stray ``1024``, etc. The docstring
-promise ("any flag this command does not recognize is forwarded
-verbatim") was silently violated for ~11 llama-server short flags.
+The cleanup drops ``-m``, ``-f``, ``-hfr``. The 2-char ``-hf`` stays
+(documented; multi-char shorts don't cluster). Long forms remain.
+``studio_default`` keeps ``-f`` because it has no pass-through.
 
-The cleanup removes the colliding 1-char shorts ``-m`` and ``-f`` and
-the redundant ``-hfr``. The 2-char ``-hf`` is kept (documented in
-basics/api/README.md; Click treats multi-char shorts atomically so it
-does not cluster). Long forms ``--model``, ``--hf-repo``, ``--frontend``
-remain. ``studio_default`` keeps ``-f`` because it has no pass-through.
-
-See also ``test_studio_run_parallel_flag.py`` for the typer
-``--parallel`` / ``--n-parallel`` / ``-np`` flag itself, the
-typer-alias / denylist subset invariant, and runtime forwarding of
-``--load-in-4bit`` and friends across the venv re-exec.
+See ``test_studio_run_parallel_flag.py`` for ``--parallel`` /
+``-np`` coverage and re-exec forwarding.
 """
 
 from __future__ import annotations
@@ -55,18 +44,14 @@ def _decls_for(param_name):
     return set(getattr(opt, "param_decls", []) or [])
 
 
-# Surface-level checks: removed shorts must not reappear.
+# Surface checks: removed shorts must not reappear.
 
 
 def test_model_short_aliases_removed():
-    """`-m` and `-hfr` were removed from --model. `-hf` is kept
-    (documented) and is safe because Click treats multi-char shorts
-    atomically (no clustering of `-hff`, `-hfv`, `-hffv`, `-hft`)."""
+    """`-m` / `-hfr` removed from --model; `-hf` kept (multi-char,
+    doesn't cluster)."""
     decls = _decls_for("model")
-    assert "-m" not in decls, (
-        "`-m` was re-added; re-introduces Click clustering "
-        "(`-mg` -> `-m g`, `-md` -> `-m d`, ...)"
-    )
+    assert "-m" not in decls, "`-m` re-added; brings back `-mg`/`-md` clustering"
     assert "-hfr" not in decls, "`-hfr` was re-added; remove it"
     assert "--model" in decls
     assert "--hf-repo" in decls
@@ -74,26 +59,21 @@ def test_model_short_aliases_removed():
 
 
 def test_frontend_short_alias_removed_from_run():
-    """`-f` must not be a typer alias on `studio run` (cluster-eats
-    `-fa`, `-fit`, `-fitt`, `-fitc`)."""
+    """`-f` must not be on `run` (eats `-fa`/`-fit`/`-fitt`/`-fitc`)."""
     decls = _decls_for("frontend")
-    assert "-f" not in decls, (
-        "`-f` was re-added on run(); re-introduces Click clustering "
-        "(`-fa` -> `-f a`, ...)"
-    )
+    assert "-f" not in decls, "`-f` re-added on run(); brings back `-fa` clustering"
     assert "--frontend" in decls
 
 
 def test_studio_default_keeps_dash_f():
-    """`studio_default` keeps `-f` because it has no pass-through args."""
+    """`studio_default` keeps `-f`: no pass-through tail to clash with."""
     sig = inspect.signature(_studio_mod().studio_default)
     opt = sig.parameters["frontend"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "-f" in decls
 
 
-# Behaviour-level checks: each llama-server short flag must survive
-# typer parsing and land verbatim in the re-exec'd child argv.
+# Behaviour checks: llama-server shorts must reach the child verbatim.
 
 
 class _ExecCaptured(SystemExit):
@@ -149,8 +129,8 @@ def _invoke(monkeypatch, args):
     return captured
 
 
-# Each entry is (short_flag, value, llama-server long name). All of
-# these were silently mis-parsed before the cleanup.
+# (short_flag, value, llama-server long name). All were silently
+# mis-parsed pre-cleanup.
 _PREVIOUSLY_BROKEN = [
     ("-fa", None, "--flash-attn"),
     ("-fit", None, "--fit"),
@@ -173,8 +153,7 @@ def test_previously_broken_short_flag_now_passes_through(
     value,
     llama_long_name,
 ):
-    """Each of these was silently mis-parsed before the short-alias
-    cleanup. They must now pass through to the re-exec'd child verbatim."""
+    """Each of these was eaten by typer pre-cleanup; must pass through verbatim now."""
     extras = [flag] if value is None else [flag, value]
     captured = _invoke(monkeypatch, ["--model", "X"] + extras)
     assert len(captured) == 1, f"parent did not re-exec for {extras}"
@@ -191,25 +170,22 @@ def test_previously_broken_short_flag_now_passes_through(
 
 
 def test_dash_hf_documented_alias_still_works(monkeypatch):
-    """`-hf` is documented in basics/api/README.md and must keep working.
-    Multi-char shorts don't cluster in Click."""
+    """`-hf` is documented and must keep working (multi-char shorts
+    don't cluster in Click)."""
     captured = _invoke(
         monkeypatch,
         ["-hf", "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"],
     )
     assert len(captured) == 1
     argv = captured[0]
-    # _split_repo_variant in the parent strips the variant suffix
-    # before re-exec, so the child sees --model + --gguf-variant.
+    # `_split_repo_variant` peels the `:variant` suffix before re-exec.
     assert argv[argv.index("--model") + 1] == ("unsloth/gemma-4-26B-A4B-it-GGUF"), argv
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
 
 
-# Legacy-alias backwards compatibility. -m / -hfr / -f were typer aliases
-# pre-PR. Dropping them from typer would break any script using the exact
-# tokens, so an in-function preprocessor promotes EXACT matches back into
-# their typer parameters while leaving clustered tokens (`-mg`, `-fa`, ...)
-# in the llama-server pass-through tail.
+# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The
+# preprocessor promotes EXACT matches back to their typer params and
+# leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through tail.
 
 
 @pytest.mark.parametrize(
@@ -226,20 +202,19 @@ def test_legacy_model_aliases_still_promote_to_model(
     legacy_args,
     expected_model,
 ):
-    """Pre-PR `-m X` / `-hfr X` set --model X. The preprocessor must
-    keep those scripts working."""
+    """Pre-PR `-m X` / `-hfr X` set --model X; preprocessor preserves that."""
     captured = _invoke(monkeypatch, legacy_args)
     assert len(captured) == 1, f"parent did not re-exec for {legacy_args}"
     argv = captured[0]
     assert argv[argv.index("--model") + 1] == expected_model, argv
-    # The legacy alias must not also leak into the pass-through tail.
+    # Promoted alias must not also leak into the pass-through tail.
     for alias in ("-m", "-hfr"):
         if alias in legacy_args:
             assert alias not in argv, f"legacy {alias} leaked into child argv: {argv}"
 
 
 def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
-    """Pre-PR `-f dist` set --frontend dist. Preprocessor preserves it."""
+    """Pre-PR `-f dist` set --frontend dist; preprocessor preserves it."""
     captured = _invoke(monkeypatch, ["--model", "X", "-f", "/tmp/dist"])
     assert len(captured) == 1
     argv = captured[0]
@@ -248,34 +223,30 @@ def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
 
 
 def test_legacy_model_alias_conflicts_with_long_form(monkeypatch):
-    """Passing both --model X and -m Y should error -- ambiguous intent."""
+    """`--model X` plus `-m Y` is ambiguous; must error pre-re-exec."""
     captured = _invoke(monkeypatch, ["--model", "X", "-m", "Y"])
-    # The preprocessor raises typer.BadParameter before reaching execvp.
     assert (
         len(captured) == 0
     ), f"expected error before re-exec, got launch with argv = {captured}"
 
 
 def test_clustered_tokens_are_not_promoted(monkeypatch):
-    """`-mg 0`, `-fa`, `-fitt 1024` are llama-server flags, not legacy
-    aliases. They must pass through to llama-server even though they
-    start with `-m` / `-f`."""
+    """`-mg` / `-fa` / `-fitt` are llama-server flags and must survive
+    in the tail even though they start with `-m` / `-f`."""
     captured = _invoke(
         monkeypatch,
         ["--model", "X", "-mg", "0", "-fa", "-fitt", "1024"],
     )
     assert len(captured) == 1
     argv = captured[0]
-    # Studio --model came from --model X, not from `-mg` cluster.
     assert argv[argv.index("--model") + 1] == "X", argv
-    # All three llama-server tokens survive verbatim in the tail.
     for flag in ("-mg", "-fa", "-fitt"):
         assert flag in argv, f"{flag!r} was promoted instead of passed through: {argv}"
 
 
 def test_legacy_m_with_repo_variant_syntax(monkeypatch):
-    """`-m unsloth/foo:UD-Q4_K_XL` must round-trip through the preprocessor
-    AND _split_repo_variant so the child sees --model + --gguf-variant."""
+    """`-m repo:variant` must round-trip through preprocessor +
+    _split_repo_variant into --model + --gguf-variant."""
     captured = _invoke(
         monkeypatch,
         ["-m", "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"],
@@ -287,25 +258,22 @@ def test_legacy_m_with_repo_variant_syntax(monkeypatch):
 
 
 def test_missing_model_after_preprocessor_errors(monkeypatch):
-    """If neither --model nor any legacy alias is supplied, the
-    preprocessor's required-check must trigger a clean exit(2)."""
+    """Neither --model nor a legacy alias → clean exit(2) before re-exec."""
     captured = _invoke(monkeypatch, ["--parallel", "8"])
-    # No execvp because the missing-model check raises typer.Exit(2)
-    # before reaching the re-exec branch.
     assert (
         len(captured) == 0
     ), f"expected exit before re-exec, got launch with argv = {captured}"
 
 
 def test_legacy_m_inline_value_form(monkeypatch):
-    """`-m=foo` inline form must be promoted just like `-m foo`."""
+    """`-m=foo` is promoted like `-m foo`."""
     captured = _invoke(monkeypatch, ["-m=unsloth/Qwen3-1.7B-GGUF"])
     assert len(captured) == 1
     argv = captured[0]
     assert argv[argv.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF", argv
 
 
-# Direct unit tests for the _consume_legacy_short_aliases helper.
+# Unit tests for _consume_legacy_short_aliases.
 
 
 def test_consume_helper_exact_match_space_form():
@@ -384,10 +352,8 @@ def test_consume_helper_preserves_value_when_no_match():
     assert remaining == ["--top-k", "20"]
 
 
-# _expand_attached_np_short: Click clusters `-np8` as `-n -p 8` because
-# `-p` is the typer short for `--port`. This silently sets port=8 and
-# drops the parallel value. The rewrite splits the attached form into
-# the space-separated form before Click parses.
+# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8`
+# (port=8, parallel dropped). The rewrite splits to `-np 8` pre-parse.
 
 
 def test_expand_np_rewrites_attached_form(monkeypatch):
@@ -428,7 +394,7 @@ def test_expand_np_leaves_equals_form_alone(monkeypatch):
 
 
 def test_expand_np_leaves_non_digit_suffix_alone(monkeypatch):
-    # `-npfoo` is not a valid attached value -- leave for typer to reject.
+    # `-npfoo` isn't a numeric attached value; let typer reject it.
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-npfoo"])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-npfoo"]
@@ -452,8 +418,7 @@ def test_expand_np_handles_multiple_occurrences(monkeypatch):
 
 @pytest.mark.parametrize("attached,expected", [("-np-1", "-1"), ("-np+1", "+1")])
 def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected):
-    """Signed -np-1 / -np+1 must split too: Click would otherwise
-    cluster `-n -p -1` and set port=-1 silently."""
+    """Signed `-np-1` / `-np+1` must split too, else Click sets port=-1."""
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-np", expected]
@@ -466,16 +431,15 @@ def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected
 def test_expand_np_rewrites_numeric_prefix_even_with_junk(
     monkeypatch, attached, expected_suffix
 ):
-    """`-np8x` would otherwise cluster as `-n -p 8x` and surface a
-    baffling `--port` error; rewriting it to `-np 8x` makes typer
-    report the issue against `-np` (which is where the user typed it)."""
+    """`-np8x` would surface as a baffling --port error; rewriting to
+    `-np 8x` makes typer report against `-np` where it was typed."""
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-np", expected_suffix]
 
 
 def test_consume_helper_rejects_empty_inline_value():
-    """`-m=` must error before re-exec instead of becoming --model ''."""
+    """`-m=` must error, not silently become --model ''."""
     import typer as _typer
 
     helper = _studio_mod()._consume_legacy_short_aliases
@@ -483,10 +447,8 @@ def test_consume_helper_rejects_empty_inline_value():
         helper(["-m="], ("-m",), None, "--model")
 
 
-# Entry-point gate isolation: importing unsloth_cli from a third-party
-# script (e.g. an unrelated `myproj/cli.py` that happens to import the
-# package) must not mutate that script's sys.argv. Pin the gate's
-# narrow basename set so re-broadening doesn't slip back in.
+# Gate isolation: importing unsloth_cli from a third-party script must
+# leave its sys.argv intact. Pins the narrow basename set.
 
 
 @pytest.mark.parametrize(
@@ -504,9 +466,8 @@ def test_consume_helper_rejects_empty_inline_value():
 def test_third_party_importers_do_not_trigger_np_rewrite(
     monkeypatch, third_party_argv0
 ):
-    """A third-party script importing unsloth_cli must keep its argv
-    intact. Only the pyproject-declared `unsloth` / `unsloth.exe`
-    console-script may run the canonicaliser."""
+    """Only the `unsloth` / `unsloth.exe` console-script may run the
+    canonicaliser; third-party scripts must keep their argv intact."""
     import os as _os
     import importlib
 
@@ -523,24 +484,22 @@ def test_third_party_importers_do_not_trigger_np_rewrite(
 
 
 def test_attached_np8_no_longer_silently_sets_port(monkeypatch):
-    """Behavioural pin: after _expand_attached_np_short runs in the
-    entry-point gate, `-np8` produces --parallel=8 (not --port=8)."""
+    """After the gate runs, `-np8` produces --parallel=8 (not --port=8)."""
     monkeypatch.setattr(
         sys,
         "argv",
         ["unsloth", "studio", "run", "--model", "X", "-np8"],
     )
     _studio_mod()._expand_attached_np_short()
-    captured = _invoke(monkeypatch, sys.argv[2:])  # skip "unsloth studio"
+    captured = _invoke(monkeypatch, sys.argv[2:])  # drop "unsloth studio"
     assert len(captured) == 1, "parent did not re-exec"
     argv = captured[0]
     assert argv[argv.index("--parallel") + 1] == "8", argv
-    # Port must stay at the typer default (not silently rewritten to 8).
     assert argv[argv.index("--port") + 1] == "8888", argv
 
 
 def test_expand_np_stops_at_double_dash(monkeypatch):
-    """`--` ends option processing; post-`--` `-np8` must stay raw."""
+    """Tokens after `--` are positional; `-np8` stays raw."""
     monkeypatch.setattr(
         sys,
         "argv",
@@ -551,7 +510,7 @@ def test_expand_np_stops_at_double_dash(monkeypatch):
 
 
 def test_consume_helper_stops_at_double_dash():
-    """Legacy alias promotion must not consume tokens past `--`."""
+    """Alias promotion must not reach past `--`."""
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(
         ["--top-k", "20", "--", "-m", "FOO"],
@@ -564,7 +523,7 @@ def test_consume_helper_stops_at_double_dash():
 
 
 def test_consume_helper_rejects_long_flag_as_value():
-    """`-m --flash-attn` should error: --xxx is unambiguously a flag."""
+    """`-m --flash-attn` errors; `--xxx` is unambiguously a flag."""
     import typer as _typer
 
     helper = _studio_mod()._consume_legacy_short_aliases
@@ -573,7 +532,7 @@ def test_consume_helper_rejects_long_flag_as_value():
 
 
 def test_consume_helper_allows_bare_dash_as_value():
-    """A lone `-` is a valid stdin/path sentinel, not a flag."""
+    """Lone `-` is a stdin/path sentinel, not a flag."""
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(["-m", "-", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-"
@@ -581,9 +540,8 @@ def test_consume_helper_allows_bare_dash_as_value():
 
 
 def test_consume_helper_allows_short_dash_value():
-    """Short `-x` tokens may be paths or arbitrary values (e.g. a model
-    name that legitimately starts with `-`); only `--long` flags are
-    rejected as values."""
+    """`-foo` may be a path or a leading-dash model name; only `--long`
+    tokens are rejected as values."""
     helper = _studio_mod()._consume_legacy_short_aliases
     value, remaining = helper(["-m", "-foo", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-foo"

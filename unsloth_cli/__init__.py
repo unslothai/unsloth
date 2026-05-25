@@ -18,12 +18,9 @@ from unsloth_cli.commands.studio import (
 )
 
 
-# Run the studio `-np<N>` argv canonicalisation only when invoked through
-# the pyproject-declared `unsloth` console-script. Generic basenames
-# like `cli.py` would side-effect any third-party `myproj/cli.py` that
-# happens to import unsloth_cli, so they are not in the set. Dev users
-# running `python cli.py ... --parallel N` should use the space form,
-# which parses without the rewrite.
+# Canonicalise `-np<N>` only under the declared `unsloth` console-script.
+# Generic names like `cli.py` would mutate argv for any third-party script
+# that imports unsloth_cli; the space form `--parallel N` works without us.
 _entry_base = _osp.basename(_sys.argv[0]).lower() if _sys.argv else ""
 if _entry_base in {"unsloth", "unsloth.exe"}:
     _expand_attached_np_short()
@@ -66,9 +63,8 @@ app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
 app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
 
-# Top-level alias: `unsloth run ...` is equivalent to `unsloth studio run ...`.
-# Same context_settings as the studio_app registration so unknown flags
-# still pass through to llama-server.
+# Top-level alias for `unsloth studio run ...`; same context_settings so
+# unknown flags still pass through to llama-server.
 app.command(
     "run",
     context_settings = {
