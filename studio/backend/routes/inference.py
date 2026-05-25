@@ -274,14 +274,14 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 </html>"""
 
 
-@studio_router.get("/artifact-preview-frame", include_in_schema=False)
+@studio_router.get("/artifact-preview-frame", include_in_schema = False)
 async def artifact_preview_frame():
     """Serve the opaque sandbox shell used for client-side HTML artifacts."""
 
     return Response(
-        content=_ARTIFACT_PREVIEW_FRAME_HTML,
-        media_type="text/html; charset=utf-8",
-        headers={
+        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        media_type = "text/html; charset=utf-8",
+        headers = {
             "Cache-Control": "no-store",
             "Content-Security-Policy": _ARTIFACT_PREVIEW_FRAME_CSP,
             "Referrer-Policy": "no-referrer",
