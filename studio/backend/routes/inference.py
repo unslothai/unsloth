@@ -2399,7 +2399,9 @@ async def diffusion_generate(
     # vae_scale_factor * 2 multiples internally, so the actual PNG can
     # differ from the requested dims. Report the real image size so
     # the metadata caption matches the bytes on the wire.
-    actual_w, actual_h = (image.size if hasattr(image, "size") else (payload.width, payload.height))
+    actual_w, actual_h = (
+        image.size if hasattr(image, "size") else (payload.width, payload.height)
+    )
     return DiffusionGenerateResponse(
         image_b64 = encode_png_base64(image),
         image_mime = "image/png",
