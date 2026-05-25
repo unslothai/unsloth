@@ -727,17 +727,31 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    # Limits mirrored from unsloth_cli/commands/studio.py
+    # (_PARALLEL_MIN / _PARALLEL_MAX / _PARALLEL_DEFAULT_PLAIN). The
+    # `unsloth studio run` wrapper supplies its own value (4) on every
+    # invocation, so this default only applies when run.py is launched
+    # directly (`python -m studio.backend.run` / dev workflows).
+    _PARALLEL_MIN = 1
+    _PARALLEL_MAX = 64
+    _PARALLEL_DEFAULT_PLAIN = 1
     parser.add_argument(
         "--parallel",
         "--n-parallel",
         type = int,
-        default = 1,
-        help = "llama-server parallel decode slots (1..64). Default 1 matches pre-PR behaviour.",
+        default = _PARALLEL_DEFAULT_PLAIN,
+        help = (
+            f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
+            f"Default {_PARALLEL_DEFAULT_PLAIN} (direct backend launch); the "
+            f"`unsloth studio run` wrapper uses 4 instead."
+        ),
     )
 
     args = parser.parse_args()
-    if not 1 <= args.parallel <= 64:
-        parser.error("--parallel must be between 1 and 64")
+    if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
+        parser.error(
+            f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}"
+        )
 
     kwargs = dict(
         host = args.host,

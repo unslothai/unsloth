@@ -21,6 +21,11 @@ the redundant ``-hfr``. The 2-char ``-hf`` is kept (documented in
 basics/api/README.md; Click treats multi-char shorts atomically so it
 does not cluster). Long forms ``--model``, ``--hf-repo``, ``--frontend``
 remain. ``studio_default`` keeps ``-f`` because it has no pass-through.
+
+See also ``test_studio_run_parallel_flag.py`` for the typer
+``--parallel`` / ``--n-parallel`` / ``-np`` flag itself, the
+typer-alias / denylist subset invariant, and runtime forwarding of
+``--load-in-4bit`` and friends across the venv re-exec.
 """
 
 from __future__ import annotations
@@ -452,6 +457,21 @@ def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-np", expected]
+
+
+@pytest.mark.parametrize(
+    "attached,expected_suffix",
+    [("-np8x", "8x"), ("-np-1foo", "-1foo"), ("-np9bar", "9bar")],
+)
+def test_expand_np_rewrites_numeric_prefix_even_with_junk(
+    monkeypatch, attached, expected_suffix
+):
+    """`-np8x` would otherwise cluster as `-n -p 8x` and surface a
+    baffling `--port` error; rewriting it to `-np 8x` makes typer
+    report the issue against `-np` (which is where the user typed it)."""
+    monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
+    _studio_mod()._expand_attached_np_short()
+    assert sys.argv == ["unsloth", "run", "-np", expected_suffix]
 
 
 def test_consume_helper_rejects_empty_inline_value():

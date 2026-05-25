@@ -118,18 +118,29 @@ def test_non_flag_token_passes_through():
         "-np",
         "--parallel",
         "--n-parallel",
-        # Model identity
+        # Model identity (every alias in the denylist groups; bumping
+        # llama.cpp must keep every form rejected, not just the long).
         "-m",
         "--model",
+        "-mu",
+        "--model-url",
+        "-dr",
+        "--docker-repo",
         "-hf",
         "-hfr",
         "--hf-repo",
         "-hff",
         "--hf-file",
+        "-hfv",
+        "-hfrv",
+        "--hf-repo-v",
+        "-hffv",
+        "--hf-file-v",
         "-hft",
         "--hf-token",
         "-mm",
         "--mmproj",
+        "-mmu",
         "--mmproj-url",
         # Networking (Studio binds + proxies)
         "--host",
@@ -142,11 +153,20 @@ def test_non_flag_token_passes_through():
         "--api-key-file",
         "--ssl-key-file",
         "--ssl-cert-file",
-        # Single-model server
+        # Single-model server (legacy --webui + current --ui group)
         "--webui",
         "--no-webui",
+        "--ui",
+        "--no-ui",
+        "--ui-config",
+        "--ui-config-file",
+        "--ui-mcp-proxy",
+        "--no-ui-mcp-proxy",
         "--models-dir",
+        "--models-preset",
         "--models-max",
+        "--models-autoload",
+        "--no-models-autoload",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
@@ -191,6 +211,19 @@ def test_parallel_flags_are_managed(args, offending):
 def test_denylist_rejects_equals_form():
     with pytest.raises(ValueError, match = "--port"):
         validate_extra_args(["--port=9000"])
+
+
+@pytest.mark.parametrize(
+    "padded",
+    [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np \n", "-np\t"],
+)
+def test_denylist_rejects_whitespace_padded_forms(padded):
+    # `_flag_name` trims surrounding whitespace before lookup so a
+    # caller can't slip a managed flag past the boundary by appending
+    # a space (llama-server's argv parser sees the trimmed token too,
+    # so without normalisation the slot count would silently desync).
+    with pytest.raises(ValueError, match = "parallel|np"):
+        validate_extra_args([padded, "8"])
 
 
 def test_denylist_rejects_short_form_when_long_is_denied():

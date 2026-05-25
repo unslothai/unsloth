@@ -12,6 +12,13 @@ These tests pin:
   2. The default value matches the previous hardcoded value (4),
      so behaviour is unchanged for existing users.
   3. The range guards reject out-of-band values.
+  4. Typer aliases stay a subset of the backend parallel denylist.
+  5. Re-exec forwarding preserves every typer-claimed knob.
+
+See also ``test_studio_run_short_alias_clashes.py`` for the argv
+canonicaliser (``_expand_attached_np_short`` rewrites ``-np8`` /
+``-np-1`` etc. before Click parses) and the legacy ``-m`` / ``-hfr`` /
+``-f`` exact-match compatibility shim.
 """
 
 from __future__ import annotations
@@ -82,6 +89,38 @@ def test_parallel_range_guards_are_set():
     opt = sig.parameters["parallel"].default
     assert getattr(opt, "min", None) == 1, "min must be 1 (0 = no decode possible)"
     assert getattr(opt, "max", None) == 64, "max must be 64 (KV split sanity cap)"
+
+
+def test_typer_parallel_aliases_are_subset_of_backend_denylist():
+    """Load-bearing invariant: every alias the typer Option claims as
+    --parallel on `run` MUST also be in the backend parallel denylist
+    group, otherwise an HTTP /load caller could smuggle the value
+    through `llama_extra_args` and desync app.state.llama_parallel_slots
+    from the running llama-server slot count."""
+    studio_mod = _load_run_command()
+    import inspect
+    import sys as _sys
+
+    backend = Path(__file__).resolve().parents[2] / "studio" / "backend"
+    if str(backend) not in _sys.path:
+        _sys.path.insert(0, str(backend))
+    from core.inference.llama_server_args import _DENYLIST_GROUPS
+
+    parallel_group = next(
+        (g for g in _DENYLIST_GROUPS if "--parallel" in g), None
+    )
+    assert parallel_group is not None, "denylist must include a --parallel group"
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["parallel"].default
+    typer_aliases = set(getattr(opt, "param_decls", []) or [])
+    missing = typer_aliases - parallel_group
+    assert not missing, (
+        f"typer claims parallel aliases {missing!r} that the backend "
+        f"denylist does not reject; an HTTP /load caller could pass "
+        f"them through and desync llama_parallel_slots from the "
+        f"running process. Add them to _DENYLIST_GROUPS."
+    )
 
 
 # Runtime equivalent of the old source-text guard lives in
@@ -236,6 +275,38 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--parallel") == "8", argv
     assert _value_after(argv, "--top-k") == "20", argv
     assert _value_after(argv, "--temp") == "0.7", argv
+
+
+@pytest.mark.parametrize(
+    "user_flag,expected_in_child",
+    [
+        ("--load-in-4bit", "--load-in-4bit"),
+        ("--no-load-in-4bit", "--no-load-in-4bit"),
+        (None, "--load-in-4bit"),  # default True
+    ],
+)
+def test_reexec_forwards_load_in_4bit_in_both_directions(
+    monkeypatch, user_flag, expected_in_child
+):
+    """The re-exec must emit the explicit polarity the operator chose
+    (or the typer default if neither was passed). Without this, a
+    future default flip on one layer would silently invert behaviour
+    for users who never typed the flag."""
+    extras = [user_flag] if user_flag else []
+    result, captured = _invoke_run(monkeypatch, _BASE + extras)
+    assert len(captured) == 1
+    argv = captured[0]["argv"]
+    other_polarity = (
+        "--no-load-in-4bit"
+        if expected_in_child == "--load-in-4bit"
+        else "--load-in-4bit"
+    )
+    assert (
+        expected_in_child in argv
+    ), f"expected {expected_in_child} in child argv; got {argv}"
+    assert (
+        other_polarity not in argv
+    ), f"unexpected {other_polarity} in child argv; got {argv}"
 
 
 # Runtime behaviour test: bypass the re-exec branch by faking sys.prefix

@@ -103,8 +103,11 @@ def _flag_name(token: str) -> Optional[str]:
     llama-server short-form flags always start with a letter.
     Also normalises the attached short-option form ``-np<N>`` (and the
     signed ``-np-1`` / ``-np+1`` variants) to ``-np`` so the denylist
-    catches every form a caller could write.
+    catches every form a caller could write. Surrounding whitespace
+    is stripped first so ``"-np "`` cannot slip past the membership
+    check while still being parsed as ``-np`` by downstream tools.
     """
+    token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
         return None
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):

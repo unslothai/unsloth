@@ -206,6 +206,17 @@ def _find_setup_script() -> Optional[Path]:
     return None
 
 
+# ── llama-server --parallel limits ──────────────────────────────────
+# Shared by the typer Options on `unsloth studio` and `unsloth studio run`
+# and mirrored by studio/backend/run.py's argparse + the backend denylist
+# in studio/backend/core/inference/llama_server_args.py. Bumping the cap
+# here without updating run.py + the denylist test will desync silently.
+_PARALLEL_MIN = 1
+_PARALLEL_MAX = 64
+_PARALLEL_DEFAULT_RUN = 4       # pre-PR hardcoded value for `unsloth studio run`
+_PARALLEL_DEFAULT_PLAIN = 1     # pre-PR effective default for plain `unsloth studio`
+
+
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
 
@@ -515,15 +526,16 @@ def studio_default(
         help = "Run API server only, no frontend serving (for Tauri desktop app)",
     ),
     parallel: int = typer.Option(
-        1,
+        _PARALLEL_DEFAULT_PLAIN,
         "--parallel",
         "--n-parallel",
-        min = 1,
-        max = 64,
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
         help = (
-            "llama-server parallel decode slots (1..64). Default 1 matches "
-            "pre-PR behaviour for the plain-server path; `unsloth studio "
-            "run` defaults to 4."
+            f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
+            f"Default {_PARALLEL_DEFAULT_PLAIN} matches pre-PR behaviour for the "
+            f"plain-server path; `unsloth studio run` defaults to "
+            f"{_PARALLEL_DEFAULT_RUN}."
         ),
     ),
 ):
@@ -666,7 +678,10 @@ def _expand_attached_np_short() -> None:
     # post-`--` payload tokens are never rewritten. Signed suffixes
     # (`-np-1`, `-np+1`) are normalised too so this stays in lockstep
     # with the backend validator's _flag_name; otherwise Click would
-    # cluster them into `-n -p -1` and silently set port=-1.
+    # cluster them into `-n -p -1` and silently set port=-1. Suffixes
+    # whose first character looks numeric (`-np8x`, `-np-1foo`) are also
+    # rewritten so typer reports a clean "-np takes an int" error rather
+    # than a baffling `--port` complaint about the cluster fallout.
     i = 0
     while i < len(sys.argv):
         tok = sys.argv[i]
@@ -674,9 +689,10 @@ def _expand_attached_np_short() -> None:
             break
         if len(tok) > 3 and tok.startswith("-np") and tok[3] != "=":
             suffix = tok[3:]
-            if suffix.isdigit() or (
-                len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1:].isdigit()
-            ):
+            first_numeric = suffix[0].isdigit() or (
+                len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
+            )
+            if first_numeric:
                 sys.argv[i : i + 1] = ["-np", suffix]
                 i += 2
                 continue
@@ -797,17 +813,17 @@ def run(
         help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
     ),
     parallel: int = typer.Option(
-        4,
+        _PARALLEL_DEFAULT_RUN,
         "--parallel",
         "--n-parallel",
         "-np",
-        min = 1,
-        max = 64,
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
         help = (
             "llama-server parallel decode slots. Lets N requests share "
             "one loaded model concurrently; each slot gets ctx/N KV "
-            "cache, so higher N reduces per-call context. Default 4 "
-            "(matches the previous hardcoded value)."
+            f"cache, so higher N reduces per-call context. Default "
+            f"{_PARALLEL_DEFAULT_RUN} (matches the previous hardcoded value)."
         ),
     ),
 ):
@@ -817,11 +833,14 @@ def run(
     the underlying llama-server (GGUF only). Studio-managed flags
     rejected with HTTP 400 are model identity, networking (--host /
     --port / --path / --api-prefix / --reuse-port), auth/TLS (--api-key
-    / --ssl-*) and single-model UI (--ui / --models-* / --webui). See
-    studio/backend/core/inference/llama_server_args.py for the full
-    denylist. Other tunables like -c / --ctx-size, -ngl, --jinja,
-    --flash-attn, --no-context-shift, -t / --threads pass through and
-    last-wins-override Studio's auto-set value.
+    / --ssl-*), single-model UI (--ui / --models-* / --webui) and the
+    parallel slot count (--parallel / --n-parallel / -np: use the
+    first-class flag above, not a pass-through, so Studio's KV-fit and
+    app.state.llama_parallel_slots stay in sync with the running
+    process). See studio/backend/core/inference/llama_server_args.py
+    for the full denylist. Other tunables like -c / --ctx-size, -ngl,
+    --jinja, --flash-attn, --no-context-shift, -t / --threads pass
+    through and last-wins-override Studio's auto-set value.
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
@@ -916,8 +935,11 @@ def run(
         ]
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
-        if not load_in_4bit:
-            args.append("--no-load-in-4bit")
+        # Forward both polarities explicitly so the child sees the
+        # operator's exact choice; otherwise a future default flip on
+        # one layer would silently invert behaviour for users who
+        # never typed the flag.
+        args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
         if frontend:
             args.extend(["--frontend", str(frontend)])
         if silent:
