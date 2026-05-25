@@ -102,10 +102,12 @@ def _flag_name(token: str) -> Optional[str]:
     like ``-1`` or ``-0.5`` (e.g. ``--seed -1``) are values, not flags;
     llama-server short-form flags always start with a letter.
     Also normalises the attached short-option form ``-np<N>`` (and the
-    signed ``-np-1`` / ``-np+1`` variants) to ``-np`` so the denylist
-    catches every form a caller could write. Surrounding whitespace
-    is stripped first so ``"-np "`` cannot slip past the membership
-    check while still being parsed as ``-np`` by downstream tools.
+    signed ``-np-1`` / ``-np+1`` / digit-prefix-with-junk ``-np8x``
+    variants) to ``-np`` so the denylist catches every form a caller
+    could write. Stays in lockstep with the CLI's
+    ``_expand_attached_np_short`` recogniser. Surrounding whitespace is
+    stripped first so ``"-np "`` cannot slip past the membership check
+    while still being parsed as ``-np`` by downstream tools.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -115,8 +117,8 @@ def _flag_name(token: str) -> Optional[str]:
     name = token.split("=", 1)[0]
     if len(name) > 3 and name.startswith("-np"):
         suffix = name[3:]
-        if suffix.isdigit() or (
-            len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1:].isdigit()
+        if suffix[0].isdigit() or (
+            len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
         ):
             return "-np"
     return name

@@ -226,6 +226,19 @@ def test_denylist_rejects_whitespace_padded_forms(padded):
         validate_extra_args([padded, "8"])
 
 
+@pytest.mark.parametrize(
+    "attached",
+    ["-np8x", "-np-1foo", "-np+1bar", "-np9zzz"],
+)
+def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
+    # Backend `_flag_name` must classify the same forms the CLI
+    # rewriter expands; otherwise an HTTP /load caller could pass
+    # `-np8x` through llama_extra_args and the validator would
+    # forward it unchanged while the CLI rewrites it to ["-np", "8x"].
+    with pytest.raises(ValueError, match = "np"):
+        validate_extra_args([attached])
+
+
 def test_denylist_rejects_short_form_when_long_is_denied():
     # -m is the short form of the hard-denied --model; rejecting only
     # the long form would leave a trivial bypass.

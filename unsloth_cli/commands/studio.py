@@ -543,6 +543,21 @@ def studio_default(
     # Runs before any subcommand; covers run/setup/update/etc in one place.
     _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
+        # `unsloth studio --parallel N run ...` would silently drop the
+        # group-level value because typer doesn't propagate parent
+        # options into subcommand kwargs. Reject explicitly so the
+        # operator gets told where to put the flag instead of getting
+        # the run subcommand's default.
+        if parallel != _PARALLEL_DEFAULT_PLAIN:
+            typer.echo(
+                f"Error: --parallel on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put the flag after the "
+                f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
+                f"--parallel {parallel} ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
 
     # Always use the studio venv if it exists and we're not already in it

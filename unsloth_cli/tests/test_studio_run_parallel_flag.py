@@ -326,6 +326,51 @@ def _types_module(name):
     return _types.ModuleType(name)
 
 
+def test_studio_default_rejects_parallel_when_subcommand_invoked():
+    """`unsloth studio --parallel 8 run ...` would silently drop the 8
+    because typer doesn't propagate parent options to subcommand
+    kwargs. The studio_default callback rejects with exit code 2 and a
+    message pointing the operator at the subcommand-level flag."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--parallel", "8", "run", "--model", "X"])
+    assert result.exit_code == 2, (
+        f"expected exit 2 when --parallel is on studio group with a "
+        f"subcommand invoked; got {result.exit_code}; output={result.output!r}"
+    )
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--parallel" in combined, combined
+    assert "run --parallel 8" in combined, (
+        f"error message must show the corrected invocation; got: {combined}"
+    )
+
+
+def test_studio_default_default_parallel_with_subcommand_does_not_error():
+    """When the user doesn't pass --parallel on the group, invoking a
+    subcommand must still succeed (the group's default 1 is benign)."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    monkey_target = studio_mod
+    # Stub setup so invoking `studio setup` doesn't actually run the
+    # installer script; we only care that the callback didn't error
+    # out on the default --parallel.
+    monkey_target.setup.__wrapped__ if hasattr(
+        monkey_target.setup, "__wrapped__"
+    ) else None
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--help"])
+    assert result.exit_code == 0, result.output
+
+
 def test_studio_default_exposes_parallel_option():
     """Plain `unsloth studio` (no `run`) must also expose --parallel so
     the API-only / bare-server path has a way to raise concurrency
