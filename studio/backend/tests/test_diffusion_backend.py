@@ -502,9 +502,7 @@ def test_release_chat_backend_calls_unload_with_model_name(monkeypatch):
 
     # Skip the llama-server branch by also stubbing routes.inference.
     fake_routes = types.ModuleType("routes.inference")
-    fake_routes.get_llama_cpp_backend = lambda: types.SimpleNamespace(
-        is_loaded = False
-    )
+    fake_routes.get_llama_cpp_backend = lambda: types.SimpleNamespace(is_loaded = False)
     monkeypatch.setitem(sys.modules, "routes.inference", fake_routes)
 
     from core.inference.diffusion import _release_chat_backend_for_diffusion
