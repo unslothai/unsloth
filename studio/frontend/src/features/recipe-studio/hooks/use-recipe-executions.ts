@@ -75,6 +75,11 @@ type LocalModelLoadPlan =
   | { selection: null; error: string; legacyAliases?: never }
   | { selection: null; error: null; legacyAliases: string[] };
 
+type RestorableLocalModelSnapshot = {
+  selection: LocalModelSelection | null;
+  unrestorableLabel: string | null;
+};
+
 function getLocalProviderNames(payload: RecipePayload): Set<string> {
   const providers = Array.isArray(payload.recipe.model_providers)
     ? (payload.recipe.model_providers as Record<string, unknown>[])
@@ -219,7 +224,7 @@ async function isLocalModelAlreadyLoaded(
     return localSelectionMatchesActive({
       target,
       ggufVariant,
-      activeModel: status.active_model,
+      activeModel: status.model_identifier ?? status.active_model,
       activeVariant: status.gguf_variant?.trim() ?? "",
     });
   } catch {
@@ -284,7 +289,7 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
   try {
     const status = await getInferenceStatus();
     const target = status.active_model?.trim();
-    if (!target || status.is_gguf === true) {
+    if (!target) {
       return null;
     }
     return {
@@ -294,6 +299,32 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
     };
   } catch {
     return null;
+  }
+}
+
+async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocalModelSnapshot> {
+  try {
+    const status = await getInferenceStatus();
+    const activeLabel = status.active_model?.trim() ?? null;
+    const target = (
+      status.model_identifier ?? (status.is_gguf ? null : status.active_model)
+    )?.trim();
+    if (!target) {
+      return {
+        selection: null,
+        unrestorableLabel: activeLabel,
+      };
+    }
+    return {
+      selection: {
+        target,
+        ggufVariant: status.gguf_variant?.trim() ?? "",
+        aliases: ["previous Chat model"],
+      },
+      unrestorableLabel: null,
+    };
+  } catch {
+    return { selection: null, unrestorableLabel: null };
   }
 }
 
@@ -354,7 +385,8 @@ async function prepareLocalModelForRun(payload: RecipePayload): Promise<{
     return { error: null, restorePrevious: null };
   }
 
-  const previousSelection = await getActiveLocalModelSelection();
+  const previousSnapshot = await getRestorableActiveLocalModelSelection();
+  const previousSelection = previousSnapshot.selection;
   const error = await loadLocalModelSelection(loadPlan.selection);
   if (error) {
     return { error, restorePrevious: null };
@@ -371,7 +403,14 @@ async function prepareLocalModelForRun(payload: RecipePayload): Promise<{
             toastError("Could not restore previous local model", restoreError);
           }
         }
-      : null,
+      : previousSnapshot.unrestorableLabel
+        ? () => {
+            toast.warning("Previous local model was not restored", {
+              description: `${previousSnapshot.unrestorableLabel} was selected from a native file path. Reopen it in Chat to continue with that model.`,
+            });
+            return Promise.resolve();
+          }
+        : null,
   };
 }
 

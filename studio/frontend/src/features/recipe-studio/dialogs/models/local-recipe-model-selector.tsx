@@ -189,11 +189,11 @@ function LocalGgufVariantList({
   }
 
   return (
-    <div className="ml-3 border-l border-border/70 py-1 pl-3">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+    <div className="ml-6 mt-1 rounded-lg bg-muted/25 p-1.5">
+      <div className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
         Quantization
       </div>
-      <div className="space-y-1">
+      <div className="space-y-0.5">
         {sortedVariants.map((variant) => {
           const selected = selectedVariant === variant.quant;
           return (
@@ -202,8 +202,8 @@ function LocalGgufVariantList({
               type="button"
               onClick={() => onSelect(variant.quant)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/70",
-                selected && "bg-muted text-foreground",
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/60",
+                selected && "bg-background text-foreground shadow-sm",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono">
@@ -330,8 +330,8 @@ function LocalModelRow({
         disabled={probing}
         onClick={() => onSelectModel(model)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted/70",
-          selected && "bg-muted text-foreground",
+          "flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
+          selected && "bg-muted/70 text-foreground ring-1 ring-border/70",
         )}
       >
         {expandable ? (
@@ -591,29 +591,39 @@ export function LocalRecipeModelSelector({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="menu-soft-surface w-[min(420px,calc(100vw-1rem))] gap-2 p-2"
+        sideOffset={6}
+        className="menu-soft-surface nodrag nowheel gap-0 overflow-hidden p-0"
+        style={{
+          width:
+            "min(max(var(--radix-popover-trigger-width), 34rem), calc(100vw - 1rem))",
+        }}
       >
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search local models"
-              className="h-8"
-              autoFocus={true}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              onClick={requestModelRefresh}
-              aria-label="Refresh local models"
-            >
-              <RefreshCwIcon className="size-3.5" />
-            </Button>
+        <div className="flex flex-col">
+          <div className="border-b border-border/60 p-2.5">
+            <div className="flex items-center gap-2">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Filter local models"
+                className="h-8 flex-1"
+                autoFocus={true}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={requestModelRefresh}
+                aria-label="Refresh local models"
+              >
+                <RefreshCwIcon className="size-3.5" />
+              </Button>
+            </div>
           </div>
 
-          <div className="max-h-72 overflow-y-auto rounded-lg border border-border/60 p-1">
+          <div
+            className="nowheel max-h-[min(24rem,calc(100vh-12rem))] overflow-y-auto overscroll-contain p-1.5"
+            onWheelCapture={(event) => event.stopPropagation()}
+          >
             <LocalModelResults
               loading={loading}
               error={error}

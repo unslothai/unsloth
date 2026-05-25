@@ -606,11 +606,16 @@ async def load_model(
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
-        if request.gguf_variant:
+        is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+        if request.gguf_variant or is_direct_gguf_request:
+            gguf_variant_matches = is_direct_gguf_request or bool(
+                llama_backend.hf_variant
+                and request.gguf_variant
+                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
+            )
             if (
                 llama_backend.is_loaded
-                and llama_backend.hf_variant
-                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
+                and gguf_variant_matches
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings too so Apply isn't dropped (#5401).
@@ -619,7 +624,8 @@ async def load_model(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 logger.info(
-                    f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
+                    "Model already loaded (GGUF): "
+                    f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
 
@@ -1373,6 +1379,7 @@ async def get_status(
             _audio_type = getattr(llama_backend, "_audio_type", None)
             return InferenceStatusResponse(
                 active_model = _display_model_id,
+                model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
@@ -1435,6 +1442,7 @@ async def get_status(
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
+            model_identifier = backend.active_model_name,
             is_vision = is_vision,
             is_gguf = False,
             is_audio = is_audio,

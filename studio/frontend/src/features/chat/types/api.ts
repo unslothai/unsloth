@@ -143,6 +143,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   active_model: string | null;
+  model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
   gguf_variant?: string | null;
@@ -158,7 +159,7 @@ export interface InferenceStatusResponse {
     min_p?: number;
     presence_penalty?: number;
     trust_remote_code?: boolean;
-  };
+  } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?: "enable_thinking" | "reasoning_effort";
