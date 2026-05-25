@@ -74,6 +74,17 @@ from .scoring import (
     ScoreRequest,
     ScoreResponse,
 )
+from .eval import (
+    EvalDatasetRef,
+    EvalStartRequest,
+    EvalProgress,
+    EvalLastResult,
+    EvalRunSummary,
+    EvalResultRow,
+    EvalRunDetail,
+    MetricInfo,
+    MetricConfigField,
+)
 
 __all__ = [
     # Training schemas
@@ -136,4 +147,14 @@ __all__ = [
     # Document scoring
     "ScoreRequest",
     "ScoreResponse",
+    # Eval schemas
+    "EvalDatasetRef",
+    "EvalStartRequest",
+    "EvalProgress",
+    "EvalLastResult",
+    "EvalRunSummary",
+    "EvalResultRow",
+    "EvalRunDetail",
+    "MetricInfo",
+    "MetricConfigField",
 ]
