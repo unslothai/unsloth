@@ -408,6 +408,25 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
         lambda self: ("cpu", "fake_dtype"),
     )
 
+    # Round 16 reordered _release_other_gpu_owners_for_diffusion to
+    # run BEFORE the chat unload. That helper imports core.training /
+    # core.export and raises on active or unverifiable status. Stub
+    # both modules with idle backends so the load_model fast path
+    # works in CI environments where neither module is fully wired
+    # (Windows runners without the training/export deps).
+    fake_training_mod = types.ModuleType("core.training")
+    fake_training_mod.get_training_backend = lambda: SimpleNamespace(
+        is_training_active = lambda: False,
+    )
+    monkeypatch.setitem(sys.modules, "core.training", fake_training_mod)
+
+    fake_export_mod = types.ModuleType("core.export")
+    fake_export_mod.get_export_backend = lambda: SimpleNamespace(
+        is_export_active = lambda: False,
+        current_checkpoint = None,
+    )
+    monkeypatch.setitem(sys.modules, "core.export", fake_export_mod)
+
     return fake
 
 
@@ -1483,9 +1502,11 @@ def test_smart_base_repo_uses_windows_leaf_only_already_set_separator_round14():
     assert _smart_base_repo(fam, repo) == "black-forest-labs/FLUX.2-klein-9B"
 
 
-def test_display_repo_id_collapses_absolute_path():
+def test_display_repo_id_collapses_absolute_path(tmp_path):
     """Round 15 P2 #6: absolute local paths must NOT leak through
-    status(). Hub-style repo ids pass through unchanged."""
+    status(). Hub-style repo ids pass through unchanged. Uses
+    ``tmp_path`` so the absolute path is platform-correct (POSIX
+    ``/`` paths read as drive-relative on Windows)."""
     from core.inference.diffusion import _display_repo_id
 
     # Hub id passes through.
@@ -1493,8 +1514,11 @@ def test_display_repo_id_collapses_absolute_path():
         _display_repo_id("black-forest-labs/FLUX.2-klein-4B")
         == "black-forest-labs/FLUX.2-klein-4B"
     )
-    # Absolute local path collapses to leaf.
-    assert _display_repo_id("/home/alice/exports/private-flux") == "private-flux"
+    # Absolute local path collapses to leaf. ``tmp_path`` is absolute
+    # on every OS pytest supports.
+    absolute_local = tmp_path / "private-flux"
+    absolute_local.mkdir()
+    assert _display_repo_id(str(absolute_local)) == "private-flux"
     # HF tokens are scrubbed defensively.
     leaky = "https://hf_abcdefghij0123456789@huggingface.co/owner/repo"
     out = _display_repo_id(leaky)
@@ -1527,15 +1551,23 @@ def test_detect_family_compact_aliases_with_owner_prefix():
     assert detect_family("unsloth/Flux20-GGUF") is None
 
 
-def test_public_status_does_not_leak_local_path_via_active_fields(monkeypatch):
+def test_public_status_does_not_leak_local_path_via_active_fields(
+    monkeypatch, tmp_path
+):
     """Round 16 P1 #5: even the guard-facing active_*/pending_* keys
-    must be absent from the public status payload."""
+    must be absent from the public status payload. Uses ``tmp_path``
+    so the absolute path is correct on every OS."""
     import core.inference.diffusion as d
+
+    absolute_repo = tmp_path / "private-flux"
+    absolute_repo.mkdir()
+    absolute_base = tmp_path / "base-private"
+    absolute_base.mkdir()
 
     backend = d.DiffusionBackend()
     backend._pipe = object()
-    backend._repo_id = "/home/alice/private-flux"
-    backend._base_repo = "/home/alice/base-private"
+    backend._repo_id = str(absolute_repo)
+    backend._base_repo = str(absolute_base)
     backend._family = d.DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
@@ -1559,18 +1591,21 @@ def test_public_status_does_not_leak_local_path_via_active_fields(monkeypatch):
         assert key not in public
 
     internal = backend.status(include_internal = True)
-    assert internal["active_repo_id"] == "/home/alice/private-flux"
-    assert internal["active_base_repo"] == "/home/alice/base-private"
+    assert internal["active_repo_id"] == str(absolute_repo)
+    assert internal["active_base_repo"] == str(absolute_base)
 
 
-def test_generate_image_with_metadata_redacts_local_path(monkeypatch):
+def test_generate_image_with_metadata_redacts_local_path(monkeypatch, tmp_path):
     """Round 16 P1 #6: the generation response must not echo a raw
     absolute path back to the browser."""
     import core.inference.diffusion as d
 
+    absolute_repo = tmp_path / "secret-flux"
+    absolute_repo.mkdir()
+
     backend = d.DiffusionBackend()
     backend._pipe = object()
-    backend._repo_id = "/home/alice/private/secret-flux"
+    backend._repo_id = str(absolute_repo)
     backend._family = d.DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
@@ -1587,7 +1622,7 @@ def test_generate_image_with_metadata_redacts_local_path(monkeypatch):
     monkeypatch.setattr(backend, "_generate_image_unlocked", _fake_unlocked)
     _, meta = backend.generate_image_with_metadata(prompt = "x")
     assert meta["model"] == "secret-flux"
-    assert "/home/alice" not in meta["model"]
+    assert str(tmp_path) not in meta["model"]
 
 
 def test_release_other_gpu_owners_raises_on_active_training(monkeypatch):
