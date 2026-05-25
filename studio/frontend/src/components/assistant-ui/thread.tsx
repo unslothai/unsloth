@@ -478,10 +478,26 @@ function useImeComposerInputHandlers() {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         composingRef.current = true;
         refreshStuckTimer();
+      } else if (composingRef.current) {
+        // Non-IME key while composingRef is stuck — the input method was likely
+        // switched away on macOS without firing compositionend (issue #5546
+        // pattern, but triggered by input-method switch rather than WSL).
+        // Clear immediately so Send is unblocked on the first non-IME keystroke
+        // rather than waiting for the 2500ms watchdog.
+        setCompositionState(false);
       }
     },
-    [refreshStuckTimer],
+    [refreshStuckTimer, setCompositionState],
   );
+
+  // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea
+  // is focused can fire compositionstart without a matching compositionend —
+  // leaving composingRef pinned and Send permanently blocked. The OS always
+  // commits or cancels any in-progress composition before surrendering focus,
+  // so blur is a safe unconditional reset point.
+  const onBlur = useCallback(() => {
+    setCompositionState(false);
+  }, [setCompositionState]);
 
   return {
     inputProps: {
@@ -490,6 +506,7 @@ function useImeComposerInputHandlers() {
       onCompositionEnd,
       onChange,
       onKeyDown,
+      onBlur,
     },
     isComposing,
     isComposingRef: composingRef,
