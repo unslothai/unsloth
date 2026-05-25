@@ -1145,6 +1145,16 @@ def install_python_stack() -> int:
             package_name,
             "--upgrade-package",
             "unsloth-zoo",
+            # Force the resolver to consider transformers + mlx-vlm afresh
+            # so a venv carrying a stale transformers (from an older install
+            # that pinned 4.57.6 via constraints.txt) does not end up paired
+            # with a newer unsloth-zoo's mlx-vlm requirement. Both flags are
+            # no-ops when the package is absent (mlx-vlm only ships wheels
+            # on darwin arm64) so this is safe to apply unconditionally.
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
             package_name,
             "unsloth-zoo",
             floor = _pin_floor_args(
@@ -1203,6 +1213,12 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            # Re-resolve transformers + mlx-vlm too -- see explanation in the
+            # NO_TORCH branch above (stale transformers / new mlx-vlm split).
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
             floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
         )
@@ -1255,6 +1271,12 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            # Re-resolve transformers + mlx-vlm too -- see explanation in the
+            # NO_TORCH branch above (stale transformers / new mlx-vlm split).
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
             floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
         )
