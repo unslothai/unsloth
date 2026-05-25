@@ -135,7 +135,7 @@ class LoRA_MLP(torch.autograd.Function):
         e = e.view(-1, e.shape[-1])
         g = g.view(-1, g.shape[-1])
         dtype = _get_compute_dtype(X)
-        X = X.to(dtype)
+        X, dY = X.to(dtype), dY.to(dtype)
 
         gateA, gateB, upA, upB, downA, downB = (
             gateA.to(dtype),
@@ -441,7 +441,7 @@ class LoRA_QKV(torch.autograd.Function):
         dV = dV.view(-1, dV.shape[-1])
         X = X.view(-1, X.shape[-1])
         dtype = _get_compute_dtype(X)
-        X = X.to(dtype)
+        X, dQ, dK, dV = X.to(dtype), dQ.to(dtype), dK.to(dtype), dV.to(dtype)
 
         QA, QB, KA, KB, VA, VB = (
             QA.to(dtype),
@@ -613,7 +613,7 @@ class LoRA_W(torch.autograd.Function):
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
         dtype = _get_compute_dtype(X)
-        X = X.to(dtype)
+        X, dY = X.to(dtype), dY.to(dtype)
 
         A, B = A.to(dtype), B.to(dtype)
 
