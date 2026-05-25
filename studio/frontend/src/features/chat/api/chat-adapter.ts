@@ -833,7 +833,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        artifactsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -872,33 +878,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
-      const webSearchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
-        );
-      const codeExecEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            externalSelection &&
-            codeToolsEnabled &&
-            providerSupportsBuiltinCodeExecution(
-              externalProvider.providerType,
-              externalSelection.modelId,
-              externalProvider.baseUrl,
-            ),
-        );
+      const webSearchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebSearch(externalProvider.providerType),
+      );
+      const codeExecEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          codeToolsEnabled &&
+          providerSupportsBuiltinCodeExecution(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
       // web_fetch shares the Search pill with web_search (no separate
       // UI toggle), so it follows toolsEnabled. Anthropic is the only
       // provider that ships it today; on others providerSupportsBuiltinWebFetch
       // returns false and this stays inert.
-      const webFetchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebFetch(externalProvider.providerType),
-        );
+      const webFetchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
       const providerShipsWebFetch = Boolean(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
@@ -964,30 +967,50 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             "Do not return tool-call syntax inside your response.";
         }
       }
-      if (disabledToolGuard) {
-        const firstMessage = outboundMessages[0];
+      type OutboundMessage = (typeof outboundMessages)[number];
+      function addSystemInstruction(
+        targetMessages: OutboundMessage[],
+        text: string | null,
+      ): void {
+        if (!text) return;
+        const firstMessage = targetMessages[0];
         if (firstMessage?.role === "system") {
           if (typeof firstMessage.content === "string") {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
-              content: `${firstMessage.content}\n\n${disabledToolGuard}`,
+              content: `${firstMessage.content}\n\n${text}`,
             };
           } else {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
               content: [
                 ...firstMessage.content,
-                { type: "text", text: `\n\n${disabledToolGuard}` },
+                { type: "text", text: `\n\n${text}` },
               ],
             };
           }
-        } else {
-          outboundMessages.unshift({
-            role: "system",
-            content: disabledToolGuard,
-          });
+          return;
         }
+        targetMessages.unshift({ role: "system", content: text });
       }
+
+      // Keep render_html local-only for now. External providers already have
+      // provider-specific built-in tool translation, but no generic custom-tool
+      // round-trip loop; they get the fenced-html artifact fallback instead.
+      const renderHtmlToolEnabledForThisTurn = Boolean(
+        !isExternalRequest && supportsTools && artifactsEnabled,
+      );
+      const artifactInstruction = artifactsEnabled
+        ? renderHtmlToolEnabledForThisTurn
+          ? "When the user asks for an HTML, CSS, or JavaScript artifact, use the render_html tool with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document."
+          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+        : null;
+      const effectiveDisabledToolGuard =
+        disabledToolGuard && artifactsEnabled
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          : disabledToolGuard;
+      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
+      addSystemInstruction(outboundMessages, artifactInstruction);
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
 
@@ -1314,8 +1337,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ) {
                       void updateStoredChatThreadEventually(t.id, {
                         openaiCodeExecContainerId: null,
-                      })
-                        .catch(() => {});
+                      }).catch(() => {});
                       continue;
                     }
                     openaiCodeExecContainerId = t.openaiCodeExecContainerId;
@@ -1359,8 +1381,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = created.id;
                   void updateStoredChatThreadEventually(resolvedThreadId, {
                     openaiCodeExecContainerId: created.id,
-                  })
-                    .catch(() => {});
+                  }).catch(() => {});
                 } catch {
                   // Fall back to backend's container_auto path on
                   // failure — keeps the chat moving; the next turn
@@ -1473,7 +1494,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // attaches `cache_control.ttl` when the value is one of
               // "5m" / "1h" (see external_provider.py near line 1375),
               // so unknown values are a no-op end-to-end.
-              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              ...(supportsProviderPromptCacheTtl(
+                externalProvider.providerType,
+              ) &&
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
@@ -1518,12 +1541,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools && (toolsEnabled || codeToolsEnabled)
+            ...(supportsTools &&
+            (toolsEnabled || codeToolsEnabled || artifactsEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(artifactsEnabled ? ["render_html"] : []),
                   ],
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
@@ -1591,8 +1616,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         : "openaiCodeExecContainerId";
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: null,
-                    })
-                      .catch(() => {});
+                    }).catch(() => {});
                   }
                   continue;
                 }

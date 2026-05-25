@@ -19,6 +19,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -67,6 +68,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
+  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   ImageIcon,
@@ -79,7 +81,12 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  Copy01Icon,
+  Delete02Icon,
+  Edit03Icon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ChangeEvent,
@@ -98,11 +105,7 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({
-  hideComposer,
-  hideWelcome,
-  targetThreadId,
-}) => {
+}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
@@ -136,7 +139,9 @@ export const Thread: FC<{
           )}
         >
           {!hideWelcome && (
-            <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
+            <AuiIf
+              condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+            >
               <ThreadWelcome hideComposer={hideComposer} />
             </AuiIf>
           )}
@@ -225,7 +230,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   useEffect(() => {
     const hour = new Date().getHours();
     if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
-    else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
+    else if (hour >= 12 && hour < 17)
+      setCurrentEmoji("sloth magnify final.png");
     else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
     else setCurrentEmoji("unsloth-gem.png");
   }, []);
@@ -240,11 +246,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
-            <img
-              src={currentEmojiSrc}
-              alt="Sloth mascot"
-              className="size-20"
-            />
+            <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
@@ -294,7 +296,8 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
-  const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const { inputProps, isComposing, isComposingRef } =
+    useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
@@ -304,7 +307,9 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       (attachment) => attachment.status.type === "running",
     ),
   );
-  const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const hasPendingAudio = useChatRuntimeStore((s) =>
+    Boolean(s.pendingAudioName),
+  );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
@@ -342,7 +347,10 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       />
       <ComposerAction
         disabled={
-          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+          disabled ||
+          !hasSendableContent ||
+          isComposing ||
+          hasPendingAttachments
         }
         blockSend={() =>
           !hasSendableContent || isComposingRef.current || hasPendingAttachments
@@ -553,7 +561,6 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -565,8 +572,12 @@ const ReasoningToggle: FC = () => {
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
+  const reasoningEffortLevels = useChatRuntimeStore(
+    (s) => s.reasoningEffortLevels,
+  );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
@@ -619,7 +630,8 @@ const ReasoningToggle: FC = () => {
     effectiveReasoningEnabled && reasoningEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
-    if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
+    if (level !== "xhigh")
+      return level.charAt(0).toUpperCase() + level.slice(1);
     const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
     if (
       normalized.startsWith("claude-opus-4-6") ||
@@ -677,23 +689,25 @@ const ReasoningToggle: FC = () => {
           {effectiveReasoningEffortLevels
             .filter((level) => level !== "none")
             .map((level) => (
-            <DropdownMenuItem
-              key={level}
-              onSelect={() => {
-                setReasoningEffort(level);
-                setReasoningEnabled(true);
-                applyQwenThinkingParams(true);
-                // Kimi's $web_search builtin forbids thinking, so
-                // enabling thinking flips the Search pill off.
-                if (isKimiExternal && toolsEnabled) {
-                  setToolsEnabled(false);
-                }
-              }}
-            >
-              {formatEffortLabel(level)}
-              {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
-            </DropdownMenuItem>
-          ))}
+              <DropdownMenuItem
+                key={level}
+                onSelect={() => {
+                  setReasoningEffort(level);
+                  setReasoningEnabled(true);
+                  applyQwenThinkingParams(true);
+                  // Kimi's $web_search builtin forbids thinking, so
+                  // enabling thinking flips the Search pill off.
+                  if (isKimiExternal && toolsEnabled) {
+                    setToolsEnabled(false);
+                  }
+                }}
+              >
+                {formatEffortLabel(level)}
+                {effectiveReasoningVisualEnabled && reasoningEffort === level
+                  ? " \u2713"
+                  : ""}
+              </DropdownMenuItem>
+            ))}
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -808,8 +822,7 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  const disabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  const disabled = !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
@@ -899,11 +912,36 @@ const ImagesToggle: FC = () => {
       className="composer-pill-btn"
       data-active={imageToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+        imageToolsEnabled
+          ? "Disable image generation"
+          : "Enable image generation"
       }
     >
       <ImageIcon className="size-3.5" />
       <span>Images</span>
+    </button>
+  );
+};
+
+const ArtifactsToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const disabled = !modelLoaded;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+      className="composer-pill-btn"
+      data-active={artifactsEnabled && !disabled ? "true" : "false"}
+      aria-label={artifactsEnabled ? "Disable artifacts" : "Enable artifacts"}
+    >
+      <FileTextIcon className="size-3.5" />
+      <span>Artifacts</span>
     </button>
   );
 };
@@ -980,6 +1018,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <ArtifactsToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
@@ -1107,6 +1146,7 @@ const AssistantMessage: FC = () => {
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
                 image_generation: ImageGenerationToolUI,
+                render_html: RenderHtmlToolUI,
               },
               Fallback: ToolFallback,
             },
@@ -1284,7 +1324,11 @@ const UserActionBar: FC = () => {
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon
+            icon={Edit03Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
       <DeleteMessageButton />
