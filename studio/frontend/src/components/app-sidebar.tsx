@@ -249,10 +249,16 @@ export function AppSidebar() {
 
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
     await deleteChatItem(item, activeThreadId, (view) => {
-      navigate({
+      // Function-form search replaces (not merges) so the deleted
+      // thread / compare id can't survive in the URL. The recovery
+      // useEffect in chat-page only fires on hard reload, which is
+      // why the in-tab address bar stays stale otherwise.
+      setActiveThreadId(null);
+      void navigate({
         to: "/chat",
-        search: { new: view.newThreadNonce },
+        search: () => ({ new: view.newThreadNonce }),
       });
+      closeMobileIfOpen();
     });
   }
 
@@ -362,7 +368,7 @@ export function AppSidebar() {
               closeMobileIfOpen();
               void navigate({
                 to: "/chat",
-                search: { new: createNavigationNonce() },
+                search: () => ({ new: createNavigationNonce() }),
               });
             }}
             className="flex items-center gap-[6px] select-none"
@@ -440,7 +446,10 @@ export function AppSidebar() {
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+                navigate({
+                  to: "/chat",
+                  search: () => ({ new: createNavigationNonce() }),
+                });
                 closeMobileIfOpen();
               }}
             />
