@@ -687,7 +687,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         if gguf_file:
             mmproj_file = detect_mmproj_file(gguf_file, search_root = local_path)
             is_vision = mmproj_file is not None
-            logger.info(
+            logger.debug(
                 "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
                 gguf_file,
                 mmproj_file,
