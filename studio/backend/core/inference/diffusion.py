@@ -893,20 +893,39 @@ class DiffusionBackend:
                             token = hf_token,
                         )
 
-                # Round 19 P1 #3: the GGUF branch above already
-                # proved repo + filename are accessible via
-                # ``hf_hub_download``. The full-diffusers path (no
-                # ``gguf_filename``) did NOT, so a typo / private /
-                # gated full repo only surfaced inside
-                # ``from_pretrained`` AFTER chat was unloaded. Probe
-                # ``effective_base`` for ``model_index.json`` here so
-                # the chat model is preserved on a bad full-repo
-                # request. Also probe when the GGUF caller supplied
-                # an explicit ``base_repo`` (the base companion is
-                # ALSO downloaded via from_pretrained further down
-                # and would OOM-then-fail past the unload).
-                if not gguf_filename or base_repo:
-                    _preflight_full_diffusers_repo(effective_base, hf_token)
+                # Round 20 P1 #1: every load mode (full diffusers
+                # repo, GGUF + explicit base_repo, GGUF + auto-picked
+                # base_repo) feeds ``effective_base`` into
+                # ``from_pretrained`` further down. The round 19
+                # preflight only ran for the first two, so an
+                # auto-picked GGUF companion that turned out to be
+                # gated / private / missing still unloaded chat
+                # before the load failed. Always preflight
+                # ``effective_base`` so a bad companion repo is
+                # caught BEFORE chat / export are released.
+                _preflight_full_diffusers_repo(effective_base, hf_token)
+
+                # Round 20 P1 #2: ``diffusers.GGUFQuantizationConfig``
+                # imports the ``gguf`` package lazily at construction
+                # time. Partial Studio installs (``diffusers`` present,
+                # ``gguf`` not) used to discover that AFTER the chat /
+                # export release calls. Build the quant config up
+                # front so the missing-dependency surface raises
+                # while the user's chat model is still resident.
+                quant_config = None
+                if gguf_filename:
+                    try:
+                        quant_config = diffusers.GGUFQuantizationConfig(
+                            compute_dtype = dtype
+                        )
+                    except ModuleNotFoundError as exc:
+                        missing = exc.name or str(exc)
+                        raise RuntimeError(
+                            "Diffusion GGUF loading requires the gguf "
+                            "runtime package. Missing dependency: "
+                            f"{missing}. Re-run Studio setup before "
+                            "loading an image GGUF."
+                        ) from exc
 
                 # All cheap failure points (bad gguf_filename, missing
                 # pipeline / transformer class, gated download token,
@@ -965,7 +984,8 @@ class DiffusionBackend:
                     _drain_cuda_cache()
 
                 if gguf_filename:
-                    quant_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype)
+                    # ``quant_config`` was already constructed above
+                    # (round 20 P1 #2 pre-release fail-fast).
                     # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
                     # SD3) need the matching base repo's component config
                     # at config=<base_repo>, subfolder="transformer".
@@ -1098,20 +1118,34 @@ class DiffusionBackend:
                     except (OSError, ValueError):
                         return msg
                     leaf = p.name or candidate
-                    abs_str = None
-                    if p.is_absolute() or p.exists():
-                        try:
-                            abs_str = str(p)
-                        except (OSError, ValueError):
-                            abs_str = None
-                    if abs_str and abs_str in msg:
-                        msg = msg.replace(abs_str, leaf)
-                    if (
-                        candidate != leaf
-                        and candidate in msg
-                        and ("/" in candidate or "\\" in candidate)
+                    needles: set[str] = set()
+                    # Round 20 P2 #6: a relative candidate like
+                    # ``exports/my-flux`` used to collapse only the
+                    # exact ``exports/my-flux`` substring, but
+                    # downstream libraries (diffusers / safetensors)
+                    # resolve and emit ``/mnt/disks/.../exports/my-flux/...``
+                    # absolute strings that leaked the operator's
+                    # filesystem layout. Also scrub the resolved
+                    # absolute form so the leaf is the only path
+                    # fragment that survives.
+                    try:
+                        if p.exists():
+                            needles.add(str(p.resolve()))
+                        elif p.is_absolute():
+                            needles.add(str(p))
+                    except (OSError, ValueError):
+                        pass
+                    if "/" in candidate or "\\" in candidate:
+                        needles.add(candidate)
+                    # Replace longest first so a parent-directory
+                    # substring does not blank out the leaf-only
+                    # context the user needs.
+                    for needle in sorted(
+                        (n for n in needles if n and n != leaf),
+                        key = len,
+                        reverse = True,
                     ):
-                        msg = msg.replace(candidate, leaf)
+                        msg = msg.replace(needle, leaf)
                     return msg
 
                 # ``effective_base`` and ``gguf_filename`` are local

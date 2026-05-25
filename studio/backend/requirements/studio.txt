@@ -23,3 +23,10 @@ diceware
 ddgs
 cryptography>=42.0.0
 httpx>=0.27.0
+# Studio Images page runtime. Flux2KleinPipeline / Flux2Pipeline /
+# QwenImagePipeline / StableDiffusion3Pipeline are available in
+# diffusers>=0.37.0, and GGUFQuantizationConfig requires the gguf
+# package (round 20 P1 #4: fresh standard Studio installs failed on
+# /images/load because these were only listed in the extras files).
+diffusers>=0.37.0
+gguf>=0.10.0

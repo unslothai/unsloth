@@ -1305,7 +1305,15 @@ def test_load_model_accepts_relative_local_dir(monkeypatch, tmp_path):
         ),
     )
 
-    def _boom(**_):
+    def _boom(**kwargs):
+        # Round 20 P1 #1 added a base-repo preflight that downloads
+        # the diffusers ``model_index.json`` of the auto-picked
+        # companion repo BEFORE the chat unload. Allow that call
+        # through (it would otherwise hit the network) but still
+        # reject any attempt to download the GGUF itself, which is
+        # what this test guards.
+        if kwargs.get("filename") == "model_index.json":
+            return "/tmp/model_index.json"
         raise AssertionError("hf_hub_download must not run for a local dir")
 
     fake_hub = SimpleNamespace(hf_hub_download = _boom)

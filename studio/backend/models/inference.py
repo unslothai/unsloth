@@ -60,6 +60,24 @@ class LoadRequest(BaseModel):
             return None
         return value
 
+    # Round 20 P1 #5: extend the diffusion-side identifier hardening
+    # (round 5 P2 / round 15 P1 #5) to the chat LoadRequest. Newline
+    # / tab / control characters in ``model_path`` or ``gguf_variant``
+    # would otherwise be echoed verbatim into structured-log lines
+    # ("Loading model %s") and let a caller smuggle in fake log
+    # entries, and an embedded ``hf_...`` token in a URL-form path
+    # would leak the credential into the same log sinks the
+    # diffusion route already redacts.
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("model_path")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
     cache_type_kv: Optional[str] = Field(
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
@@ -110,6 +128,20 @@ class UnloadRequest(BaseModel):
 
     model_path: str = Field(..., description = "Model identifier to unload")
 
+    # Round 20 P1 #5: mirror the LoadRequest identifier hardening so
+    # /api/inference/unload also rejects control characters and
+    # URL-embedded HF tokens before the path reaches structured log
+    # sinks.
+    @field_validator("model_path")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("model_path")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
 
 class ValidateModelRequest(BaseModel):
     """
@@ -129,6 +161,20 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+
+    # Round 20 P1 #5: same identifier hardening as LoadRequest /
+    # UnloadRequest. /api/inference/validate flows directly into
+    # ``ModelConfig.from_identifier`` and the resulting log lines, so
+    # control characters and embedded HF tokens must not survive.
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("model_path")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class ValidateModelResponse(BaseModel):
