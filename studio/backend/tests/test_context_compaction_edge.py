@@ -852,8 +852,7 @@ def test_compaction_content_part_is_not_multimodal_anchor():
         m.get("role") == "assistant"
         and isinstance(m.get("content"), list)
         and any(
-            isinstance(p, dict) and p.get("type") == "compaction"
-            for p in m["content"]
+            isinstance(p, dict) and p.get("type") == "compaction" for p in m["content"]
         )
         for m in out
     )
