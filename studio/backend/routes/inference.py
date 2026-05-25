@@ -2380,10 +2380,16 @@ async def openai_chat_completions(
         # hard-override the per-request value. Without a CLI override, falls
         # back to `payload.enable_tools` (existing behavior). `mcp_enabled=true`
         # also opens the tool loop so MCP-only callers do not have to flip a
-        # second flag (matches the documented "append MCP tools" semantics).
+        # second flag, BUT must still honor a CLI `--disable-tools` policy --
+        # checking the raw policy here keeps `mcp_enabled` from re-enabling
+        # tools that the operator explicitly forbade.
+        from state.tool_policy import get_tool_policy as _get_tool_policy_g
+
+        _cli_policy = _get_tool_policy_g()
         _tools_on = _effective_enable_tools(payload)
+        _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
         use_tools = (
-            (_tools_on or payload.mcp_enabled)
+            (_tools_on or _mcp_allowed)
             and llama_backend.supports_tools
             and not has_gguf_image
         )
@@ -2403,7 +2409,7 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
-            if payload.mcp_enabled:
+            if _mcp_allowed:
                 tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
             # Skip the tool loop when no tool actually survived, so the
@@ -2891,10 +2897,15 @@ async def openai_chat_completions(
         else 25
     )
 
-    # Match the GGUF path: mcp_enabled also opens the tool loop on its own.
+    # Match the GGUF path: mcp_enabled also opens the tool loop on its own
+    # but must still honor a CLI `--disable-tools` policy.
+    from state.tool_policy import get_tool_policy as _get_tool_policy_sf
+
+    _sf_cli_policy = _get_tool_policy_sf()
     _sf_tools_on = _effective_enable_tools(payload)
+    _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
     _sf_use_tools = (
-        (_sf_tools_on or payload.mcp_enabled)
+        (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
         and not _sf_is_gptoss
@@ -2913,7 +2924,7 @@ async def openai_chat_completions(
         else:
             _sf_tools_to_use = ALL_TOOLS
 
-        if payload.mcp_enabled:
+        if _sf_mcp_allowed:
             _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
         # Mirror the GGUF path: refuse to enter the tool loop when nothing

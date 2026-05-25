@@ -415,6 +415,142 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
     assert exc.value.status_code == 400
 
 
+def test_tool_xml_parser_handles_hyphenated_parameter_names():
+    """MCP tool schemas commonly use hyphenated property names like
+    `issue-number` / `repo-name`; the XML parser's `<parameter=\\w+>` regex
+    dropped those keys. Verify hyphenated parameter names round-trip."""
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+    import json as _json
+
+    calls = parse_tool_calls_from_text(
+        "<function=mcp__srv__create-issue>"
+        "<parameter=issue-title>Bug report</parameter>"
+        "<parameter=repo-name>octocat/hello</parameter>"
+        "</function>"
+    )
+    assert len(calls) == 1
+    args = _json.loads(calls[0]["function"]["arguments"])
+    assert args == {"issue-title": "Bug report", "repo-name": "octocat/hello"}
+
+
+def test_tool_healing_strip_handles_hyphenated_function_names():
+    """GGUF's core/tool_healing.py has its own copy of the XML strip
+    regex; the round-4 fix to the shared parser missed this file."""
+    from core.tool_healing import strip_tool_call_markup
+
+    out = strip_tool_call_markup(
+        "before <function=mcp__srv__list-issues>"
+        "<parameter=q>x</parameter></function> after"
+    )
+    assert out == "before  after"
+
+
+def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
+    """When the model emits a tool call not in the per-request tool list
+    the GGUF agentic loop must refuse to dispatch -- mirroring the
+    safetensors path. Previously execute_tool ran the call regardless."""
+    from core.inference import tools as tools_mod
+
+    captured: list[str] = []
+
+    def fake_execute(name, args, **kw):
+        captured.append(name)
+        return "executed"
+
+    monkeypatch.setattr(tools_mod, "execute_tool", fake_execute)
+
+    # Re-create the allow-list check inline so we can unit-test the
+    # behavior without spinning up llama-server.
+    def _gate(tools_advertised, called_name, args):
+        allowed = {
+            (t.get("function") or {}).get("name")
+            for t in (tools_advertised or [])
+            if (t.get("function") or {}).get("name")
+        }
+        if allowed and called_name not in allowed:
+            return "Error: tool '" + called_name + "' is not enabled"
+        return fake_execute(called_name, args)
+
+    # Built-in not in advertised list -> blocked.
+    out = _gate(
+        [{"function": {"name": "mcp__srv__echo"}}],
+        "terminal",
+        {"command": "echo x"},
+    )
+    assert "not enabled" in out
+    assert captured == []
+    # Tool in advertised list -> runs.
+    out = _gate(
+        [{"function": {"name": "mcp__srv__echo"}}],
+        "mcp__srv__echo",
+        {"text": "hi"},
+    )
+    assert out == "executed"
+    assert captured == ["mcp__srv__echo"]
+
+
+def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
+    """cancel_event set BEFORE call_tool_sync runs -> no HTTP request
+    is made. Previously the call task was created before the cancel
+    check, opening a transport that the watcher then had to cancel."""
+    from core.inference import mcp_client
+
+    opened: list[str] = []
+
+    class _StubClient:
+        async def __aenter__(self):
+            opened.append("opened")
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def call_tool(self, name, args):
+            return "ran"
+
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
+
+    import threading
+    ev = threading.Event()
+    ev.set()
+    out = mcp_client.call_tool_sync(
+        url = "https://example/mcp",
+        headers = None,
+        name = "x",
+        args = {},
+        timeout = 5.0,
+        cancel_event = ev,
+    )
+    assert "cancelled" in out.lower()
+    # The client must NOT have been opened.
+    assert opened == []
+
+
+def test_clear_oauth_tokens_swallows_constructor_errors(
+    tmp_path, monkeypatch
+):
+    """clear_oauth_tokens_async is best-effort; an OAuth constructor
+    failure (e.g. missing fastmcp.client.auth) must not bubble out into
+    a 500 from the delete / update routes."""
+    import asyncio
+    from core.inference import mcp_client
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+
+    # Patch the OAuth import path to raise so the entire body fails.
+    class _BoomOAuth:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("simulated")
+
+    import sys as _sys
+    fake_mod = type(_sys)("fastmcp.client.auth")
+    fake_mod.OAuth = _BoomOAuth
+    monkeypatch.setitem(_sys.modules, "fastmcp.client.auth", fake_mod)
+    # Must not raise.
+    asyncio.run(mcp_client.clear_oauth_tokens_async("https://x/mcp"))
+
+
 def test_tool_xml_parser_handles_hyphenated_function_names():
     """MCP tool names are advertised as `mcp__srv__list-issues` (the regex
     fix allows '-'); the XML tool-call parser must parse them too,

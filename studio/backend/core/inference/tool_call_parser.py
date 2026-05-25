@@ -66,7 +66,9 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
+# Parameter names can carry hyphens too (e.g. MCP tool schemas with
+# `issue-number`, `repo-name`); using `\w+` here dropped those keys.
+_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 

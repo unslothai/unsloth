@@ -48,11 +48,13 @@ async def clear_oauth_tokens_async(url: str) -> None:
     """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by
     MCP URL, so on server delete / URL change / OAuth disable we have to
     clear the old credentials explicitly. Otherwise re-registering the
-    same URL would silently reuse the old account's token."""
-    from fastmcp.client.auth import OAuth
-
-    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    same URL would silently reuse the old account's token. The entire
+    body runs inside the protected block -- store / OAuth construction
+    failing must not make the delete / update route 500."""
     try:
+        from fastmcp.client.auth import OAuth
+
+        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         # Cleanup is best-effort; the row delete still wins.
@@ -137,6 +139,11 @@ def call_tool_sync(
             await asyncio.sleep(0.05)
 
     async def _race() -> Any:
+        # Check cancellation before spawning the call task so a pre-set
+        # event short-circuits before opening the transport / HTTP
+        # connection (reviewer-reproduced race).
+        if cancel_event is not None and cancel_event.is_set():
+            raise _MCPCancelled
         call_task = asyncio.create_task(_call())
         if cancel_event is None:
             return await asyncio.wait_for(call_task, timeout = timeout)
