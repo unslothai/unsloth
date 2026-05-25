@@ -50,7 +50,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         title={title}
         source="tool"
         sourceToolCallId={toolCallId}
-        preview={false}
         autoOpen={true}
         isStreaming={isRunning || codeIsStreaming}
       />

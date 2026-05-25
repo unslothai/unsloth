@@ -85,6 +85,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
+  clearAutoOpenedArtifacts,
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
@@ -962,6 +963,7 @@ export function ChatPage(): ReactElement {
       : `compare:${view.pairId}`;
 
   useEffect(() => {
+    clearAutoOpenedArtifacts();
     closeArtifactSurface();
   }, [artifactViewKey, closeArtifactSurface]);
 

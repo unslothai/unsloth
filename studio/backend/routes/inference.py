@@ -268,7 +268,6 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
           render(data.html);
         });
-        parent.postMessage({ chatArtifactReady: true }, "*");
       })();
     </script>
   </body>

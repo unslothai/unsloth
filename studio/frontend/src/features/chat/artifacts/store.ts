@@ -4,6 +4,20 @@
 import { create } from "zustand";
 import type { ChatArtifact, ChatArtifactSurface } from "./types";
 
+const autoOpenedArtifactIds = new Set<string>();
+
+export function hasAutoOpenedArtifact(artifactId: string): boolean {
+  return autoOpenedArtifactIds.has(artifactId);
+}
+
+export function rememberAutoOpenedArtifact(artifactId: string): void {
+  autoOpenedArtifactIds.add(artifactId);
+}
+
+export function clearAutoOpenedArtifacts(): void {
+  autoOpenedArtifactIds.clear();
+}
+
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;

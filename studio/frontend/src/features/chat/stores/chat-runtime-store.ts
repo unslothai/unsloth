@@ -326,7 +326,7 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
-  setArtifactsEnabled: (enabled: boolean) => void;
+  setArtifactsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -811,9 +811,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
     }),
-  setArtifactsEnabled: (artifactsEnabled) =>
+  setArtifactsEnabled: (artifactsEnabled, options) =>
     set(() => {
-      saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      if (options?.persist !== false) {
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      }
       return { artifactsEnabled };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),

@@ -9,7 +9,11 @@ import { useAuiState } from "@assistant-ui/react";
 import { CheckIcon, CopyIcon, DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { useChatArtifactsStore } from "./store";
+import {
+  hasAutoOpenedArtifact,
+  rememberAutoOpenedArtifact,
+  useChatArtifactsStore,
+} from "./store";
 import {
   type ChatArtifact,
   type ChatArtifactSource,
@@ -18,7 +22,6 @@ import {
 } from "./types";
 
 const COPY_RESET_MS = 2000;
-const autoOpenedArtifactIds = new Set<string>();
 
 function downloadTextFile(filename: string, text: string): void {
   const blob = new Blob([text], { type: "text/html;charset=utf-8" });
@@ -74,7 +77,6 @@ export function ArtifactCard({
   sourceToolCallId?: string | null;
   sourceMessageId?: string | null;
   className?: string;
-  preview?: boolean;
   autoOpen?: boolean;
   isStreaming?: boolean;
 }) {
@@ -119,8 +121,8 @@ export function ArtifactCard({
 
   useEffect(() => {
     if (!autoOpen) return;
-    if (!autoOpenedArtifactIds.has(artifact.id)) {
-      autoOpenedArtifactIds.add(artifact.id);
+    if (!hasAutoOpenedArtifact(artifact.id)) {
+      rememberAutoOpenedArtifact(artifact.id);
       openArtifact(artifact, { surface });
       return;
     }

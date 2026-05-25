@@ -51,6 +51,9 @@ export function ArtifactHtmlFrame({
     [code],
   );
   const postArtifactHtml = useCallback(() => {
+    // The sandboxed frame intentionally has an opaque origin ("null").
+    // A wildcard target is required here;
+    // the payload is sent only to this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",
@@ -60,9 +63,7 @@ export function ArtifactHtmlFrame({
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
-      if (event.data?.chatArtifactReady === true) {
-        postArtifactHtml();
-      }
+      if (event.origin !== "null") return;
       if (typeof event.data?.chatArtifactHeight !== "number") return;
       setHeight(
         Math.min(
