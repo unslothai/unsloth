@@ -89,9 +89,7 @@ async def load_checkpoint(
 
             llama = get_llama_cpp_backend()
             if getattr(llama, "is_loaded", False):
-                logger.info(
-                    "Unloading GGUF chat model to free GPU memory for export"
-                )
+                logger.info("Unloading GGUF chat model to free GPU memory for export")
                 llama.unload_model()
         except Exception as e:
             logger.debug("llama-server unload skipped for export: %s", e)

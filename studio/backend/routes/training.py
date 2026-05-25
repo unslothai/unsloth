@@ -304,9 +304,7 @@ async def start_training(
 
             diff_backend = get_diffusion_backend()
             if diff_backend.is_loaded:
-                logger.info(
-                    "Unloading diffusion model to free GPU memory for training"
-                )
+                logger.info("Unloading diffusion model to free GPU memory for training")
                 diff_backend.unload_model()
         except Exception as e:
             logger.warning("Could not unload diffusion model: %s", e)
