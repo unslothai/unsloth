@@ -69,3 +69,60 @@ def test_start_then_run_appears_in_history(db, monkeypatch):
 def test_unknown_run_404(db, monkeypatch):
     client, _ = _client(monkeypatch)
     assert client.get("/api/eval/runs/does-not-exist").status_code == 404
+
+
+def _client_with_run(monkeypatch, run_fn):
+    import eval.jobs as jobs
+    from auth.authentication import get_current_subject
+    import routes.eval as eval_routes
+
+    mgr = jobs.EvalJobManager(run_fn=run_fn)
+    monkeypatch.setattr(eval_routes, "get_eval_manager", lambda: mgr)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.include_router(eval_routes.router, prefix="/api/eval")
+    return TestClient(app), mgr
+
+
+_START_BODY = {
+    "model_identifier": "m",
+    "dataset": {"is_local": True, "path": "d.jsonl", "split": "train"},
+    "input_column": "q", "reference_column": "a", "metric_name": "exact_match",
+    "limit": 1,
+}
+
+
+def test_concurrent_start_returns_409(db, monkeypatch):
+    from eval.runner import EvalSummary
+
+    def slow_run(req, *, on_result, should_cancel):
+        while not should_cancel():
+            time.sleep(0.02)
+        return EvalSummary(status="cancelled", num_scored=0, avg_score=0.0)
+
+    client, mgr = _client_with_run(monkeypatch, slow_run)
+    first = client.post("/api/eval/start", json=_START_BODY)
+    assert first.status_code == 200
+    run_id = first.json()["run_id"]
+    busy = client.post("/api/eval/start", json=_START_BODY)
+    assert busy.status_code == 409
+    mgr.cancel(run_id)  # let the slow run finish
+
+
+def test_cancel_active_run(db, monkeypatch):
+    from eval.runner import EvalSummary
+
+    def slow_run(req, *, on_result, should_cancel):
+        while not should_cancel():
+            time.sleep(0.02)
+        return EvalSummary(status="cancelled", num_scored=0, avg_score=0.0)
+
+    client, _ = _client_with_run(monkeypatch, slow_run)
+    run_id = client.post("/api/eval/start", json=_START_BODY).json()["run_id"]
+    r = client.post(f"/api/eval/cancel/{run_id}")
+    assert r.status_code == 200 and r.json()["cancelled"] is True
+
+
+def test_cancel_unknown_run_404(db, monkeypatch):
+    client, _ = _client(monkeypatch)
+    assert client.post("/api/eval/cancel/nope").status_code == 404
