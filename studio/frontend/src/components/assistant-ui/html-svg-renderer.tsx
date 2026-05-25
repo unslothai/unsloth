@@ -356,13 +356,18 @@ function HtmlPreview({
       //                           that includes 'unsafe-inline'
       //   allow-modals         -- alert/confirm/prompt are not no-ops
       //                           when scripts do fire
-      //   allow-popups +       -- a ``<base target="_blank">`` link
-      //   allow-popups-to-        opens a regular browser tab rather
-      //   escape-sandbox          than an opaque-origin sandboxed one
-      // We do NOT grant allow-same-origin or allow-top-navigation, so
-      // the iframe cannot read parent.document, navigate the host
-      // page, or escape its origin.
-      sandbox="allow-scripts allow-modals allow-popups allow-popups-to-escape-sandbox"
+      //   allow-popups         -- the ``<base target="_blank">`` link
+      //                           rule can open a new tab instead of
+      //                           silently dropping the click
+      // We do NOT grant:
+      //   allow-same-origin / allow-top-navigation -- the iframe
+      //     cannot read parent.document or navigate the host page
+      //   allow-popups-to-escape-sandbox -- popups INHERIT the sandbox
+      //     so an opened tab cannot use ``window.opener.top.location``
+      //     to tabnab the Studio tab. The opened tab loads with an
+      //     opaque origin (some sites will render degraded) which is
+      //     the deliberate trade-off for tabnabbing safety.
+      sandbox="allow-scripts allow-modals allow-popups"
       style={{
         width: "100%",
         height: iframeHeight,

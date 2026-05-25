@@ -26,17 +26,19 @@ describe("HtmlSvgRenderer", () => {
     ) as HTMLIFrameElement;
     expect(iframe.tagName).toBe("IFRAME");
     // SECURITY: allow-scripts + allow-modals leave script / alert /
-    // confirm operative IF the inherited host CSP ever permits inline;
-    // allow-popups + allow-popups-to-escape-sandbox so a `<base
-    // target="_blank">` link does not silently no-op; NEVER
-    // allow-same-origin or allow-top-navigation -- those would let
-    // the preview read parent.document and exfiltrate session data.
+    // confirm operative if the inherited host CSP ever permits inline.
+    // allow-popups lets ``<base target="_blank">`` links open without
+    // being silently dropped, BUT the popups INHERIT the sandbox
+    // (allow-popups-to-escape-sandbox is intentionally absent) so a
+    // tab opened from a malicious assistant link cannot use
+    // window.opener.top.location.* to tabnab the Studio tab.
+    // allow-same-origin and allow-top-navigation are NEVER granted.
     const sandbox = iframe.getAttribute("sandbox") ?? "";
     const sandboxTokens = sandbox.split(/\s+/);
     expect(sandboxTokens).toContain("allow-scripts");
     expect(sandboxTokens).toContain("allow-modals");
     expect(sandboxTokens).toContain("allow-popups");
-    expect(sandboxTokens).toContain("allow-popups-to-escape-sandbox");
+    expect(sandboxTokens).not.toContain("allow-popups-to-escape-sandbox");
     expect(sandbox).not.toContain("allow-same-origin");
     expect(sandbox).not.toContain("allow-top-navigation");
     // srcdoc carries the assistant HTML plus a defense-in-depth meta
