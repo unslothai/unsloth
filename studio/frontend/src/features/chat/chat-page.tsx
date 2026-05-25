@@ -632,12 +632,10 @@ function ProjectLanding({
 }): ReactElement {
   const navigate = useNavigate();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
-  const [pendingRunStarted, setPendingRunStarted] = useState(false);
   const [newThreadNonce, setNewThreadNonce] = useState(() =>
     crypto.randomUUID(),
   );
@@ -651,7 +649,6 @@ function ProjectLanding({
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
-    setPendingRunStarted(false);
     setNewThreadNonce(crypto.randomUUID());
   }, [projectId]);
 
@@ -663,24 +660,7 @@ function ProjectLanding({
       return;
     }
     setPendingNewThreadId(activeThreadId);
-    setPendingRunStarted(false);
   }, [activeThreadId]);
-
-  useEffect(() => {
-    if (!pendingNewThreadId) {
-      return;
-    }
-
-    const isRunning =
-      Boolean(runningByThreadId[pendingNewThreadId]) ||
-      Object.keys(runningByThreadId).length > 0;
-    if (isRunning) {
-      setPendingRunStarted(true);
-    }
-  }, [
-    pendingNewThreadId,
-    runningByThreadId,
-  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -729,7 +709,7 @@ function ProjectLanding({
       newThreadNonce={newThreadNonce}
       listThreads={false}
     >
-      {pendingNewThreadId && pendingRunStarted ? (
+      {pendingNewThreadId ? (
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
           <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
         </div>
