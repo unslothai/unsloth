@@ -56,7 +56,9 @@ export function ChatTab() {
         toast.success(
           clearedCount === 0
             ? t("settings.chat.clearedAllChats")
-            : t("settings.chat.clearedChatCount", { count: clearedCount }),
+            : clearedCount === 1
+              ? t("settings.chat.clearedOneChat")
+              : t("settings.chat.clearedChatCount", { count: clearedCount }),
         );
         return;
       }
@@ -71,11 +73,21 @@ export function ChatTab() {
       toast.warning(t("settings.chat.someChatsCouldNotBeCleared"), {
         description:
           result.failedThreadIds.length > 0
-            ? t("settings.chat.chatsClearedRemain", {
-                clearedCount,
-                remainingCount: result.failedThreadIds.length,
-              })
-            : t("settings.chat.storageClearFailed", { count: remaining }),
+            ? clearedCount === 1 && result.failedThreadIds.length === 1
+              ? t("settings.chat.oneChatClearedRemainOne")
+              : clearedCount === 1
+                ? t("settings.chat.oneChatClearedRemain", {
+                    remainingCount: result.failedThreadIds.length,
+                  })
+                : result.failedThreadIds.length === 1
+                  ? t("settings.chat.chatsClearedRemainOne", { clearedCount })
+                  : t("settings.chat.chatsClearedRemain", {
+                      clearedCount,
+                      remainingCount: result.failedThreadIds.length,
+                    })
+            : remaining === 1
+              ? t("settings.chat.storageClearFailedOne")
+              : t("settings.chat.storageClearFailed", { count: remaining }),
       });
     } catch (error) {
       const remaining = await countAllChats().catch(() => count);
@@ -125,7 +137,9 @@ export function ChatTab() {
               ? t("settings.chat.clearAllChatsDescription")
               : count === 0
                 ? t("settings.chat.noChatsToClear")
-                : t("settings.chat.clearChatCountDescription", { count })
+                : count === 1
+                  ? t("settings.chat.clearOneChatDescription")
+                  : t("settings.chat.clearChatCountDescription", { count })
           }
         >
           <Button
@@ -145,7 +159,9 @@ export function ChatTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
+              {count === 1
+                ? t("settings.chat.clearOneChatTitle")
+                : t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
             </DialogTitle>
             <DialogDescription>
               {t("settings.chat.clearChatsConfirmDescription")}
@@ -162,7 +178,11 @@ export function ChatTab() {
             >
               {clearing
                 ? t("settings.chat.clearingAction")
-                : t("settings.chat.clearChatCountAction", { count: count ?? 0 })}
+                : count === 1
+                  ? t("settings.chat.clearOneChatAction")
+                  : t("settings.chat.clearChatCountAction", {
+                      count: count ?? 0,
+                    })}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -49,15 +49,21 @@ function updateCurrentLocale(locale: Locale): void {
   notifySubscribers();
 }
 
-function handleStorageEvent(event: StorageEvent): void {
-  if (
-    event.storageArea &&
-    typeof window !== "undefined" &&
-    event.storageArea !== window.localStorage
-  ) {
-    return;
+function isLocaleStorageEvent(event: StorageEvent): boolean {
+  if (event.key !== LOCALE_STORAGE_KEY && event.key !== null) return false;
+  if (!event.storageArea || typeof window === "undefined") return true;
+  // Accessing window.localStorage can throw in privacy-restricted contexts
+  // where storage is blocked; mirror the try/catch in readStoredLocale/
+  // writeStoredLocale so storage-event handling is just as resilient.
+  try {
+    return event.storageArea === window.localStorage;
+  } catch {
+    return false;
   }
-  if (event.key !== LOCALE_STORAGE_KEY && event.key !== null) return;
+}
+
+function handleStorageEvent(event: StorageEvent): void {
+  if (!isLocaleStorageEvent(event)) return;
   const nextLocale =
     event.key === null ? DEFAULT_LOCALE : normalizeLocale(event.newValue);
   updateCurrentLocale(nextLocale);

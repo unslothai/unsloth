@@ -178,19 +178,32 @@ export const en = {
       clearAllChatsDescription:
         "Permanently delete every chat on this device.",
       noChatsToClear: "No chats to clear.",
+      clearOneChatDescription:
+        "Permanently delete the only chat on this device.",
       clearChatCountDescription:
         "Permanently delete all {count} chats on this device.",
       clearChatsAction: "Clear chats",
+      clearOneChatTitle: "Clear 1 chat?",
       clearChatsTitle: "Clear {count} chats?",
       clearChatsConfirmDescription:
         "This permanently deletes every chat and message stored on this device. This cannot be undone.",
       clearingAction: "Clearing...",
+      clearOneChatAction: "Clear 1 chat",
       clearChatCountAction: "Clear {count} chats",
       clearedAllChats: "Cleared all chats",
+      clearedOneChat: "Cleared 1 chat",
       clearedChatCount: "Cleared {count} chats",
       someChatsCouldNotBeCleared: "Some chats could not be cleared",
+      chatsClearedRemainOne:
+        "{clearedCount} chats cleared; 1 chat remains. Please retry.",
       chatsClearedRemain:
         "{clearedCount} chats cleared; {remainingCount} chats remain. Please retry.",
+      oneChatClearedRemain:
+        "1 chat cleared; {remainingCount} chats remain. Please retry.",
+      oneChatClearedRemainOne:
+        "1 chat cleared; 1 chat remains. Please retry.",
+      storageClearFailedOne:
+        "A storage clear failed; 1 chat may remain. Please retry.",
       storageClearFailed:
         "A storage clear failed; {count} chats may remain. Please retry.",
       failedToClearChats: "Failed to clear chats",
