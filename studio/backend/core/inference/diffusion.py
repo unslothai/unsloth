@@ -208,9 +208,7 @@ def _resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
         or gguf_filename.startswith(("/", "\\"))
         or "\\" in gguf_filename
     ):
-        raise RuntimeError(
-            "gguf_filename must be a relative file path inside repo_id."
-        )
+        raise RuntimeError("gguf_filename must be a relative file path inside repo_id.")
     rel = PurePosixPath(gguf_filename)
     if any(part in ("", ".", "..") for part in rel.parts):
         raise RuntimeError(
