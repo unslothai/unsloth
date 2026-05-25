@@ -329,21 +329,23 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Use bun for install if available (faster), fall back to npm.
-# Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
-# NOTE: We intentionally avoid run_quiet for the bun install attempt because
-# run_quiet calls exit on failure, which would kill the script before the npm
-# fallback can run. Instead we capture output manually and only show it on failure.
+# Lockfile-pinned install. Prefer bun ONLY when a bun.lock is checked in
+# AND bun is on PATH; otherwise use `npm ci`, which is non-mutating and
+# refuses to run unless the committed package-lock.json matches the
+# dependency tree byte-for-byte. The `[ -f bun.lock ]` gate keeps bun
+# off the path until a bun.lock is also committed -- the bun-fallback
+# wiring (cache-clear retry + critical-binary verification) is kept
+# intact so this script auto-upgrades when bun.lock eventually lands.
 #
-# IMPORTANT: bun's package cache can become corrupt -- packages get stored
-# with only metadata (package.json, README) but no actual content (bin/,
-# lib/). When this happens bun install exits 0 but leaves binaries missing.
-# We verify critical binaries after install. If missing, we clear the cache
-# and retry once before falling back to npm.
+# IMPORTANT: bun's package cache can become corrupt -- packages get
+# stored with only metadata (package.json, README) but no actual content
+# (bin/, lib/). When this happens bun install exits 0 but leaves
+# binaries missing. We verify critical binaries after install. If
+# missing, we clear the cache and retry once before falling back to npm.
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install >"$_log" 2>&1 || _exit_code=$?
+    bun install --frozen-lockfile --no-progress >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -355,7 +357,7 @@ _try_bun_install() {
 
     # Either bun install failed or it exited 0 but left packages missing
     if [ "$_exit_code" -ne 0 ]; then
-        echo "   bun install failed (exit code $_exit_code):"
+        echo "   bun install --frozen-lockfile failed (exit code $_exit_code):"
     else
         echo "   bun install exited 0 but critical binaries are missing:"
     fi
@@ -366,7 +368,7 @@ _try_bun_install() {
 }
 
 _bun_install_ok=false
-if command -v bun &>/dev/null; then
+if [ -f bun.lock ] && command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
@@ -381,7 +383,10 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
+    # npm ci enforces the committed package-lock.json (refuses to install
+    # otherwise); --no-fund / --no-audit / --loglevel=error keep the
+    # output quiet during normal installs.
+    run_quiet_no_exit "npm ci" npm ci --no-fund --no-audit --loglevel=error
     _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
         exit "$_npm_install_rc"
@@ -406,12 +411,26 @@ cd "$SCRIPT_DIR"
 fi  # end frontend build check
 
 # ── oxc-validator runtime ──
+# Same lockfile-pinned shape as the frontend block above: bun only when
+# a bun.lock is checked in next to package.json (currently not the
+# case), otherwise `npm ci` against the committed package-lock.json
+# (shipped in #5604).
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
-    _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        exit "$_oxc_install_rc"
+    _oxc_install_ok=false
+    if [ -f bun.lock ] && command -v bun &>/dev/null; then
+        if run_quiet_no_exit "bun install (oxc validator runtime)" bun install --frozen-lockfile --no-progress; then
+            _oxc_install_ok=true
+        else
+            rm -rf node_modules
+        fi
+    fi
+    if [ "$_oxc_install_ok" = false ]; then
+        run_quiet_no_exit "npm ci (oxc validator runtime)" npm ci --no-fund --no-audit --loglevel=error
+        _oxc_install_rc=$?
+        if [ "$_oxc_install_rc" -ne 0 ]; then
+            exit "$_oxc_install_rc"
+        fi
     fi
     cd "$SCRIPT_DIR"
 fi
