@@ -451,6 +451,37 @@ def test_anthropic_native_key_takes_precedence_over_mirrored():
     assert math.isclose(r["cache_read_usd"], 0.4, rel_tol = 1e-3), r
 
 
+def test_anthropic_native_zero_takes_precedence_over_mirrored():
+    """An explicit ``cache_read_input_tokens: 0`` from the upstream is
+    authoritative -- the mirrored ``prompt_tokens_details.cached_tokens``
+    is a fallback for the *missing-key* case, not an override. A stale
+    proxy that forwards a previous turn's details block must not be
+    able to inflate cache_read past the native zero count, which would
+    overbill the turn (false cache-read line) AND inflate
+    ``billable_input_tokens``.
+    """
+    r = calculate_cost(
+        provider = "anthropic",
+        model = "claude-opus-4-7",
+        usage = {
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            # Stale / off-spec mirror from a proxy. Must be ignored
+            # because the native key is present (== 0).
+            "prompt_tokens_details": {"cached_tokens": 1_000_000},
+        },
+    )
+    # Native says 0, so cache_read stays 0; no cache_read_usd bill.
+    assert r["cache_read_usd"] == 0.0, r
+    # billable_input_tokens = input_tokens + cache_creation + cache_read
+    #                      = 1_000_000 + 0 + 0 = 1_000_000
+    assert r["billable_input_tokens"] == 1_000_000, r
+    # 1M uncached input tokens at $5/M = $5.00 (no cache discount).
+    assert math.isclose(r["input_usd"], 5.0, rel_tol = 1e-3), r
+    assert math.isclose(r["total_usd"], 5.0, rel_tol = 1e-3), r
+
+
 # ── _build_usage_chunk preserves cache_creation breakdown ──
 
 
