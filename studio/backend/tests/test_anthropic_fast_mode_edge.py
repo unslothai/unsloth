@@ -498,9 +498,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
     can apply the 6x multiplier and clients can verify a fast-mode
     request actually ran fast."""
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "fast"))
-    usage_lines = [
-        l for l in lines if l.startswith("data: ") and '"usage"' in l
-    ]
+    usage_lines = [l for l in lines if l.startswith("data: ") and '"usage"' in l]
     assert usage_lines, lines
     parsed = [json.loads(l[len("data: ") :]) for l in usage_lines]
     speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]

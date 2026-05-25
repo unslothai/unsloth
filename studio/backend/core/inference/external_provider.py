@@ -197,8 +197,7 @@ def _anthropic_supports_fast_mode(model: str) -> bool:
     # "claude-opus-4-70" / "claude-opus-4-7b" that merely share a
     # prefix with the supported families.
     return any(
-        model == p or model.startswith(f"{p}-")
-        for p in _ANTHROPIC_FAST_MODE_PREFIXES
+        model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES
     )
 
 
