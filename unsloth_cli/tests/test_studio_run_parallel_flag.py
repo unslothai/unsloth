@@ -3,22 +3,12 @@
 
 """Tests for the `unsloth studio run --parallel` CLI flag.
 
-Before this commit, `unsloth studio run` always set
-``llama_parallel_slots=4`` (hardcoded). Engine + KV-cache math already
-supported any N, but the knob was not user-reachable.
+Pre-PR `llama_parallel_slots` was hardcoded to 4. These tests pin
+the typer Option (aliases, default 4, 1..64 range), the
+typer/denylist subset invariant, and re-exec forwarding.
 
-These tests pin:
-  1. The Typer option exists with the documented aliases.
-  2. The default value matches the previous hardcoded value (4),
-     so behaviour is unchanged for existing users.
-  3. The range guards reject out-of-band values.
-  4. Typer aliases stay a subset of the backend parallel denylist.
-  5. Re-exec forwarding preserves every typer-claimed knob.
-
-See also ``test_studio_run_short_alias_clashes.py`` for the argv
-canonicaliser (``_expand_attached_np_short`` rewrites ``-np8`` /
-``-np-1`` etc. before Click parses) and the legacy ``-m`` / ``-hfr`` /
-``-f`` exact-match compatibility shim.
+See ``test_studio_run_short_alias_clashes.py`` for the argv
+canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 """
 
 from __future__ import annotations
@@ -53,10 +43,8 @@ def test_parallel_option_is_registered():
     assert "parallel" in sig.parameters, "missing `parallel` parameter on run()"
 
     param = sig.parameters["parallel"]
-    # typer.OptionInfo lives in the default value
-    opt = param.default
+    opt = param.default  # typer.OptionInfo
     flags = set()
-    # OptionInfo stores param_decls in .param_decls (typer >=0.4)
     decls = getattr(opt, "param_decls", None) or []
     for d in decls:
         flags.add(d)
@@ -121,12 +109,9 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
 # `llama_parallel_slots = 4`.
 
 
-# Re-exec arg-builder coverage. `unsloth studio run` is normally invoked
-# outside the Studio venv; run() rebuilds argv and re-execs via execvp
-# (POSIX) or subprocess.Popen (Windows). Typer claims
-# --parallel/--n-parallel/-np in the outer process, so without explicit
-# forwarding the child re-execs at the typer default and silently drops
-# the user's value (including pre-PR `-np N` pass-through users).
+# Re-exec arg-builder coverage. run() re-execs into the studio venv
+# (execvp on POSIX, Popen on Windows). Without explicit forwarding the
+# child reverts to typer defaults and silently drops the user's value.
 
 
 class _ExecCaptured(SystemExit):
