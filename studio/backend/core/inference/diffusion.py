@@ -800,6 +800,23 @@ class DiffusionBackend:
                 "loading an image model."
             ) from exc
 
+        # Round 30 P1 #11: also preflight transformers + accelerate
+        # BEFORE any destructive unload. Diffusers can expose stub
+        # pipeline classes when transformers is missing or broken, so
+        # the load would otherwise tear down chat first and fail
+        # later inside from_pretrained. Use find_spec (no module
+        # execution) so test environments that stub these modules
+        # still pass the preflight without us actually importing them.
+        import importlib.util as _ilu
+        for _mod in ("transformers", "accelerate"):
+            if _ilu.find_spec(_mod) is None:
+                raise RuntimeError(
+                    "Diffusion image generation requires the Studio torch "
+                    f"runtime. Missing dependency: {_mod}. Install the "
+                    "Studio torch runtime (re-run setup.sh / install.ps1) "
+                    "before loading an image model."
+                )
+
         fam = detect_family(repo_id, override_family = family_override)
         if fam is None:
             # Round 22 P2 #4: route the repo label through

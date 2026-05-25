@@ -218,6 +218,14 @@ class ExportGGUFRequest(BaseModel):
     def _no_quantization_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
+    # Round 30 P1 #5: quantization_method is forwarded into worker
+    # command lines and reflected in error / success text, so also
+    # reject embedded HF tokens to mirror the repo_id hardening.
+    @field_validator("quantization_method")
+    @classmethod
+    def _no_quantization_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""

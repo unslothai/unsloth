@@ -119,6 +119,37 @@ class SeedInspectUploadRequest(BaseModel):
     unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
     unstructured_chunk_overlap: int | None = Field(default = None, ge = 0, le = 20000)
 
+    # Round 30 P1 #6: filename / file_names are reflected as dataset
+    # names + error/log messages; harden them the same way the sibling
+    # SeedInspectRequest hardens dataset_name.
+    @field_validator("filename")
+    @classmethod
+    def _no_filename_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("filename")
+    @classmethod
+    def _no_filename_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("file_names")
+    @classmethod
+    def _no_file_names_control_chars(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _no_control_chars(entry, f"file_names[{i}]")
+        return v
+
+    @field_validator("file_names")
+    @classmethod
+    def _no_file_names_embedded_hf_tokens(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _reject_embedded_hf_token(entry, f"file_names[{i}]")
+        return v
+
     @model_validator(mode = "after")
     def _check_mutual_exclusivity(self) -> "SeedInspectUploadRequest":
         has_legacy = self.content_base64 is not None

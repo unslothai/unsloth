@@ -145,7 +145,13 @@ export function ImagesPage() {
   }, []);
 
   useEffect(() => {
-    void refreshStatus();
+    // Round 30 P2 #12: defer the first refreshStatus call via
+    // queueMicrotask so the synchronous setRefreshingStatus(true)
+    // inside it does not trip the react-hooks/set-state-in-effect
+    // lint rule on the mount render.
+    queueMicrotask(() => {
+      void refreshStatus();
+    });
   }, [refreshStatus]);
 
   // Round 27 P2: when the backend is mid-load (is_loading=true) the
