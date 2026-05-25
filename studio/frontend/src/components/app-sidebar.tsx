@@ -41,6 +41,8 @@ import { Button } from "@/components/ui/button";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
+  Archive01Icon,
+  ArchiveRestoreIcon,
   ChefHatIcon,
   ColumnInsertIcon,
   CursorInfo02Icon,
@@ -67,9 +69,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, MoreHorizontalIcon, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  archiveChatItem,
   ChatSearchDialog,
   deleteChatItem,
   renameChatItem,
+  unarchiveChatItem,
   useChatRuntimeStore,
   useChatSearchStore,
   useChatSidebarItems,
@@ -227,7 +231,9 @@ export function AppSidebar() {
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
-  const { items: chatItems } = useChatSidebarItems();
+  const { items: chatItems, archivedItems: archivedChatItems } =
+    useChatSidebarItems();
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -254,6 +260,31 @@ export function AppSidebar() {
         search: { new: view.newThreadNonce },
       });
     });
+  }
+
+  async function handleArchiveThread(item: SidebarItem) {
+    try {
+      await archiveChatItem(item, activeThreadId, (view) => {
+        navigate({
+          to: "/chat",
+          search: { new: view.newThreadNonce },
+        });
+      });
+    } catch (err) {
+      toast.error("Failed to archive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function handleUnarchiveThread(item: SidebarItem) {
+    try {
+      await unarchiveChatItem(item);
+    } catch (err) {
+      toast.error("Failed to unarchive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
   }
 
   type RenameTarget =
@@ -569,6 +600,85 @@ export function AppSidebar() {
                         <DropdownMenuItem onSelect={() => openRenameChat(item)}>
                           <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                           <span>Rename</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+                          <HugeiconsIcon icon={Archive01Icon} strokeWidth={1.75} className="size-icon" />
+                          <span>Archive</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                          <span>Delete</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {/* Archived Chats — hidden on Studio + when nothing is archived */}
+        {!isStudioRoute && archivedChatItems.length > 0 && (
+          <Collapsible open={archivedOpen} onOpenChange={setArchivedOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                Archived
+                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+            <SidebarGroupContent className="px-2">
+              <SidebarMenu>
+                {archivedChatItems.map((item) => (
+                  <SidebarMenuItem key={item.id} className="group/archived-item relative">
+                    <SidebarMenuButton
+                      data-testid="archived-thread"
+                      data-thread-type={item.type}
+                      data-thread-id={item.id}
+                      isActive={activeThreadId === item.id}
+                      className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/archived-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/archived-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium text-muted-foreground"
+                      onClick={() => {
+                        navigate({
+                          to: "/chat",
+                          search:
+                            item.type === "single"
+                              ? { thread: item.id }
+                              : { compare: item.id },
+                        });
+                        closeMobileIfOpen();
+                      }}
+                    >
+                      <span className="truncate">{item.title}</span>
+                    </SidebarMenuButton>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Archived chat options"
+                          className="sidebar-row-action group-hover/archived-item:opacity-100 group-hover/archived-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                        >
+                          <span className="sidebar-row-action-glyph">
+                            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                          </span>
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        side="bottom"
+                        align="end"
+                        sideOffset={4}
+                        className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                      >
+                        <DropdownMenuItem onSelect={() => void handleUnarchiveThread(item)}>
+                          <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-icon" />
+                          <span>Unarchive</span>
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"

@@ -8,11 +8,13 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useChatRuntimeStore } from "@/features/chat";
 import {
   Outlet,
   createRootRoute,
   redirect,
   useMatches,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -72,6 +74,7 @@ function RootLayout() {
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const isChatRoute = pathname.startsWith("/chat");
   const { pinned, setPinned, togglePinned } = useSidebarPin();
+  const navigate = useNavigate();
 
   useTrainingUnloadGuard();
 
@@ -105,11 +108,22 @@ function RootLayout() {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         useSettingsDialogStore.getState().openDialog();
+        return;
+      }
+      // Cmd/Ctrl+Shift+O opens a new chat. Match on code so the binding
+      // keeps working regardless of keyboard layout.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
+        e.preventDefault();
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        void navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+        });
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [navigate]);
 
   return (
     <AppProvider>

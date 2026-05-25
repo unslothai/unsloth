@@ -16,8 +16,10 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
+  archiveChatItem,
   deleteChatItem,
   renameChatItem,
+  unarchiveChatItem,
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";

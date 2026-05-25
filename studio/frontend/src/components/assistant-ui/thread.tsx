@@ -294,6 +294,7 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const aui = useAui();
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
   const hasAttachments = useAuiState(
@@ -307,6 +308,31 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+
+  // Per-thread draft autosave. Restores any saved draft on mount, then
+  // mirrors composer text into localStorage (debounced) so a half-typed
+  // message survives a navigation away or a reload. Clears the slot once
+  // the field is empty (i.e. after a send).
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const draftKey = `chat-draft:${activeThreadId ?? "__new__"}`;
+  useEffect(() => {
+    const draft = window.localStorage.getItem(draftKey);
+    if (!draft) return;
+    const composer = aui.composer();
+    if (composer.getState().isEditing) {
+      composer.setText(draft);
+    }
+  }, [draftKey, aui]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (composerText.length > 0) {
+        window.localStorage.setItem(draftKey, composerText);
+      } else {
+        window.localStorage.removeItem(draftKey);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [composerText, draftKey]);
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

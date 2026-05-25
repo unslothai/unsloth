@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  notifyChatHistoryUpdated,
+} from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -16,7 +19,6 @@ import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
-import { notifyChatHistoryUpdated } from "../api/chat-api";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -25,12 +27,15 @@ export interface SidebarItem {
   createdAt: number;
 }
 
-export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
+export function groupThreads(
+  threads: ThreadRecord[],
+  archived = false,
+): SidebarItem[] {
   const items: SidebarItem[] = [];
   const seenPairs = new Set<string>();
 
   for (const t of threads) {
-    if (t.archived) {
+    if (t.archived !== archived) {
       continue;
     }
     if (t.pairId) {
@@ -73,7 +78,7 @@ export function useChatSidebarItems() {
     async function doLoad(seq: number) {
       try {
         const threads = await listStoredChatThreadsWithMessages({
-          includeArchived: false,
+          includeArchived: true,
         });
         // Discard the response if a newer request was scheduled while we
         // were in flight, or if the effect was torn down.
@@ -109,9 +114,10 @@ export function useChatSidebarItems() {
   }, []);
 
   const items = groupThreads(allThreads ?? []);
+  const archivedItems = groupThreads(allThreads ?? [], true);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
-  return { items, canCompare };
+  return { items, archivedItems, canCompare };
 }
 
 function cancelIfRunning(threadId: string): void {
@@ -141,6 +147,53 @@ export async function renameChatItem(
   await Promise.all(
     threadIds.map((id) => updateStoredChatThread(id, { title: trimmed })),
   );
+}
+
+export async function archiveChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<void> {
+  const threadIds: string[] =
+    item.type === "single"
+      ? [item.id]
+      : (
+          await listStoredChatThreads({
+            pairId: item.id,
+            includeArchived: true,
+          })
+        ).map((t) => t.id);
+
+  for (const id of threadIds) cancelIfRunning(id);
+
+  await Promise.all(
+    threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
+  );
+
+  if (activeId === item.id) {
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  notifyChatHistoryUpdated();
+}
+
+export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
+  const threadIds: string[] =
+    item.type === "single"
+      ? [item.id]
+      : (
+          await listStoredChatThreads({
+            pairId: item.id,
+            includeArchived: true,
+          })
+        ).map((t) => t.id);
+
+  await Promise.all(
+    threadIds.map((id) => updateStoredChatThread(id, { archived: false })),
+  );
+
+  notifyChatHistoryUpdated();
 }
 
 export async function deleteChatItem(
