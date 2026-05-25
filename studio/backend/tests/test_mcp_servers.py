@@ -511,6 +511,7 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
 
     import threading
+
     ev = threading.Event()
     ev.set()
     out = mcp_client.call_tool_sync(
@@ -526,9 +527,7 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
     assert opened == []
 
 
-def test_clear_oauth_tokens_swallows_constructor_errors(
-    tmp_path, monkeypatch
-):
+def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
     """clear_oauth_tokens_async is best-effort; an OAuth constructor
     failure (e.g. missing fastmcp.client.auth) must not bubble out into
     a 500 from the delete / update routes."""
@@ -544,6 +543,7 @@ def test_clear_oauth_tokens_swallows_constructor_errors(
             raise RuntimeError("simulated")
 
     import sys as _sys
+
     fake_mod = type(_sys)("fastmcp.client.auth")
     fake_mod.OAuth = _BoomOAuth
     monkeypatch.setitem(_sys.modules, "fastmcp.client.auth", fake_mod)
