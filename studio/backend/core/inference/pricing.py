@@ -320,9 +320,7 @@ def calculate_cost(
     ):
         base = base * ANTHROPIC_FAST_MODE_MULT
         out_per = out_per * ANTHROPIC_FAST_MODE_MULT
-        out["model_priced"] = (
-            f"{out['model_priced'] or model} (fast)"
-        )
+        out["model_priced"] = f"{out['model_priced'] or model} (fast)"
 
     out["input_usd"] = (input_tokens / 1_000_000.0) * base
     out["output_usd"] = (output_tokens / 1_000_000.0) * out_per

@@ -509,11 +509,13 @@ def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
 def test_fast_mode_bills_input_and_output_at_6x_on_opus_47():
     """Opus 4.7 standard: $5/$25; fast: $30/$150."""
     standard = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
     )
     fast = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
         fast_mode = True,
     )
@@ -526,7 +528,8 @@ def test_fast_mode_bills_input_and_output_at_6x_on_opus_47():
 
 def test_fast_mode_applies_to_opus_46_too():
     fast = calculate_cost(
-        "anthropic", "claude-opus-4-6",
+        "anthropic",
+        "claude-opus-4-6",
         {"input_tokens": 1_000_000, "output_tokens": 0},
         fast_mode = True,
     )
@@ -537,11 +540,13 @@ def test_fast_mode_silently_dropped_on_non_opus_46_47():
     """Stray fast_mode=True on Sonnet/Haiku must not over-charge."""
     for model in ("claude-sonnet-4-5", "claude-sonnet-4-6", "claude-haiku-4-5"):
         std = calculate_cost(
-            "anthropic", model,
+            "anthropic",
+            model,
             {"input_tokens": 1_000_000, "output_tokens": 0},
         )
         fast = calculate_cost(
-            "anthropic", model,
+            "anthropic",
+            model,
             {"input_tokens": 1_000_000, "output_tokens": 0},
             fast_mode = True,
         )
@@ -551,11 +556,13 @@ def test_fast_mode_silently_dropped_on_non_opus_46_47():
 def test_fast_mode_ignored_on_openai():
     """Provider gate: fast_mode is Anthropic-only."""
     std = calculate_cost(
-        "openai", "gpt-5.4",
+        "openai",
+        "gpt-5.4",
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     fast = calculate_cost(
-        "openai", "gpt-5.4",
+        "openai",
+        "gpt-5.4",
         {"input_tokens": 1_000_000, "output_tokens": 0},
         fast_mode = True,
     )
@@ -565,7 +572,8 @@ def test_fast_mode_ignored_on_openai():
 def test_fast_mode_stacks_with_cache_read_discount():
     """Cache reads stay at 0.1x base * fast_mult per Anthropic docs."""
     r = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
             "input_tokens": 0,
             "output_tokens": 0,
