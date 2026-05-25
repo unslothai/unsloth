@@ -10,6 +10,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal, Dict, Any
 
+# Round 23 P1 #1 / #2 / #6: reuse the chat identifier validators
+# so export requests reject newline / tab / control characters and
+# URL-form ``hf_xxxxx`` tokens in any user-supplied identifier
+# (Hub ``repo_id``, ``base_model_id``, the local
+# ``checkpoint_path``) that flows into log lines or HF API calls.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
+
 
 def _validate_save_directory(value: str) -> str:
     """Reject save_directory values that escape the export root."""
@@ -53,6 +60,19 @@ class LoadCheckpointRequest(BaseModel):
         False,
         description = "Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
     )
+
+    # Round 23 P1 #6: ``checkpoint_path`` is logged verbatim by the
+    # export route. Apply the same control-char + embedded-token
+    # rejection the chat / diffusion / training request models use.
+    @field_validator("checkpoint_path")
+    @classmethod
+    def _no_checkpoint_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("checkpoint_path")
+    @classmethod
+    def _no_checkpoint_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class ExportStatusResponse(BaseModel):
@@ -117,6 +137,20 @@ class ExportCommonOptions(BaseModel):
         description = "HuggingFace model ID of the base model (for model card metadata)",
     )
 
+    # Round 23 P1 #1: ``repo_id`` (Hub destination) and
+    # ``base_model_id`` (model card metadata) both feed log lines
+    # and the HF API. Reject control characters and URL-form
+    # ``hf_xxxxx`` tokens before they reach those sinks.
+    @field_validator("repo_id", "base_model_id")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "base_model_id")
+    @classmethod
+    def _no_identifier_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
 
 class ExportMergedModelRequest(ExportCommonOptions):
     """Request for exporting a merged PEFT model."""
@@ -162,6 +196,27 @@ class ExportGGUFRequest(BaseModel):
         None,
         description = "Hugging Face token for GGUF upload",
     )
+
+    # Round 23 P1 #2: GGUF export endpoint defines its own
+    # ``repo_id`` (does not inherit from ExportCommonOptions), so
+    # the chat-style hardening needs to be applied here separately.
+    # ``quantization_method`` is forwarded to the export worker
+    # command line, so it gets the control-char check too even
+    # though it does not normally carry tokens.
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("quantization_method")
+    @classmethod
+    def _no_quantization_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):

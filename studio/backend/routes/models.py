@@ -134,9 +134,28 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _validate_logged_identifier(value: str, field_name: str) -> str:
+    """Round 23 P1 #7 / #8 / #9 / #10: path / query parameters that
+    flow into ``logger.info("... %s", value)`` lines were the last
+    unguarded entry points. Newline / tab / control characters let
+    a caller smuggle forged log entries; URL-form ``hf_xxxxx``
+    tokens would leak into structured-log sinks. Mirror the
+    request-body validators by running both checks here and
+    mapping the validator's ``ValueError`` to HTTP 422 so the
+    client sees the same shape as a Pydantic validation failure.
+    """
+    try:
+        value = _no_control_chars(value, field_name)
+        value = _reject_embedded_hf_token(value, field_name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc)) from exc
+    return value
 
 
 def derive_model_type(
@@ -1571,6 +1590,7 @@ async def get_model_config(
 
     This endpoint wraps the backend load_model_defaults function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         if not is_local_path(model_name):
             resolved = resolve_cached_repo_id_case(model_name)
@@ -1580,7 +1600,11 @@ async def get_model_config(
                     resolved,
                     model_name,
                 )
-            model_name = resolved
+            # Round 23 P1 #7: re-validate the cache-resolved value
+            # (case-only resolver should be a no-op for these
+            # checks, but defend in depth in case the resolver
+            # ever broadens its match heuristic).
+            model_name = _validate_logged_identifier(resolved, "model_name")
 
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type
@@ -2220,6 +2244,7 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         logger.info(f"Checking if vision model: {model_name}")
         is_vision = is_vision_model(model_name)
@@ -2248,6 +2273,7 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
@@ -2285,6 +2311,7 @@ async def get_gguf_variants(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
     try:
         from utils.models.model_config import is_local_path, list_local_gguf_variants
 

@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Round 23 P1 #5: identifier hardening reused from the chat models
+# so /api/data_recipe/publish rejects control characters and
+# URL-form ``hf_xxxxx`` tokens in ``repo_id`` before they reach
+# log lines or the HF API.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 
 class RecipePayload(BaseModel):
@@ -59,6 +65,16 @@ class PublishDatasetRequest(BaseModel):
         default = None,
         description = "Execution artifact path captured by the UI for completed runs",
     )
+
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class PublishDatasetResponse(BaseModel):

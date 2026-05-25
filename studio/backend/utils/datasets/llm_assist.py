@@ -131,6 +131,57 @@ def _diffusion_image_model_busy() -> bool:
     return bool(status.get("is_loaded") or status.get("is_loading"))
 
 
+def _gpu_workload_busy_for_helper() -> bool:
+    """Round 23 P1 #3 / #4: the diffusion-only guard from round 22
+    let the helper / advisor GGUF run on top of a live training run
+    or a resident export checkpoint. Extend the busy check to those
+    workloads too so any GPU owner (Images, Training, Export)
+    blocks the helper instead of double-owning VRAM. Each step
+    fails closed: an unverifiable status counts as busy so the
+    user's primary workload is preserved over the optional helper.
+    """
+    if _diffusion_image_model_busy():
+        return True
+
+    try:
+        from core.training import get_training_backend
+    except Exception:
+        pass
+    else:
+        try:
+            if get_training_backend().is_training_active():
+                logger.info(
+                    "Skipping helper GGUF while training is active"
+                )
+                return True
+        except Exception:
+            logger.info(
+                "Skipping helper GGUF because training status is unavailable"
+            )
+            return True
+
+    try:
+        from core.export import get_export_backend
+    except Exception:
+        return False
+
+    try:
+        exp = get_export_backend()
+        is_active = getattr(exp, "is_export_active", None)
+        if (is_active and is_active()) or getattr(
+            exp, "current_checkpoint", None
+        ):
+            logger.info("Skipping helper GGUF while export owns the GPU")
+            return True
+    except Exception:
+        logger.info(
+            "Skipping helper GGUF because export status is unavailable"
+        )
+        return True
+
+    return False
+
+
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     """
     Load helper model, run one chat completion, unload.
@@ -140,10 +191,10 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
-    if _diffusion_image_model_busy():
-        logger.info(
-            "Skipping helper GGUF while a diffusion image model is loaded/loading"
-        )
+    # Round 23 P1 #3: round 22 only guarded against a busy
+    # diffusion pipeline. Training / export own the same GPU too,
+    # so use the broader helper that gates on all three workloads.
+    if _gpu_workload_busy_for_helper():
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
@@ -536,11 +587,10 @@ def _run_multi_pass_advisor(
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
-    # Round 22 P1 #3: same diffusion-busy guard as ``_run_with_helper``.
-    if _diffusion_image_model_busy():
-        logger.info(
-            "Skipping advisor GGUF while a diffusion image model is loaded/loading"
-        )
+    # Round 23 P1 #4: extend the round 22 diffusion-only check to
+    # training + export so the advisor cannot race the user's
+    # active workload for GPU memory.
+    if _gpu_workload_busy_for_helper():
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)

@@ -907,13 +907,21 @@ class DiffusionBackend:
                 # Scrub them BEFORE the logger formats the line so the
                 # token never reaches structured-log sinks (round 14
                 # P2 #9).
+                # Round 23 P2 #11: ``_redact_hf_tokens`` only scrubs
+                # ``hf_xxxxx`` substrings, so an absolute local
+                # path like ``/home/alice/private/FLUX.2-klein-GGUF``
+                # used to land in this log line verbatim. Route
+                # through ``_display_repo_id`` so the leaf is
+                # logged when the value is a filesystem path, with
+                # the token-redaction step inside that helper as a
+                # belt-and-braces defence.
                 logger.info(
                     "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
-                    _redact_hf_tokens(repo_id),
+                    _display_repo_id(repo_id),
                     fam.name,
                     device,
                     dtype,
-                    _redact_hf_tokens(effective_base),
+                    _display_repo_id(effective_base),
                 )
 
                 transformer = None
@@ -1249,9 +1257,12 @@ class DiffusionBackend:
                 # Use ``logger.error`` with the already-scrubbed
                 # message and exc_info=False so the bearer token
                 # cannot leak through structured logging sinks.
+                # Round 23 P2 #12: same fix as the start-of-load
+                # log above. ``_redact_hf_tokens`` alone left
+                # absolute local repo paths in this failure line.
                 logger.error(
                     "Diffusion load failed for %s: %s",
-                    _redact_hf_tokens(repo_id),
+                    _display_repo_id(repo_id),
                     exc_msg,
                 )
                 raise RuntimeError(
