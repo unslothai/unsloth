@@ -831,3 +831,109 @@ def test_generate_image_keeps_negative_prompt_on_supporting_pipe(monkeypatch):
         height = 256,
     )
     assert captured["negative_prompt"] == "blurry"
+
+
+def test_generate_image_forwards_true_cfg_scale_when_supported(monkeypatch):
+    """When a pipeline accepts both negative_prompt and true_cfg_scale
+    (QwenImagePipeline, FluxPipeline) the user's guidance_scale must be
+    forwarded as true_cfg_scale as well, otherwise the negative prompt
+    is silently ignored (Qwen leaves the default true_cfg_scale=4.0
+    while the user value lands on guidance_scale)."""
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    captured: dict = {}
+
+    class _QwenLikePipe:
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt = None,
+            num_inference_steps,
+            guidance_scale,
+            true_cfg_scale = 4.0,
+            width,
+            height,
+            **kw,
+        ):
+            captured["guidance_scale"] = guidance_scale
+            captured["true_cfg_scale"] = true_cfg_scale
+            captured["negative_prompt"] = negative_prompt
+
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (width, height), (7, 8, 9))]
+            return o
+
+    backend._pipe = _QwenLikePipe()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[2]
+    backend._repo_id = "stub/stub"
+
+    backend.generate_image(
+        prompt = "a sloth",
+        negative_prompt = "blurry",
+        num_inference_steps = 4,
+        guidance_scale = 7.5,
+        width = 256,
+        height = 256,
+    )
+    assert captured["negative_prompt"] == "blurry"
+    assert captured["guidance_scale"] == 7.5
+    assert captured["true_cfg_scale"] == 7.5
+
+
+def test_generate_image_skips_true_cfg_scale_without_negative_prompt(monkeypatch):
+    """Pipelines that accept true_cfg_scale must NOT have it forwarded
+    when no negative_prompt is given; otherwise distilled CFG models
+    would unintentionally switch into real-CFG mode and degrade
+    quality / double inference cost."""
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    captured: dict = {}
+
+    class _QwenLikePipe:
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt = None,
+            num_inference_steps,
+            guidance_scale,
+            true_cfg_scale = 4.0,
+            width,
+            height,
+            **kw,
+        ):
+            captured["guidance_scale"] = guidance_scale
+            captured["true_cfg_scale"] = true_cfg_scale
+
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (width, height), (1, 1, 1))]
+            return o
+
+    backend._pipe = _QwenLikePipe()
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[2]
+    backend._repo_id = "stub/stub"
+
+    backend.generate_image(
+        prompt = "a sloth",
+        negative_prompt = None,
+        num_inference_steps = 4,
+        guidance_scale = 7.5,
+        width = 256,
+        height = 256,
+    )
+    assert captured["guidance_scale"] == 7.5
+    # Default left untouched: real CFG only activates with neg prompt.
+    assert captured["true_cfg_scale"] == 4.0

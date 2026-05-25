@@ -610,6 +610,15 @@ class DiffusionBackend:
             if negative_prompt is not None and negative_prompt.strip():
                 if _pipe_accepts_kwarg(pipe, "negative_prompt"):
                     call_kwargs["negative_prompt"] = negative_prompt
+                    # QwenImagePipeline and FluxPipeline treat
+                    # guidance_scale as distilled CFG and use
+                    # true_cfg_scale as the real classifier-free
+                    # guidance knob; the negative prompt is only
+                    # effective when true_cfg_scale > 1. Forward the
+                    # user-supplied guidance_scale through both so the
+                    # negative prompt actually steers generation.
+                    if _pipe_accepts_kwarg(pipe, "true_cfg_scale"):
+                        call_kwargs["true_cfg_scale"] = float(guidance_scale)
                 else:
                     logger.info(
                         "Dropping negative_prompt: %s does not accept it",
