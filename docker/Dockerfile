@@ -222,10 +222,12 @@ RUN set -eux \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi
 
-# 5) Emit a lockfile so the next rebuild can be byte-identical even if PyPI
-#    has moved on. Bake it into the image at /opt/unsloth-venv/requirements.lock.txt
-#    so `docker run ... cat /opt/unsloth-venv/requirements.lock.txt > pins.txt`
-#    gives you the input to a fully-pinned rebuild.
+# 5) Emit an informational pin record so downstream consumers can see exactly
+#    what was resolved. This is NOT a byte-reproducible lockfile -- `pip freeze`
+#    captures version strings but not wheel hashes, and several deps (unsloth,
+#    unsloth_zoo, vllm --pre) resolve from VCS / nightly indexes that float.
+#    Read it with `docker run --rm <image> cat /opt/unsloth-venv/requirements.lock.txt`
+#    if you need to forensic-diff two images.
 RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
  && head -50 ${VENV}/requirements.lock.txt
 

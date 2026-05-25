@@ -49,6 +49,15 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: unsloth/unsloth
 
+# Serialise per-ref runs so two pushes to main (or two scheduled
+# fires racing a manual dispatch) don't both retag `:latest` from
+# different commits. Don't cancel in-progress runs -- the build is
+# expensive and a half-built image left around in Docker Hub is
+# worse than a slightly stale `:latest` for a few minutes.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # Per-arch build. The matrix fans out two parallel jobs on the matching
