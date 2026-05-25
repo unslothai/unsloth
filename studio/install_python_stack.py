@@ -1296,35 +1296,34 @@ def install_python_stack() -> int:
     #     here keeps the contract simple).
     if IS_MAC_ARM and not skip_base and package_name == "unsloth":
         # Realign mlx-vlm + transformers + huggingface_hub on darwin arm64.
-        # Plain --upgrade / --upgrade-package leaves the already-installed
-        # transformers 4.57.6 in place when it satisfies unsloth's own range,
-        # even though it does not satisfy mlx-vlm 0.5.0's stricter `>=5.5.0`.
-        # Read mlx-vlm's actual installed metadata, pull the transformers
-        # specifier out, and pass it as an EXPLICIT version requirement.
-        # The resolver then has no choice but to upgrade transformers and
-        # huggingface_hub to a mutually-consistent set.
-        try:
-            from importlib.metadata import requires as _md_requires
-
-            specs: list[str] = []
-            for raw in _md_requires("mlx-vlm") or []:
-                from packaging.requirements import Requirement as _Req
-
-                req = _Req(raw)
-                if req.name.lower() == "transformers" and req.specifier:
-                    specs.append(str(req.specifier))
-                    break
-            tf_pin = f"transformers{specs[0]}" if specs else "transformers"
-        except Exception:
-            tf_pin = "transformers"
+        # Every other approach (--upgrade, --upgrade-package, --force-reinstall,
+        # explicit `transformers>=X` pin) failed to actually upgrade transformers
+        # under uv because the already-installed transformers 4.57.6 satisfies
+        # unsloth-zoo's range, and uv treats that as decisive even though
+        # mlx-vlm's stricter `>=5.5.0` is unsatisfied. Cut the resolver out
+        # of the loop: uninstall the conflicting trio first, then install
+        # them fresh with no transformers in the venv. The resolver is then
+        # forced to pick a version satisfying every installed package's
+        # requirements (unsloth + unsloth-zoo + mlx-vlm), which on darwin
+        # arm64 with the latest unsloth-zoo is uniquely transformers==5.5.0.
         _progress("mlx-vlm/transformers realign")
+        try:
+            subprocess.run(
+                [
+                    sys.executable, "-m", "pip", "uninstall", "-y",
+                    "transformers", "mlx-vlm", "huggingface_hub",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            pass
         pip_install(
             "Realigning mlx-vlm + transformers (macOS arm64)",
             "--no-cache-dir",
-            "--upgrade",
-            "--force-reinstall",
             "mlx-vlm",
-            tf_pin,
+            "transformers",
             "huggingface_hub",
             constrain = False,
         )
