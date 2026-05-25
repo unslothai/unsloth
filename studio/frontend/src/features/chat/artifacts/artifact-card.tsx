@@ -5,7 +5,6 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useAuiState } from "@assistant-ui/react";
 import {
   CheckIcon,
@@ -15,6 +14,7 @@ import {
   FileTextIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { ArtifactHtmlFrame } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import {
@@ -133,6 +133,7 @@ export function ArtifactCard({
             type="button"
             className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Open artifact"
+            aria-label="Open artifact"
             onClick={() => openArtifact(artifact, { surface })}
           >
             <ExternalLinkIcon className="size-4" />
@@ -141,6 +142,7 @@ export function ArtifactCard({
             type="button"
             className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Copy HTML"
+            aria-label="Copy artifact HTML"
             onClick={async () => {
               if (await copyToClipboard(artifact.code)) showCopied();
             }}
@@ -155,6 +157,7 @@ export function ArtifactCard({
             type="button"
             className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Download HTML"
+            aria-label="Download artifact HTML"
             onClick={() => downloadTextFile(filename, artifact.code)}
           >
             <DownloadIcon className="size-4" />

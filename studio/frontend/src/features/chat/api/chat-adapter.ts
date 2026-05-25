@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -37,12 +37,12 @@ import type {
   OpenAIMessageContent,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -994,11 +994,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         targetMessages.unshift({ role: "system", content: text });
       }
 
-      // Keep render_html local-only for now. External providers already have
-      // provider-specific built-in tool translation, but no generic custom-tool
-      // round-trip loop; they get the fenced-html artifact fallback instead.
+      const imageBase64 = findLatestUserImageBase64(messages);
+      const audioBase64 = findLatestUserAudioBase64(messages);
+      const hasOutboundImage = Boolean(imageBase64);
+
+      // Keep render_html local-only and mirror the backend image-turn gate.
+      // GGUF/safetensors disable tool execution when an image is present, so
+      // image turns receive the fenced-html artifact fallback instead of being
+      // prompted to call a tool the backend will not expose.
       const renderHtmlToolEnabledForThisTurn = Boolean(
-        !isExternalRequest && supportsTools && artifactsEnabled,
+        !isExternalRequest &&
+          supportsTools &&
+          artifactsEnabled &&
+          !hasOutboundImage,
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
@@ -1011,8 +1019,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           : disabledToolGuard;
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
-      const imageBase64 = findLatestUserImageBase64(messages);
-      const audioBase64 = findLatestUserAudioBase64(messages);
 
       // Block when ANY image is in the outbound payload (current or
       // prior turns) and the loaded model can't process images. Keeps
@@ -1542,13 +1548,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ? { preserve_thinking: preserveThinking }
               : {}),
             ...(supportsTools &&
-            (toolsEnabled || codeToolsEnabled || artifactsEnabled)
+            (toolsEnabled ||
+              codeToolsEnabled ||
+              renderHtmlToolEnabledForThisTurn)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
-                    ...(artifactsEnabled ? ["render_html"] : []),
+                    ...(renderHtmlToolEnabledForThisTurn
+                      ? ["render_html"]
+                      : []),
                   ],
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,

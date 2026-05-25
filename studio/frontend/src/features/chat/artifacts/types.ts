@@ -43,12 +43,13 @@ export function createArtifactId(input: ChatArtifactInput): string {
   const threadSegment = input.threadId || "no-thread";
   const sourceId =
     input.sourceToolCallId || input.sourceMessageId || "transient";
-  return [
-    input.source,
-    threadSegment,
-    sourceId,
-    hashArtifactCode(input.code),
-  ].join(":");
+  const parts = [input.source, threadSegment, sourceId];
+
+  if (input.source !== "tool" || !input.sourceToolCallId) {
+    parts.push(hashArtifactCode(input.code));
+  }
+
+  return parts.join(":");
 }
 
 export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {

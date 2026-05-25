@@ -14,12 +14,25 @@ import {
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import type { ChatArtifact } from "./types";
 import { getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+  ).filter(
+    (element) =>
+      !element.hasAttribute("disabled") &&
+      element.getAttribute("aria-hidden") !== "true" &&
+      element.tabIndex !== -1,
+  );
+}
 
 function downloadTextFile(filename: string, text: string): void {
   const blob = new Blob([text], { type: "text/html;charset=utf-8" });
@@ -47,6 +60,8 @@ export function ArtifactSurface({
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const surfaceRef = useRef<HTMLElement>(null);
+  const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
 
   useEffect(() => {
@@ -54,6 +69,26 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (variant !== "overlay") return;
+    previousFocusRef.current = document.activeElement;
+    const timeoutId = window.setTimeout(() => {
+      const surface = surfaceRef.current;
+      if (!surface) return;
+      const firstFocusable = getFocusableElements(surface)[0];
+      if (firstFocusable) {
+        firstFocusable.focus();
+      } else {
+        surface.focus();
+      }
+    }, 0);
+    return () => {
+      window.clearTimeout(timeoutId);
+      const previousFocus = previousFocusRef.current;
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    };
+  }, [variant]);
 
   const handleCopy = async () => {
     if (!(await copyToClipboard(artifact.code))) return;
@@ -65,8 +100,38 @@ export function ArtifactSurface({
     }, COPY_RESET_MS);
   };
 
+  const handleDialogKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (variant !== "overlay") return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = getFocusableElements(event.currentTarget);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   const content = (
     <section
+      ref={surfaceRef}
+      role={variant === "overlay" ? "dialog" : undefined}
+      aria-modal={variant === "overlay" ? true : undefined}
+      tabIndex={variant === "overlay" ? -1 : undefined}
+      onKeyDown={handleDialogKeyDown}
       className={cn(
         "flex min-h-0 flex-col overflow-hidden border border-border bg-background shadow-xl",
         variant === "panel"
@@ -167,7 +232,7 @@ export function ArtifactSurface({
             className="h-full"
           />
         ) : (
-          <pre className="h-full overflow-auto p-4 text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words">
+          <pre className="h-full overflow-auto p-4 text-xs leading-relaxed text-foreground whitespace-pre">
             <code>{artifact.code}</code>
           </pre>
         )}
@@ -179,8 +244,9 @@ export function ArtifactSurface({
     return (
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
-        role="dialog"
-        aria-modal="true"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
       >
         {content}
       </div>

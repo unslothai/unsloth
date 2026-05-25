@@ -24,13 +24,13 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   openArtifact: (artifact, options) =>
     set((state) => ({
       artifactsById: {
-        ...state.artifactsById,
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
       surface: options?.surface ?? state.surface,
     })),
-  closeArtifactSurface: () => set({ selectedArtifactId: null }),
+  closeArtifactSurface: () =>
+    set({ artifactsById: {}, selectedArtifactId: null }),
   clearArtifactsForThread: (threadId) =>
     set((state) => {
       if (!threadId) return state;

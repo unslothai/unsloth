@@ -10,12 +10,12 @@ import { openLink } from "@/lib/open-link";
 import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { createCodePlugin } from "./code-plugin";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
+import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -307,12 +307,7 @@ function StreamdownBlock(props: BlockProps) {
       !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
     if (htmlSource) {
       return (
-        <ArtifactCard
-          code={htmlSource}
-          title="HTML preview"
-          source="fence"
-          preview={false}
-        />
+        <ArtifactCard code={htmlSource} title="HTML preview" source="fence" />
       );
     }
 

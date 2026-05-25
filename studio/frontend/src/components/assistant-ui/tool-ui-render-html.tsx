@@ -21,15 +21,28 @@ interface RenderHtmlArgs {
   title?: string;
 }
 
+function formatToolResult(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result == null) return "";
+  try {
+    return JSON.stringify(result, null, 2);
+  } catch {
+    return String(result);
+  }
+}
+
 const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   args,
+  result,
   status,
   toolCallId,
 }) => {
   const parsedArgs = (args as RenderHtmlArgs) ?? {};
   const code = typeof parsedArgs.code === "string" ? parsedArgs.code : "";
+  const hasCode = code.trim().length > 0;
   const title =
     typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML artifact";
+  const resultText = formatToolResult(result);
   const isRunning = status?.type === "running";
   const hasText = useAuiState(({ message }) =>
     message.content.some(
@@ -42,11 +55,10 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
-    const nextOpen = isRunning || code ? true : hasText ? false : null;
-    if (nextOpen == null) return;
+    const nextOpen = isRunning ? true : !hasText;
     const timeoutId = window.setTimeout(() => setOpen(nextOpen), 0);
     return () => window.clearTimeout(timeoutId);
-  }, [code, hasText, isRunning]);
+  }, [hasText, isRunning]);
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
@@ -56,12 +68,12 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         icon={FileTextIcon}
       />
       <ToolFallbackContent>
-        {isRunning && !code ? (
+        {isRunning && !hasCode ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderIcon className="size-3.5 animate-spin" />
             <span>Waiting for artifact source…</span>
           </div>
-        ) : code ? (
+        ) : hasCode ? (
           <ArtifactCard
             code={code}
             title={title}
@@ -70,8 +82,8 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
             preview={false}
           />
         ) : (
-          <p className="text-sm text-muted-foreground">
-            No HTML artifact source was provided.
+          <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+            {resultText || "No HTML artifact source was provided."}
           </p>
         )}
       </ToolFallbackContent>
