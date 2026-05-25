@@ -201,6 +201,64 @@ def _expand_existing_local_path(value: str) -> str:
     return value
 
 
+def _preflight_full_diffusers_repo(repo: str, hf_token: Optional[str]) -> None:
+    """Prove a full diffusers repo is accessible before any unloads.
+
+    Round 19 P1 #3: the GGUF path's ``hf_hub_download(gguf_filename)``
+    above this function fails fast on a bad / private / gated /
+    typo'd repo before we touch the chat backend. The full diffusers
+    path used to skip that round-trip and only discover the issue
+    inside ``from_pretrained`` AFTER the user's chat model was
+    already unloaded. Add the same one-file probe (``model_index.json``
+    is the diffusers manifest; every diffusers repo has one).
+
+    Local paths are checked structurally so we do not hit the network
+    for a missing on-disk directory; both branches raise RuntimeError
+    so the surrounding load_model bails out before the chat unload.
+    The display label is collapsed via ``_display_repo_id`` so an
+    absolute filesystem path in the error message does not leak the
+    operator's layout (see round 17 P2 #9).
+    """
+    if not repo:
+        return
+    try:
+        local = Path(repo).expanduser()
+    except (OSError, ValueError):
+        local = None
+    if local is not None and local.exists():
+        if not local.is_dir():
+            raise RuntimeError(
+                f"Diffusion repo '{_display_repo_id(repo)}' is not a directory."
+            )
+        if not (local / "model_index.json").is_file():
+            raise RuntimeError(
+                f"Diffusion repo '{_display_repo_id(repo)}' is missing "
+                "model_index.json."
+            )
+        return
+    if (local is not None and local.is_absolute()) or repo.startswith("~"):
+        raise RuntimeError(
+            f"Local diffusion repo '{_display_repo_id(repo)}' does not exist."
+        )
+    try:
+        from huggingface_hub import hf_hub_download as _hf_hub_download
+    except Exception:
+        # diffusers is installed but huggingface_hub is missing -- let
+        # the downstream loader produce the canonical error.
+        return
+    try:
+        _hf_hub_download(
+            repo_id = repo,
+            filename = "model_index.json",
+            token = hf_token,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not access diffusion repo '{_display_repo_id(repo)}' "
+            "before unloading the current model."
+        ) from exc
+
+
 def _display_repo_id(value: Any) -> Any:
     """Return a public-facing label for a repo_id / base_repo.
 
@@ -835,6 +893,21 @@ class DiffusionBackend:
                             token = hf_token,
                         )
 
+                # Round 19 P1 #3: the GGUF branch above already
+                # proved repo + filename are accessible via
+                # ``hf_hub_download``. The full-diffusers path (no
+                # ``gguf_filename``) did NOT, so a typo / private /
+                # gated full repo only surfaced inside
+                # ``from_pretrained`` AFTER chat was unloaded. Probe
+                # ``effective_base`` for ``model_index.json`` here so
+                # the chat model is preserved on a bad full-repo
+                # request. Also probe when the GGUF caller supplied
+                # an explicit ``base_repo`` (the base companion is
+                # ALSO downloaded via from_pretrained further down
+                # and would OOM-then-fail past the unload).
+                if not gguf_filename or base_repo:
+                    _preflight_full_diffusers_repo(effective_base, hf_token)
+
                 # All cheap failure points (bad gguf_filename, missing
                 # pipeline / transformer class, gated download token,
                 # transient Hub error on the GGUF download) have now
@@ -1384,6 +1457,7 @@ def _release_chat_backend_for_diffusion() -> None:
     backend = get_inference_backend()
     active_model_name = getattr(backend, "active_model_name", None)
     loading_models = set(getattr(backend, "loading_models", set()) or set())
+    owned_names = {name for name in ({active_model_name} | loading_models) if name}
 
     def _require_unload(model_name: str) -> None:
         try:
@@ -1397,6 +1471,20 @@ def _release_chat_backend_for_diffusion() -> None:
             raise RuntimeError(
                 f"Safetensors backend refused to unload '{model_name}' "
                 "before loading a diffusion image model."
+            )
+        # Round 19 P1 #2: per-name post-state check. ``unload_model``
+        # returning ``True`` does not guarantee the orchestrator
+        # actually dropped the weights; the worker may have responded
+        # while still holding them, or a concurrent ``load`` may have
+        # repopulated the tracker. Verify the specific name is gone
+        # so the surrounding diffusion load bails out instead of
+        # silently double-owning VRAM.
+        active_after = getattr(backend, "active_model_name", None)
+        loading_after = set(getattr(backend, "loading_models", set()) or set())
+        if active_after == model_name or model_name in loading_after:
+            raise RuntimeError(
+                f"Safetensors chat model '{model_name}' is still active "
+                "or loading after unload; retry before loading a diffusion image model."
             )
 
     if active_model_name:
@@ -1413,6 +1501,18 @@ def _release_chat_backend_for_diffusion() -> None:
             loading,
         )
         _require_unload(loading)
+
+    # Round 19 P1 #2: final sweep using the initial snapshot of
+    # owned names. Catches races where a name we did not explicitly
+    # unload (because it appeared in loading_models between the
+    # snapshot and the unload calls) is still owned after the loop.
+    remaining_loading = set(getattr(backend, "loading_models", set()) or set()) & owned_names
+    remaining_active = getattr(backend, "active_model_name", None)
+    if remaining_loading or (remaining_active in owned_names):
+        raise RuntimeError(
+            "The existing safetensors chat model is still active or loading "
+            "after unload; retry before loading a diffusion image model."
+        )
 
 
 def _release_other_gpu_owners_for_diffusion() -> None:

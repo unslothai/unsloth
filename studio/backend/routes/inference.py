@@ -464,9 +464,27 @@ async def _release_safetensors_chat_for(workload: str) -> None:
                     "Try again."
                 ),
             )
+        # Round 19 P1 #1: ``unload_model`` returning ``True`` does not
+        # by itself guarantee the orchestrator dropped the model. The
+        # worker may have responded ``unloaded`` while still holding
+        # weights, or a concurrent ``load`` from another tab may have
+        # repopulated ``loading_models`` between calls. Re-read the
+        # tracker fields and fail closed if this specific name is
+        # still active or loading so the caller retries.
+        remaining_loading = set(getattr(inf, "loading_models", set()) or set())
+        active_after = getattr(inf, "active_model_name", None)
+        if active_after == model_name or model_name in remaining_loading:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Safetensors chat model '{model_name}' is still active "
+                    f"or loading after unload; retry before starting {workload}."
+                ),
+            )
 
     active_model_name = getattr(inf, "active_model_name", None)
     loading_models = set(getattr(inf, "loading_models", set()) or set())
+    owned_names = {name for name in ({active_model_name} | loading_models) if name}
     if active_model_name:
         logger.info(
             "Unloading safetensors chat '%s' before %s load",
@@ -483,6 +501,21 @@ async def _release_safetensors_chat_for(workload: str) -> None:
             workload,
         )
         await _unload_required(loading)
+
+    # Round 19 P1 #1: final sweep using the set of names that were
+    # initially present. Catches races where a model name we did not
+    # explicitly unload (because it appeared between the snapshot and
+    # the unload calls) is still in the owned set after the loop.
+    remaining_loading = set(getattr(inf, "loading_models", set()) or set()) & owned_names
+    remaining_active = getattr(inf, "active_model_name", None)
+    if remaining_loading or (remaining_active in owned_names):
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "The existing safetensors chat model is still active or loading "
+                f"after unload; retry before starting {workload}."
+            ),
+        )
 
 
 async def _release_chat_for(workload: str) -> None:
@@ -1161,7 +1194,14 @@ async def load_model(
             await _release_export_for("GGUF chat")
 
             llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
+            # Round 19 P2 #8: previously also called
+            # ``unsloth_backend = get_inference_backend()`` here, but
+            # the binding was never used in the GGUF branch. Eager
+            # construction makes the GGUF-only path needlessly fail
+            # or pay startup cost when the safetensors backend is
+            # unavailable / lazy-initialised; the shared
+            # ``_release_safetensors_chat_for`` below already
+            # handles missing-backend cases as a no-op.
 
             # Unload any safetensors / Unsloth model first to free
             # VRAM. Uses the shared helper so we also drain
@@ -1632,16 +1672,57 @@ async def unload_model(
             )
             or not llama_backend.is_loaded
         ):
-            llama_backend.unload_model()
+            # Round 19 P1 #6: previously this called
+            # ``llama_backend.unload_model()`` and unconditionally
+            # returned ``status="unloaded"`` even when the subprocess
+            # refused to terminate or IPC timed out. The frontend then
+            # showed the model as unloaded while llama-server was
+            # still resident. Treat ``False`` / leftover state as a
+            # 503 so the user retries.
+            ok = await asyncio.to_thread(llama_backend.unload_model)
+            if (
+                ok is False
+                or getattr(llama_backend, "is_loaded", False)
+                or getattr(llama_backend, "is_active", False)
+                or getattr(llama_backend, "loading_model_identifier", None)
+            ):
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "The GGUF model is still active or loading after unload. "
+                        "Try again."
+                    ),
+                )
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
         # Otherwise, unload from Unsloth backend
         backend = get_inference_backend()
-        backend.unload_model(request.model_path)
+        # Round 19 P1 #6: same fail-closed treatment for safetensors.
+        # ``unload_model`` returning ``False`` or leaving
+        # ``active_model_name`` / ``loading_models`` populated for the
+        # requested name must surface to the client so the UI reflects
+        # the real state.
+        ok = await asyncio.to_thread(backend.unload_model, request.model_path)
+        active_after = getattr(backend, "active_model_name", None)
+        loading_after = set(getattr(backend, "loading_models", set()) or set())
+        if (
+            ok is False
+            or active_after == request.model_path
+            or request.model_path in loading_after
+        ):
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "The safetensors model is still active or loading after "
+                    "unload. Try again."
+                ),
+            )
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to unload model: {str(e)}")
@@ -2098,6 +2179,13 @@ async def diffusion_load(
             or "Could not unload" in detail
             or "refused to unload" in detail
             or "still active after unload" in detail
+            # Round 19 P2 #7: round 18 introduced new RuntimeError
+            # phrasings (``still active or loading after unload``)
+            # that the original marker list did not cover, so a
+            # retryable chat-unload failure was returning HTTP 400
+            # to the user instead of 503. Match both wordings.
+            or "still active or loading after unload" in detail
+            or "still loading after unload" in detail
         ):
             # Round 17 P1 #2: chat unload failures raised by the
             # backend helper map to 503 (retryable infra issue),
