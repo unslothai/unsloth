@@ -53,13 +53,17 @@ const HEURISTIC_UNSAFE_SVG_RE =
 // https://developer.mozilla.org/en-US/docs/Web/SVG/Guides/SVG_as_an_image
 const SVG_PURIFY_CONFIG = {
   USE_PROFILES: { svg: true, svgFilters: true },
-  // ``style`` -- inline CSS would otherwise leak to the host page selectors.
   // ``image`` / ``use`` -- carry ``href``/``xlink:href`` and would let an
   //   assistant fetch attacker-controlled URLs from the user's browser.
   // ``foreignObject`` -- can embed HTML inside the SVG and re-introduce XSS.
+  // ``script`` / ``link`` / ``meta`` / ``iframe`` / ``embed`` / ``object``
+  //   are unconditional XSS / network surfaces. ``<style>`` is kept --
+  //   the SVG preview iframe is fully sandboxed (``sandbox=""``) with a
+  //   ``default-src 'none'`` CSP, so class-based styling that real
+  //   diagram exporters emit cannot leak to the host page or fetch
+  //   external URLs (the CSP blocks ``@import`` and ``url(...)``).
   FORBID_TAGS: [
     "script",
-    "style",
     "foreignObject",
     "iframe",
     "embed",

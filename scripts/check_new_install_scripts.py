@@ -372,6 +372,31 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
 
+        # Also refuse a PR that DROPS trusted base entries. Without
+        # this, an attacker could land a two-step bypass:
+        #   1. PR A removes ``.install-script-allowlist`` from base
+        #      (passes -- no new lockfile findings).
+        #   2. PR B then hits the bootstrap path (base allowlist
+        #      missing) and self-allowlists a newly introduced
+        #      install-script dependency.
+        # Removing an allowlist entry is a security-sensitive change
+        # and must land via the same review path that added it.
+        removed_from_head = sorted(base_allowlist - head_allowlist)
+        if removed_from_head:
+            print(
+                "[install-script-diff] FAIL: PR removes trusted base "
+                "allowlist entries. Allowlist deletions must land in a "
+                "separate, isolated commit so a follow-up PR cannot "
+                "exploit the bootstrap path.",
+                file = sys.stderr,
+            )
+            for entry in removed_from_head:
+                print(
+                    f"  dropped allowlist entry: {entry}",
+                    file = sys.stderr,
+                )
+            return 1
+
         # Only the trusted base allowlist participates in the skip set.
         allowlist = base_allowlist
 

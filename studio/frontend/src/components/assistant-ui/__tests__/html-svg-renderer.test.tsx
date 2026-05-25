@@ -268,12 +268,19 @@ describe("sanitizeSvgSource", () => {
     expect(clean).toContain("<rect");
   });
 
-  it("strips inline <style> blocks so SVG CSS cannot retarget host selectors", () => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><style>body{display:none!important}</style><rect/></svg>`;
+  it("keeps inline <style> blocks so class-styled SVG exports still render", () => {
+    // The SVG preview iframe is fully sandboxed (sandbox="") and the
+    // inner CSP is default-src 'none', so the iframe's <style> cannot
+    // reach the host page selectors or fetch external URLs (CSP blocks
+    // @import / url(...)). Stripping <style> broke legitimate class-
+    // styled SVG exports from many diagram tools, which is the bigger
+    // real-world cost than the (already-mitigated) selector leak.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><style>.fg{fill:red}</style><rect class="fg"/></svg>`;
     const clean = sanitizeSvgSource(svg).toLowerCase();
-    expect(clean).not.toContain("<style");
-    expect(clean).not.toContain("display:none");
+    expect(clean).toContain("<style");
+    expect(clean).toContain(".fg");
     expect(clean).toContain("<rect");
+    expect(clean).toContain('class="fg"');
   });
 
   it("strips style attributes so inline CSS cannot fire url()/@import requests", () => {
