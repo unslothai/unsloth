@@ -1473,8 +1473,7 @@ def _release_other_gpu_owners_for_diffusion() -> None:
         exp = get_export_backend()
     except Exception as exc:
         raise RuntimeError(
-            "Could not verify export status before loading a "
-            "diffusion image model."
+            "Could not verify export status before loading a " "diffusion image model."
         ) from exc
 
     is_export_active_fn = getattr(exp, "is_export_active", None)
