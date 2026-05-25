@@ -104,11 +104,7 @@ def _run_bash(command: str, sid: str) -> str:
 
 def test_workdir_write_succeeds(sandboxed_workdir):
     sid, wd = sandboxed_workdir
-    code = (
-        "from pathlib import Path\n"
-        'Path("hi.txt").write_text("ok")\n'
-        'print("done")\n'
-    )
+    code = 'from pathlib import Path\nPath("hi.txt").write_text("ok")\nprint("done")\n'
     out = _run_python(code, sid)
     assert "done" in out, out
     assert os.path.exists(os.path.join(wd, "hi.txt"))

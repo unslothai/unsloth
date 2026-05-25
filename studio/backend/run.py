@@ -578,9 +578,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(
-                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
-                )
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
