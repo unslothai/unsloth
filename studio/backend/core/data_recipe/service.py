@@ -56,7 +56,7 @@ def _pil_image_to_base64(value: Any) -> str | None:
     image_format = str(getattr(value, "format", "") or "").upper()
     if image_format not in {"PNG", "JPEG", "JPG", "WEBP", "GIF"}:
         image_format = "PNG"
-    value.save(buffer, format = image_format)
+    value.save(buffer, format=image_format)
     return _encode_bytes_to_base64(buffer.getvalue())
 
 
@@ -96,7 +96,7 @@ def _normalize_image_context_value(value: Any, *, base_path: str | None = None) 
 
         path_value = value.get("path")
         if isinstance(path_value, str) and path_value.strip():
-            if as_base64 := _load_image_file_to_base64(path_value, base_path = base_path):
+            if as_base64 := _load_image_file_to_base64(path_value, base_path=base_path):
                 return as_base64
             return path_value
 
@@ -109,7 +109,7 @@ def _apply_data_designer_image_context_patch() -> None:
         return
 
     try:
-        from data_designer.config.models import ImageContext
+        from data_designer.config.models import ImageContext  # pyright: ignore[reportMissingImports]
     except ImportError:
         return
 
@@ -122,7 +122,7 @@ def _apply_data_designer_image_context_patch() -> None:
     def _patched_auto_resolve(
         self: Any, context_value: Any, base_path: str | None
     ) -> Any:
-        normalized = _normalize_image_context_value(context_value, base_path = base_path)
+        normalized = _normalize_image_context_value(context_value, base_path=base_path)
         return original_auto_resolve(self, normalized, base_path)
 
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
@@ -131,7 +131,7 @@ def _apply_data_designer_image_context_patch() -> None:
 
 
 def build_model_providers(recipe: dict[str, Any]):
-    from data_designer.config.models import ModelProvider
+    from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[ModelProvider] = []
     for provider in recipe.get("model_providers", []):
@@ -141,12 +141,12 @@ def build_model_providers(recipe: dict[str, Any]):
             api_key = os.getenv(api_key_env)
         providers.append(
             ModelProvider(
-                name = provider["name"],
-                endpoint = provider["endpoint"],
-                provider_type = provider.get("provider_type", "openai"),
-                api_key = api_key,
-                extra_headers = provider.get("extra_headers"),
-                extra_body = provider.get("extra_body"),
+                name=provider["name"],
+                endpoint=provider["endpoint"],
+                provider_type=provider.get("provider_type", "openai"),
+                api_key=api_key,
+                extra_headers=provider.get("extra_headers"),
+                extra_body=provider.get("extra_body"),
             )
         )
 
@@ -174,7 +174,7 @@ def _validate_recipe_runtime_support(
 def build_mcp_providers(
     recipe: dict[str, Any],
 ) -> list:
-    from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider
+    from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[MCPProvider | LocalStdioMCPProvider] = []
     for provider in recipe.get("mcp_providers", []):
@@ -190,10 +190,10 @@ def build_mcp_providers(
                 args = []
             providers.append(
                 LocalStdioMCPProvider(
-                    name = str(provider.get("name", "")),
-                    command = str(provider.get("command", "")),
-                    args = [str(value) for value in args],
-                    env = {str(key): str(value) for key, value in env.items()},
+                    name=str(provider.get("name", "")),
+                    command=str(provider.get("command", "")),
+                    args=[str(value) for value in args],
+                    env={str(key): str(value) for key, value in env.items()},
                 )
             )
             continue
@@ -205,32 +205,58 @@ def build_mcp_providers(
                 api_key = os.getenv(str(api_key_env))
             providers.append(
                 MCPProvider(
-                    name = str(provider.get("name", "")),
-                    endpoint = str(provider.get("endpoint", "")),
-                    provider_type = str(provider_type),
-                    api_key = str(api_key) if api_key else None,
+                    name=str(provider.get("name", "")),
+                    endpoint=str(provider.get("endpoint", "")),
+                    provider_type=str(provider_type),
+                    api_key=str(api_key) if api_key else None,
                 )
             )
     return providers
 
 
+def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, Any]:
+    model_configs = recipe.get("model_configs")
+    if not isinstance(model_configs, list):
+        return recipe
+
+    changed = False
+    next_model_configs: list[Any] = []
+    for model_config in model_configs:
+        if isinstance(model_config, dict) and "gguf_variant" in model_config:
+            next_model_config = dict(model_config)
+            next_model_config.pop("gguf_variant", None)
+            next_model_configs.append(next_model_config)
+            changed = True
+            continue
+        next_model_configs.append(model_config)
+
+    if not changed:
+        return recipe
+
+    return {
+        **recipe,
+        "model_configs": next_model_configs,
+    }
+
+
 def build_config_builder(recipe: dict[str, Any]):
     _apply_data_designer_image_context_patch()
-    from data_designer.config import DataDesignerConfigBuilder
-    from data_designer.config.processors import ProcessorType
+    from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
+    from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
 
     recipe_core = {
         key: value
         for key, value in recipe.items()
         if key not in {"model_providers", "mcp_providers"}
     }
+    recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
         recipe_core
     )
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
-        builder = builder,
-        specs = oxc_local_callable_specs,
+        builder=builder,
+        specs=oxc_local_callable_specs,
     )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
@@ -243,7 +269,7 @@ def build_config_builder(recipe: dict[str, Any]):
             continue
         kwargs = {k: v for k, v in processor.items() if k != "processor_type"}
         builder.add_processor(
-            processor_type = ProcessorType(processor_type_raw),
+            processor_type=ProcessorType(processor_type_raw),
             **kwargs,
         )
 
@@ -256,8 +282,9 @@ def create_data_designer(
     artifact_path: str | None = None,
 ):
     _apply_data_designer_image_context_patch()
-    from data_designer.interface.data_designer import DataDesigner
+    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
+    recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
@@ -265,21 +292,21 @@ def create_data_designer(
     # when the pipeline contains no LLM columns.  Supply a lightweight stub
     # so sampler/expression-only recipes can run without a real provider.
     if not model_providers:
-        from data_designer.config.models import ModelProvider
+        from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
         model_providers = [
             ModelProvider(
-                name = "_unused",
-                endpoint = "http://localhost",
-                provider_type = "openai",
-                api_key = None,
+                name="_unused",
+                endpoint="http://localhost",
+                provider_type="openai",
+                api_key=None,
             )
         ]
 
     return DataDesigner(
-        artifact_path = artifact_path,
-        model_providers = model_providers,
-        mcp_providers = build_mcp_providers(recipe),
+        artifact_path=artifact_path,
+        model_providers=model_providers,
+        mcp_providers=build_mcp_providers(recipe),
     )
 
 
@@ -295,11 +322,11 @@ def preview_recipe(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
     builder = build_config_builder(recipe)
     designer = create_data_designer(recipe)
-    results = designer.preview(builder, num_records = num_records)
+    results = designer.preview(builder, num_records=num_records)
 
     dataset: list[dict[str, Any]] = []
     if results.dataset is not None:
-        raw_rows = results.dataset.to_dict(orient = "records")
+        raw_rows = results.dataset.to_dict(orient="records")
         dataset = [to_jsonable(row) for row in raw_rows]
 
     artifacts = (
@@ -310,7 +337,7 @@ def preview_recipe(
     analysis = (
         None
         if results.analysis is None
-        else to_jsonable(results.analysis.model_dump(mode = "json"))
+        else to_jsonable(results.analysis.model_dump(mode="json"))
     )
 
     return dataset, artifacts, analysis
