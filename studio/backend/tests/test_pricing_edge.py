@@ -32,11 +32,13 @@ import math
 from core.inference.pricing import (
     ANTHROPIC_CACHE_5M_WRITE_MULT,
     ANTHROPIC_CACHE_READ_MULT,
+    ANTHROPIC_FAST_MODE_MULT,
     ANTHROPIC_PRICING,
     OPENAI_CACHE_READ_MULT,
     OPENAI_PRICING,
     _lookup,
     calculate_cost,
+    pricing_snapshot,
 )
 
 
@@ -499,3 +501,82 @@ def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
     # 1M tokens at 1h-premium (2x of $5 = $10/M = $10). 5m baseline
     # would be 1.25x ($6.25). 2x means cache_write_usd ~= $10.
     assert math.isclose(r["cache_write_usd"], 10.0, rel_tol = 1e-2), r
+
+
+# ── Anthropic fast_mode pricing ───────────────────────────────────
+
+
+def test_fast_mode_bills_input_and_output_at_6x_on_opus_47():
+    """Opus 4.7 standard: $5/$25; fast: $30/$150."""
+    standard = calculate_cost(
+        "anthropic", "claude-opus-4-7",
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    )
+    fast = calculate_cost(
+        "anthropic", "claude-opus-4-7",
+        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        fast_mode = True,
+    )
+    assert math.isclose(standard["input_usd"], 5.0)
+    assert math.isclose(standard["output_usd"], 25.0)
+    assert math.isclose(fast["input_usd"], 30.0)
+    assert math.isclose(fast["output_usd"], 150.0)
+    assert "fast" in fast["model_priced"]
+
+
+def test_fast_mode_applies_to_opus_46_too():
+    fast = calculate_cost(
+        "anthropic", "claude-opus-4-6",
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+        fast_mode = True,
+    )
+    assert math.isclose(fast["input_usd"], 30.0), fast
+
+
+def test_fast_mode_silently_dropped_on_non_opus_46_47():
+    """Stray fast_mode=True on Sonnet/Haiku must not over-charge."""
+    for model in ("claude-sonnet-4-5", "claude-sonnet-4-6", "claude-haiku-4-5"):
+        std = calculate_cost(
+            "anthropic", model,
+            {"input_tokens": 1_000_000, "output_tokens": 0},
+        )
+        fast = calculate_cost(
+            "anthropic", model,
+            {"input_tokens": 1_000_000, "output_tokens": 0},
+            fast_mode = True,
+        )
+        assert math.isclose(std["input_usd"], fast["input_usd"]), (model, std, fast)
+
+
+def test_fast_mode_ignored_on_openai():
+    """Provider gate: fast_mode is Anthropic-only."""
+    std = calculate_cost(
+        "openai", "gpt-5.4",
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+    )
+    fast = calculate_cost(
+        "openai", "gpt-5.4",
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+        fast_mode = True,
+    )
+    assert math.isclose(std["input_usd"], fast["input_usd"]), (std, fast)
+
+
+def test_fast_mode_stacks_with_cache_read_discount():
+    """Cache reads stay at 0.1x base * fast_mult per Anthropic docs."""
+    r = calculate_cost(
+        "anthropic", "claude-opus-4-7",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 1_000_000,
+        },
+        fast_mode = True,
+    )
+    # 1M cache_read at 0.1x base (where base = $5 * 6 = $30) = $3.
+    assert math.isclose(r["cache_read_usd"], 3.0, rel_tol = 1e-3), r
+
+
+def test_pricing_snapshot_exposes_fast_mode_mult():
+    snap = pricing_snapshot()
+    assert snap["anthropic"]["fast_mode_mult"] == 6.0
