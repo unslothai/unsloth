@@ -222,13 +222,14 @@ function renderHighlightedCode(props: BlockProps, codeFence: CodeFenceInfo) {
 function StreamdownBlock(props: BlockProps) {
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
-  // parseCodeFence requires a closing ```; while the fence is still
-  // streaming we fall through to parseIncompleteCodeFence so HtmlSvgRenderer
-  // can mount with isIncomplete=true and lock the Code tab on partial
-  // HTML/SVG fences (the advertised stream-in behaviour).
+  // parseCodeFence requires a closing ```; we fall back to
+  // parseIncompleteCodeFence both while the fence is still streaming AND
+  // when a finished reply forgot to emit the closing ``` (small local LLMs
+  // routinely drop it). Without the second fallback the HtmlSvgRenderer
+  // never mounts on an unclosed final message and the reply degrades to a
+  // plain code block.
   const codeFence =
-    parseCodeFence(props.content) ??
-    (props.isIncomplete ? parseIncompleteCodeFence(props.content) : null);
+    parseCodeFence(props.content) ?? parseIncompleteCodeFence(props.content);
 
   if (props.isIncomplete && hasMermaidFence) {
     return (

@@ -203,6 +203,23 @@ describe("parseIncompleteCodeFence", () => {
   it("returns null when the block is not a fence at all", () => {
     expect(parseIncompleteCodeFence("just text")).toBeNull();
   });
+
+  it("recovers a final-but-never-closed fence (small LLMs drop the closing ```)", () => {
+    // Regression: live probe against Qwen3-0.6B caught the model emitting a
+    // complete SVG body but no closing ```. parseCodeFence rejects (strict
+    // ``` ... ``` shape), so the StreamdownBlock fallback must still find the
+    // fence via parseIncompleteCodeFence even after streaming completes -- or
+    // HtmlSvgRenderer never mounts and the user sees a plain code block.
+    const finalNoClose =
+      "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">" +
+      "<circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"orange\"/></svg>";
+    expect(parseCodeFence(finalNoClose)).toBeNull();
+    const fence = parseIncompleteCodeFence(finalNoClose);
+    expect(fence).not.toBeNull();
+    expect(fence?.language).toBe("svg");
+    expect(fence?.source).toContain("<circle");
+    expect(fence?.source).toContain("</svg>");
+  });
 });
 
 describe("Fence helpers", () => {
