@@ -12,12 +12,14 @@ PATH to point at the venv.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -422,6 +424,27 @@ def _infer_no_torch() -> bool:
 
 
 NO_TORCH = _infer_no_torch()
+
+
+def _resolve_latest_pypi_version(package: str, *, timeout: float = 10.0) -> str | None:
+    """Return the latest published version of ``package`` on PyPI.
+
+    Used to pin a lower-bound floor on the `unsloth studio update` upgrade
+    step. With base.txt's unpinned `unsloth`/`unsloth-zoo` entries, uv's
+    resolver will silently backtrack to an older release whenever a
+    transitive constraint (e.g. bitsandbytes wheel availability on macOS
+    arm64) makes the unpinned requirement satisfiable by an older version.
+    Returns None on network failure so the caller can fall back to the
+    historical behaviour without breaking offline installs.
+    """
+    url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout) as response:
+            data = json.load(response)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    return (data.get("info") or {}).get("version") or None
+
 
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
@@ -968,6 +991,17 @@ def install_python_stack() -> int:
         # (current PyPI metadata still declares torch as a hard dep), then
         # runtime deps with --no-deps (avoids transitive torch).
         _progress("base packages (no torch)")
+        floor_args_no_torch: list[str] = []
+        # Skip the floor when --package overrides the default name (test
+        # builds publish to arbitrary side packages that may not exist on
+        # PyPI yet).
+        if package_name == "unsloth":
+            _latest_unsloth_nt = _resolve_latest_pypi_version("unsloth")
+            if _latest_unsloth_nt:
+                floor_args_no_torch.append(f"unsloth>={_latest_unsloth_nt}")
+        _latest_zoo_nt = _resolve_latest_pypi_version("unsloth-zoo")
+        if _latest_zoo_nt:
+            floor_args_no_torch.append(f"unsloth-zoo>={_latest_zoo_nt}")
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -978,6 +1012,7 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             package_name,
             "unsloth-zoo",
+            *floor_args_no_torch,
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # exact version pydantic's metadata declares. Under --no-deps
@@ -1017,7 +1052,15 @@ def install_python_stack() -> int:
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
-        # never re-resolved).
+        # never re-resolved). Pin a floor at PyPI latest for the same
+        # reason the standard update path does -- see comment below.
+        floor_args_local: list[str] = []
+        _latest_unsloth_local = _resolve_latest_pypi_version("unsloth")
+        if _latest_unsloth_local:
+            floor_args_local.append(f"unsloth>={_latest_unsloth_local}")
+        _latest_zoo_local = _resolve_latest_pypi_version("unsloth-zoo")
+        if _latest_zoo_local:
+            floor_args_local.append(f"unsloth-zoo>={_latest_zoo_local}")
         _progress("base packages")
         pip_install(
             "Updating base packages",
@@ -1026,6 +1069,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            *floor_args_local,
             req = REQ_ROOT / "base.txt",
         )
         _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
@@ -1058,6 +1102,18 @@ def install_python_stack() -> int:
         # Update path: upgrade only unsloth + unsloth-zoo while preserving
         # existing torch/CUDA installations.  Torch is pre-installed by
         # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+        # Pin a floor at the current PyPI latest so the resolver cannot
+        # silently backtrack to an older release when a transitive constraint
+        # (e.g. macOS arm64 bitsandbytes wheel availability) makes the
+        # unpinned `unsloth` requirement in base.txt satisfiable by a much
+        # older version. Mirrors the explicit floor install.sh maintains.
+        floor_args: list[str] = []
+        latest_unsloth = _resolve_latest_pypi_version("unsloth")
+        if latest_unsloth:
+            floor_args.append(f"unsloth>={latest_unsloth}")
+        latest_zoo = _resolve_latest_pypi_version("unsloth-zoo")
+        if latest_zoo:
+            floor_args.append(f"unsloth-zoo>={latest_zoo}")
         _progress("base packages")
         pip_install(
             "Updating base packages",
@@ -1066,6 +1122,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            *floor_args,
             req = REQ_ROOT / "base.txt",
         )
 
