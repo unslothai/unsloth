@@ -1290,6 +1290,14 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
+    if [ -f "$_OVERRIDES_FILE" ]; then
+        export UV_OVERRIDE="$_OVERRIDES_FILE"
+    fi
+fi
+
 _TAURI_INITIAL_GPU_BRANCH="unknown"
 if [ "$SKIP_TORCH" = true ]; then
     _TAURI_INITIAL_GPU_BRANCH="no_torch"
@@ -2108,12 +2116,6 @@ else
     fi
 fi
 
-# ── Install mlx-vlm on Apple Silicon (optional, for VLM training) ──
-if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    substep "installing mlx-vlm (VLM training support)..."
-    run_install_cmd "install mlx-vlm" uv pip install --python "$_VENV_PY" mlx-vlm
-fi
-
 # ── Run studio setup ──
 tauri_log "STEP" "Running Studio setup"
 # When --local, use the repo's own setup.sh directly.
@@ -2261,6 +2263,38 @@ _commit_studio_venv_replacement
 if [ "$TAURI_MODE" = true ]; then
     tauri_log "DONE" ""
     exit 0
+fi
+
+# Warn if another 'unsloth' wins on PATH (different venv, system pip, etc).
+# Users typing `unsloth studio` later would hit that binary instead of the
+# one just installed; the runtime now falls back via UNSLOTH_STUDIO_HOME
+# but the absolute path is still the most reliable launch.
+# Uses the venv python (just created above) for path canonicalization so
+# this works on macOS (BSD readlink has no -f) as well as Linux/WSL.
+_installed_bin="$VENV_DIR/bin/unsloth"
+_path_unsloth=$(command -v unsloth 2>/dev/null || true)
+if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    # Canonicalize via the venv python (BSD readlink lacks -f on macOS).
+    # If either side fails to resolve, skip the check entirely rather than
+    # comparing raw paths (which would false-trigger on symlink targets).
+    _canon() {
+        "$VENV_DIR/bin/python" -c \
+            'import os, sys; print(os.path.realpath(sys.argv[1]))' \
+            "$1" 2>/dev/null
+    }
+    _installed_real=$(_canon "$_installed_bin")
+    _path_real=$(_canon "$_path_unsloth")
+    if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
+        && [ "$_installed_real" != "$_path_real" ]; then
+        echo ""
+        step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
+        substep "$_path_unsloth"
+        substep "this installer's binary is at:"
+        substep "$_installed_bin"
+        substep "to use this install, run the absolute path above,"
+        substep "alias unsloth, or put its dir earlier on PATH."
+        echo ""
+    fi
 fi
 
 echo ""
