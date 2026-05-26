@@ -16,7 +16,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 
-interface ParsedChunk {
+export interface ParsedChunk {
   id: string;
   source: string;
   page?: string;
@@ -39,7 +39,7 @@ function decodeXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
-function parseChunks(raw: string): ParsedChunk[] {
+export function parseChunks(raw: string): ParsedChunk[] {
   if (!raw) return [];
   const out: ParsedChunk[] = [];
   let match: RegExpExecArray | null = CHUNK_RE.exec(raw);

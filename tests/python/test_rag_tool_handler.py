@@ -140,6 +140,19 @@ def test_format_hits_handles_unknown_source():
     assert "\norphan\n</chunk>" in result
 
 
+def test_format_hits_offsets_ids_by_start_id():
+    from core.rag.tool import _format_hits_for_llm
+
+    hits = [
+        {"filename": "a.pdf", "text": "first"},
+        {"filename": "b.pdf", "text": "second"},
+    ]
+    result = _format_hits_for_llm(hits, start_id = 5)
+    assert '<chunk id="6"' in result
+    assert '<chunk id="7"' in result
+    assert '<chunk id="1"' not in result
+
+
 def test_format_hits_escapes_xml_in_source():
     from core.rag.tool import _format_hits_for_llm
 

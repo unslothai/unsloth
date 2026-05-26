@@ -61,6 +61,10 @@ import {
   type SearchRequest,
   search as ragSearch,
 } from "@/features/rag/api/rag-api";
+import {
+  type ParsedChunk,
+  parseChunks,
+} from "@/components/assistant-ui/tool-ui-search-knowledge-base";
 import type { RagMode, RagSource } from "./chat-settings-api";
 import {
   createOpenAIContainer,
@@ -239,6 +243,64 @@ function parseSourcesFromResult(raw: string): {
     }
   }
   return sources;
+}
+
+interface DocumentSourcePart {
+  type: "source";
+  sourceType: "document";
+  id: string;
+  chunkId: string;
+  filename: string;
+  page?: string;
+  score?: string;
+  text: string;
+}
+
+/** Pull every `[N]` token the model wrote in its reply.
+ *  Naive: regex over the whole text. False positives (e.g. `[1]` inside a
+ *  code fence or list marker) are tolerated — the worst case is a stray
+ *  badge for an id that exists in the retrieval set. */
+const CITATION_RE = /\[(\d+)\]/g;
+function extractCitedIds(text: string): Set<string> {
+  const ids = new Set<string>();
+  let match: RegExpExecArray | null = CITATION_RE.exec(text);
+  while (match !== null) {
+    ids.add(match[1]);
+    match = CITATION_RE.exec(text);
+  }
+  CITATION_RE.lastIndex = 0;
+  return ids;
+}
+
+/** Build doc-shaped source parts for chunks the model actually cited.
+ *  `allChunks` is the flat union of every search_knowledge_base tool
+ *  result in this turn (deduped by id). Returns one part per unique
+ *  cited id that maps to a real chunk; hallucinated `[99]` refs without
+ *  a matching chunk are silently dropped. */
+function buildDocumentSourceParts(
+  allChunks: ParsedChunk[],
+  citedIds: Set<string>,
+): DocumentSourcePart[] {
+  const byId = new Map<string, ParsedChunk>();
+  for (const chunk of allChunks) {
+    if (!byId.has(chunk.id)) byId.set(chunk.id, chunk);
+  }
+  const out: DocumentSourcePart[] = [];
+  for (const id of citedIds) {
+    const chunk = byId.get(id);
+    if (!chunk) continue;
+    out.push({
+      type: "source",
+      sourceType: "document",
+      id: `rag-${id}`,
+      chunkId: id,
+      filename: chunk.source,
+      ...(chunk.page ? { page: chunk.page } : {}),
+      ...(chunk.score ? { score: chunk.score } : {}),
+      text: chunk.text,
+    });
+  }
+  return out;
 }
 
 function estimateTokenCount(text: string): number | undefined {
@@ -1013,8 +1075,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             "tool calls). Phrase each query as a focused question, not a " +
             "keyword bag.\n" +
             "3. After the tool calls return, ground your reply in the " +
-            "returned <chunk> blocks and cite them as [1], [2], etc. Do not " +
-            "make additional tool calls beyond the planned 3.",
+            "returned <chunk> blocks. CITE each chunk you use with its " +
+            'LITERAL id attribute — e.g. `<chunk id="7">` is cited as ' +
+            "`[7]`. IDs are unique across the whole turn; never renumber, " +
+            "never reuse a different number. Do not make additional tool " +
+            "calls beyond the planned 3.",
         );
       }
       if (systemPromptParts.length > 0) {
@@ -2021,7 +2086,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // tool calls. Both emit the same `Title:` / `URL:` / `Snippet:`
         // block shape from the Anthropic backend, so the parser does
         // not need to branch on tool name.
-        const sourceParts = toolCallParts.flatMap((tc) => {
+        const urlSourceParts = toolCallParts.flatMap((tc) => {
           if (
             (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
             !tc.result
@@ -2032,6 +2097,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             typeof tc.result === "string" ? tc.result : "",
           );
         });
+
+        // RAG: flatten chunks across every search_knowledge_base call this
+        // turn, then emit doc-source parts only for ids the model actually
+        // cited as [N] in its final reply.
+        const ragChunks = toolCallParts.flatMap((tc) => {
+          if (tc.toolName !== "search_knowledge_base" || !tc.result) {
+            return [];
+          }
+          return parseChunks(typeof tc.result === "string" ? tc.result : "");
+        });
+        const documentSourceParts =
+          ragChunks.length > 0
+            ? buildDocumentSourceParts(
+                ragChunks,
+                extractCitedIds(cumulativeText),
+              )
+            : [];
+
+        const sourceParts = [...urlSourceParts, ...documentSourceParts];
 
         const meta = serverMetadata;
         const finalTokenCount =

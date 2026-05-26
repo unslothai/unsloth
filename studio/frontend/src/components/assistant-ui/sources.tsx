@@ -10,6 +10,7 @@ import {
   type ComponentProps,
   type FC,
 } from "react";
+import { FileTextIcon } from "lucide-react";
 import { useMessage } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { Badge, badgeVariants, type BadgeProps } from "./badge";
@@ -126,13 +127,31 @@ function Source({
 
 // ── Source badge with hover card ─────────────────────────────
 
-interface SourceData {
+interface UrlSourceData {
+  kind: "url";
   url: string;
   title: string;
   description?: string;
 }
 
-const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
+interface DocSourceData {
+  kind: "document";
+  chunkId: string;
+  filename: string;
+  page?: string;
+  score?: string;
+  text: string;
+}
+
+type SourceData = UrlSourceData | DocSourceData;
+
+function sourceKey(source: SourceData): string {
+  return source.kind === "url"
+    ? `url:${source.url}`
+    : `doc:${source.chunkId}`;
+}
+
+const SourceBadge: FC<{ source: UrlSourceData }> = ({ source }) => {
   const domain = extractDomain(source.url);
   const displayTitle = source.title || domain;
 
@@ -171,6 +190,54 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
   );
 };
 
+const DocumentSourceBadge: FC<{ source: DocSourceData }> = ({ source }) => {
+  const metaParts: string[] = [];
+  if (source.page) metaParts.push(`page ${source.page}`);
+  if (source.score) metaParts.push(`score ${source.score}`);
+
+  return (
+    <HoverCard openDelay={0} closeDelay={0}>
+      <HoverCardTrigger asChild>
+        <span className="inline-block">
+          <Badge
+            variant="outline"
+            className="rounded-full cursor-default inline-flex items-center gap-1.5 outline-none"
+          >
+            <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+              [{source.chunkId}]
+            </span>
+            <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
+            <SourceTitle>{source.filename}</SourceTitle>
+          </Badge>
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="start"
+        className="!bg-black !text-white !w-72 !p-3 !rounded-2xl !shadow-md !ring-0 !duration-0"
+        style={{ animation: "none" }}
+      >
+        <div className="flex gap-2.5">
+          <FileTextIcon className="size-4 mt-0.5 shrink-0 text-white/70" />
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-semibold leading-tight truncate">
+              {source.filename}
+            </p>
+            {metaParts.length > 0 ? (
+              <p className="text-xs text-white/60 truncate">
+                {metaParts.join(" · ")}
+              </p>
+            ) : null}
+            <p className="text-xs text-white/70 leading-relaxed line-clamp-3 whitespace-pre-wrap">
+              {source.text}
+            </p>
+          </div>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
+
 // ── Grouped sources with 2-row collapse ─────────────────────
 
 const SourcesGroup: FC = () => {
@@ -179,7 +246,7 @@ const SourcesGroup: FC = () => {
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  // Extract source parts from the message
+  // Extract source parts (both URL and document) from the message
   const sources: SourceData[] = [];
   if (message.content) {
     for (const part of message.content) {
@@ -191,11 +258,34 @@ const SourcesGroup: FC = () => {
         part.url
       ) {
         sources.push({
+          kind: "url",
           url: part.url as string,
           title: (part as { title?: string }).title || "",
           description: (part as { metadata?: { description?: string } })
             .metadata?.description,
         });
+      } else if (
+        part.type === "source" &&
+        "sourceType" in part &&
+        (part as { sourceType?: string }).sourceType === "document"
+      ) {
+        const docPart = part as {
+          chunkId?: string;
+          filename?: string;
+          page?: string;
+          score?: string;
+          text?: string;
+        };
+        if (docPart.chunkId && docPart.filename) {
+          sources.push({
+            kind: "document",
+            chunkId: docPart.chunkId,
+            filename: docPart.filename,
+            page: docPart.page,
+            score: docPart.score,
+            text: docPart.text ?? "",
+          });
+        }
       }
     }
   }
@@ -258,20 +348,39 @@ const SourcesGroup: FC = () => {
         className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
       >
         {sources.map((source) => (
-          <span key={source.url} className="inline-block">
-            <Source href={source.url}>
-              <SourceIcon url={source.url} />
-              <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
-            </Source>
+          <span key={sourceKey(source)} className="inline-block">
+            {source.kind === "url" ? (
+              <Source href={source.url}>
+                <SourceIcon url={source.url} />
+                <SourceTitle>
+                  {source.title || extractDomain(source.url)}
+                </SourceTitle>
+              </Source>
+            ) : (
+              <Badge
+                variant="outline"
+                className="rounded-full inline-flex items-center gap-1.5"
+              >
+                <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+                  [{source.chunkId}]
+                </span>
+                <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
+                <SourceTitle>{source.filename}</SourceTitle>
+              </Badge>
+            )}
           </span>
         ))}
       </div>
 
       {/* Visible container */}
       <div className="flex flex-wrap gap-1">
-        {displayedSources.map((source) => (
-          <SourceBadge key={source.url} source={source} />
-        ))}
+        {displayedSources.map((source) =>
+          source.kind === "url" ? (
+            <SourceBadge key={sourceKey(source)} source={source} />
+          ) : (
+            <DocumentSourceBadge key={sourceKey(source)} source={source} />
+          ),
+        )}
         {shouldCollapse && !expanded && (
           <button
             type="button"
@@ -326,5 +435,6 @@ export {
   Source,
   SourceIcon,
   SourceTitle,
+  DocumentSourceBadge,
   badgeVariants as sourceVariants,
 };

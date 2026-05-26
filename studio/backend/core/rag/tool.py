@@ -9,11 +9,18 @@ so the model never sees KB UUIDs.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any, Literal
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+# Per-request chunk-id counter. Task-local (FastAPI runs each request in
+# its own asyncio task → its own Context). Lets the model cite chunks
+# unambiguously when multiple search_knowledge_base calls run in the
+# same chat turn: call 1 returns ids 1..N, call 2 returns N+1..N+M, etc.
+_chunk_id_counter: ContextVar[int] = ContextVar("rag_chunk_id_counter", default = 0)
 
 
 SEARCH_KNOWLEDGE_BASE_TOOL = {
@@ -27,7 +34,9 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
             "knowledge until you have called this tool with a focused query "
             "derived from the user's latest message. Returns chunks wrapped in "
             '<chunk id="N" source="..." page="..." score="...">...</chunk> '
-            "tags; cite them in your reply as [1], [2], etc."
+            "tags. CITE each chunk you use with its LITERAL id attribute, "
+            'e.g. `<chunk id="7">` is cited as `[7]`. IDs are unique across '
+            "all calls in this turn — never renumber, never reuse."
         ),
         "parameters": {
             "type": "object",
@@ -65,8 +74,12 @@ def _xml_attr(value: Any) -> str:
     )
 
 
-def _format_hits_for_llm(hits: list[dict]) -> str:
-    """Render hits as fenced <chunk> blocks with metadata."""
+def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
+    """Render hits as fenced <chunk> blocks with metadata.
+
+    ``start_id`` offsets the citation id so multiple calls in the same
+    request produce globally unique ids (call 1: 1..N, call 2: N+1..N+M).
+    """
     if not hits:
         return (
             "No matching chunks were found in the attached documents. "
@@ -74,7 +87,7 @@ def _format_hits_for_llm(hits: list[dict]) -> str:
             "have been ingested yet."
         )
     blocks: list[str] = []
-    for index, hit in enumerate(hits, start = 1):
+    for index, hit in enumerate(hits, start = start_id + 1):
         attrs = [
             f'id="{index}"',
             f'source="{_xml_attr(hit.get("filename") or "unknown")}"',
@@ -244,4 +257,7 @@ def search_knowledge_base(
                 "chunk_index": hit.chunk_index,
             }
         )
-    return _format_hits_for_llm(formatted)
+    start_id = _chunk_id_counter.get()
+    rendered = _format_hits_for_llm(formatted, start_id = start_id)
+    _chunk_id_counter.set(start_id + len(formatted))
+    return rendered
