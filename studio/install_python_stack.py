@@ -370,7 +370,7 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     # Pick the highest numeric suffix so that e.g. "713" wins over "72" when
     # both variants are present in the wheel.  Filesystem glob order is not
     # guaranteed, so always sort rather than stopping at the first match.
-    return max(all_vers, key=lambda v: int(v)) if all_vers else None
+    return max(all_vers, key = lambda v: int(v)) if all_vers else None
 
 
 def _has_rocm_gpu() -> bool:

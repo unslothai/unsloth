@@ -113,7 +113,7 @@ if sys.platform == "win32":
                         if _km:
                             _all_vers_main.append(_km.group(1))
                 if _all_vers_main:
-                    _bnb_rocm_ver = max(_all_vers_main, key=lambda v: int(v))
+                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",

@@ -2117,7 +2117,7 @@ def run_training_process(
                         # Filesystem glob order is not guaranteed, so always
                         # sort rather than stopping at the first match.
                         if _all_vers:
-                            _bnb_rocm_ver = max(_all_vers, key=lambda v: int(v))
+                            _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
                     pass
                 _bnb_rocm_ver = _bnb_rocm_ver or "72"
