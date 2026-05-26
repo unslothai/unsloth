@@ -1725,11 +1725,7 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
-    # Only check when NOT called from install.ps1 (which just installed the package).
-    # Check BOTH unsloth and unsloth-zoo -- a stale zoo while unsloth itself is
-    # at latest is the most common bug-trigger after the macOS arm64 resolver
-    # backtrack (PR #5767); the old single-package check would print
-    # "up to date" and skip the update entirely.
+    # Only check when NOT called from install.ps1 (which just installed the package)
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
     $LatestVer = ""
     try {
@@ -1737,43 +1733,12 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    # Only probe public unsloth-zoo when the package being managed IS unsloth.
-    # Custom side packages (e.g. $env:STUDIO_PACKAGE_NAME=roland-sloth) ship
-    # their own zoo fork via dependency metadata and may not install public
-    # unsloth-zoo at all; checking it would force a no-op update.
-    $CheckZoo = ($_PkgName -eq "unsloth")
-
-    $InstalledZooVer = ""
-    $LatestZooVer = ""
-    if ($CheckZoo) {
-        $InstalledZooVer = try { (& python -c "from importlib.metadata import version; print(version('unsloth-zoo'))" 2>$null | Out-String).Trim() } catch { "" }
-        try {
-            $zooJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/unsloth-zoo/json" -TimeoutSec 5 -ErrorAction Stop
-            $LatestZooVer = "$($zooJson.info.version)".Trim()
-        } catch { }
-    }
-
-    $UnslothUpToDate = ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer))
-    if ($CheckZoo) {
-        $ZooUpToDate = ($InstalledZooVer -and $LatestZooVer -and ($InstalledZooVer -eq $LatestZooVer))
-    } else {
-        $ZooUpToDate = $true
-    }
-
-    if ($UnslothUpToDate -and $ZooUpToDate) {
-        step "python" "$_PkgName $InstalledVer + unsloth-zoo $InstalledZooVer are up to date"
+    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+        step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
-    } elseif ($LatestVer -or $LatestZooVer) {
-        $_iv = if ($InstalledVer) { $InstalledVer } else { "unknown" }
-        $_lv = if ($LatestVer)    { $LatestVer }    else { "unknown" }
-        $msg = "$_PkgName $_iv -> $_lv"
-        if (-not $ZooUpToDate -and $LatestZooVer) {
-            $_iz = if ($InstalledZooVer) { $InstalledZooVer } else { "unknown" }
-            $_lz = $LatestZooVer
-            $msg = "$msg / unsloth-zoo $_iz -> $_lz"
-        }
-        substep "$msg available, updating..."
-    } else {
+    } elseif ($InstalledVer -and $LatestVer) {
+        substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
+    } elseif (-not $LatestVer) {
         substep "could not reach PyPI, updating to be safe..."
     }
 }
