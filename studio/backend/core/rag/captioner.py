@@ -21,7 +21,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_CAPTION_MODEL_NAME = "unsloth/PaddleOCR-VL"
+_CAPTION_MODEL_NAME = "Qwen/Qwen3-VL-2B-Instruct"
 _PROMPT = (
     "Describe this figure in <=60 words. Focus on factual content "
     "(axes, labels, captions, visible text, main objects). "
@@ -56,12 +56,15 @@ def _load() -> tuple[Any, Any] | None:
                 _CAPTION_MODEL_NAME,
                 trust_remote_code = True,
             )
+            # bf16 per the model card; deliberately not 4-bit because
+            # bnb + VLM custom code can be finicky and the model is
+            # small enough to fit in bf16 on any GPU that already
+            # hosts the chat model.
             model = AutoModelForVision2Seq.from_pretrained(
                 _CAPTION_MODEL_NAME,
                 trust_remote_code = True,
-                load_in_4bit = True,
                 device_map = "auto",
-                torch_dtype = torch.float16,
+                dtype = torch.bfloat16,
             )
             model.eval()
             _model = model
@@ -105,27 +108,25 @@ def caption_images(image_bytes_list: list[bytes]) -> list[str]:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image"},
+                        {"type": "image", "image": image},
                         {"type": "text", "text": _PROMPT},
                     ],
                 }
             ]
-            prompt = processor.apply_chat_template(
+            # Qwen3-VL's processor pipes image + text through the chat
+            # template in one call when tokenize=True / return_dict=True.
+            inputs = processor.apply_chat_template(
                 messages,
+                tokenize = True,
                 add_generation_prompt = True,
-            )
-            inputs = processor(
-                images = image,
-                text = prompt,
+                return_dict = True,
                 return_tensors = "pt",
-            )
-            input_ids_len = (
-                int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
             )
             inputs = {
                 k: (v.to(model.device) if hasattr(v, "to") else v)
                 for k, v in inputs.items()
             }
+            input_ids_len = int(inputs["input_ids"].shape[1])
             with torch.no_grad():
                 output_ids = model.generate(
                     **inputs,
