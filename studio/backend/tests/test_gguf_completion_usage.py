@@ -17,22 +17,21 @@ class _GgufBackend:
     is_vision = False
     supports_tools = False
 
+    def __init__(self, usage):
+        self.usage = usage
+
     def generate_chat_completion(self, **kwargs):
         yield "answer"
         yield {
             "type": "metadata",
-            "usage": {
-                "prompt_tokens": 23,
-                "completion_tokens": 1283,
-                "total_tokens": 1306,
-            },
+            "usage": self.usage,
             "timings": {"prompt_n": 23, "predicted_n": 1283},
         }
 
 
-def test_non_streaming_gguf_completion_includes_generated_usage(monkeypatch):
+def _request_completion(monkeypatch, usage):
     monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _GgufBackend()
+        inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage)
     )
     monkeypatch.setattr(
         inference_route, "_effective_enable_tools", lambda payload: False
@@ -42,7 +41,7 @@ def test_non_streaming_gguf_completion_includes_generated_usage(monkeypatch):
     app.include_router(inference_route.router)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
 
-    response = TestClient(app).post(
+    return TestClient(app).post(
         "/chat/completions",
         json = {
             "messages": [{"role": "user", "content": "Why is the sky blue?"}],
@@ -50,9 +49,30 @@ def test_non_streaming_gguf_completion_includes_generated_usage(monkeypatch):
         },
     )
 
+
+def test_non_streaming_gguf_completion_includes_generated_usage(monkeypatch):
+    response = _request_completion(
+        monkeypatch,
+        {"prompt_tokens": 23, "completion_tokens": 1283, "total_tokens": 1306},
+    )
+
     assert response.status_code == 200
     assert response.json()["usage"] == {
         "prompt_tokens": 23,
         "completion_tokens": 1283,
         "total_tokens": 1306,
+    }
+
+
+def test_non_streaming_gguf_completion_defaults_nullable_usage_to_zero(monkeypatch):
+    response = _request_completion(
+        monkeypatch,
+        {"prompt_tokens": None, "completion_tokens": 1283, "total_tokens": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 1283,
+        "total_tokens": 0,
     }

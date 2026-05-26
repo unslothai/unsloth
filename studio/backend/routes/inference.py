@@ -2812,11 +2812,13 @@ async def openai_chat_completions(
                         )
                     ],
                     usage = CompletionUsage(
-                        prompt_tokens = (completion_usage or {}).get("prompt_tokens", 0),
+                        prompt_tokens = (completion_usage or {}).get("prompt_tokens")
+                        or 0,
                         completion_tokens = (completion_usage or {}).get(
-                            "completion_tokens", 0
-                        ),
-                        total_tokens = (completion_usage or {}).get("total_tokens", 0),
+                            "completion_tokens"
+                        )
+                        or 0,
+                        total_tokens = (completion_usage or {}).get("total_tokens") or 0,
                     ),
                 )
                 return JSONResponse(content = response.model_dump())
