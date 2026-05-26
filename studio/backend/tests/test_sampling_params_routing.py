@@ -999,3 +999,40 @@ def test_local_anthropic_passthrough_helpers_accept_parallel_tool_calls():
         parallel_tool_calls = False,
     )
     assert body.get("parallel_tool_calls") is False, body
+
+
+def test_anthropic_4_7_sampling_removed_regex_matches_expected_ids():
+    """Pin the canonical Claude 4.7 model-id shape so the frontend
+    ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX in
+    studio/frontend/src/features/chat/provider-capabilities.ts stays
+    in lockstep with the backend strip in
+    external_provider._stream_anthropic.
+
+    Drift would mean the panel either silently strips a knob the user
+    moved (UI shows, wire drops) or the wire 400s after the user moved
+    a knob the UI should have hidden. Both are user-visible bugs.
+    """
+    from core.inference.external_provider import (
+        _ANTHROPIC_4_7_SAMPLING_REMOVED as RX,
+    )
+
+    should_match = [
+        "claude-opus-4-7",
+        "claude-sonnet-4-7",
+        "claude-haiku-4-7",
+        "claude-opus-4-7-20260418",
+        "claude-sonnet-4-7.1",
+    ]
+    should_not_match = [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-opus-4-71",
+        "claude-opus-5",
+        "claude-3-opus",
+        "gpt-4o",
+    ]
+    for mid in should_match:
+        assert RX.match(mid), f"{mid!r} should match 4.7 sampling-removed regex"
+    for mid in should_not_match:
+        assert not RX.match(mid), f"{mid!r} should NOT match 4.7 regex"
