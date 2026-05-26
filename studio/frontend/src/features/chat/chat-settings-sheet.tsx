@@ -484,7 +484,7 @@ export function ChatSettingsPanel({
     ragDefaults?.chunking_strategy ??
     "standard";
   const effectiveThreadMode: KBMode =
-    threadSettings?.mode ?? ragDefaults?.mode ?? "text";
+    threadSettings?.mode ?? ragDefaults?.mode ?? "multimodal";
 
   const aui = useAui();
   // Brand-new chat has no backend thread yet — initialize the local

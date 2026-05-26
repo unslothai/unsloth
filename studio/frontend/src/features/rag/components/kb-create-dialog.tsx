@@ -43,7 +43,7 @@ export function KBCreateDialog({
 
   const initialStrategy: ChunkingStrategy =
     defaults?.chunking_strategy ?? "standard";
-  const initialMode: KBMode = defaults?.mode ?? "text";
+  const initialMode: KBMode = defaults?.mode ?? "multimodal";
   const initialEmbedder = defaults?.embedding_model ?? "";
 
   const [name, setName] = useState("");
@@ -76,7 +76,7 @@ export function KBCreateDialog({
     setDescription("");
     setEmbeddingModel(defaults?.embedding_model ?? "");
     setChunkingStrategy(defaults?.chunking_strategy ?? "standard");
-    setMode(defaults?.mode ?? "text");
+    setMode(defaults?.mode ?? "multimodal");
     setError(null);
     setSubmitting(false);
   };

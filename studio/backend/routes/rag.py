@@ -66,7 +66,7 @@ class CreateKBRequest(BaseModel):
     description: str | None = None
     embedding_model: str | None = None
     chunking_strategy: ChunkingStrategy = "standard"
-    mode: KBMode = "text"
+    mode: KBMode = "multimodal"
 
 
 class KBResponse(BaseModel):
@@ -401,7 +401,7 @@ def list_knowledge_bases(
 
 class RagDefaults(BaseModel):
     chunking_strategy: ChunkingStrategy = "standard"
-    mode: KBMode = "text"
+    mode: KBMode = "multimodal"
     embedding_model: str | None = None
 
 
@@ -423,7 +423,7 @@ def _load_rag_defaults() -> RagDefaults:
         raw = {}
     return RagDefaults(
         chunking_strategy = raw.get("chunking_strategy") or "standard",
-        mode = raw.get("mode") or "text",
+        mode = raw.get("mode") or "multimodal",
         embedding_model = raw.get("embedding_model"),
     )
 
@@ -470,7 +470,7 @@ def set_rag_defaults(
 
 class ThreadRagSettings(BaseModel):
     chunking_strategy: ChunkingStrategy = "standard"
-    mode: KBMode = "text"
+    mode: KBMode = "multimodal"
     embedding_model: str | None = None
 
 
