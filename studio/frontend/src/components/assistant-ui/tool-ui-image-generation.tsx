@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
-import { memo, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { Image, downloadImagePart } from "./image";
 import {
@@ -62,6 +62,8 @@ type GeneratedImagePart = {
   image: string;
   filename?: string;
 };
+
+const CAPTION_COLLAPSED_LINES = 4;
 
 const extensionForMime = (mime: string): string => {
   switch (mime.toLowerCase()) {
@@ -119,7 +121,7 @@ function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
     <div
       className={cn(
-        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl border border-border/70 bg-muted/15",
+        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl bg-muted/20 shadow-[0_0_12px_rgba(15,23,42,0.05),0_6px_18px_rgba(15,23,42,0.04)] dark:shadow-[0_0_12px_rgba(0,0,0,0.18),0_6px_18px_rgba(0,0,0,0.12)]",
       )}
       aria-busy="true"
       aria-label={label}
@@ -154,6 +156,8 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     : null;
   const imageTitle =
     imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
+  const captionPrompt = imageResult?.prompt?.trim() || prompt.trim();
+  const promptLikelyNeedsExpansion = captionPrompt.length > 220;
   const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
     .filter(Boolean)
     .join(" · ");
@@ -174,7 +178,62 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     : null;
 
   const [open, setOpen] = useState(true);
+  const [expandedCaptionPrompt, setExpandedCaptionPrompt] = useState<
+    string | null
+  >(null);
+  const [promptOverflow, setPromptOverflow] = useState<{
+    prompt: string;
+    canExpand: boolean;
+  } | null>(null);
+  const captionRef = useRef<HTMLDivElement | null>(null);
   const isPendingImage = !imagePart && status?.type === "running";
+
+  const promptOverflowMeasured = promptOverflow?.prompt === captionPrompt;
+  const promptCanExpand = promptOverflowMeasured
+    ? promptOverflow.canExpand
+    : false;
+  const promptExpanded = expandedCaptionPrompt === captionPrompt;
+
+  const updatePromptOverflow = useCallback(() => {
+    const captionElement = captionRef.current;
+    if (!captionElement || !captionPrompt) {
+      return;
+    }
+    const computedStyle = window.getComputedStyle(captionElement);
+    const lineHeight = Number.parseFloat(computedStyle.lineHeight);
+    const collapsedHeight =
+      (Number.isFinite(lineHeight) ? lineHeight : 20) *
+      CAPTION_COLLAPSED_LINES;
+    const hasOverflow = captionElement.scrollHeight > collapsedHeight + 1;
+    setPromptOverflow((current) =>
+      current?.prompt === captionPrompt && current.canExpand === hasOverflow
+        ? current
+        : { prompt: captionPrompt, canExpand: hasOverflow },
+    );
+  }, [captionPrompt]);
+
+  useEffect(() => {
+    const captionElement = captionRef.current;
+    if (!captionElement || !captionPrompt) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(updatePromptOverflow);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updatePromptOverflow);
+    resizeObserver?.observe(captionElement);
+    window.addEventListener("resize", updatePromptOverflow);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updatePromptOverflow);
+    };
+  }, [captionPrompt, updatePromptOverflow]);
+
+  const shouldClampPrompt =
+    (promptOverflowMeasured ? promptCanExpand : promptLikelyNeedsExpansion) &&
+    !promptExpanded;
 
   const runningLabel = "Generating image…";
   const completedLabel = formatGeneratedImageLabel(prompt);
@@ -231,21 +290,28 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {imagePart ? (
           <figure className="m-0 flex flex-col gap-2">
-            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/30 shadow-sm">
+            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl bg-muted/25 shadow-lg shadow-foreground/5 dark:shadow-black/25">
+              <img
+                src={imagePart.image}
+                alt=""
+                aria-hidden={true}
+                className="pointer-events-none absolute inset-0 size-full scale-110 object-cover opacity-25 blur-2xl saturate-125"
+              />
+              <div className="pointer-events-none absolute inset-0 bg-background/45" />
               <button
                 type="button"
-                className="block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="relative z-10 block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 onClick={showPreview}
                 aria-label="Open generated image preview"
               >
                 <Image.Preview
                   src={imagePart.image}
                   alt={imageTitle}
-                  containerClassName="size-full min-h-0 bg-background"
-                  className="size-full object-cover"
+                  containerClassName="flex size-full min-h-0 items-center justify-center bg-transparent"
+                  className="size-full object-contain"
                 />
               </button>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
                 <Button
                   type="button"
                   variant="dark"
@@ -268,9 +334,31 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 </Button>
               </div>
             </div>
-            {prompt ? (
-              <figcaption className="max-w-[480px] text-xs leading-snug text-muted-foreground">
-                {prompt}
+            {captionPrompt ? (
+              <figcaption className="max-w-[480px] text-xs leading-5 text-muted-foreground">
+                <div
+                  ref={captionRef}
+                  className={cn(
+                    "whitespace-pre-wrap break-words",
+                    shouldClampPrompt && "max-h-20 overflow-hidden",
+                  )}
+                >
+                  {captionPrompt}
+                </div>
+                {promptCanExpand ? (
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    onClick={() =>
+                      setExpandedCaptionPrompt((value) =>
+                        value === captionPrompt ? null : captionPrompt,
+                      )
+                    }
+                    aria-expanded={promptExpanded}
+                  >
+                    {promptExpanded ? "Show less" : "Show more"}
+                  </button>
+                ) : null}
               </figcaption>
             ) : null}
           </figure>
