@@ -616,7 +616,14 @@ WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
 # These packages either *are* torch extensions or have unconditional
 # ``Requires-Dist: torch`` in their published metadata, so installing
-# them would pull torch back into the environment.
+# them would pull torch back into the environment. ``librosa`` also
+# lives in this set even though it does not itself require torch:
+# upstream ``llvmlite`` dropped its macOS x86_64 wheel between 0.42.0
+# and 0.46.0+ (see https://pypi.org/project/llvmlite/0.47.0/#files --
+# only macosx_arm64 / manylinux / win_amd64 remain), so on Intel Mac
+# the librosa -> numba -> llvmlite chain triggers a from-source build
+# that fails inside CI and on the host without LLVM 14/15 headers.
+# Tracked separately in unslothai/unsloth#5046.
 NO_TORCH_SKIP_PACKAGES = {
     "torch-stoi",
     "timm",
@@ -624,6 +631,7 @@ NO_TORCH_SKIP_PACKAGES = {
     "torch-c-dlpack-ext",
     "openai-whisper",
     "transformers-cfg",
+    "librosa",
 }
 
 
