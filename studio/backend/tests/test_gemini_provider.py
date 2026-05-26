@@ -2681,6 +2681,65 @@ def test_gemini_native_skips_orphan_function_response_for_native_part_replay(
     assert saw_native, contents
 
 
+def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
+    """Round 27: a direct OpenAI-compat API caller (or imported third-
+    party thread) cannot use Studio's non-standard
+    `tool_calls[].extra_content` field, so the native_part payload
+    round-trips through `function.arguments` as
+    `{"google": {"native_part": {...}}}`. The synthetic-builtin
+    detector recognizes that location, but the replay branch was only
+    reading from `tc.extra_content.google.native_part`. Result: the
+    round-25 guard saw a synthetic builtin with no _native_part and
+    dropped the entire assistant turn, losing the prior code/image
+    context. The translator must fall back to args.google.native_part
+    and still emit the native executableCode / inlineData parts."""
+    import json as _json
+
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "draw a cat"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_img",
+                        "type": "function",
+                        "function": {
+                            "name": "image_generation",
+                            "arguments": _json.dumps(
+                                {
+                                    "google": {
+                                        "native_part": {
+                                            "parts": [
+                                                {
+                                                    "inlineData": {
+                                                        "mimeType": "image/png",
+                                                        "data": "AAAA",
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"role": "user", "content": "now make it a dog"},
+        ],
+    )
+    contents = captured["body"].get("contents") or []
+    saw_inline = False
+    for entry in contents:
+        for part in entry.get("parts", []):
+            if "inlineData" in part:
+                saw_inline = True
+    assert saw_inline, contents
+
+
 def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
     """Round 25: Marked server-side builtin tool_calls (web_search /
     web_fetch with `_server_tool` or `args.google.native_part`) must

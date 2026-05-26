@@ -3204,11 +3204,16 @@ class ExternalProviderClient:
         # single chat request can include many image_url parts; each
         # is independently capped at 10MB but without a request-level
         # cap a request with 50 URLs can force ~500MB of backend
-        # downloads. Caps below match the per-image cap and a small
-        # count cap so a single chat message stays within Gemini's
-        # ~20MB request size limit while not blocking realistic use.
+        # downloads. The cap below counts DECODED bytes, but Gemini
+        # receives the images base64-encoded inside JSON, and base64
+        # inflates payload size by ~4/3. The ~20MB Gemini request
+        # limit is on the encoded JSON, so the decoded-byte cap is
+        # set to ~14MB to keep the actual outbound body comfortably
+        # below 20MB even with prompt overhead. (10 MiB encoded image
+        # = ~7.5 MiB decoded; two such images plus prompt text fit
+        # comfortably under 20MB.)
         _GEMINI_REMOTE_IMAGE_MAX_COUNT = 8
-        _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+        _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 14 * 1024 * 1024
         _remote_image_count = 0
         _remote_image_total_bytes = 0
         for msg in messages:
@@ -3485,6 +3490,20 @@ class ExternalProviderClient:
                     # to the generic functionCall path when the native
                     # dict is missing (e.g. older messages persisted
                     # before this field existed).
+                    #
+                    # Studio's emit path puts the native part on the
+                    # assistant tool_call's `extra_content.google`, but
+                    # a direct OpenAI-compatible API caller or imported
+                    # third-party thread will round-trip the same
+                    # payload through `function.arguments` as
+                    # `{"google": {"native_part": {...}}}` because
+                    # `tool_call.extra_content` is not in the OpenAI
+                    # spec. Fall back to `args.google.native_part` so
+                    # the synthetic-builtin detector and the native
+                    # replay branch agree on what counts as replayable;
+                    # otherwise the synthetic detector classifies the
+                    # call as builtin and the missing _native_part
+                    # makes the round 25 guard drop the entire turn.
                     _extra = tc.get("extra_content")
                     _native_part = None
                     _google_extra: dict[str, Any] = {}
@@ -3493,6 +3512,14 @@ class ExternalProviderClient:
                         if isinstance(_ge, dict):
                             _google_extra = _ge
                             _native_part = _ge.get("native_part")
+                    if _native_part is None and isinstance(args, dict):
+                        _args_google = args.get("google")
+                        if isinstance(_args_google, dict):
+                            _args_np = _args_google.get("native_part")
+                            if isinstance(_args_np, dict):
+                                _native_part = _args_np
+                                if not _google_extra:
+                                    _google_extra = _args_google
 
                     # Synthetic provider-side server-tool cards
                     # (web_search, web_fetch, etc.) tagged with
