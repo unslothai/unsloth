@@ -1521,19 +1521,15 @@ class LlamaCppBackend:
     @staticmethod
     def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
         """Build an env dict with LD_LIBRARY_PATH / PATH so a llama-server
-        binary can find its shared libraries and CUDA runtime DLLs.
-
-        This mirrors the library-resolution logic in ``start_llama_server``
-        but is factored out so ``probe_server_capabilities`` (which runs
-        ``--help``) does not fail with "cannot open shared object file".
+        binary can find its shared libraries and CUDA runtime DLLs - this
+        library-resolution logic is not only used in ``start_llama_server``
+        but also in ``probe_server_capabilities`` before running ``--help``
         """
-        import platform as _platform
-        import glob as _glob
-
         env = child_env_without_native_path_secret()
         binary_dir = str(Path(binary).parent)
 
         if sys.platform == "win32":
+            # See _build_windows_path_dirs for ordering. #5106.
             path_dirs = LlamaCppBackend._build_windows_path_dirs(
                 binary_dir,
                 sys.prefix,
@@ -1544,9 +1540,16 @@ class LlamaCppBackend:
         else:
             # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
             # and CUDA runtime libs (libcudart, libcublas, etc.)
-            _arch = _platform.machine()
+            import platform
 
             lib_dirs = [binary_dir]
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs (e.g. torch's
+            # bundled cuda-bindings).  The prebuilt llama.cpp binary
+            # links against libcudart.so.13 / libcublas.so.13 which
+            # live here, not in /usr/local/cuda.
+            import glob as _glob
 
             for _nv_pattern in [
                 os.path.join(
@@ -1584,6 +1587,9 @@ class LlamaCppBackend:
             for cuda_lib in [
                 "/usr/local/cuda/lib64",
                 f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with
+                # CUDA 12 on a system where default /usr/local/cuda
+                # points to CUDA 13+).
                 "/usr/local/cuda-12/lib64",
                 "/usr/local/cuda-12.8/lib64",
                 f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
