@@ -675,6 +675,45 @@ def _torch_has_hip() -> bool:
         return False
 
 
+def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
+    """Classify a ROCm device as unified-memory (APU) or discrete.
+
+    Returns ``(gcn_arch, is_unified)`` where:
+    - ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a
+      known attribute is present, or ``""`` when all arch attrs are absent.
+    - ``is_unified`` is ``True`` for AMD APUs with a shared GPU/system-RAM pool
+      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
+      ``set_per_process_memory_fraction`` cap to leave headroom for the OS.
+
+    Classification priority:
+    1. ``gcnArchName`` / variant spellings (stable, naming-independent).
+    2. Device-name substring match as a last-resort fallback when all arch
+       attrs are absent (AMD SDK / Radeon wheels may not populate them):
+         - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
+         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
+                                ``Radeon 8050S`` (cut-down SKU)
+    """
+    gcn_arch = ""
+    for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        _v = (getattr(props, _attr, "") or "").split(":")[0].strip()
+        if _v:
+            gcn_arch = _v
+            break
+
+    if gcn_arch:
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+
+    # Arch attrs absent — fall back to device-name matching.
+    dev_lower = (getattr(props, "name", "") or "").lower()
+    is_unified = (
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
+    )
+    return gcn_arch, is_unified
+
+
 def _tilelang_platform_supported() -> bool:
     """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
 
@@ -2309,37 +2348,17 @@ def run_training_process(
             import torch as _torch_mem
 
             if _torch_mem.cuda.is_available():
-                # Classify unified vs discrete by gcnArchName, not by VRAM/RAM
-                # ratio (false-positives on 16 GB card + 16 GB RAM hosts).
+                # Classify unified vs discrete via _rocm_classify_unified_memory.
+                # See that function's docstring for classification priority.
                 _props = _torch_mem.cuda.get_device_properties(0)
                 _dev_name = _props.name
-                # Try multiple attribute name forms: different ROCm wheel builds
-                # (HIP SDK vs AMD SDK / Radeon wheels) may use different spellings.
-                _gcn_arch = ""
-                for _arch_attr in (
-                    "gcnArchName",
-                    "gcn_arch_name",
-                    "arch_name",
-                    "gfx_arch_name",
-                ):
-                    _v = (getattr(_props, _arch_attr, "") or "").split(":")[0].strip()
-                    if _v:
-                        _gcn_arch = _v
-                        break
-                _is_unified = _gcn_arch in {"gfx1150", "gfx1151"}
-                if not _is_unified and not _gcn_arch:
-                    # gcnArchName absent (AMD SDK / Radeon wheels may not populate
-                    # it) -- fall back to device name matching for known
-                    # unified-memory iGPU model names (Strix Halo: 890M,
-                    # Strix Point: 880M).
-                    _dev_lower = _dev_name.lower()
-                    _is_unified = "890m" in _dev_lower or "880m" in _dev_lower
-                    if _is_unified:
-                        logger.debug(
-                            "ROCm OOM guard: gcnArchName absent -- inferred "
-                            "unified memory from device name %r; applying 0.80 cap",
-                            _dev_name,
-                        )
+                _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
+                if _is_unified and not _gcn_arch:
+                    logger.debug(
+                        "ROCm OOM guard: gcnArchName absent -- inferred "
+                        "unified memory from device name %r; applying 0.80 cap",
+                        _dev_name,
+                    )
                 _mem_fraction = 0.80 if _is_unified else 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
