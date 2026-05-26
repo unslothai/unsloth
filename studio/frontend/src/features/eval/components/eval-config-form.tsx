@@ -56,6 +56,7 @@ export function EvalConfigForm({
   const [maxNewTokens, setMaxNewTokens] = useState(256);
   const [temperature, setTemperature] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
 
   // On mount: load metrics and local models
   useEffect(() => {
@@ -63,17 +64,13 @@ export function EvalConfigForm({
       .then((loaded) => {
         setMetrics(loaded);
         if (loaded.length > 0) {
-          const first = loaded[0];
-          setMetricName(first.name);
-          const defaults: Record<string, unknown> = {};
-          for (const f of first.config_fields) {
-            defaults[f.name] = f.default;
-          }
-          setMetricConfig(defaults);
+          // The [metricName, metrics] effect reseeds metricConfig once
+          // both metrics and metricName are set, so no need to seed here.
+          setMetricName(loaded[0].name);
         }
       })
-      .catch(() => {
-        // ignore
+      .catch((err) => {
+        setMetricsError(err instanceof Error ? err.message : "Failed to load metrics.");
       });
 
     listLocalModels()
@@ -387,6 +384,9 @@ export function EvalConfigForm({
                 ))}
               </SelectContent>
             </Select>
+            {metricsError && (
+              <p className="text-sm text-red-500">{metricsError}</p>
+            )}
           </div>
           {selectedMetric && (
             <MetricConfigFields
@@ -420,8 +420,8 @@ export function EvalConfigForm({
                 type="number"
                 value={limit}
                 onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setLimit(isNaN(v) ? limit : v);
+                  const v = e.target.value === "" ? NaN : Number(e.target.value);
+                  setLimit(Number.isNaN(v) ? limit : v);
                 }}
               />
             </div>
@@ -433,8 +433,8 @@ export function EvalConfigForm({
               type="number"
               value={maxNewTokens}
               onChange={(e) => {
-                const v = Number(e.target.value);
-                setMaxNewTokens(isNaN(v) ? maxNewTokens : v);
+                const v = e.target.value === "" ? NaN : Number(e.target.value);
+                setMaxNewTokens(Number.isNaN(v) ? maxNewTokens : v);
               }}
             />
           </div>
@@ -446,8 +446,8 @@ export function EvalConfigForm({
               step="0.1"
               value={temperature}
               onChange={(e) => {
-                const v = Number(e.target.value);
-                setTemperature(isNaN(v) ? temperature : v);
+                const v = e.target.value === "" ? NaN : Number(e.target.value);
+                setTemperature(Number.isNaN(v) ? temperature : v);
               }}
             />
             <p className="text-xs text-muted-foreground">

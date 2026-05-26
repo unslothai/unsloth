@@ -51,9 +51,14 @@ export function MetricConfigFields({
                 type="number"
                 step="0.01"
                 value={current === undefined || current === null ? "" : String(current)}
-                onChange={(e) =>
-                  set(f.name, e.target.value === "" ? null : Number(e.target.value))
-                }
+                onChange={(e) => {
+                  if (e.target.value === "") {
+                    set(f.name, null);
+                    return;
+                  }
+                  const n = Number(e.target.value);
+                  if (!Number.isNaN(n)) set(f.name, n);
+                }}
               />
             </div>
           );
