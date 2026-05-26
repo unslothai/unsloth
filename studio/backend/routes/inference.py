@@ -1897,6 +1897,7 @@ async def _proxy_to_external_provider(
             stop = payload.stop,
             service_tier = payload.service_tier,
             parallel_tool_calls = payload.parallel_tool_calls,
+            fast_mode = payload.fast_mode,
             stream = payload.stream,
         )
         try:

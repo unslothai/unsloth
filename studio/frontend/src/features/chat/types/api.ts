@@ -304,6 +304,12 @@ export interface OpenAIChatCompletionsRequest {
    * keeps each provider's upstream default.
    */
   parallel_tool_calls?: boolean;
+  /**
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
+   * silently on every other model + provider. See
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   */
+  fast_mode?: boolean | null;
 }
 
 export interface OpenAIChatDelta {

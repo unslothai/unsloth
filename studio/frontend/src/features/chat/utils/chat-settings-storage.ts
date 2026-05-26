@@ -182,6 +182,11 @@ function sanitizeInferenceParams(
   if (typeof value.parallelToolCalls === "boolean") {
     params.parallelToolCalls = value.parallelToolCalls;
   }
+  // Mirror trustRemoteCode handling so the toggle survives reload
+  // and the /api/chat/settings round-trip.
+  if (typeof value.fastMode === "boolean") {
+    params.fastMode = value.fastMode;
+  }
   return hasKeys(params) ? params : undefined;
 }
 
