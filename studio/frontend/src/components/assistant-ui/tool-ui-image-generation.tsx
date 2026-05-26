@@ -100,6 +100,16 @@ const formatGeneratedImageLabel = (prompt: string): string => {
     : `Generated image: ${prompt}`;
 };
 
+const parseImageSize = (
+  size?: string,
+): { width: number; height: number } | null => {
+  const match = size?.match(/^(\d+)x(\d+)$/i);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? { width, height } : null;
+};
+
 const loadingDots = Array.from({ length: 64 }, (_, index) => {
   const row = Math.floor(index / 8);
   const col = index % 8;
@@ -150,6 +160,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof result === "object" &&
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
+  const imageDimensions = parseImageSize(imageResult?.size);
   const mime = imageResult?.image_mime || "image/png";
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
@@ -288,7 +299,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {imagePart ? (
-          <figure className="m-0 inline-flex max-w-full flex-col items-start gap-2 align-top">
+          <figure className="m-0 inline-flex w-min max-w-full flex-col items-start gap-2 align-top">
             <div className="group/generated-image relative inline-block max-w-full overflow-hidden rounded-2xl align-top">
               <button
                 type="button"
@@ -299,6 +310,8 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 <img
                   src={imagePart.image}
                   alt={imageTitle}
+                  width={imageDimensions?.width}
+                  height={imageDimensions?.height}
                   className="block h-auto max-h-[min(70vh,620px)] max-w-[min(100%,520px)] rounded-2xl object-contain"
                 />
               </button>
@@ -326,7 +339,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             </div>
             {captionPrompt ? (
-              <figcaption className="max-w-[min(100%,520px)] text-xs leading-5 text-muted-foreground">
+              <figcaption className="w-full max-w-[min(100%,520px)] text-xs leading-5 text-muted-foreground">
                 <div
                   ref={captionRef}
                   className={cn(
