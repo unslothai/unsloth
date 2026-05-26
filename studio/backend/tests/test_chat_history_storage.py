@@ -84,6 +84,9 @@ def test_chat_projects_delete_cascades_threads_and_messages(
     assert project["rootPath"].startswith(str(tmp_path / "Projects"))
     assert (tmp_path / "Projects" / "Research-project").exists()
     assert (tmp_path / "Projects" / "Research-project" / "sandbox").is_dir()
+    assert not (tmp_path / "Projects" / "Research-project" / "chats").exists()
+    assert not (tmp_path / "Projects" / "Research-project" / "files").exists()
+    assert not (tmp_path / "Projects" / "Research-project" / "exports").exists()
     studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
     studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
 

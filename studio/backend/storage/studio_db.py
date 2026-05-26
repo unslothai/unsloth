@@ -57,7 +57,7 @@ def _denied_path_prefixes() -> list[str]:
 _schema_lock = threading.Lock()
 _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
-_PROJECT_WORKSPACE_SUBDIRS = ("sandbox", "chats", "files", "exports")
+_PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 
 
 def _project_slug(name: str) -> str:
