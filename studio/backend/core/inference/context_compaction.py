@@ -317,20 +317,25 @@ class SlidingWindowCompact(CompactStrategy):
         # Final invariant sweep, two passes so the asst-strip decision
         # sees the post-orphan-drop tool set:
         #   pass 1: drop tools whose tcid has no matching assistant
-        #     ``tool_calls`` earlier in the kept output (anchored tools
-        #     stay; same leak-rather-than-violate-anchor rule);
+        #     ``tool_calls`` earlier in the kept output;
         #   pass 2: recompute responded_ids from the surviving tools and
         #     mark assts whose tool_calls aren't all responded for strip.
         # Computing responded_ids before pass 1 would let a stale tcid
         # of a just-dropped orphan tool satisfy `ids <= responded_ids`,
         # leaving the asst with dangling tool_calls (OpenAI 400).
+        # Anchored (multimodal) orphan tools are still dropped here:
+        # keeping them violates the chat-template pair invariant (a hard
+        # invariant that 400s upstream) to honor the multimodal-anchor
+        # quality preference, which the docstring describes as a soft
+        # quality rule. The pair-validity wins; the image content is
+        # lost rather than the entire turn.
         seen_ids: set[str] = set()
         for i, m in enumerate(messages):
             if i in dropped:
                 continue
             if m.get("role") == "assistant":
                 seen_ids |= _assistant_tool_call_ids(m)
-            elif m.get("role") == "tool" and i not in anchor_idx:
+            elif m.get("role") == "tool":
                 tcid = m.get("tool_call_id")
                 if isinstance(tcid, str) and tcid and tcid not in seen_ids:
                     dropped.add(i)

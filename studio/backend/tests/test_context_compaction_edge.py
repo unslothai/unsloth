@@ -907,3 +907,31 @@ def test_orphan_tool_before_asst_does_not_leave_dangling_tool_calls():
     out = SlidingWindowCompact(keep_recent = 5).compact(msgs, budget_tokens = 1000)
     asst_ids, tool_ids = _surviving_tool_ids(out)
     assert asst_ids == tool_ids, (asst_ids, tool_ids)
+
+
+def test_anchored_multimodal_orphan_tool_dropped():
+    """Anchored multimodal tool message references a tool_call_id no
+    surviving assistant declares. Keeping the anchor would leave a
+    dangling `tool_call_id` in the output and 400 upstream. Pair
+    validity is the hard invariant; the multimodal anchor is the soft
+    quality preference, so we drop the orphan rather than violate the
+    template. Earlier behavior preserved the anchor and produced an
+    invalid chat template.
+    """
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "first task"),
+        {
+            "role": "tool",
+            "tool_call_id": "stale_call",
+            "content": [
+                {"type": "text", "text": "image description"},
+                {"type": "image_url", "image_url": {"url": "x"}},
+            ],
+        },
+        _msg("user", "follow up"),
+        _long("assistant", 100),
+    ]
+    out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 5)
+    asst_ids, tool_ids = _surviving_tool_ids(out)
+    assert asst_ids == tool_ids, (asst_ids, tool_ids)
