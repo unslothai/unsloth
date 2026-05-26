@@ -21,7 +21,20 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, DownloadIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  DownloadIcon,
+  GlobeIcon,
+  HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
+  MicIcon,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
+import { Image03Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -1115,7 +1128,11 @@ export function SharedComposer({
                 imageToolsEnabled ? "Disable image generation" : "Enable image generation"
               }
             >
-              <ImageIcon className="size-3.5" />
+              <HugeiconsIcon
+                icon={Image03Icon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
               <span>Images</span>
             </button>
           )}
