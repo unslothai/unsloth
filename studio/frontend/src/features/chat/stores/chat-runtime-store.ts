@@ -291,6 +291,8 @@ type ChatRuntimeStore = {
     completionTokens: number;
     totalTokens: number;
     cachedTokens: number;
+    // Anthropic-only; optional so pre-cache-stats persisted entries load.
+    cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
@@ -640,7 +642,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      return { params };
+      // Mirror setCheckpoint: the local model load path can mutate
+      // params.checkpoint via setParams() before setCheckpoint runs,
+      // leaving stale per-turn counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      return {
+        params,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+      };
     }),
   setCustomPresets: (customPresets) =>
     set(() => {
@@ -704,12 +713,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // mount, and a stale persisted local id would race against the
       // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      // Clear stale per-turn usage when the model changes; the relaxed
+      // external-provider render gate would otherwise show old counters
+      // until the next completion overwrites them.
+      const checkpointChanged = state.params.checkpoint !== modelId;
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
         },
         activeGgufVariant: ggufVariant ?? null,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>

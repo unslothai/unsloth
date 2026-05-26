@@ -1037,6 +1037,10 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          // Clear previous-model counters; the relaxed external-provider
+          // render gate would otherwise show stale stats until the next
+          // completion overwrites them.
+          contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -1161,7 +1165,9 @@ export function ChatPage(): ReactElement {
     if (!saved) return;
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore context usage from the active thread's last assistant message.
+    // Restore usage from the last assistant message, but only if it
+    // matches the currently active checkpoint. Without this guard the
+    // relaxed render gate would show stale stats from another model.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1175,7 +1181,29 @@ export function ChatPage(): ReactElement {
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
-          if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+          if (!usage) return;
+          const store = useChatRuntimeStore.getState();
+          const activeCheckpoint = store.params.checkpoint;
+          const usageModelId =
+            (usage as { modelId?: unknown }).modelId;
+          // Scope by modelId when present; reject if no active checkpoint
+          // (model-scoped usage cannot be attributed to "nothing").
+          if (typeof usageModelId === "string" && usageModelId) {
+            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+              return;
+            }
+          }
+          // For local turns, also require the restored count to fit in
+          // the active window. Skip when unknown (external provider).
+          const limit = store.ggufContextLength;
+          if (
+            typeof limit === "number" &&
+            limit > 0 &&
+            (usage.totalTokens ?? 0) > limit
+          ) {
+            return;
+          }
+          store.setContextUsage(usage);
         })
         .catch((error) => {
           if (!isExpectedBackgroundChatStorageError(error)) {
@@ -1491,11 +1519,13 @@ export function ChatPage(): ReactElement {
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {view.mode === "single" && ggufContextLength && contextUsage ? (
+            {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
+                // null on external providers; the bar handles that.
                 total={ggufContextLength}
                 cached={contextUsage.cachedTokens}
+                cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
                 className="h-[34px]"

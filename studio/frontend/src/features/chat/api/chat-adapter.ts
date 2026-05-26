@@ -70,6 +70,13 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // External prompt-cache fields (see _build_usage_chunk in
+  // external_provider.py). cache_creation is Anthropic-only.
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 /** Server-side timing data from llama-server's timings object. */
@@ -1881,18 +1888,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Update context usage in store if we got valid server data
+        // Prefer llama-server timings; fall back to provider usage envelope.
+        const cachedTokens =
+          meta?.timings?.cache_n ??
+          meta?.usage?.prompt_tokens_details?.cached_tokens ??
+          meta?.usage?.cache_read_input_tokens ??
+          0;
+        // Anthropic-only (billed at the write premium).
+        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+
+        // Gate on the captured checkpoint still being active so a late
+        // completion from provider A doesn't populate the bar after the
+        // user switched to provider B mid-stream.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number"
+          typeof meta.usage.total_tokens === "number" &&
+          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
-            cachedTokens: meta.timings?.cache_n ?? 0,
+            cachedTokens,
+            cacheWriteTokens,
           });
         }
 
@@ -1922,7 +1942,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
-                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    cachedTokens,
+                    cacheWriteTokens,
                     modelId: params.checkpoint,
                   }
                 : undefined,
