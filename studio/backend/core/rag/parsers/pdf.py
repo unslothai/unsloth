@@ -6,11 +6,25 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from . import ParsedImage, ParsedPage, ParseResult
 
 logger = logging.getLogger(__name__)
+
+# pymupdf4llm wraps OCR'd vector-graphics text with these markers even when
+# `ignore_images=True`. Strip the whole block — the VLM captioner produces
+# a proper description for the figure, and the marker text just pollutes
+# the chunked body / shows up verbatim in citations.
+_PICTURE_TEXT_BLOCK_RE = re.compile(
+    r"-{3,}\s*Start of picture text\s*-{3,}.*?-{3,}\s*End of picture text\s*-{3,}",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_picture_text_markers(md: str) -> str:
+    return _PICTURE_TEXT_BLOCK_RE.sub("", md)
 
 
 def _extract_with_pymupdf(path: Path, want_images: bool) -> ParseResult:
@@ -32,7 +46,7 @@ def _extract_with_pymupdf(path: Path, want_images: bool) -> ParseResult:
             except Exception:
                 # pymupdf4llm can choke on a single page; fall back to plain text.
                 md = doc[page_index].get_text("text") or ""
-            md = md.strip()
+            md = _strip_picture_text_markers(md).strip()
             if md:
                 pages.append(ParsedPage(text = md, page_number = page_index + 1))
 

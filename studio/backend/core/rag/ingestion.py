@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import queue as queue_module
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -564,13 +565,22 @@ def _pump(
                     embedding_dim = len(msg["vectors"][0]) if msg["vectors"] else None
                     if embedding_dim is not None:
                         vector_store.ensure_collection(state.scope, embedding_dim)
-                bm25_rows = _insert_chunks_and_collect_for_bm25(
-                    state.document_id,
-                    state.scope,
-                    int(msg["first_index"]),
-                    msg["chunks"],
-                    msg["vectors"],
-                )
+                try:
+                    bm25_rows = _insert_chunks_and_collect_for_bm25(
+                        state.document_id,
+                        state.scope,
+                        int(msg["first_index"]),
+                        msg["chunks"],
+                        msg["vectors"],
+                    )
+                except sqlite3.IntegrityError as exc:
+                    # rag_documents row was deleted mid-ingest (user removed
+                    # the chip / cleared the index). Fail the job cleanly
+                    # rather than crashing the pump thread.
+                    final_error = (
+                        f"document was removed before ingestion finished ({exc})"
+                    )
+                    break
                 bm25_buffer.extend(bm25_rows)
             elif mtype == "complete":
                 final_status = "completed"
