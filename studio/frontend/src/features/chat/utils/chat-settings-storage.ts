@@ -140,6 +140,11 @@ function sanitizeInferenceParams(
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
   }
+  // Mirror trustRemoteCode handling so the toggle survives reload
+  // and the /api/chat/settings round-trip.
+  if (typeof value.fastMode === "boolean") {
+    params.fastMode = value.fastMode;
+  }
   return hasKeys(params) ? params : undefined;
 }
 
