@@ -68,6 +68,136 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
+# OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
+# using private-use codepoints (see
+# https://developers.openai.com/api/docs/guides/citation-formatting).
+# Group 1 holds the delim-separated tokens; each resolvable token expands
+# to `[[N]](URL)`, unresolved tokens (locators, unknown ids) drop silently
+# so no garbled glyph reaches the renderer.
+_OPENAI_CITE_OPEN = "cite"
+_OPENAI_CITE_STOP = ""
+_OPENAI_CITE_DELIM = ""
+_OPENAI_CITATION_MARKER = re.compile(
+    f"{_OPENAI_CITE_OPEN}([^{_OPENAI_CITE_STOP}]+){_OPENAI_CITE_STOP}"
+)
+
+
+def _build_citation_lookup(
+    url_citations: list[dict[str, Any]],
+) -> dict[str, tuple[int, str]]:
+    """Map every known ``source_id`` alias to ``(citation_index, url)``.
+
+    Accepts singular ``source_id`` and plural ``source_ids``. First-seen
+    wins on alias collision so an earlier citation keeps its number.
+    """
+    by_source: dict[str, tuple[int, str]] = {}
+    for idx, cit in enumerate(url_citations, start = 1):
+        url = cit.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        aliases: list[str] = []
+        sid = cit.get("source_id")
+        if isinstance(sid, str) and sid:
+            aliases.append(sid)
+        sids = cit.get("source_ids")
+        if isinstance(sids, list):
+            aliases.extend(s for s in sids if isinstance(s, str) and s)
+        for alias in aliases:
+            by_source.setdefault(alias, (idx, url))
+    return by_source
+
+
+def _replace_openai_citation_markers(
+    text: str,
+    url_citations: list[dict[str, Any]],
+) -> str:
+    """Rewrite `\\ue200cite\\ue202SOURCE_ID[\\ue202LOCATOR]\\ue201` markers into
+    `[[N]](URL)` per resolvable id. Multi-source markers expand to one link
+    per id; unresolved tokens drop silently. Idempotent on text without
+    private-use codepoints.
+    """
+    if not text or _OPENAI_CITE_STOP not in text:
+        return text
+    by_source = _build_citation_lookup(url_citations)
+
+    def _sub(match: re.Match[str]) -> str:
+        # Try every delim-split token; unresolved tokens drop silently.
+        # Handles multi-source (all resolve) and source+locator (only the
+        # id resolves, locator drops). Empty result strips the marker.
+        rendered: list[str] = []
+        for tok in match.group(1).split(_OPENAI_CITE_DELIM):
+            if not tok:
+                continue
+            hit = by_source.get(tok)
+            if hit is None:
+                continue
+            idx, url = hit
+            rendered.append(f"[[{idx}]]({url})")
+        return "".join(rendered)
+
+    return _OPENAI_CITATION_MARKER.sub(_sub, text)
+
+
+def _rewrite_citation_markers_partial(
+    text: str,
+    url_citations: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    """Like ``_replace_openai_citation_markers`` but also reports whether
+    any marker referenced a source_id not yet in ``url_citations``.
+
+    The ``annotation.added`` event for a url_citation typically arrives
+    AFTER the delta carrying the marker referencing it. Callers buffer the
+    segment until a later event records the annotation; unresolved markers
+    are left verbatim so a follow-up pass still parses cleanly.
+    """
+    if not text or _OPENAI_CITE_STOP not in text:
+        return text, False
+    by_source = _build_citation_lookup(url_citations)
+    has_unresolved = False
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal has_unresolved
+        tokens = [t for t in match.group(1).split(_OPENAI_CITE_DELIM) if t]
+        rendered: list[str] = []
+        any_unresolved = False
+        for tok in tokens:
+            hit = by_source.get(tok)
+            if hit is None:
+                any_unresolved = True
+                continue
+            idx, url = hit
+            rendered.append(f"[[{idx}]]({url})")
+        # Leave the whole marker verbatim if any token is unresolved so the
+        # caller can re-run once the late annotation lands; partial emission
+        # would lose the unresolved ids once the source text is dropped.
+        if any_unresolved:
+            has_unresolved = True
+            return match.group(0)
+        return "".join(rendered)
+
+    return _OPENAI_CITATION_MARKER.sub(_sub, text), has_unresolved
+
+
+def _split_pending_citation_tail(text: str) -> tuple[str, str]:
+    """Split ``text`` into ``(head, pending_tail)`` for streamed deltas.
+
+    A citation marker can straddle two SSE deltas (e.g. delta-1 ends with
+    ``\\ue200citetu`` and delta-2 starts with ``rn0view0\\ue201``); the
+    unterminated tail is buffered and prepended onto the next delta so the
+    rewriter sees a complete marker. ``pending_tail`` is the longest suffix
+    starting with ``\\ue200`` and lacking ``\\ue201``; ``head`` is safe to
+    emit. Empty tail when ``text`` has no open marker or a fully closed one.
+    """
+    if not text:
+        return text, ""
+    last_open = text.rfind("")
+    if last_open == -1:
+        return text, ""
+    # Stop byte after the last open byte means the marker closed in this delta.
+    if _OPENAI_CITE_STOP in text[last_open:]:
+        return text, ""
+    return text[:last_open], text[last_open:]
+
 
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
@@ -173,8 +303,85 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
+# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
+# https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Mutually exclusive with the Priority service tier.
+_ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
+_ANTHROPIC_FAST_MODE_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+)
+
+
 def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
+
+
+def _anthropic_supports_fast_mode(model: str) -> bool:
+    # Require a family boundary ("" or "-") after the prefix so IDs like
+    # "claude-opus-4-70" / "claude-opus-4-7b" do not match.
+    return any(
+        model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES
+    )
+
+
+# Cap on ``cited_text`` forwarded in document_citations tool_events;
+# keeps SSE bytes bounded on multi-KB cited spans (frontend trims to
+# 240 chars anyway).
+_CITED_TEXT_MAX_LEN = 512
+
+
+def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
+    """Stable dedup key for an Anthropic ``citations_delta.citation``.
+
+    Anchor fields vary per type (char_location, page_location,
+    content_block_location, search_result_location); both start AND
+    exclusive end indices are part of the key so same-start /
+    different-end pairs stay distinct. search_result_location keys on
+    ``search_result_index`` + ``source`` instead of document_index so
+    distinct results with the same source don't collapse. Unknown
+    shapes fall back to a stringified copy (more entries, never
+    collisions). See
+    https://platform.claude.com/docs/en/build-with-claude/citations
+    and https://platform.claude.com/docs/en/build-with-claude/search-results.
+    """
+    ctype = citation.get("type")
+    doc = citation.get("document_index")
+    title = citation.get("document_title") or ""
+    if ctype == "char_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_char_index"),
+            citation.get("end_char_index"),
+        )
+    if ctype == "page_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_page_number"),
+            citation.get("end_page_number"),
+        )
+    if ctype == "content_block_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_block_index"),
+            citation.get("end_block_index"),
+        )
+    if ctype == "search_result_location":
+        return (
+            ctype,
+            citation.get("search_result_index"),
+            citation.get("source"),
+            citation.get("title") or "",
+            citation.get("start_block_index"),
+            citation.get("end_block_index"),
+        )
+    return (ctype, _json.dumps(citation, sort_keys = True))
 
 
 class _MistralThinkingSpec(NamedTuple):
@@ -348,6 +555,7 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        fast_mode: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -360,6 +568,9 @@ class ExternalProviderClient:
         supplies a value the provider accepts — the frontend's
         provider-capability map already filters these per provider, so we
         treat them as opt-in here.
+
+        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
+        dropped elsewhere); adds the beta header and ``speed: "fast"``.
         """
         if not self._is_openai_compatible():
             async for line in self._stream_anthropic(
@@ -376,6 +587,7 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                fast_mode = fast_mode,
             ):
                 yield line
             return
@@ -1186,6 +1398,8 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        *,
+        fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1305,6 +1519,11 @@ class ExternalProviderClient:
                                     "media_type": media_type,
                                     "data": b64data,
                                 },
+                                # Opt into Anthropic's natural-citation
+                                # pipeline; without this no citations_delta
+                                # events fire. See
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title
@@ -1316,6 +1535,7 @@ class ExternalProviderClient:
                                     "type": "url",
                                     "url": url,
                                 },
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title
@@ -1509,25 +1729,19 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
-        # Anthropic server-side web_fetch — see
-        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
-        # `web_fetch_20250910` reads a single URL (text or PDF) and
-        # returns a document block in a `web_fetch_tool_result`. For
-        # safety Anthropic only lets the model fetch URLs that already
-        # appeared in the conversation (user message, prior tool
-        # result, web_search hit) — there is no domain restriction we
-        # have to apply locally. No beta header is required today; the
-        # tool ships under the standard `2023-06-01` API version. We
-        # mirror the web_search wiring: max_uses cap, opt in via
-        # `enabled_tools=["web_fetch"]`, citations off by default
-        # because the frontend already paints source pills from the
-        # generic tool_end payload.
+        # Anthropic server-side web_fetch reads a single URL (text/PDF)
+        # and returns a `web_fetch_tool_result` document block. Opt in
+        # via `enabled_tools=["web_fetch"]`; no beta header required.
+        # `_anthropic_web_fetch_version` picks `web_fetch_20260209`
+        # (dynamic filtering) for Opus 4.6/4.7 + Sonnet 4.6, falling
+        # back to `web_fetch_20250910` elsewhere; mismatched variants
+        # return 400 so the per-model picker is required.
         web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "web_fetch_20250910",
+                    "type": _anthropic_web_fetch_version(model),
                     "name": "web_fetch",
                     "max_uses": 5,
                 }
@@ -1611,6 +1825,13 @@ class ExternalProviderClient:
                 ]
             }
 
+        # fast_mode is Opus 4.6/4.7 only; silently drop elsewhere.
+        # Incompatible with the Priority service_tier (frontend gate
+        # prevents both at once; backend lets Anthropic 400 if combined).
+        fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
+        if fast_mode_active:
+            body["speed"] = "fast"
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -1669,6 +1890,8 @@ class ExternalProviderClient:
             beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
         if compaction_active and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
+        if fast_mode_active and _ANTHROPIC_FAST_MODE_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_FAST_MODE_BETA)
         if beta_parts:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
@@ -1767,6 +1990,12 @@ class ExternalProviderClient:
                 # the next turn.
                 current_compaction: Optional[dict[str, Any]] = None
                 compaction_blocks_seen = 0
+                # Document citations from ``citations_delta`` events.
+                # Deduped by type-specific anchor key; inline [N] is
+                # injected after each cited run, and the full list is
+                # forwarded as a synthetic document_citations tool_event
+                # on message_stop for the Sources panel.
+                document_citations: list[dict[str, Any]] = []
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -2118,10 +2347,27 @@ class ExternalProviderClient:
                                         thinking_open = False
                                     if text:
                                         yield _content_chunk(text)
-                                    # Citations on text deltas are attached
-                                    # per-call by Anthropic via the
-                                    # `web_search_tool_result` block; we don't
-                                    # need to scrape them off the text events.
+                                    # web_search citations: web_search_tool_result.
+                                    # User-doc citations: citations_delta below.
+                            elif delta_type == "citations_delta":
+                                # One citation per event; collapse onto a
+                                # numbered footnote list and inject [N]
+                                # inline. See
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                cit = delta.get("citation")
+                                if isinstance(cit, dict):
+                                    key = _anthropic_citation_key(cit)
+                                    idx_for_marker: Optional[int] = None
+                                    for idx, existing in enumerate(
+                                        document_citations, start = 1
+                                    ):
+                                        if existing.get("_key") == key:
+                                            idx_for_marker = idx
+                                            break
+                                    if idx_for_marker is None:
+                                        document_citations.append({**cit, "_key": key})
+                                        idx_for_marker = len(document_citations)
+                                    yield _content_chunk(f"[{idx_for_marker}]")
                             elif delta_type == "input_json_delta":
                                 # Streamed partial_json carrying tool inputs
                                 # — the search query for web_search, or the
@@ -2410,6 +2656,29 @@ class ExternalProviderClient:
                                 # finish_reason="stop" chunk that would
                                 # truncate the rendered message in the UI.
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
+                                # Streaming refusal: emit a visible notice
+                                # plus an out-of-band _toolEvent so the
+                                # frontend can prune the refused turn.
+                                # The mapped finish_reason is
+                                # "content_filter" per OpenAI spec.
+                                # https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
+                                if stop_reason == "refusal":
+                                    logger.warning(
+                                        "Anthropic refusal stop_reason (model=%s)",
+                                        model,
+                                    )
+                                    # Drop signal rides _toolEvent (not
+                                    # text) so assistant content cannot
+                                    # spoof a context reset.
+                                    yield _content_chunk(
+                                        "\n\n_The response was stopped by "
+                                        "Anthropic's safety classifier. Edit "
+                                        "or remove the previous turn and try "
+                                        "again._"
+                                    )
+                                    yield _emit_tool_event(
+                                        {"type": "anthropic_refusal"}
+                                    )
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,
@@ -2428,6 +2697,29 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # Forward document_citations so the Sources
+                            # panel can render the inline [N] footnotes.
+                            # ``cited_text`` is truncated server-side to
+                            # keep SSE bytes bounded on long spans.
+                            if document_citations:
+                                clean_cits = []
+                                for c in document_citations:
+                                    entry = {k: v for k, v in c.items() if k != "_key"}
+                                    cited = entry.get("cited_text")
+                                    if (
+                                        isinstance(cited, str)
+                                        and len(cited) > _CITED_TEXT_MAX_LEN
+                                    ):
+                                        entry["cited_text"] = (
+                                            cited[:_CITED_TEXT_MAX_LEN] + "…"
+                                        )
+                                    clean_cits.append(entry)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "document_citations",
+                                        "citations": clean_cits,
+                                    }
+                                )
                             # Final include_usage-style chunk so callers can
                             # see cache_creation / cache_read without
                             # scraping the server log.
@@ -2943,6 +3235,65 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    # Buffer for a citation marker straddling two delta events;
+                    # prepended onto the next delta. See _split_pending_citation_tail.
+                    pending_marker_tail: str = ""
+                    # Segments deferred while their markers reference unseen
+                    # source_ids; held in arrival order so output never
+                    # leapfrogs an earlier deferred segment. Flushed on
+                    # annotation events and force-flushed at end-of-stream
+                    # with leftover private-use codepoints stripped.
+                    pending_citation_segments: list[str] = []
+
+                    def _drain_pending_segments(force: bool) -> str:
+                        """Re-attempt resolution on buffered segments in order.
+                        Stops at the first still-unresolved segment unless
+                        ``force`` (end-of-stream), where lingering markers are stripped."""
+                        out: list[str] = []
+                        while pending_citation_segments:
+                            seg = pending_citation_segments[0]
+                            rewritten, unresolved = _rewrite_citation_markers_partial(
+                                seg,
+                                all_url_citations,
+                            )
+                            if unresolved and not force:
+                                pending_citation_segments[0] = rewritten
+                                break
+                            if unresolved and force:
+                                rewritten = _replace_openai_citation_markers(
+                                    rewritten,
+                                    all_url_citations,
+                                )
+                            pending_citation_segments.pop(0)
+                            if rewritten:
+                                out.append(rewritten)
+                        return "".join(out)
+
+                    def _flush_pending_marker_tail(tail: str) -> str:
+                        """Render any leftover citation tail at end-of-stream.
+
+                        Unterminated tails drop (no annotation to bind to). If the
+                        close byte arrived concatenated, rewrite then scrub any
+                        residual private-use bytes and any orphan ``cite<sid>``
+                        literal so the renderer never sees raw markup. url_citations
+                        are aggregated separately and applied to web_search tool_end.
+                        """
+                        if not tail:
+                            return ""
+                        if _OPENAI_CITE_STOP not in tail:
+                            # Unterminated: drop the whole tail, otherwise the
+                            # residual ``cite<sid>`` would leak as plain text.
+                            return ""
+                        rendered = _replace_openai_citation_markers(
+                            tail, all_url_citations
+                        )
+                        # Scrub residual private-use bytes (e.g. a partial opener).
+                        for ch in ("", "", ""):
+                            rendered = rendered.replace(ch, "")
+                        # Drop any orphan ``cite<sid>`` literal -- meaningless
+                        # without its closing byte and matching url_citation.
+                        rendered = re.sub(r"^cite\S*", "", rendered)
+                        return rendered
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
                         chunk = {
@@ -3000,16 +3351,35 @@ class ExternalProviderClient:
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
-                        list. Dedup by URL — the same source can be cited multiple
-                        times across deltas. We do NOT try to attribute citations
-                        to individual web_search_call invocations because OpenAI's
-                        annotation events don't carry that linkage."""
+                        list. Dedup by URL — the same URL can be cited many
+                        times under different ``source_id`` aliases (one per
+                        span/locator), so collect every alias we see onto
+                        the matching entry's ``source_ids`` list. The
+                        delta-text rewriter resolves any of those aliases
+                        back to this entry's URL. The id may live under
+                        ``source_id``, ``id``, or ``locator`` across the
+                        Responses API revisions."""
                         if payload.get("type") != "url_citation":
                             return
                         url = payload.get("url", "")
                         if not url:
                             return
-                        if any(c["url"] == url for c in all_url_citations):
+                        source_id = (
+                            payload.get("source_id")
+                            or payload.get("id")
+                            or payload.get("locator")
+                            or ""
+                        )
+                        # Single pass: either backfill aliases onto an
+                        # existing URL entry (and return) or fall through
+                        # to append a fresh one.
+                        for c in all_url_citations:
+                            if c["url"] != url:
+                                continue
+                            if source_id:
+                                aliases = c.setdefault("source_ids", [])
+                                if source_id not in aliases:
+                                    aliases.append(source_id)
                             return
                         title = payload.get("title") or url
                         snippet = payload.get("snippet") or payload.get("quote") or ""
@@ -3018,6 +3388,7 @@ class ExternalProviderClient:
                                 "url": url,
                                 "title": title,
                                 "snippet": snippet,
+                                "source_ids": [source_id] if source_id else [],
                             }
                         )
 
@@ -3074,6 +3445,28 @@ class ExternalProviderClient:
                             if not data_str:
                                 continue
                             if data_str == "[DONE]":
+                                # Flush any held-over partial marker; strip
+                                # private-use bytes so garbled glyphs don't leak.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if not done_emitted:
                                     yield "data: [DONE]"
                                     done_emitted = True
@@ -3088,22 +3481,57 @@ class ExternalProviderClient:
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
-                                if delta_text:
-                                    if reasoning_open:
-                                        yield _chunk_with_text("</think>")
-                                        reasoning_open = False
-                                    yield _chunk_with_text(delta_text)
-                                # Some API versions inline url citations on the
-                                # delta event itself rather than as a separate
-                                # response.output_text.annotation.added event.
+                                # Process inline annotations first so source_ids
+                                # referenced by same-delta markers are in the lookup
+                                # before the rewriter runs. Some API versions inline
+                                # url citations on the delta event itself.
                                 for ann in event.get("annotations") or []:
                                     if isinstance(ann, dict):
                                         _record_url_citation(ann)
+                                if delta_text or pending_marker_tail:
+                                    # Prepend any held-over tail so a marker
+                                    # straddling two SSE events resolves cleanly.
+                                    combined = pending_marker_tail + delta_text
+                                    head, pending_marker_tail = (
+                                        _split_pending_citation_tail(combined)
+                                    )
+                                    if head:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        # Re-attempt earlier deferred segments first
+                                        # so output stays in order; the needed
+                                        # annotation may have arrived inline above.
+                                        flushed = _drain_pending_segments(
+                                            force = False,
+                                        )
+                                        if flushed:
+                                            yield _chunk_with_text(flushed)
+                                        head_rewritten, has_unresolved = (
+                                            _rewrite_citation_markers_partial(
+                                                head,
+                                                all_url_citations,
+                                            )
+                                        )
+                                        if has_unresolved or pending_citation_segments:
+                                            pending_citation_segments.append(
+                                                head_rewritten
+                                            )
+                                        elif head_rewritten:
+                                            yield _chunk_with_text(head_rewritten)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
                                 if isinstance(ann, dict):
                                     _record_url_citation(ann)
+                                flushed = _drain_pending_segments(
+                                    force = False,
+                                )
+                                if flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(flushed)
 
                             elif event_type == "response.output_item.added":
                                 # Track the call early but do NOT emit tool_start
@@ -3342,6 +3770,34 @@ class ExternalProviderClient:
                                 )
                                 if isinstance(completed_usage, dict):
                                     last_usage = completed_usage
+                                # Flush any unterminated citation tail
+                                # held over from the last delta. By
+                                # the time we get here every annotation
+                                # has been recorded so a late-arriving
+                                # source_id may resolve cleanly; if it
+                                # still doesn't, the helper strips the
+                                # private-use bytes so no garbled
+                                # glyph reaches the user.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
@@ -3434,6 +3890,29 @@ class ExternalProviderClient:
                                 )
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
+                                # Same flush as response.completed --
+                                # truncated streams can leave a half-
+                                # marker in the buffer.
+                                if pending_marker_tail:
+                                    flushed = _flush_pending_marker_tail(
+                                        pending_marker_tail
+                                    )
+                                    pending_marker_tail = ""
+                                    if flushed:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
+                                        yield _chunk_with_text(flushed)
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
+                                tail_flushed = _drain_pending_segments(
+                                    force = True,
+                                )
+                                if tail_flushed:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
@@ -3939,6 +4418,17 @@ def _build_usage_chunk(
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
+        # Forward 5m/1h cache-write breakdown so cost calc applies the
+        # 2x 1h premium instead of defaulting to 5m on chat-style.
+        cc_breakdown = last_usage.get("cache_creation")
+        if isinstance(cc_breakdown, dict) and cc_breakdown:
+            usage_block["cache_creation"] = cc_breakdown
+        # Propagate fast-mode `usage.speed` so the cost ledger can apply
+        # the 6x multiplier without re-derivation (Anthropic falls back
+        # to "standard" when fast-mode is unsupported or rate-limited).
+        speed = last_usage.get("speed")
+        if speed in ("fast", "standard"):
+            usage_block["speed"] = speed
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
         cached = 0
