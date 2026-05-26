@@ -157,11 +157,13 @@ export function LiveEvalView() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="max-h-80 overflow-auto">
-              <Table>
+              <Table className="w-full table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-16">Idx</TableHead>
-                    <TableHead>Score</TableHead>
+                    <TableHead className="w-12">Idx</TableHead>
+                    <TableHead className="w-20">Score</TableHead>
+                    <TableHead>Input</TableHead>
+                    <TableHead>Output</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -179,6 +181,20 @@ export function LiveEvalView() {
                               {r.score.toFixed(3)}
                             </span>
                           )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="truncate text-muted-foreground">
+                            {r.input ?? ""}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="truncate">
+                            {r.error ? (
+                              <span className="text-red-500">{r.error}</span>
+                            ) : (
+                              r.prediction ?? ""
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}

@@ -39,6 +39,8 @@ export interface EvalLastResult {
   idx: number;
   score: number;
   error?: string | null;
+  input?: string | null;
+  prediction?: string | null;
 }
 
 export interface EvalProgress {

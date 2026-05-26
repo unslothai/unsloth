@@ -25,6 +25,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _trunc(value: Any, limit: int = 300) -> str:
+    """Bound a text field for the live progress payload."""
+    s = str(value)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 class EvalJobManager:
     def __init__(self, run_fn: RunFn):
         self._run_fn = run_fn
@@ -111,7 +117,10 @@ class EvalJobManager:
             prog = self._progress[run_id]
             prog["done"] = running_total["n"]
             prog["avg_score"] = running_total["sum"] / running_total["n"]
-            prog["last_result"] = {"idx": idx, "score": score, "error": error}
+            prog["last_result"] = {
+                "idx": idx, "score": score, "error": error,
+                "input": _trunc(input_text), "prediction": _trunc(prediction),
+            }
             if error:
                 self.append_log(run_id, "error", f"#{idx} error: {error}")
             else:

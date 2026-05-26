@@ -34,6 +34,8 @@ class EvalLastResult(BaseModel):
     idx: int
     score: float
     error: Optional[str] = None
+    input: Optional[str] = None
+    prediction: Optional[str] = None
 
 
 class EvalProgress(BaseModel):

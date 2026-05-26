@@ -8,6 +8,8 @@ export interface EvalMiniResult {
   idx: number;
   score: number;
   error?: string | null;
+  input?: string | null;
+  prediction?: string | null;
 }
 
 interface EvalRuntimeState {
@@ -73,6 +75,8 @@ export const useEvalRuntimeStore = create<EvalRuntimeState>()((set) => ({
           idx: p.last_result.idx,
           score: p.last_result.score,
           error: p.last_result.error,
+          input: p.last_result.input,
+          prediction: p.last_result.prediction,
         };
         if (i >= 0) liveResults[i] = entry;
         else liveResults.push(entry);
