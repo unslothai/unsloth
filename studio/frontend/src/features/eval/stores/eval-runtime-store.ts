@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import type { EvalProgress, EvalStatus } from "../api/eval-api";
+import type { EvalLogEntry, EvalProgress, EvalStatus } from "../api/eval-api";
 
 export interface EvalMiniResult {
   idx: number;
@@ -19,12 +19,14 @@ interface EvalRuntimeState {
   startedAtMs: number | null;
   isEvalRunning: boolean;
   liveResults: EvalMiniResult[]; // accumulated from SSE last_result, deduped by idx
+  logs: EvalLogEntry[];
   startError: string | null;
   selectedHistoryRunId: string | null;
 
   beginRun: (runId: string, total: number) => void;
   applyProgress: (p: EvalProgress) => void;
   finishRun: (status: EvalStatus) => void;
+  appendLogs: (entries: EvalLogEntry[]) => void;
   setStartError: (msg: string | null) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
   resetRuntime: () => void;
@@ -39,6 +41,7 @@ const initial = {
   startedAtMs: null as number | null,
   isEvalRunning: false,
   liveResults: [] as EvalMiniResult[],
+  logs: [] as EvalLogEntry[],
   startError: null as string | null,
 };
 
@@ -56,6 +59,7 @@ export const useEvalRuntimeStore = create<EvalRuntimeState>()((set) => ({
       startedAtMs: Date.now(),
       isEvalRunning: true,
       liveResults: [],
+      logs: [],
       startError: null,
       selectedHistoryRunId: runId,
     }),
@@ -84,6 +88,16 @@ export const useEvalRuntimeStore = create<EvalRuntimeState>()((set) => ({
     }),
 
   finishRun: (status) => set({ status, isEvalRunning: false }),
+
+  appendLogs: (entries) =>
+    set((s) => {
+      const lastSeq = s.logs.length ? s.logs[s.logs.length - 1].seq : -1;
+      const fresh = entries.filter((e) => e.seq > lastSeq);
+      if (fresh.length === 0) return {};
+      const next = [...s.logs, ...fresh];
+      return { logs: next.length > 1000 ? next.slice(next.length - 1000) : next };
+    }),
+
   setStartError: (msg) => set({ startError: msg }),
   setSelectedHistoryRunId: (id) => set({ selectedHistoryRunId: id }),
   resetRuntime: () => set({ ...initial }),

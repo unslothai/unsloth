@@ -165,12 +165,18 @@ export async function getEvalRun(
 
 // ── SSE progress stream (mirrors streamTrainingProgress) ───────────────
 
-type EvalEventName = "progress" | "complete";
-
-interface ParsedEvalEvent {
-  event: EvalEventName;
-  payload: EvalProgress;
+export interface EvalLogEntry {
+  seq: number;
+  ts: string;
+  level: string;
+  message: string;
 }
+
+type EvalEventName = "progress" | "complete" | "log";
+
+type ParsedEvalEvent =
+  | { event: "progress" | "complete"; payload: EvalProgress }
+  | { event: "log"; logs: EvalLogEntry[] };
 
 function parseEvalSseEvent(rawEvent: string): ParsedEvalEvent | null {
   const lines = rawEvent.split(/\r?\n/);
@@ -180,12 +186,19 @@ function parseEvalSseEvent(rawEvent: string): ParsedEvalEvent | null {
     if (!line) continue;
     if (line.startsWith("event:")) {
       const value = line.slice(6).trim();
-      if (value === "progress" || value === "complete") eventName = value;
+      if (value === "progress" || value === "complete" || value === "log")
+        eventName = value;
       continue;
     }
     if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }
   if (dataLines.length === 0) return null;
+  if (eventName === "log") {
+    const parsed = JSON.parse(dataLines.join("\n")) as {
+      entries?: EvalLogEntry[];
+    };
+    return { event: "log", logs: parsed.entries ?? [] };
+  }
   const parsed = JSON.parse(dataLines.join("\n")) as EvalProgress;
   return { event: eventName, payload: parsed };
 }

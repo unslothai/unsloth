@@ -9,6 +9,7 @@ import { useEvalRuntimeStore } from "../stores/eval-runtime-store";
 export function useEvalProgressStream(runId: string | null, enabled: boolean) {
   const applyProgress = useEvalRuntimeStore((s) => s.applyProgress);
   const finishRun = useEvalRuntimeStore((s) => s.finishRun);
+  const appendLogs = useEvalRuntimeStore((s) => s.appendLogs);
 
   useEffect(() => {
     if (!runId || !enabled) return;
@@ -21,11 +22,15 @@ export function useEvalProgressStream(runId: string | null, enabled: boolean) {
         await streamEvalProgress({
           runId,
           signal: controller.signal,
-          onEvent: ({ event, payload }) => {
-            applyProgress(payload);
-            if (event === "complete") {
+          onEvent: (evt) => {
+            if (evt.event === "log") {
+              appendLogs(evt.logs);
+              return;
+            }
+            applyProgress(evt.payload);
+            if (evt.event === "complete") {
               sawTerminal = true;
-              finishRun(payload.status);
+              finishRun(evt.payload.status);
             }
           },
         });
@@ -45,5 +50,5 @@ export function useEvalProgressStream(runId: string | null, enabled: boolean) {
       cancelled = true;
       controller.abort();
     };
-  }, [runId, enabled, applyProgress, finishRun]);
+  }, [runId, enabled, applyProgress, finishRun, appendLogs]);
 }

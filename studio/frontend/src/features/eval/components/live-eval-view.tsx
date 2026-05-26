@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +28,12 @@ import { useEvalRuntimeStore } from "../stores/eval-runtime-store";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+function logColor(level: string): string {
+  if (level === "error") return "text-red-500";
+  if (level === "warning" || level === "warn") return "text-amber-500";
+  return "text-foreground/80";
+}
+
 function formatDuration(totalSec: number): string {
   const s = Math.max(0, Math.round(totalSec));
   if (s < 60) return `${s}s`;
@@ -46,6 +53,13 @@ export function LiveEvalView() {
   const startedAtMs = useEvalRuntimeStore((s) => s.startedAtMs);
   const liveResults = useEvalRuntimeStore((s) => s.liveResults);
   const isEvalRunning = useEvalRuntimeStore((s) => s.isEvalRunning);
+  const logs = useEvalRuntimeStore((s) => s.logs);
+
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = logsEndRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs.length]);
 
   const etaSec =
     startedAtMs && done > 0 && total > done
@@ -103,6 +117,35 @@ export function LiveEvalView() {
             )}
             {" · "}{status}
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Logs card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Logs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div
+            ref={logsEndRef}
+            className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-xs leading-relaxed"
+          >
+            {logs.length === 0 ? (
+              <span className="text-muted-foreground">Waiting for logs…</span>
+            ) : (
+              logs.map((e) => (
+                <div
+                  key={e.seq}
+                  className={cn("whitespace-pre-wrap wrap-break-word", logColor(e.level))}
+                >
+                  <span className="mr-2 text-muted-foreground">
+                    {new Date(e.ts).toLocaleTimeString()}
+                  </span>
+                  {e.message}
+                </div>
+              ))
+            )}
+          </div>
         </CardContent>
       </Card>
 
