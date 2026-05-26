@@ -299,7 +299,11 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description = "Currently active model identifier"
+        None, description = "Currently active model display identifier"
+    )
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Loadable identifier for the active model.",
     )
     is_vision: bool = Field(
         False, description = "Whether the active model is a vision model"
@@ -471,6 +475,40 @@ class InputDocumentContentPart(BaseModel):
     )
 
 
+class OpenAIReasoningContentPart(BaseModel):
+    """OpenAI Responses reasoning item paired with a tool output.
+
+    Reasoning models can require the previous ``reasoning`` output item
+    to be replayed immediately before an ``image_generation_call`` id
+    when manually managing Responses context. This part is OpenAI-only;
+    routes strip it for every other provider before proxying.
+    """
+
+    type: Literal["reasoning"]
+    id: str = Field(..., description = "OpenAI reasoning output item id.")
+    summary: list[dict[str, Any]] = Field(default_factory = list)
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ImageGenerationCallContentPart(BaseModel):
+    """OpenAI Responses image_generation call reference.
+
+    OpenAI accepts prior ``image_generation_call`` items in the next
+    Responses ``input`` array so follow-up prompts can edit or refine a
+    generated image without resending the base64 payload. The frontend
+    forwards this as a synthetic assistant content part when building
+    the next OpenAI Responses request; ``external_provider`` translates
+    it back to the provider-specific top-level input item.
+    """
+
+    type: Literal["image_generation_call"]
+    id: str = Field(..., description = "OpenAI image_generation_call output item id.")
+    response_id: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses response id to use as previous_response_id for follow-up edits.",
+    )
+
+
 class CompactionContentPart(BaseModel):
     """Anthropic server-side compaction state, attached to an assistant
     message for round-tripping on the next turn.
@@ -504,6 +542,8 @@ ContentPart = Annotated[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
+        Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
