@@ -2029,7 +2029,15 @@ if ($HasROCm -and $CuTag -eq "cpu") {
         "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
+    # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
+    # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
+    # the same floor and ceiling when pulling from AMD's per-arch index.
+    $torchFloorMap = @{
+        "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+        "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+    }
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+    $ROCmTorchSpec = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { "torch" }
     if ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
@@ -2049,12 +2057,15 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
+    if ($ROCmTorchSpec -ne "torch") {
+        substep "  enforcing $ROCmTorchSpec (known _grouped_mm bug in older wheels)" "Cyan"
+    }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl
+        Fast-Install $ROCmTorchSpec torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $output = Fast-Install $ROCmTorchSpec torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

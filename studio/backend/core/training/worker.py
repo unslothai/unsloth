@@ -2142,6 +2142,8 @@ def run_training_process(
                     getattr(_torch_for_rocm, "version", None), "hip", None
                 )
                 if not _hip_str:
+                    # Try the standard "+rocmX.Y.Z" embedded version first
+                    # (e.g. "2.11.0+rocm7.13.0").
                     _ver_match = _re_ver.search(
                         r"rocm(\d+)\.(\d+)", _build_version_for_rocm
                     )
@@ -2150,6 +2152,24 @@ def run_training_process(
                             int(_ver_match.group(1)),
                             int(_ver_match.group(2)),
                         ) >= (major, minor)
+                    # AMD SDK / Radeon Windows wheels encode the build as
+                    # "+rocmsdk<date>" (e.g. "2.9.0+rocmsdk20251116") with no
+                    # explicit rocmX.Y component. The rocmsdk format was
+                    # introduced after the gfx120X null-kernel fix landed in
+                    # ROCm 7.13, so any wheel with this suffix is new enough to
+                    # have working HIP kernels. Treat as >= 7.13 rather than
+                    # falling back to False and installing the Python workaround
+                    # on a wheel that doesn't need it.
+                    if "rocmsdk" in _build_version_for_rocm:
+                        logger.debug(
+                            "Windows ROCm: AMD SDK wheel detected (%r); "
+                            "assuming HIP >= %d.%d (rocmsdk wheels post-date "
+                            "the gfx120X null-kernel fix)",
+                            _build_version_for_rocm,
+                            major,
+                            minor,
+                        )
+                        return True
                     return False
                 try:
                     _parts = [int(x) for x in str(_hip_str).split(".")[:2]]

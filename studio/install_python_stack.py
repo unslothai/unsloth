@@ -723,8 +723,14 @@ def _ensure_rocm_torch() -> None:
                 _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
                 _strix_override_pkgs = (
                     "torch>=2.11.0,<2.12.0",
-                    "torchvision",
-                    "torchaudio",
+                    # Pin torchvision/torchaudio to the 2.11.x-compatible range.
+                    # The install uses --index-url (exclusive, no PyPI fallback),
+                    # so bare unversioned names risk resolving a build from AMD's
+                    # index that targets a different torch major (e.g. 0.27 built
+                    # against torch 2.12), which would fail at runtime with an
+                    # ABI/version mismatch. Matches _ROCM_TORCH_CONSTRAINT["rocm7.2"].
+                    "torchvision>=0.26.0,<0.27.0",
+                    "torchaudio>=2.11.0,<2.12.0",
                 )
                 print(
                     f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
