@@ -188,13 +188,20 @@ def _rewrite_citation_markers_partial(
         nonlocal has_unresolved
         tokens = [t for t in match.group(1).split(_OPENAI_CITE_DELIM) if t]
         rendered: list[str] = []
+        any_unresolved = False
         for tok in tokens:
             hit = by_source.get(tok)
             if hit is None:
+                any_unresolved = True
                 continue
             idx, url = hit
             rendered.append(f"[[{idx}]]({url})")
-        if not rendered:
+        # If even one token in a multi-source marker is unresolved,
+        # leave the whole marker verbatim so the caller buffers the
+        # segment and re-runs once the late annotation lands. Emitting
+        # just the resolved tokens would discard the unresolved ids
+        # for good when the caller no longer retains the source text.
+        if any_unresolved:
             has_unresolved = True
             return match.group(0)
         return "".join(rendered)

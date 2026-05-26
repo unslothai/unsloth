@@ -227,18 +227,27 @@ def test_partial_resolves_after_late_annotation():
     assert not _has_marker_codepoints(out2)
 
 
-def test_partial_multi_source_partial_resolution_treats_as_resolved():
-    """When at least one token in a multi-source marker resolves, the
-    marker is considered resolved -- unknown tokens are dropped (they
-    are typically locators rather than missing annotations)."""
+def test_partial_multi_source_partial_resolution_keeps_marker_pending():
+    """When any token in a multi-source marker is unresolved, the
+    whole marker is left verbatim and ``unresolved`` is True. Emitting
+    just the resolved token would discard the unresolved id once the
+    caller drops the segment, so we defer until either every id
+    resolves (a follow-up partial pass) or end-of-stream forces a
+    flush (the non-partial helper drops unresolved tokens then).
+    """
     cite = f"{CITE_START}cite{CITE_DELIM}known{CITE_DELIM}locator{CITE_STOP}"
     text = f"Pre {cite} post."
     citations = [{"source_id": "known", "url": "https://example.com/y"}]
     out, unresolved = _rewrite_citation_markers_partial(text, citations)
-    assert unresolved is False
-    assert "[[1]](https://example.com/y)" in out
-    assert "locator" not in out
-    assert not _has_marker_codepoints(out)
+    assert unresolved is True
+    assert cite in out
+    # End-of-stream force flush: drop the unresolved token, keep the
+    # resolved link. The streamer routes pending segments through
+    # `_replace_openai_citation_markers` at force=True for this.
+    forced = _replace_openai_citation_markers(out, citations)
+    assert "[[1]](https://example.com/y)" in forced
+    assert "locator" not in forced
+    assert not _has_marker_codepoints(forced)
 
 
 def test_partial_idempotent_on_marker_free_text():
