@@ -259,11 +259,45 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
   <body>
     <script>
       (() => {
+        const createMemoryStorage = () => {
+          const data = new Map();
+          return {
+            get length() { return data.size; },
+            key: (index) => Array.from(data.keys())[index] ?? null,
+            getItem: (key) => data.has(String(key)) ? data.get(String(key)) : null,
+            setItem: (key, value) => data.set(String(key), String(value)),
+            removeItem: (key) => data.delete(String(key)),
+            clear: () => data.clear(),
+          };
+        };
+        const installStorageFallback = (name) => {
+          try {
+            void window[name];
+            return;
+          } catch {
+            // Opaque-origin sandboxed frames throw SecurityError for Web Storage.
+          }
+          try {
+            Object.defineProperty(window, name, {
+              value: createMemoryStorage(),
+              configurable: true,
+            });
+          } catch {
+            // Leave the sandbox failure contained in the artifact if the
+            // browser refuses to shadow the Web Storage accessor.
+          }
+        };
+        const installStorageFallbacks = () => {
+          installStorageFallback("localStorage");
+          installStorageFallback("sessionStorage");
+        };
         const render = (html) => {
+          installStorageFallbacks();
           document.open();
           document.write(html);
           document.close();
         };
+        installStorageFallbacks();
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;

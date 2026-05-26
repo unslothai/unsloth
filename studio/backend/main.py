@@ -353,7 +353,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+            "camera=(), microphone=(), geolocation=()",
         )
         response.headers["server"] = "unsloth-studio"
         return response
