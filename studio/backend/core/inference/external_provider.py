@@ -4256,6 +4256,24 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Same orphan-shell_call flush as
+                                # response.completed: a truncated stream
+                                # (max_tokens hit) leaves any in-flight
+                                # shell_call stuck on "running" unless we
+                                # emit a final tool_end here too.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",

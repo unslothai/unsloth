@@ -326,3 +326,73 @@ def test_shell_call_final_flush_on_completed_when_no_output_event(monkeypatch):
     events = _tool_events(lines)
     ends = [e for e in events if e["type"] == "tool_end"]
     assert any(e["tool_call_id"] == "scall_orphan" for e in ends)
+
+
+def test_shell_call_flushed_on_response_incomplete_truncation(monkeypatch):
+    """Truncated streams (max_tokens hit) end with response.incomplete
+    instead of response.completed. The orphan-shell_call flush must fire
+    here too, otherwise the card spins indefinitely in the UI."""
+    sse_events = [
+        {
+            "type": "response.output_item.added",
+            "item": {
+                "type": "shell_call",
+                "id": "scall_truncated",
+                "action": {"commands": ["long_running"]},
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "scall_truncated",
+                "action": {"commands": ["long_running"]},
+                "status": "in_progress",
+            },
+        },
+        {
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        },
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    events = _tool_events(lines)
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert any(e["tool_call_id"] == "scall_truncated" for e in ends)
+
+
+def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
+    """If a shell_call already finalised via bundled output on its done
+    event, the response.incomplete flush must skip it rather than emit
+    a second tool_end and re-complete the card."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "scall_done",
+                "action": {"commands": ["echo done"]},
+                "output": [
+                    {
+                        "stdout": "done\n",
+                        "stderr": "",
+                        "outcome": {"type": "exit", "exit_code": 0},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        },
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    events = _tool_events(lines)
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert len(ends) == 1
+    assert ends[0]["tool_call_id"] == "scall_done"
+    assert "done" in ends[0]["result"]
