@@ -987,8 +987,9 @@ def _resize_mlx_vlm_image(image, resize):
     if new_size != image.size:
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         image = image.resize(new_size, resampling)
-    # Return a writable ndarray so mlx-vlm skips its PIL-path square-resize
-    # and HF processors don't warn on non-writable views.
+    # When a resize is requested, hand mlx-vlm a writable RGB ndarray so its
+    # PIL-path square-resize is skipped and HF processors don't warn on
+    # non-writable views. resize=None (Default) above keeps the original PIL.
     return np.array(image, copy = True)
 
 

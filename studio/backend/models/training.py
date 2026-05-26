@@ -5,8 +5,15 @@
 Pydantic schemas for Training API
 """
 
+import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
+
+
+# ASCII integer with an optional single sign. Used by _check_vision_image_size
+# to reject "++512", "--256", and Unicode-digit strings ("５１２", "٥١٢") that
+# would otherwise slip through str.isdigit() + int().
+_INT_RE = re.compile(r"[+-]?[0-9]+")
 
 
 _MAX_BATCH_SIZE = 4096
@@ -176,8 +183,8 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("vision_image_size must be an integer or null")
         if isinstance(v, int):
             coerced = v
-        elif isinstance(v, str) and v.strip().lstrip("+-").isdigit():
-            coerced = int(v)
+        elif isinstance(v, str) and _INT_RE.fullmatch(v.strip()):
+            coerced = int(v.strip())
         elif isinstance(v, float) and v.is_integer():
             coerced = int(v)
         else:

@@ -137,7 +137,9 @@ export function mapBackendModelConfigToTrainingPatch(
     if (raw == null) {
       patch.visionImageSize = null;
     } else {
-      // Drop anything the backend validator would reject.
+      // Mirror studio/backend/models/training.py:_check_vision_image_size:
+      // drop anything outside [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE]
+      // so the store/UI never show a value the backend would reject.
       const n = toNumber(raw);
       if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
         patch.visionImageSize = n;

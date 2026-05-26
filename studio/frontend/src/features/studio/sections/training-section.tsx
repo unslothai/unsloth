@@ -80,8 +80,11 @@ export function TrainingSection() {
   };
 
   const handleSaveConfig = () => {
-    // isDatasetImage is null during dataset checks; treat that as "save it"
-    // so an in-flight check doesn't silently drop the user's choice.
+    // isDatasetImage is null in three windows: before a dataset check
+    // completes, after dataset edits, and on import. Treat all three as
+    // "save it" so the user's choice is never silently dropped while we
+    // wait to confirm the dataset type. Only a confirmed text-only dataset
+    // (=== false) suppresses the vision fields.
     const includeVisionFields =
       store.isVisionModel && store.isDatasetImage !== false;
     // DeepSeek OCR ignores vision_image_size; don't emit it to YAML either,
