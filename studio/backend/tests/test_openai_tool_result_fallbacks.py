@@ -284,7 +284,11 @@ def test_web_search_per_call_results_formatted_as_source_blocks(monkeypatch):
                 "id": "ws_r",
                 "action": {"type": "search", "query": "tiger ranking"},
                 "results": [
-                    {"url": "https://a.example/1", "title": "Tigers", "snippet": "Big cats"},
+                    {
+                        "url": "https://a.example/1",
+                        "title": "Tigers",
+                        "snippet": "Big cats",
+                    },
                     {"url": "https://b.example/2", "title": "Lion stats"},
                 ],
             },

@@ -276,9 +276,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _format_web_search_per_call_sources(
-    results: Any, sources: Any
-) -> str:
+def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
     """Format per-call sources as the Title/URL/Snippet block the
     frontend's parseSearchResults expects. Prefers `results` (snippet
     bearing, reasoning models) then `action.sources` (urls only).
@@ -3583,7 +3581,12 @@ class ExternalProviderClient:
                                 if isinstance(entry, str) and entry:
                                     parts.append(entry)
                                 continue
-                            stdout = entry.get("stdout") or entry.get("text") or entry.get("content") or ""
+                            stdout = (
+                                entry.get("stdout")
+                                or entry.get("text")
+                                or entry.get("content")
+                                or ""
+                            )
                             stderr = entry.get("stderr") or ""
                             outcome = entry.get("outcome") or {}
                             chunk_parts: list[str] = []
@@ -3603,7 +3606,7 @@ class ExternalProviderClient:
                                 # Unknown shape: surface the raw dict so the
                                 # user can see what OpenAI actually returned.
                                 try:
-                                    chunk_parts.append(_json.dumps(entry, indent=2))
+                                    chunk_parts.append(_json.dumps(entry, indent = 2))
                                 except (TypeError, ValueError):
                                     pass
                             if chunk_parts:
@@ -3982,16 +3985,22 @@ class ExternalProviderClient:
                                     # as the Title/URL/Snippet block the frontend
                                     # parser already understands.
                                     action_obj = (
-                                        item.get("action") if isinstance(item.get("action"), dict) else {}
+                                        item.get("action")
+                                        if isinstance(item.get("action"), dict)
+                                        else {}
                                     ) or {}
-                                    per_call_sources = _format_web_search_per_call_sources(
-                                        item.get("results"), action_obj.get("sources")
+                                    per_call_sources = (
+                                        _format_web_search_per_call_sources(
+                                            item.get("results"),
+                                            action_obj.get("sources"),
+                                        )
                                     )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            "result": per_call_sources or _web_search_card_text(args),
+                                            "result": per_call_sources
+                                            or _web_search_card_text(args),
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
