@@ -2272,14 +2272,18 @@ fi
 _installed_bin="$VENV_DIR/bin/unsloth"
 _path_unsloth=$(command -v unsloth 2>/dev/null || true)
 if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    # Canonicalize via the venv python (BSD readlink lacks -f on macOS).
+    # If either side fails to resolve, skip the check entirely rather than
+    # comparing raw paths (which would false-trigger on symlink targets).
     _canon() {
         "$VENV_DIR/bin/python" -c \
             'import os, sys; print(os.path.realpath(sys.argv[1]))' \
-            "$1" 2>/dev/null || echo "$1"
+            "$1" 2>/dev/null
     }
     _installed_real=$(_canon "$_installed_bin")
     _path_real=$(_canon "$_path_unsloth")
-    if [ "$_installed_real" != "$_path_real" ]; then
+    if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
+        && [ "$_installed_real" != "$_path_real" ]; then
         echo ""
         step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
         substep "$_path_unsloth"

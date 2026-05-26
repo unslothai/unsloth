@@ -123,3 +123,95 @@ def test_iter_candidates_handles_missing_studio_home(tmp_path, monkeypatch):
     # Glob over a non-existent dir is empty; must not raise.
     candidates = helpers["_iter_frontend_fallback_candidates"]()
     assert candidates == []
+
+
+def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypatch):
+    """Pins the `Lib/site-packages` (capital L) Windows venv layout
+    alongside the POSIX `lib/python*/site-packages` path."""
+    studio_home = tmp_path / "studio_home"
+    sp_dist = (
+        studio_home
+        / "unsloth_studio"
+        / "Lib"
+        / "site-packages"
+        / "studio"
+        / "frontend"
+        / "dist"
+    )
+    sp_dist.mkdir(parents = True)
+    (sp_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    helpers = _load_helpers_only()
+    chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
+    assert chosen is not None
+    assert chosen.resolve() == sp_dist.resolve()
+
+
+def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
+    """A future setuptools / black reformat that wraps the MAPPING dict
+    across multiple lines must still parse and resolve. Locks in the
+    `[^}]*` + re.DOTALL behaviour."""
+    studio_home = tmp_path / "studio_home"
+    sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
+    sp.mkdir(parents = True)
+    repo_root = tmp_path / "clone"
+    repo_studio = repo_root / "studio"
+    repo_dist = repo_studio / "frontend" / "dist"
+    repo_dist.mkdir(parents = True)
+    (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    finder = sp / "__editable___unsloth_0_0_0_finder.py"
+    finder.write_text(
+        "MAPPING: dict[str, str] = {\n"
+        f"    'studio': {str(repo_studio)!r},\n"
+        "    'unsloth': '/x',\n"
+        "    'unsloth_cli': '/y',\n"
+        "}\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    helpers = _load_helpers_only()
+    chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
+    assert chosen is not None
+    assert chosen.resolve() == repo_dist.resolve()
+
+
+def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
+    """The user-facing recovery message is a contract: it must surface the
+    attempted paths and every concrete fix. Pin its structure so a future
+    refactor doesn't drop one."""
+    import os
+    import sys
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "no_studio"))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    helpers = _load_helpers_only()
+    bogus = tmp_path / "no_such_dist"
+    _, attempted = helpers["_resolve_frontend_path"](bogus)
+    home = Path(os.environ["UNSLOTH_STUDIO_HOME"]).expanduser()
+    if sys.platform == "win32":
+        installer_bin = home / "bin" / "unsloth.exe"
+    else:
+        installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
+    tried_lines = "\n".join(f"  - {p}" for p in attempted)
+    message = (
+        "[ERROR] Studio frontend build not found.\n"
+        f"Tried:\n{tried_lines}\n"
+        "\n"
+        "Likely cause: another 'unsloth' on PATH is shadowing the "
+        "installer's binary and points at a site-packages tree with "
+        "no built dist.\n"
+        "\n"
+        "Fix one of:\n"
+        f"  - run the installer's binary directly: {installer_bin} studio\n"
+        "  - pass --frontend <path/to/studio/frontend/dist>\n"
+        "  - pass --api-only to skip serving the web UI\n"
+        "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
+    )
+    assert str(bogus) in message
+    assert "--frontend" in message
+    assert "--api-only" in message
+    assert "reinstall" in message
+    assert "installer's binary directly" in message
+    assert str(installer_bin) in message

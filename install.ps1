@@ -1628,13 +1628,17 @@ shell.Run cmd, 0, False
 
     # Warn if another 'unsloth' wins on PATH (different venv, system pip).
     # Mirrors install.sh; absolute path is still the most reliable launch.
+    # Uses content-hash equality (Get-FileHash) so hardlinks, symlinks, and
+    # identical copies of the installer's shim don't false-trigger. CommandType
+    # Application restricts the probe to real executables (skips aliases,
+    # functions, scripts).
     try {
-        $_pathCmd = Get-Command unsloth -ErrorAction SilentlyContinue
+        $_pathCmd = Get-Command unsloth -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($_pathCmd) {
             $_pathExe = $_pathCmd.Source
-            $_installedReal = (Resolve-Path -LiteralPath $UnslothExe -ErrorAction SilentlyContinue).Path
-            $_pathReal      = (Resolve-Path -LiteralPath $_pathExe   -ErrorAction SilentlyContinue).Path
-            if ($_installedReal -and $_pathReal -and ($_installedReal -ne $_pathReal)) {
+            $_installedHash = (Get-FileHash -LiteralPath $UnslothExe -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            $_pathHash      = (Get-FileHash -LiteralPath $_pathExe   -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            if ($_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
                 Write-Host ""
                 step "warning" "another 'unsloth' wins on PATH:" "Yellow"
                 substep $_pathExe

@@ -223,7 +223,12 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                     src = finder.read_text(encoding = "utf-8")
                 except OSError:
                     continue
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^\n]*\})", src, re.M)
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:

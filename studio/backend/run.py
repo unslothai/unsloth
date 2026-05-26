@@ -547,7 +547,12 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     src = finder.read_text(encoding = "utf-8")
                 except OSError:
                     continue
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^\n]*\})", src, re.M)
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:
@@ -667,17 +672,26 @@ def run_server(
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
         if chosen is not None and setup_frontend(app, chosen):
             if not silent:
-                print(f"[OK] Frontend loaded from {chosen}")
+                # Resolve so logs always show an absolute path for support.
+                try:
+                    display = chosen.resolve()
+                except OSError:
+                    display = chosen
+                print(f"[OK] Frontend loaded from {display}")
         else:
             home_str = (
                 os.environ.get("UNSLOTH_STUDIO_HOME")
                 or os.environ.get("STUDIO_HOME")
                 or str(Path.home() / ".unsloth" / "studio")
             )
-            shim = "unsloth.exe" if sys.platform == "win32" else "unsloth"
-            installer_bin = (
-                Path(home_str).expanduser() / "unsloth_studio" / "bin" / shim
-            )
+            # Windows ships the user-facing shim at $STUDIO_HOME/bin/unsloth.exe
+            # (a hardlink to the venv exe); Linux/macOS use the venv binary
+            # at $STUDIO_HOME/unsloth_studio/bin/unsloth.
+            home = Path(home_str).expanduser()
+            if sys.platform == "win32":
+                installer_bin = home / "bin" / "unsloth.exe"
+            else:
+                installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
             tried_lines = "\n".join(f"  - {p}" for p in attempted) or "  (none)"
             raise SystemExit(
                 "[ERROR] Studio frontend build not found.\n"
@@ -819,7 +833,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frontend",
         type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        default = _DEFAULT_FRONTEND_PATH,
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
