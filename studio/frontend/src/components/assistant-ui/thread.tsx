@@ -20,6 +20,7 @@ import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
+import { SearchKnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-search-knowledge-base";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -1218,6 +1219,7 @@ const AssistantMessage: FC = () => {
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
                 image_generation: ImageGenerationToolUI,
+                search_knowledge_base: SearchKnowledgeBaseToolUI,
               },
               Fallback: ToolFallback,
             },
