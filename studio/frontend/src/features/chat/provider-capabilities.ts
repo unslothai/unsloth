@@ -122,6 +122,42 @@ export function providerSupportsBuiltinWebSearch(
 }
 
 /**
+ * Whether the external provider exposes a server-side web_fetch tool
+ * (single URL, text or PDF) emitting a document block. Anthropic-only
+ * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
+ * composer's standalone Fetch pill, independent of Search.
+ */
+export function providerSupportsBuiltinWebFetch(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "anthropic";
+}
+
+/**
+ * Whether the active provider + model supports Anthropic fast-mode
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
+ * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * Backend silently drops on unsupported models as a second defence.
+ */
+const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+] as const;
+
+export function providerSupportsFastMode(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerType !== "anthropic") return false;
+  if (!modelId) return false;
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
+  // / "claude-opus-4-7b" do not match.
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
+    (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
+  );
+}
+
+/**
  * Whether the selected external provider/model exposes a server-side
  * code-execution tool. Two providers ship one today:
  *
@@ -171,15 +207,21 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /**
  * Strict check that a provider configuration points at OpenAI's
- * managed cloud (api.openai.com), as opposed to a custom OpenAI-compat
- * backend (ollama / llama.cpp / vLLM / generic "custom" preset). The
- * shell tool ONLY exists on OpenAI cloud; sending it to anything else
- * 400s the request. Mirror of the backend's
- * `is_openai_cloud = "api.openai.com" in self.base_url` guard.
+ * managed cloud (api.openai.com) or Azure OpenAI Foundry
+ * (*.openai.azure.com), as opposed to a custom OpenAI-compat backend
+ * (ollama / llama.cpp / vLLM / generic "custom" preset). The shell and
+ * image-generation tools only exist on cloud backends; sending them to
+ * anything else 400s the request. Mirror of the backend's
+ * `_is_openai_family_cloud` host check.
  */
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
-  return baseUrl.trim().toLowerCase().includes("api.openai.com");
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
 }
 
 export function providerSupportsBuiltinCodeExecution(
@@ -201,6 +243,44 @@ export function providerSupportsBuiltinCodeExecution(
     );
   }
   return false;
+}
+
+/**
+ * Whether the selected external provider/model exposes OpenAI's
+ * Responses-API server-side image_generation tool. Lit on for OpenAI
+ * cloud (`api.openai.com`) when the picked model is a Responses-API
+ * family id (gpt-5.x today). The backend additionally gates on
+ * `is_openai_cloud`; mirror that here so the pill is hidden on custom
+ * OpenAI-compat backends (ollama / llama.cpp / vLLM) that report
+ * `provider_type="openai"` but would 400 on a `{type:"image_generation"}`
+ * tool. See backend/core/inference/external_provider.py near line 2770
+ * for the dispatch and backend/tests/test_openai_image_generation.py
+ * for the round-trip coverage.
+ */
+const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
+  "gpt-5.5-pro",
+  "gpt-5.5",
+  "gpt-5.4-pro",
+  "gpt-5.4",
+  "gpt-5.3",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "o3",
+] as const;
+
+export function providerSupportsBuiltinImageGeneration(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  baseUrl?: string | null,
+): boolean {
+  if (providerType !== "openai") return false;
+  if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
+    normalized.startsWith(prefix),
+  );
 }
 
 /**

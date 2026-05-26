@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type ExternalModelOption,
@@ -9,22 +10,22 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { useSidebar } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
 import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
 import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
 import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
 import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { useSidebar } from "@/components/ui/sidebar";
 import { CustomizeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type ReactElement,
   memo,
@@ -35,30 +36,30 @@ import {
   useState,
 } from "react";
 import { toast } from "@/lib/toast";
-import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
-import { db } from "./db";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
-import {
-  clampReasoningEffortToLevels,
-  getExternalReasoningCapabilities,
-  getProviderCapabilities,
-  providerSupportsBuiltinCodeExecution,
-  providerSupportsBuiltinWebSearch,
-} from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
+  providerSupportsBuiltinWebSearch,
+} from "./provider-capabilities";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
@@ -69,13 +70,21 @@ import {
 } from "./shared-composer";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  getStoredChatThread,
+  isExpectedBackgroundChatStorageError,
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
 type LoraCandidate = {
   id: string;
@@ -322,15 +331,15 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
-      });
+    listStoredChatThreads({ pairId }).then((threads) => {
+      if (!isActive) return;
+      setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+      setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
+    });
     return () => {
       isActive = false;
     };
@@ -471,23 +480,21 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
-      });
+    listStoredChatThreads({ pairId }).then((threads) => {
+      if (!isActive) return;
+      setModel1ThreadId(
+        threads.find((t) => t.modelType === "model1" || t.modelType === "base")
+          ?.id,
+      );
+      setModel2ThreadId(
+        threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
+          ?.id,
+      );
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
+    });
     return () => {
       isActive = false;
     };
@@ -565,6 +572,9 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (s) => s.hydratePersistedSettings,
+  );
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -573,12 +583,15 @@ export function ChatPage(): ReactElement {
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
+
+  useEffect(() => {
     const threadId = search.thread;
     if (!threadId) return;
 
     let canceled = false;
-    void db.threads
-      .get(threadId)
+    void getStoredChatThread(threadId)
       .then((thread) => {
         if (canceled || thread) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -762,6 +775,15 @@ export function ChatPage(): ReactElement {
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsBuiltinImageGeneration =
+      providerSupportsBuiltinImageGeneration(
+        provider?.providerType,
+        selection.modelId,
+        provider?.baseUrl,
+      );
+    const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+      provider?.providerType,
+    );
     // Kimi's k2.6/k2.5 default to thinking enabled on the server side
     // (per https://platform.kimi.ai/docs/models). Mirror that default
     // in the UI so the Think pill comes up clicked when the user picks
@@ -781,6 +803,12 @@ export function ChatPage(): ReactElement {
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
     const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedImageToolsEnabled = loadOptionalBool(
+      CHAT_IMAGE_TOOLS_ENABLED_KEY,
+    );
+    const storedWebFetchToolsEnabled = loadOptionalBool(
+      CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+    );
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
         ? false
@@ -802,18 +830,29 @@ export function ChatPage(): ReactElement {
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
       // External models never give us a local tool runtime (no
-      // python sandbox), so `supportsTools` must be false. The two
+      // python sandbox), so `supportsTools` must be false. The three
       // `supportsBuiltin*` flags pick up the slack for providers that
       // run the tool server-side: `supportsBuiltinWebSearch` lights
       // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
       // `supportsBuiltinCodeExecution` lights up the Code pill
-      // (Anthropic Claude 4.x only, today).
+      // (Anthropic Claude 4.x and OpenAI gpt-5.5), and
+      // `supportsBuiltinImageGeneration` lights up the Images pill
+      // (OpenAI cloud Responses-API models only).
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
+      supportsBuiltinImageGeneration,
+      supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: supportsBuiltinCodeExecution
         ? (storedCodeToolsEnabled ?? false)
+        : false,
+      imageToolsEnabled: supportsBuiltinImageGeneration
+        ? (storedImageToolsEnabled ?? false)
+        : false,
+      // Default Fetch off (Anthropic bills per fetch); deliberate opt-in.
+      webFetchToolsEnabled: supportsBuiltinWebFetch
+        ? (storedWebFetchToolsEnabled ?? false)
         : false,
     });
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
@@ -967,10 +1006,7 @@ export function ChatPage(): ReactElement {
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
-        setInferenceParams({
-          ...store.params,
-          checkpoint: value,
-        });
+        store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
@@ -978,6 +1014,15 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
+        );
+        const supportsBuiltinImageGeneration =
+          providerSupportsBuiltinImageGeneration(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+            selectedProvider?.baseUrl,
+          );
+        const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+          selectedProvider?.providerType,
         );
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
@@ -994,6 +1039,12 @@ export function ChatPage(): ReactElement {
         const storedCodeToolsEnabled = loadOptionalBool(
           CHAT_CODE_TOOLS_ENABLED_KEY,
         );
+        const storedImageToolsEnabled = loadOptionalBool(
+          CHAT_IMAGE_TOOLS_ENABLED_KEY,
+        );
+        const storedWebFetchToolsEnabled = loadOptionalBool(
+          CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+        );
         const nextToolsEnabled = supportsBuiltinWebSearch
           ? isKimi
             ? false
@@ -1005,6 +1056,10 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          // Clear previous-model counters; the relaxed external-provider
+          // render gate would otherwise show stale stats until the next
+          // completion overwrites them.
+          contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -1020,17 +1075,27 @@ export function ChatPage(): ReactElement {
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
           // External models have no local tool runtime → supportsTools
-          // stays false. The two supportsBuiltin* flags carry the
+          // stays false. The three supportsBuiltin* flags carry the
           // server-side capability info for each pill:
           //   - Search → providerSupportsBuiltinWebSearch
           //   - Code   → providerSupportsBuiltinCodeExecution
-          //              (Anthropic Claude 4.x only, today)
+          //              (Anthropic Claude 4.x + OpenAI gpt-5.5)
+          //   - Images → providerSupportsBuiltinImageGeneration
+          //              (OpenAI cloud Responses-API models)
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
+          supportsBuiltinImageGeneration,
+          supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
           codeToolsEnabled: supportsBuiltinCodeExecution
             ? (storedCodeToolsEnabled ?? false)
+            : false,
+          imageToolsEnabled: supportsBuiltinImageGeneration
+            ? (storedImageToolsEnabled ?? false)
+            : false,
+          webFetchToolsEnabled: supportsBuiltinWebFetch
+            ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
@@ -1041,12 +1106,9 @@ export function ChatPage(): ReactElement {
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
-          const thread = await db.threads.get(activeThreadId);
+          const thread = await getStoredChatThread(activeThreadId);
           if (thread?.modelId && thread.modelId !== value) {
-            const messages = await db.messages
-              .where("threadId")
-              .equals(activeThreadId)
-              .toArray();
+            const messages = await listStoredChatMessages(activeThreadId);
             if (messages.length > 0) {
               const hasImage = messages.some(messageHasImage);
               const targetModel = modelsFromStore.find(
@@ -1079,7 +1141,6 @@ export function ChatPage(): ReactElement {
       externalProvidersForChat,
       modelsFromStore,
       selectModel,
-      setInferenceParams,
       view,
     ],
   );
@@ -1127,21 +1188,50 @@ export function ChatPage(): ReactElement {
     if (!saved) return;
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore context usage from the active thread's last assistant message.
+    // Restore usage from the last assistant message, but only if it
+    // matches the currently active checkpoint. Without this guard the
+    // relaxed render gate would show stale stats from another model.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
-      void db.messages
-        .where("threadId")
-        .equals(threadId)
-        .reverse()
-        .first()
+      void listStoredChatMessages(threadId)
+        .then(
+          (messages) =>
+            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
+        )
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
-          if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+          if (!usage) return;
+          const store = useChatRuntimeStore.getState();
+          const activeCheckpoint = store.params.checkpoint;
+          const usageModelId =
+            (usage as { modelId?: unknown }).modelId;
+          // Scope by modelId when present; reject if no active checkpoint
+          // (model-scoped usage cannot be attributed to "nothing").
+          if (typeof usageModelId === "string" && usageModelId) {
+            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+              return;
+            }
+          }
+          // For local turns, also require the restored count to fit in
+          // the active window. Skip when unknown (external provider).
+          const limit = store.ggufContextLength;
+          if (
+            typeof limit === "number" &&
+            limit > 0 &&
+            (usage.totalTokens ?? 0) > limit
+          ) {
+            return;
+          }
+          store.setContextUsage(usage);
+        })
+        .catch((error) => {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            throw error;
+          }
         });
     }
   }, [navigate]);
@@ -1452,11 +1542,13 @@ export function ChatPage(): ReactElement {
             ) : null}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {view.mode === "single" && ggufContextLength && contextUsage ? (
+            {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
+                // null on external providers; the bar handles that.
                 total={ggufContextLength}
                 cached={contextUsage.cachedTokens}
+                cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
                 className="h-[34px]"
@@ -1464,7 +1556,7 @@ export function ChatPage(): ReactElement {
             ) : null}
             {!settingsOpen && (
               <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
+                <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
-import { db } from "../db";
-import type { MessageRecord, ThreadRecord } from "../types";
+import { useEffect, useRef, useState } from "react";
+import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import type { MessageRecord } from "../types";
+import {
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "../utils/chat-history-storage";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -15,6 +19,7 @@ export interface ChatSearchItem {
 
 const THREAD_LIMIT = 200;
 const PREVIEW_MAX = 120;
+const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 
 function extractText(message: MessageRecord): string {
   const content = message.content;
@@ -23,7 +28,10 @@ function extractText(message: MessageRecord): string {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as { type?: string; text?: unknown };
-    if ((p.type === "text" || p.type === "reasoning") && typeof p.text === "string") {
+    if (
+      (p.type === "text" || p.type === "reasoning") &&
+      typeof p.text === "string"
+    ) {
       parts.push(p.text);
     }
   }
@@ -32,18 +40,13 @@ function extractText(message: MessageRecord): string {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return text.slice(0, max).trimEnd() + "…";
+  return `${text.slice(0, max).trimEnd()}…`;
 }
 
 async function buildIndex(): Promise<ChatSearchItem[]> {
-  // Fetch all threads newest-first, filter archived in JS, then take top N.
-  // `archived` is a boolean which Dexie does not index reliably, so we filter
-  // after the sort instead of using `.where("archived")`.
-  const all = (await db.threads
-    .orderBy("createdAt")
-    .reverse()
-    .toArray()) as ThreadRecord[];
-  const active = all.filter((t) => !t.archived).slice(0, THREAD_LIMIT);
+  const active = (
+    await listStoredChatThreads({ includeArchived: false })
+  ).slice(0, THREAD_LIMIT);
 
   const itemThreadIds = new Map<
     string,
@@ -81,15 +84,16 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     }
   }
 
-  // One query for all messages across all relevant threads, then group by
-  // threadId in memory. Avoids N sequential awaits.
   const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
     (e) => e.threadIds,
   );
-  const messages = (await db.messages
-    .where("threadId")
-    .anyOf(allThreadIds)
-    .toArray()) as MessageRecord[];
+  const storedMessagesByThread = await Promise.all(
+    allThreadIds.map(async (threadId) => ({
+      threadId,
+      messages: await listStoredChatMessages(threadId),
+    })),
+  );
+  const messages = storedMessagesByThread.flatMap((entry) => entry.messages);
 
   const byThreadId = new Map<string, MessageRecord[]>();
   for (const m of messages) {
@@ -131,6 +135,7 @@ export function useChatSearchIndex(enabled: boolean): {
 } {
   const [items, setItems] = useState<ChatSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const requestSeqRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
@@ -139,19 +144,42 @@ export function useChatSearchIndex(enabled: boolean): {
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    buildIndex()
-      .then((result) => {
-        if (!cancelled) setItems(result);
-      })
-      .catch(() => {
-        if (!cancelled) setItems([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const run = () => {
+      const seq = ++requestSeqRef.current;
+      setLoading(true);
+      buildIndex()
+        .then((result) => {
+          // Drop out-of-order responses so a slower rebuild can't clobber
+          // a fresher one.
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems(result);
+        })
+        .catch(() => {
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems([]);
+        })
+        .finally(() => {
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setLoading(false);
+        });
+    };
+
+    const scheduleRebuild = () => {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (!cancelled) run();
+      }, SEARCH_REBUILD_DEBOUNCE_MS);
+    };
+
+    run();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     return () => {
       cancelled = true;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
 
