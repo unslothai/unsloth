@@ -314,18 +314,26 @@ class SlidingWindowCompact(CompactStrategy):
                 else:
                     rewrite_strip_tool_calls.add(asst_idx)
 
-        # Final invariant sweep: drop any surviving tool message whose
-        # tool_call_id has no matching assistant ``tool_calls`` earlier
-        # in the kept output. This catches orphans pair_map could not
-        # link -- e.g. a tool that arrives after a user boundary and
-        # references an assistant that the boundary-clearing logic in
-        # ``_pair_linked_indices`` no longer treats as the pair root.
-        # Anchored tool messages (multimodal content) stay regardless,
-        # matching the existing leak-rather-than-violate-anchor rule.
-        # Also collect assistant indices whose surviving tool_calls
-        # entries lack a matching tool follow-up so we can strip the
-        # orphan ids from a copy below (same reason: OpenAI 400s on
-        # tool_calls without matching tool responses).
+        # Final invariant sweep, two passes so the asst-strip decision
+        # sees the post-orphan-drop tool set:
+        #   pass 1: drop tools whose tcid has no matching assistant
+        #     ``tool_calls`` earlier in the kept output (anchored tools
+        #     stay; same leak-rather-than-violate-anchor rule);
+        #   pass 2: recompute responded_ids from the surviving tools and
+        #     mark assts whose tool_calls aren't all responded for strip.
+        # Computing responded_ids before pass 1 would let a stale tcid
+        # of a just-dropped orphan tool satisfy `ids <= responded_ids`,
+        # leaving the asst with dangling tool_calls (OpenAI 400).
+        seen_ids: set[str] = set()
+        for i, m in enumerate(messages):
+            if i in dropped:
+                continue
+            if m.get("role") == "assistant":
+                seen_ids |= _assistant_tool_call_ids(m)
+            elif m.get("role") == "tool" and i not in anchor_idx:
+                tcid = m.get("tool_call_id")
+                if isinstance(tcid, str) and tcid and tcid not in seen_ids:
+                    dropped.add(i)
         responded_ids: set[str] = set()
         for i, m in enumerate(messages):
             if i in dropped:
@@ -334,19 +342,13 @@ class SlidingWindowCompact(CompactStrategy):
                 tcid = m.get("tool_call_id")
                 if isinstance(tcid, str) and tcid:
                     responded_ids.add(tcid)
-        seen_ids: set[str] = set()
         for i, m in enumerate(messages):
             if i in dropped:
                 continue
             if m.get("role") == "assistant":
                 ids = _assistant_tool_call_ids(m)
-                seen_ids |= ids
                 if ids and not (ids <= responded_ids):
                     rewrite_strip_tool_calls.add(i)
-            elif m.get("role") == "tool" and i not in anchor_idx:
-                tcid = m.get("tool_call_id")
-                if isinstance(tcid, str) and tcid and tcid not in seen_ids:
-                    dropped.add(i)
 
         out: list[dict] = []
         for i, m in enumerate(messages):

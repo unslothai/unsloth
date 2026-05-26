@@ -883,3 +883,27 @@ def test_partial_tool_drop_strips_orphan_tool_call_id():
     out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 200)
     asst_ids, tool_ids = _surviving_tool_ids(out)
     assert asst_ids == tool_ids, (asst_ids, tool_ids)
+
+
+def test_orphan_tool_before_asst_does_not_leave_dangling_tool_calls():
+    """Malformed input: a tool message arrives BEFORE the assistant
+    that references its id. The final sweep must drop the orphan tool
+    AND strip the now-dangling tool_call from the later assistant so
+    the chat template stays valid. Earlier behavior computed
+    responded_ids once before the orphan-tool drop, so the post-drop
+    asst still matched ids <= responded_ids and kept its tool_calls.
+    """
+    msgs = [
+        _msg("system", "sys"),
+        _msg("user", "first task"),
+        _msg("tool", content = "early", tool_call_id = "call_a"),
+        _msg(
+            "assistant",
+            content = "thinking",
+            tool_calls = [_tool_call("call_a")],
+        ),
+        _long("user", 50),
+    ]
+    out = SlidingWindowCompact(keep_recent = 5).compact(msgs, budget_tokens = 1000)
+    asst_ids, tool_ids = _surviving_tool_ids(out)
+    assert asst_ids == tool_ids, (asst_ids, tool_ids)
