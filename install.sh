@@ -2263,6 +2263,38 @@ if [ "$TAURI_MODE" = true ]; then
     exit 0
 fi
 
+# Warn if another 'unsloth' wins on PATH (different venv, system pip, etc).
+# Users typing `unsloth studio` later would hit that binary instead of the
+# one just installed; the runtime now falls back via UNSLOTH_STUDIO_HOME
+# but the absolute path is still the most reliable launch.
+# Uses the venv python (just created above) for path canonicalization so
+# this works on macOS (BSD readlink has no -f) as well as Linux/WSL.
+_installed_bin="$VENV_DIR/bin/unsloth"
+_path_unsloth=$(command -v unsloth 2>/dev/null || true)
+if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    # Canonicalize via the venv python (BSD readlink lacks -f on macOS).
+    # If either side fails to resolve, skip the check entirely rather than
+    # comparing raw paths (which would false-trigger on symlink targets).
+    _canon() {
+        "$VENV_DIR/bin/python" -c \
+            'import os, sys; print(os.path.realpath(sys.argv[1]))' \
+            "$1" 2>/dev/null
+    }
+    _installed_real=$(_canon "$_installed_bin")
+    _path_real=$(_canon "$_path_unsloth")
+    if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
+        && [ "$_installed_real" != "$_path_real" ]; then
+        echo ""
+        step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
+        substep "$_path_unsloth"
+        substep "this installer's binary is at:"
+        substep "$_installed_bin"
+        substep "to use this install, run the absolute path above,"
+        substep "alias unsloth, or put its dir earlier on PATH."
+        echo ""
+    fi
+fi
+
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
