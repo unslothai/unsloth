@@ -54,7 +54,7 @@ SPEC = MetricSpec(
     label="JSON document score",
     reference_kind="json",
     config_fields=[
-        ConfigField("schema", "json", None, "Field schema (optional)"),
+        ConfigField("schema", "json", None, "Field schema or JSON Schema (optional)"),
         ConfigField("default_comparator", "string", "string", "Default comparator"),
     ],
     build=_build,
