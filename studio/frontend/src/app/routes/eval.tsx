@@ -6,16 +6,14 @@ import { lazy } from "react";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-const DocumentScorePage = lazy(() =>
-  import("@/features/document-score/document-score-page").then((m) => ({
-    default: m.DocumentScorePage,
-  })),
+const EvalPage = lazy(() =>
+  import("@/features/eval").then((m) => ({ default: m.EvalPage })),
 );
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/document-score",
-  staticData: { title: "Document Score" },
+  path: "/eval",
+  staticData: { title: "Eval" },
   beforeLoad: () => requireAuth(),
-  component: DocumentScorePage,
+  component: EvalPage,
 });

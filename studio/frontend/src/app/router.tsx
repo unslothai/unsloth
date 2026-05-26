@@ -7,7 +7,7 @@ import { Route as rootRoute } from "./routes/__root";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
 import { Route as dataRecipeRoute } from "./routes/data-recipes.$recipeId";
 import { Route as chatRoute } from "./routes/chat";
-import { Route as documentScoreRoute } from "./routes/document-score";
+import { Route as evalRoute } from "./routes/eval";
 import { Route as exportRoute } from "./routes/export";
 import { Route as gridTestRoute } from "./routes/grid-test";
 import { Route as indexRoute } from "./routes/index";
@@ -27,7 +27,7 @@ const routeTree = rootRoute.addChildren([
   studioRoute,
   chatRoute,
   exportRoute,
-  documentScoreRoute,
+  evalRoute,
   dataRecipesRoute,
   dataRecipeRoute,
 ]);

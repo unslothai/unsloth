@@ -90,6 +90,10 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
+import {
+  useEvalHistorySidebarItems,
+  useEvalRuntimeStore,
+} from "@/features/eval";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
@@ -111,7 +115,7 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
   3,
 ) as typeof TestTube01Icon;
 
-function runStatusDotClass(status: TrainingRunSummary["status"]): string {
+function runStatusDotClass(status: string): string {
   switch (status) {
     case "running":
       return "bg-blue-500 animate-pulse";
@@ -207,11 +211,14 @@ export function AppSidebar() {
   // Chat collapsible state — open by default, auto-expand on route entry
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
+  const isEvalRoute = pathname === "/eval" || pathname.startsWith("/eval/");
   const [chatOpen, setChatOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
+  const [evalRunsOpen, setEvalRunsOpen] = useState(true);
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
+  useEffect(() => { if (isEvalRoute) setEvalRunsOpen(true); }, [isEvalRoute]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -244,6 +251,11 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+
+  // Eval runs
+  const { items: evalRunItems } = useEvalHistorySidebarItems(!chatOnly && isEvalRoute);
+  const selectedEvalRunId = useEvalRuntimeStore((s) => s.selectedHistoryRunId);
+  const setSelectedEvalRunId = useEvalRuntimeStore((s) => s.setSelectedHistoryRunId);
 
   const chatDisabled = isTrainingRunning;
 
@@ -511,15 +523,12 @@ export function AppSidebar() {
 
             <NavItem
               icon={LayoutAlignLeftIcon}
-              label="Score"
-              active={
-                pathname === "/document-score" ||
-                pathname.startsWith("/document-score/")
-              }
+              label="Eval"
+              active={pathname === "/eval" || pathname.startsWith("/eval/")}
               disabled={chatOnly}
               onClick={() => {
                 if (chatOnly) return;
-                navigate({ to: "/document-score" });
+                navigate({ to: "/eval" });
                 closeMobileIfOpen();
               }}
             />
@@ -693,6 +702,49 @@ export function AppSidebar() {
               </SidebarGroupContent>
             </CollapsibleContent>
           </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {isEvalRoute && evalRunItems.length > 0 && !chatOnly && (
+          <Collapsible open={evalRunsOpen} onOpenChange={setEvalRunsOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                  Recents
+                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className="px-2">
+                  <SidebarMenu>
+                    {evalRunItems.map((run) => (
+                      <SidebarMenuItem key={run.id} className="relative">
+                        <SidebarMenuButton
+                          isActive={selectedEvalRunId === run.id}
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-2.5 text-[14.5px] tracking-nav font-medium"
+                          onClick={() => {
+                            setSelectedEvalRunId(run.id);
+                            navigate({ to: "/eval" });
+                            closeMobileIfOpen();
+                          }}
+                        >
+                          <div className="flex w-full items-center gap-[8.5px]">
+                            <span className={cn("size-1.5 shrink-0 rounded-full", runStatusDotClass(run.status))} aria-hidden />
+                            <span className="truncate">{run.display_name ?? run.model_identifier}</span>
+                            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                              {formatRelativeShort(run.started_at)}
+                            </span>
+                          </div>
+                          <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
+                            {run.dataset_ref}
+                          </span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
           </Collapsible>
         )}
       </SidebarContent>
