@@ -1433,6 +1433,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      const orderAssistantContent = (
+        textParts: ReturnType<typeof parseAssistantContent>,
+      ) => {
+        const imageToolParts = toolCallParts.filter(
+          (part) => part.toolName === "image_generation",
+        );
+        const otherToolParts = toolCallParts.filter(
+          (part) => part.toolName !== "image_generation",
+        );
+        return [...otherToolParts, ...textParts, ...imageToolParts];
+      };
       // Anthropic document_citations tool_event payload, converted to
       // Sources-panel source parts at end-of-stream so the inline [N]
       // markers have matching entries.
@@ -2036,10 +2047,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates (tools first, text after)
+                // Yield cumulative state so tool UI updates. Search/code tools stay
+                // before the text, while generated images sit after the answer.
                 const textParts = parseAssistantContent(cumulativeText);
                 yield {
-                  content: [...toolCallParts, ...textParts],
+                  content: orderAssistantContent(textParts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2187,7 +2199,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
               if (parts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: [...toolCallParts, ...parts],
+                  content: orderAssistantContent(parts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2283,8 +2295,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            ...orderAssistantContent(parseAssistantContent(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
           ],

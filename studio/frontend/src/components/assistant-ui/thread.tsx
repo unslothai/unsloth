@@ -280,8 +280,8 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
               </p>
             ) : null}
             {hideComposer ? null : (
-              <p className="mt-1 text-muted-foreground text-xs">
-                Type edits below, then send.
+              <p className="mx-auto mt-2 inline-flex rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-medium text-foreground shadow-sm">
+                Type edits below, then send
               </p>
             )}
           </div>
@@ -525,13 +525,15 @@ const Composer: FC<{
       <PendingAudioChip />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
-        placeholder="Send a message..."
+        placeholder={
+          overlay ? "Type your edits for your image" : "Send a message..."
+        }
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={12}
         autoFocus={!disabled}
         disabled={disabled}
-        aria-label="Message input"
+        aria-label={overlay ? "Image edit instructions" : "Message input"}
         // dir="auto": browser picks LTR/RTL from the first strong char;
         // no effect on Latin / CJK / Devanagari.
         dir="auto"
