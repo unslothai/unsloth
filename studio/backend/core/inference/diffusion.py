@@ -1988,7 +1988,7 @@ async def async_generate(
 ) -> "Any":
     """Run ``generate_image`` in the default executor so route handlers
     do not block the event loop for the 5-30 s a diffusion step takes."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: backend.generate_image(**kwargs))
 
 
@@ -2002,7 +2002,7 @@ async def async_generate_with_metadata(
     fields reflect the pipeline that actually produced the image, even
     if an unload races the route between the forward returning and the
     response being assembled (round 13 P2 #9)."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
         lambda: backend.generate_image_with_metadata(**kwargs),

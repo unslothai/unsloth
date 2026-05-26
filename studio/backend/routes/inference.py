@@ -2260,7 +2260,7 @@ async def generate_audio(
         )
 
     try:
-        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
+        wav_bytes, sample_rate = await asyncio.get_running_loop().run_in_executor(
             None, gen
         )
     except Exception as e:
@@ -2471,7 +2471,7 @@ async def diffusion_load(
         # AFTER validation.
         backend = _get_diffusion_backend()
         try:
-            status = await asyncio.get_event_loop().run_in_executor(
+            status = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: backend.load_model(
                     repo_id = resolved_repo_id,
@@ -4265,7 +4265,7 @@ async def openai_chat_completions(
                 # the second request's blocking lock acquisition would
                 # freeze the entire event loop, stalling both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
