@@ -111,6 +111,7 @@ def _sanitize_openai_reasoning_replay_item(
         replay_item["status"] = status
     return replay_item
 
+
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
 # using private-use codepoints (see
 # https://developers.openai.com/api/docs/guides/citation-formatting).
