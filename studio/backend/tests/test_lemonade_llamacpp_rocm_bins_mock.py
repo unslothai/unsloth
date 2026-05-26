@@ -356,7 +356,12 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
 
 
 def test_lemonade_runtime_patterns_include_hip_runtime():
-    """Lemonade ZIPs bundle libamdhip64.so etc; runtime overlay must catch them."""
+    """linux-rocm overlay must use a broad lib glob to catch all bundled .so files.
+
+    Lemonade ZIPs carry transitive deps (libamd_comgr, libLLVM, libclang-cpp,
+    ...) whose names change across ROCm releases. A broad ``lib*.so*`` glob
+    avoids having to enumerate every transitive dependency by name.
+    """
     from install_llama_prebuilt import runtime_patterns_for_choice, AssetChoice
 
     choice = AssetChoice(
@@ -368,18 +373,9 @@ def test_lemonade_runtime_patterns_include_hip_runtime():
         install_kind = "linux-rocm",
     )
     pats = runtime_patterns_for_choice(choice)
-    for needed in (
-        "libamdhip64.so*",
-        "libhsa-runtime64.so*",
-        "libhipblas.so*",
-        "librocblas.so*",
-        # Transitive NEEDED entries of libamdhip64.so.7 in lemonade bundles --
-        # preflight fails without these (confirmed on gfx1151, b1272).
-        "libamd_comgr.so*",
-        "librocm_kpack.so*",
-        "librocm_sysdeps_*.so*",
-    ):
-        assert needed in pats, f"missing {needed!r} in {pats}"
+    # The broad glob must be present so every .so in the lemonade bundle
+    # (including transitive deps added in future ROCm releases) gets overlaid.
+    assert "lib*.so*" in pats, f"'lib*.so*' missing from linux-rocm patterns: {pats}"
 
 
 _pick_rocm_gfx_target = getattr(_mod, "_pick_rocm_gfx_target", None)

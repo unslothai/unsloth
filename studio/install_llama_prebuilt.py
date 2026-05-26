@@ -4206,28 +4206,17 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             # Lemonade ROCm ZIPs bundle the full HIP / ROCm runtime so the
             # install does not require system /opt/rocm. The upstream
             # tarball links against system /opt/rocm and ships none of these
-            # globs (empty matches = no-op). Both paths therefore stay
-            # correct; lemonade users get the bundled runtime overlaid into
+            # (empty matches = no-op). Both paths therefore stay correct;
+            # lemonade users get the bundled runtime overlaid into
             # ~/.unsloth/llama.cpp where llama-server's RPATH can find it.
-            patterns.extend(
-                [
-                    "libamdhip64.so*",
-                    "libhsa-runtime64.so*",
-                    "libhipblas.so*",
-                    "libhipblaslt.so*",
-                    "librocblas.so*",
-                    "librocsolver.so*",
-                    "librocsparse.so*",
-                    "librocrand.so*",
-                    "libMIOpen.so*",
-                    "libmagma.so*",
-                    # Direct NEEDED entries of libamdhip64.so.7 in lemonade bundles;
-                    # absent from upstream tarballs (no-op matches there).
-                    "libamd_comgr.so*",
-                    "librocm_kpack.so*",
-                    "librocm_sysdeps_*.so*",
-                ]
-            )
+            #
+            # Use a broad glob rather than an explicit allowlist: lemonade
+            # bundles carry transitive deps (libamd_comgr.so.3,
+            # libLLVM.so.23.0git, libclang-cpp.so.23.0git, ...) whose names
+            # change across ROCm releases. An explicit list would need to be
+            # updated every time a new transitive dep appears and preflight
+            # would silently drop libs that are NEEDED at load time.
+            patterns.extend(["lib*.so*"])
         return patterns
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
