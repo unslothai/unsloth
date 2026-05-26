@@ -280,7 +280,7 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
               </p>
             ) : null}
             {hideComposer ? null : (
-              <p className="mx-auto mt-2 inline-flex rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-medium text-foreground shadow-sm">
+              <p className="mx-auto mt-2 inline-flex rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                 Type edits below, then send
               </p>
             )}

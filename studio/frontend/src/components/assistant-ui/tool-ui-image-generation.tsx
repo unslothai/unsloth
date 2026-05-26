@@ -119,7 +119,7 @@ function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
     <div
       className={cn(
-        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl bg-muted/15 shadow-xl shadow-foreground/10 dark:shadow-black/30",
+        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl bg-muted/15 shadow-sm shadow-foreground/5 dark:shadow-black/10",
       )}
       aria-busy="true"
       aria-label={label}
@@ -234,7 +234,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {imagePart ? (
           <figure className="m-0 flex flex-col gap-2">
-            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl bg-muted/25 shadow-2xl shadow-foreground/10 dark:shadow-black/35">
+            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl bg-muted/25 shadow-lg shadow-foreground/5 dark:shadow-black/25">
               <img
                 src={imagePart.image}
                 alt=""
