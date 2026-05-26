@@ -92,6 +92,35 @@ def test_cancel_sets_status(db):
     assert _wait(mgr, run_id) == "cancelled"
 
 
+def test_append_log_and_get_logs():
+    from eval.jobs import EvalJobManager
+
+    def never_run(req, *, on_result, should_cancel):
+        raise AssertionError("should not be called")
+
+    mgr = EvalJobManager(run_fn=never_run)
+    mgr.append_log("r1", "info", "hi")
+    mgr.append_log("r1", "error", "boom")
+
+    result = mgr.get_logs("r1")
+    entries = result["entries"]
+    assert len(entries) == 2
+    assert entries[0]["seq"] == 0
+    assert entries[0]["level"] == "info"
+    assert entries[0]["message"] == "hi"
+    assert entries[1]["seq"] == 1
+    assert entries[1]["level"] == "error"
+    assert entries[1]["message"] == "boom"
+    # seq values are strictly increasing
+    assert entries[1]["seq"] > entries[0]["seq"]
+
+    # since=1 should return only the second entry
+    result_since = mgr.get_logs("r1", since=1)
+    assert len(result_since["entries"]) == 1
+    assert result_since["entries"][0]["seq"] == 1
+    assert result_since["next"] == 2
+
+
 def test_start_validates_metric_and_limit(db):
     from eval.jobs import EvalJobManager
     from models import EvalStartRequest

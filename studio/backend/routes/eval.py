@@ -92,9 +92,22 @@ async def stream_progress(run_id: str, request: Request,
     async def gen():
         yield "retry: 3000\n\n"
         last_done = -1
+        log_cursor = 0
+
+        def drain_logs():
+            nonlocal log_cursor
+            data = mgr.get_logs(run_id, since=log_cursor)
+            if data["entries"]:
+                log_cursor = data["next"]
+                return f"event: log\ndata: {json.dumps({'entries': data['entries']})}\n\n"
+            return None
+
         while True:
             if await request.is_disconnected():
                 break
+            chunk = drain_logs()
+            if chunk:
+                yield chunk
             prog = mgr.get(run_id)
             if prog is None:
                 break
@@ -109,7 +122,10 @@ async def stream_progress(run_id: str, request: Request,
                 yield f"id: {prog.get('done', 0)}\nevent: {event}\ndata: {payload}\n\n"
                 last_done = prog["done"]
                 if prog["status"] != "running":
+                    final = drain_logs()      # flush any trailing logs before closing
+                    if final:
+                        yield final
                     break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

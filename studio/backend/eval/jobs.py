@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from loggers.capture import register_sink, unregister_sink
 from storage import studio_db
 
 # run_fn(config, *, on_result, should_cancel) -> EvalSummary
@@ -32,6 +33,25 @@ class EvalJobManager:
         self._cancel = threading.Event()
         self._progress: dict[str, dict] = {}
         self._thread: Optional[threading.Thread] = None
+        self._logs: dict[str, list[dict]] = {}
+        self._log_seq: dict[str, int] = {}
+        self._log_lock = threading.Lock()
+
+    def append_log(self, run_id: str, level: str, message: str) -> None:
+        with self._log_lock:
+            buf = self._logs.setdefault(run_id, [])
+            seq = self._log_seq.get(run_id, 0)
+            buf.append({"seq": seq, "ts": _now(), "level": level, "message": message})
+            self._log_seq[run_id] = seq + 1
+            if len(buf) > 2000:
+                del buf[: len(buf) - 2000]
+
+    def get_logs(self, run_id: str, since: int = 0) -> dict:
+        with self._log_lock:
+            buf = self._logs.get(run_id, [])
+            entries = [e for e in buf if e["seq"] >= since]
+            nxt = (buf[-1]["seq"] + 1) if buf else since
+            return {"entries": entries, "next": nxt}
 
     def is_running(self) -> bool:
         return self._active_run_id is not None
@@ -63,6 +83,7 @@ class EvalJobManager:
             "run_id": run_id, "status": "running", "done": 0,
             "total": total, "avg_score": 0.0, "last_result": None,
         }
+        self.append_log(run_id, "info", f"Eval started · model {req.model_identifier} · {total if total else 'all'} rows")
         self._thread = threading.Thread(
             target=self._run, args=(run_id, req), daemon=True
         )
@@ -70,6 +91,8 @@ class EvalJobManager:
         return run_id
 
     def _run(self, run_id: str, req) -> None:
+        ident = threading.get_ident()
+        register_sink(ident, lambda level, message: self.append_log(run_id, level, message))
         running_total = {"sum": 0.0, "n": 0}
 
         def on_result(idx, score, prediction, input_text, reference,
@@ -89,6 +112,10 @@ class EvalJobManager:
             prog["done"] = running_total["n"]
             prog["avg_score"] = running_total["sum"] / running_total["n"]
             prog["last_result"] = {"idx": idx, "score": score, "error": error}
+            if error:
+                self.append_log(run_id, "error", f"#{idx} error: {error}")
+            else:
+                self.append_log(run_id, "info", f"#{idx} → {(score or 0.0):.3f}")
 
         status = "error"
         avg = 0.0
@@ -112,6 +139,12 @@ class EvalJobManager:
             prog["avg_score"] = avg
             with self._lock:
                 self._active_run_id = None
+            self.append_log(
+                run_id,
+                "info" if status == "completed" else "warning",
+                f"{status} · avg {avg:.4f}" + (f" · {err_msg}" if err_msg else ""),
+            )
+            unregister_sink(ident)
 
     def cancel(self, run_id: str) -> bool:
         if self._active_run_id != run_id:
@@ -138,15 +171,22 @@ class EvalJobManager:
 
 def build_eval_run_fn() -> RunFn:
     """Production run_fn: loads model + dataset, scores via the real inference path."""
+    from loggers import get_logger
+
     from core.inference import get_inference_backend
     from .dataset import DatasetRef, load_eval_examples
     from .inference_adapter import ensure_model_loaded, make_generate
     from .metrics.registry import make_scorer
     from .runner import run_eval
 
+    logger = get_logger(__name__)
+
     def run_fn(req, *, on_result, should_cancel):
         backend = get_inference_backend()
+        logger.info("Loading model", model=req.model_identifier)
         ensure_model_loaded(backend, req.model_identifier)
+        logger.info("Model loaded")
+        logger.info("Loading dataset", dataset=(req.dataset.path or req.dataset.name), split=req.dataset.split)
         ref = DatasetRef(
             is_local=req.dataset.is_local, path=req.dataset.path,
             name=req.dataset.name, split=req.dataset.split, subset=req.dataset.subset,
@@ -155,9 +195,11 @@ def build_eval_run_fn() -> RunFn:
             ref, input_col=req.input_column,
             reference_col=req.reference_column, limit=req.limit,
         )
+        logger.info("Dataset loaded", examples=len(examples))
         generate = make_generate(backend, max_new_tokens=req.max_new_tokens,
                                  temperature=req.temperature)
         scorer = make_scorer(req.metric_name, req.metric_config)
+        logger.info("Running evaluation", metric=req.metric_name)
 
         def _on_result(idx, result, prediction, input_text, reference):
             # bridge run_eval's 5-arg callback to the manager's 7-arg on_result
