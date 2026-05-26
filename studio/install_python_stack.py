@@ -962,9 +962,12 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
-    # macOS arm64: install MLX stack --no-deps before unsloth-zoo so the
-    # resolver does not see mlx-vlm's transformers>=5.5.0 pin (would backtrack
-    # unsloth). Per-model transformers routing happens via side-car venvs.
+    # 3a. macOS arm64: install MLX stack --no-deps BEFORE unsloth-zoo so its
+    #     mlx-vlm>=0.4.4 dep is already satisfied. This stops the resolver from
+    #     inspecting mlx-vlm's transformers>=5.5.0 metadata (which would conflict
+    #     with the venv's transformers==4.57.6 pin and backtrack unsloth). Per-
+    #     model transformers routing is handled at runtime by the side-car venvs
+    #     in utils/transformers_version.py.
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
