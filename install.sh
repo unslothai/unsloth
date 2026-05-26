@@ -1290,6 +1290,14 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
+    if [ -f "$_OVERRIDES_FILE" ]; then
+        export UV_OVERRIDE="$_OVERRIDES_FILE"
+    fi
+fi
+
 _TAURI_INITIAL_GPU_BRANCH="unknown"
 if [ "$SKIP_TORCH" = true ]; then
     _TAURI_INITIAL_GPU_BRANCH="no_torch"
@@ -2106,12 +2114,6 @@ else
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
-fi
-
-# ── Install mlx-vlm on Apple Silicon (optional, for VLM training) ──
-if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    substep "installing mlx-vlm (VLM training support)..."
-    run_install_cmd "install mlx-vlm" uv pip install --python "$_VENV_PY" mlx-vlm
 fi
 
 # ── Run studio setup ──
