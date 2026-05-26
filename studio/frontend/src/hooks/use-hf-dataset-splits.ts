@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { fetchWithTimeout } from "@/lib/network";
 import { useCallback, useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,7 @@ export interface HfDatasetSplitsResult {
 }
 
 const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
+const HF_SPLITS_TIMEOUT_MS = 10_000;
 
 function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
@@ -89,7 +91,6 @@ export function useHfDatasetSplits(
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  
   const [prevDatasetName, setPrevDatasetName] = useState(datasetName);
   if (datasetName !== prevDatasetName) {
     setPrevDatasetName(datasetName);
@@ -107,7 +108,11 @@ export function useHfDatasetSplits(
         headers.Authorization = `Bearer ${accessToken}`;
       }
 
-      const res = await fetch(url, { headers, signal });
+      const res = await fetchWithTimeout(
+        url,
+        { headers, signal },
+        HF_SPLITS_TIMEOUT_MS,
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(

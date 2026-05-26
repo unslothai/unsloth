@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, hfTokenHeader } from "@/features/auth";
+import type { ModelInventoryFormat } from "@/features/inventory";
+import { isHuggingFaceOffline } from "@/lib/network";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -11,6 +13,12 @@ interface VisionCheckResponse {
 interface EmbeddingCheckResponse {
   model_name: string;
   is_embedding: boolean;
+}
+
+interface ModelMetadataFetchOptions {
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
 }
 
 interface BackendTrainingDefaults {
@@ -74,32 +82,57 @@ export interface ModelConfigResponse {
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
   chat_template?: string | null;
+  model_format?: ModelInventoryFormat | null;
 }
 
 export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
   partial?: boolean;
+  pipeline_tag?: string | null;
+  tags?: string[];
+  library_name?: string | null;
+  quant_method?: string | null;
 }
 
 interface LocalModelListResponse {
   models_dir: string;
   hf_cache_dir?: string | null;
   lmstudio_dirs: string[];
+  ollama_dirs?: string[];
   models: LocalModelInfo[];
 }
 
-/**
- * Check whether a model is a vision model by asking the backend.
- * Calls GET /api/models/check-vision/{model_name}.
- */
-export async function checkVisionModel(modelName: string): Promise<boolean> {
+function modelMetadataParams(options?: ModelMetadataFetchOptions): string {
+  const params = new URLSearchParams();
+  const localPath = options?.localPath?.trim() || null;
+  if (options?.preferLocalCache || localPath || isHuggingFaceOffline()) {
+    params.set("prefer_local_cache", "true");
+  }
+  if (localPath) {
+    params.set("local_path", localPath);
+  }
+  if (options?.modelFormat) {
+    params.set("model_format", options.modelFormat);
+  }
+  return params.toString();
+}
+
+export async function checkVisionModel(
+  modelName: string,
+  hfToken?: string,
+  options?: ModelMetadataFetchOptions,
+): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/check-vision/${encoded}`);
+  const qs = modelMetadataParams(options);
+  const response = await authFetch(
+    `/api/models/check-vision/${encoded}${qs ? `?${qs}` : ""}`,
+    { headers: hfTokenHeader(hfToken) },
+  );
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-vision
     return false;
@@ -129,12 +162,17 @@ export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
   hfToken?: string,
+  options?: ModelMetadataFetchOptions,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/config/${encoded}`, {
-    signal,
-    headers: hfTokenHeader(hfToken),
-  });
+  const qs = modelMetadataParams(options);
+  const response = await authFetch(
+    `/api/models/config/${encoded}${qs ? `?${qs}` : ""}`,
+    {
+      signal,
+      headers: hfTokenHeader(hfToken),
+    },
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

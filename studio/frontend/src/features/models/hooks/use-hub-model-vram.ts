@@ -25,10 +25,7 @@ export function useHubModelVram(
       return null;
     }
     const est = estimateLoadingVram(selectedModel.totalParams, "qlora");
-    if (!gpu.available) {
-      return { est, status: "fits" };
-    }
-    const status = checkVramFit(est, gpu.memoryTotalGb);
+    const status = checkVramFit(est, gpu.available ? gpu.memoryTotalGb : 0);
     return status ? { est, status } : null;
   }, [gpu, selectedModel]);
 

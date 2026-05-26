@@ -71,6 +71,82 @@ _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
 
+def _set_offline_env(keys: tuple[str, ...], enabled: bool) -> dict[str, str | None]:
+    if not enabled:
+        return {}
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ[key] = "1"
+    return previous
+
+
+def _restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _model_local_files_only(config: dict) -> bool:
+    return bool(config.get("model_known_cached") or config.get("model_local_path"))
+
+
+def _dataset_local_files_only(config: dict) -> bool:
+    return bool(config.get("dataset_known_cached") or config.get("dataset_local_path"))
+
+
+def _untrainable_model_format_error(config: dict) -> str | None:
+    model_format = str(config.get("model_format") or "").strip().lower()
+    if model_format == "gguf":
+        return "GGUF models are inference-only and cannot be trained."
+    if model_format == "adapter":
+        return "Adapter models are inference-only and cannot be trained as base models."
+    return None
+
+
+def _cached_dataset_training_files_for_config(config: dict, split: str) -> list[str]:
+    hf_dataset = (config.get("hf_dataset") or "").strip()
+    local_path = config.get("dataset_local_path")
+    if not hf_dataset or not local_path:
+        return []
+    from utils.datasets.cache_paths import cached_dataset_training_files
+
+    return cached_dataset_training_files(
+        hf_dataset,
+        local_path,
+        subset = config.get("subset") or None,
+        train_split = split or "train",
+    )
+
+
+def _resolve_cached_model_load_name(config: dict) -> str:
+    model_name = config["model_name"]
+    if not _model_local_files_only(config):
+        return model_name
+    local_path = config.get("model_local_path")
+    if local_path:
+        try:
+            from utils import hf_cache_scan
+
+            snapshot = hf_cache_scan.latest_snapshot_from_cache_path(
+                local_path,
+                "model",
+                model_name,
+                ("config.json", "adapter_config.json"),
+            )
+            if snapshot:
+                return snapshot
+        except Exception:
+            pass
+    try:
+        from utils.models.model_config import _cached_transformers_snapshot_path
+
+        return _cached_transformers_snapshot_path(model_name) or model_name
+    except Exception:
+        return model_name
+
+
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(
@@ -1135,6 +1211,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             mx.set_wired_limit(wired_cap)
 
     model_name = config["model_name"]
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
+    dataset_local_only = _dataset_local_files_only(config)
     hf_token = config.get("hf_token") or None
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -1156,15 +1235,22 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
-    model, tokenizer = FastMLXModel.from_pretrained(
-        model_name,
-        load_in_4bit = config.get("load_in_4bit", True),
-        full_finetuning = not use_lora,
-        text_only = None if is_dataset_image else True,
-        token = hf_token,
-        trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = config.get("random_seed", 3407),
+    previous_model_env = _set_offline_env(
+        ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"),
+        model_local_only,
     )
+    try:
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_load_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = config.get("random_seed", 3407),
+        )
+    finally:
+        _restore_env(previous_model_env)
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
@@ -1255,11 +1341,26 @@ def _run_mlx_training(event_queue, stop_queue, config):
         loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(loader, data_files = all_files, split = "train")
 
+    def _load_hf_dataset(*args, **kwargs):
+        previous_dataset_env = _set_offline_env(
+            ("HF_DATASETS_OFFLINE", "HF_HUB_OFFLINE"),
+            dataset_local_only,
+        )
+        try:
+            return load_dataset(*args, **kwargs)
+        finally:
+            _restore_env(previous_dataset_env)
+
     if hf_dataset:
-        load_kwargs = {"split": train_split, "token": hf_token}
-        if subset:
-            load_kwargs["name"] = subset
-        dataset = load_dataset(hf_dataset, **load_kwargs)
+        cached_files = _cached_dataset_training_files_for_config(config, train_split)
+        if cached_files:
+            loader = _mlx_local_dataset_loader_for_files(cached_files)
+            dataset = load_dataset(loader, data_files = cached_files, split = "train")
+        else:
+            load_kwargs = {"split": train_split, "token": hf_token}
+            if subset:
+                load_kwargs["name"] = subset
+            dataset = _load_hf_dataset(hf_dataset, **load_kwargs)
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
@@ -1270,11 +1371,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Eval dataset (separate split or local file)
     eval_dataset = None
     if eval_split and hf_dataset:
-        eval_kwargs = {"split": eval_split, "token": hf_token}
-        if subset:
-            eval_kwargs["name"] = subset
+        cached_eval_files = _cached_dataset_training_files_for_config(config, eval_split)
         try:
-            eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
+            if cached_eval_files:
+                eval_loader = _mlx_local_dataset_loader_for_files(cached_eval_files)
+                eval_dataset = load_dataset(
+                    eval_loader,
+                    data_files = cached_eval_files,
+                    split = "train",
+                )
+            else:
+                eval_kwargs = {"split": eval_split, "token": hf_token}
+                if subset:
+                    eval_kwargs["name"] = subset
+                eval_dataset = _load_hf_dataset(hf_dataset, **eval_kwargs)
         except Exception as e:
             _send("status", status_message = f"Eval split load failed: {e}")
             eval_dataset = None
@@ -1682,6 +1792,17 @@ def run_training_process(
     apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
+    format_error = _untrainable_model_format_error(config)
+    if format_error:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": format_error,
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
 
     # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
     # Apple Silicon uses MLXTrainer directly -- skip transformers version
@@ -1935,6 +2056,9 @@ def run_training_process(
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
+        model_load_name = _resolve_cached_model_load_name(config)
+        model_local_only = _model_local_files_only(config)
+        dataset_local_only = _dataset_local_files_only(config)
 
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
         _send_status(event_queue, "Detecting model type...")
@@ -1945,6 +2069,8 @@ def run_training_process(
             is_dataset_image = config.get("is_dataset_image", False),
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
+            model_load_name = model_load_name,
+            local_files_only = model_local_only,
         )
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
@@ -1968,6 +2094,8 @@ def run_training_process(
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
             is_cpt = _is_cpt_for_dataset,
+            dataset_local_files_only = dataset_local_only,
+            dataset_local_path = config.get("dataset_local_path"),
         )
 
         if isinstance(dataset_result, tuple):
@@ -2069,6 +2197,8 @@ def run_training_process(
             is_dataset_audio = config.get("is_dataset_audio", False),
             trust_remote_code = config.get("trust_remote_code", False),
             gpu_ids = config.get("resolved_gpu_ids"),
+            model_load_name = model_load_name,
+            local_files_only = model_local_only,
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -2318,6 +2448,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     import threading
 
     model_name = config["model_name"]
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
+    dataset_local_only = _dataset_local_files_only(config)
     training_start_time = time.time()
 
     # ── 1. Import embedding-specific libraries ──
@@ -2379,12 +2512,19 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
 
-        model = FastSentenceTransformer.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            full_finetuning = not use_lora,
-            token = hf_token,
+        previous_model_env = _set_offline_env(
+            ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"),
+            model_local_only,
         )
+        try:
+            model = FastSentenceTransformer.from_pretrained(
+                model_name = model_load_name,
+                max_seq_length = max_seq_length,
+                full_finetuning = not use_lora,
+                token = hf_token,
+            )
+        finally:
+            _restore_env(previous_model_env)
     except Exception as e:
         event_queue.put(
             {
@@ -2451,12 +2591,24 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         if hf_dataset and hf_dataset.strip():
             hf_token = config.get("hf_token", "")
             hf_token = hf_token if hf_token and hf_token.strip() else None
-            dataset = load_dataset(
-                hf_dataset.strip(),
-                subset,
-                split = train_split,
-                token = hf_token,
-            )
+            cached_files = _cached_dataset_training_files_for_config(config, train_split)
+            if cached_files:
+                loader = _mlx_local_dataset_loader_for_files(cached_files)
+                dataset = load_dataset(loader, data_files = cached_files, split = "train")
+            else:
+                previous_dataset_env = _set_offline_env(
+                    ("HF_DATASETS_OFFLINE", "HF_HUB_OFFLINE"),
+                    dataset_local_only,
+                )
+                try:
+                    dataset = load_dataset(
+                        hf_dataset.strip(),
+                        subset,
+                        split = train_split,
+                        token = hf_token,
+                    )
+                finally:
+                    _restore_env(previous_dataset_env)
         elif local_datasets:
             # Load from local file(s) — mirrors the non-embedding pipeline's
             # directory handling so recipe outputs (parquet-files/) work.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/inventory";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -24,6 +26,7 @@ export interface BackendLoraInfo {
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
   run_display_name?: string | null;
+  training_method?: string | null;
 }
 
 export interface ListLorasResponse {
@@ -39,6 +42,9 @@ export interface LoadModelRequest {
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
+  model_format?: ModelInventoryFormat | null;
+  local_files_only?: boolean;
+  local_path?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
@@ -75,6 +81,7 @@ export interface GgufVariantDetail {
   filename: string;
   quant: string;
   size_bytes: number;
+  download_size_bytes?: number;
   downloaded?: boolean;
   partial?: boolean;
 }
@@ -134,6 +141,7 @@ export interface LoadModelResponse {
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  chat_template_override?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;

@@ -10,20 +10,25 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 export function NetworkErrorState({
   online,
   message,
   onRetry,
+  onSwitchDevice,
+  resourceLabel = "models",
 }: {
   online: boolean;
   message: string;
   onRetry: () => void;
+  onSwitchDevice?: () => void;
+  resourceLabel?: "models" | "datasets";
 }) {
   const title = online ? "Couldn't reach Hugging Face" : "You're offline";
   const body = online
     ? "The discovery feed couldn't load. Check your connection or try again."
-    : "Reconnect to the internet to browse models from Hugging Face.";
+    : `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`;
   const icon = online ? CloudOffIcon : WifiDisconnected02Icon;
 
   return (
@@ -40,31 +45,44 @@ export function NetworkErrorState({
         </p>
         <p className="text-[11px] text-muted-foreground/70">{message}</p>
       </div>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
-      >
-        <HugeiconsIcon
-          icon={RefreshIcon}
-          strokeWidth={1.75}
-          className="size-3.5"
-        />
-        Try again
-      </button>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {onSwitchDevice ? (
+          <button
+            type="button"
+            onClick={onSwitchDevice}
+            className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+          >
+            On Device
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+        >
+          <HugeiconsIcon
+            icon={RefreshIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          Try again
+        </button>
+      </div>
     </div>
   );
 }
 
-export function FilterStarvedState({
+export function DiscoverFetchMoreState({
   scannedCount,
   hasActiveFilters,
-  onKeepSearching,
+  isLoadingMore,
+  onFetchMore,
   onClearFilters,
 }: {
   scannedCount: number;
   hasActiveFilters: boolean;
-  onKeepSearching: () => void;
+  isLoadingMore: boolean;
+  onFetchMore: () => void;
   onClearFilters: () => void;
 }) {
   return (
@@ -77,8 +95,8 @@ export function FilterStarvedState({
           No matches yet
         </p>
         <p className="max-w-md text-[12.5px] leading-5 text-muted-foreground">
-          Scanned {scannedCount.toLocaleString()} results. None match the
-          current filters. Loosen them, or keep searching for a deeper sweep.
+          Scanned {scannedCount.toLocaleString()} results. Load another page to
+          keep searching Hugging Face.
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
@@ -93,17 +111,53 @@ export function FilterStarvedState({
         )}
         <button
           type="button"
-          onClick={onKeepSearching}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+          onClick={onFetchMore}
+          disabled={isLoadingMore}
+          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={RefreshIcon}
             strokeWidth={1.75}
             className="size-3.5"
           />
-          Keep searching
+          {isLoadingMore ? "Loading..." : "Load more"}
         </button>
       </div>
+    </div>
+  );
+}
+
+export function DiscoverFetchMoreFooter({
+  scannedCount,
+  manualFetchAvailable,
+  isLoadingMore,
+  onFetchMore,
+}: {
+  scannedCount: number;
+  manualFetchAvailable: boolean;
+  isLoadingMore: boolean;
+  onFetchMore: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 px-4 py-4 text-center">
+      <p className="text-[11.5px] leading-4 text-muted-foreground">
+        {manualFetchAvailable
+          ? `Scanned ${scannedCount.toLocaleString()} results. Load more to continue.`
+          : "More results are available."}
+      </p>
+      <button
+        type="button"
+        onClick={onFetchMore}
+        disabled={isLoadingMore}
+        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+      >
+        <HugeiconsIcon
+          icon={RefreshIcon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+        {isLoadingMore ? "Loading..." : "Load more"}
+      </button>
     </div>
   );
 }
@@ -180,10 +234,59 @@ function SkeletonRow() {
   );
 }
 
-export function SkeletonList({ count = 6 }: { count?: number }) {
+const SKELETON_ROW_ESTIMATE_PX = 56;
+const MIN_SKELETON_ROWS = 4;
+const MAX_SKELETON_ROWS = 24;
+const DEFAULT_SKELETON_ROWS = 6;
+
+function clampSkeletonCount(height: number): number {
+  if (!Number.isFinite(height) || height <= 0) return DEFAULT_SKELETON_ROWS;
+  return Math.max(
+    MIN_SKELETON_ROWS,
+    Math.min(MAX_SKELETON_ROWS, Math.ceil(height / SKELETON_ROW_ESTIMATE_PX)),
+  );
+}
+
+export function SkeletonList({ count }: { count?: number }) {
+  const ref = useRef<HTMLUListElement>(null);
+  const [autoCount, setAutoCount] = useState(count ?? DEFAULT_SKELETON_ROWS);
+  const rowCount = count ?? autoCount;
+
+  useLayoutEffect(() => {
+    if (count != null) return;
+    const container = ref.current?.parentElement;
+    if (!container || typeof window === "undefined") return;
+
+    let frame: number | null = null;
+    const update = () => {
+      frame = null;
+      setAutoCount(clampSkeletonCount(container.clientHeight));
+    };
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(update);
+    };
+    schedule();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", schedule);
+      return () => {
+        if (frame !== null) window.cancelAnimationFrame(frame);
+        window.removeEventListener("resize", schedule);
+      };
+    }
+
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [count]);
+
   return (
-    <ul className="divide-y divide-border" aria-hidden="true">
-      {Array.from({ length: count }).map((_, i) => (
+    <ul ref={ref} className="divide-y divide-border" aria-hidden="true">
+      {Array.from({ length: rowCount }).map((_, i) => (
         <li key={i}>
           <SkeletonRow />
         </li>

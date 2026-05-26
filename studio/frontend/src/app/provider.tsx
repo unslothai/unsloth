@@ -10,8 +10,9 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { WebUpdateBanner } from "@/components/web/update-banner";
-import { DownloadManagerPanel } from "@/features/models/download-manager";
+import { DownloadManagerPanel } from "@/features/download-jobs";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { startModelDeleteSync } from "@/features/chat/model-config/model-delete-cleanup";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
@@ -153,6 +154,13 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
   "/signup",
 ]);
 
+const DOWNLOAD_MANAGER_HIDDEN_ROUTES = new Set([
+  "/onboarding",
+  "/login",
+  "/change-password",
+  "/signup",
+]);
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
@@ -205,7 +213,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isTauri) {
-      setDesktopAuthReady(true);
       return;
     }
     if (status !== "running") {
@@ -232,11 +239,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { disposed = true; };
   }, [status, desktopAuthRetry]);
 
+  const showDownloadManager = !DOWNLOAD_MANAGER_HIDDEN_ROUTES.has(pathname);
+
   if (!isTauri) {
     return (
       <>
         {children}
-        <DownloadManagerPanel />
+        {showDownloadManager && <DownloadManagerPanel />}
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
@@ -254,7 +263,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
-      <DownloadManagerPanel />
+      {showDownloadManager && <DownloadManagerPanel />}
     </>
   ) : (
     <StartupScreen
@@ -288,9 +297,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   );
 }
 
+function ModelDeleteSyncLayer() {
+  useEffect(() => startModelDeleteSync(), []);
+  return null;
+}
+
 export function AppProvider({ children }: AppProviderProps) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light">
+      <ModelDeleteSyncLayer />
       <TauriWrapper>
         {children}
       </TauriWrapper>

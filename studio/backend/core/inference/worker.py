@@ -330,6 +330,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 hf_token = hf_token,
                 trust_remote_code = trust_remote_code,
                 gpu_ids = config.get("resolved_gpu_ids"),
+                chat_template_override = config.get("chat_template_override"),
             )
         finally:
             heartbeat_stop.set()
@@ -364,6 +365,21 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
                     }
+                _default_tpl_info = _entry.get("default_chat_template_info")
+                if isinstance(_default_tpl_info, dict):
+                    model_info["default_chat_template_info"] = {
+                        "has_template": bool(
+                            _default_tpl_info.get("has_template", False)
+                        ),
+                        "template": _default_tpl_info.get("template"),
+                        "format_type": _default_tpl_info.get("format_type", "generic"),
+                        "template_name": _default_tpl_info.get("template_name"),
+                        "special_tokens": _default_tpl_info.get("special_tokens", {})
+                        or {},
+                    }
+                model_info["chat_template_override"] = _entry.get(
+                    "chat_template_override"
+                )
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
             _send_response(

@@ -15,6 +15,9 @@ type CheckDatasetFormatArgs = {
   subset?: string | null;
   split?: string | null;
   isVlm?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+  signal?: AbortSignal;
 };
 
 export async function checkDatasetFormat({
@@ -23,16 +26,22 @@ export async function checkDatasetFormat({
   subset,
   split,
   isVlm,
+  preferLocalCache,
+  localPath,
+  signal,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
   const res = await authFetch("/api/datasets/check-format", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({
       dataset_name: datasetName,
       hf_token: hfToken || undefined,
       subset: subset || undefined,
       split: split || "train",
       is_vlm: !!isVlm,
+      prefer_local_cache: !!preferLocalCache,
+      local_path: localPath || undefined,
     }),
   });
 
@@ -127,6 +136,8 @@ export interface CachedDatasetRepo {
   partial?: boolean;
 }
 
+let warnedCachedDatasetsUnavailable = false;
+
 export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   const res = await authFetch("/api/datasets/cached");
   if (!res.ok) {
@@ -134,9 +145,12 @@ export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
     // other failure must surface so callers can show Retry instead of an empty
     // list that reads as "nothing cached".
     if (res.status === 404) {
-      console.warn(
-        "GET /api/datasets/cached returned 404 — backend may need a restart to expose the cached-datasets endpoint.",
-      );
+      if (!warnedCachedDatasetsUnavailable) {
+        warnedCachedDatasetsUnavailable = true;
+        console.warn(
+          "GET /api/datasets/cached returned 404 — backend may need a restart to expose the cached-datasets endpoint.",
+        );
+      }
       return [];
     }
     throw new Error(await readFastApiError(res, "Couldn't scan cached datasets"));

@@ -12,8 +12,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { deleteFineTunedModel } from "@/features/chat";
-import { bumpInventoryVersion } from "@/stores/inventory-events";
-import { emitTrainingRunsChanged } from "@/features/training";
+import { notifyInventoryEntryDeleted } from "@/features/models/delete-notifications";
+import {
+  emitTrainingRunDeleted,
+  emitTrainingRunsChanged,
+} from "@/features/training";
 import { useId, useState } from "react";
 import { toast } from "sonner";
 
@@ -47,6 +50,7 @@ export function DeleteFineTuneDialog({
       : false;
   const [inFlight, setInFlight] = useState(false);
   const deleteRunRecordId = useId();
+  const isGgufTarget = target?.exportType === "gguf" && !!target.ggufVariant;
 
   async function confirm() {
     if (!target) return;
@@ -61,9 +65,17 @@ export function DeleteFineTuneDialog({
         ggufVariant: target.ggufVariant,
         deleteRunRecord: alsoDeleteRunRecord,
       });
-      bumpInventoryVersion();
+      const deletedRunIds = result.deleted_run_ids ?? [];
+      notifyInventoryEntryDeleted({
+        kind: "model",
+        id: target.id,
+        ggufVariant: target.ggufVariant,
+      });
+      for (const runId of deletedRunIds) {
+        emitTrainingRunDeleted(runId);
+      }
       emitTrainingRunsChanged();
-      onDeleted(target, result.deleted_run_ids ?? []);
+      onDeleted(target, deletedRunIds);
     } catch (err) {
       toast.error("Failed to delete model", {
         description: err instanceof Error ? err.message : undefined,
@@ -83,11 +95,18 @@ export function DeleteFineTuneDialog({
     >
       <DialogContent className="menu-flat-destructive corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Delete fine-tuned model</DialogTitle>
+          <DialogTitle>
+            {isGgufTarget ? "Delete GGUF quantization" : "Delete fine-tuned model"}
+          </DialogTitle>
           <DialogDescription>
-            {target ? (
+            {target && isGgufTarget ? (
               <>
-                Delete the adapter files for <em>{target.displayName}</em>? The
+                Delete <em>{target.ggufVariant}</em> for{" "}
+                <em>{target.displayName}</em>? Other quantizations stay on disk.
+              </>
+            ) : target ? (
+              <>
+                Delete the model files for <em>{target.displayName}</em>? The
                 model will disappear from the chat picker.
               </>
             ) : null}

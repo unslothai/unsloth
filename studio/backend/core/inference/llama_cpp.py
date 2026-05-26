@@ -598,6 +598,29 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _ollama_llama_cpp_load_error(output: str) -> Optional[str]:
+    """Return a targeted user message for Ollama GGUF load failures."""
+    lower = output.lower()
+    if (
+        "qwen35.rope.dimension_sections has wrong array length" in lower
+        or "error loading model hyperparameters" in lower
+        or "unknown model architecture" in lower
+    ):
+        return (
+            "This Ollama model uses GGUF metadata that Studio's current "
+            "llama.cpp build cannot load. Run `unsloth studio update` to "
+            "refresh llama.cpp, then try again. If it still fails, use the "
+            "model through the Ollama connection instead."
+        )
+    if "missing tensor" in lower or "failed to load model" in lower:
+        return (
+            "Some Ollama models do not work with Studio's llama.cpp bridge. "
+            "Try `unsloth studio update`, use a different Ollama model, or "
+            "run this model through the Ollama connection instead."
+        )
+    return None
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -2171,10 +2194,75 @@ class LlamaCppBackend:
                 "Install it with: pip install huggingface_hub"
             )
 
+        def _extra_shards_from_available(
+            filename: str,
+            available: list[str],
+        ) -> Optional[list[str]]:
+            m = _SHARD_FULL_RE.match(Path(filename).name)
+            if not m:
+                return []
+            prefix, _, total_raw = m.groups()
+            try:
+                total = int(total_raw)
+            except ValueError:
+                return None
+            parent = Path(filename).parent.as_posix()
+            available_set = set(available)
+            expected: list[str] = []
+            for index in range(1, total + 1):
+                shard_name = f"{prefix}-{index:05d}-of-{total_raw}.gguf"
+                rel = shard_name if parent == "." else f"{parent}/{shard_name}"
+                if rel not in available_set:
+                    return None
+                expected.append(rel)
+            return [shard for shard in expected if shard != filename]
+
+        def _cached_variant_path() -> Optional[tuple[str, list[str], str]]:
+            if not hf_variant:
+                return None
+            try:
+                from utils.models.model_config import _iter_hf_cache_snapshots
+            except Exception as e:
+                logger.debug(f"Local HF cache lookup for GGUF variant failed: {e}")
+                return None
+
+            boundary = re.compile(
+                r"(?<![a-zA-Z0-9])"
+                + re.escape(hf_variant.lower())
+                + r"(?![a-zA-Z0-9])"
+            )
+            for snap in _iter_hf_cache_snapshots(hf_repo):
+                try:
+                    matches = sorted(
+                        p.relative_to(snap).as_posix()
+                        for p in snap.rglob("*.gguf")
+                        if "mmproj" not in p.name.lower()
+                        and boundary.search(p.relative_to(snap).as_posix().lower())
+                    )
+                except OSError:
+                    continue
+                for candidate in matches:
+                    extra_shards = _extra_shards_from_available(candidate, matches)
+                    if extra_shards is None:
+                        continue
+                    main_path = snap / candidate
+                    if not main_path.is_file():
+                        continue
+                    if not all((snap / shard).is_file() for shard in extra_shards):
+                        continue
+                    return candidate, extra_shards, str(main_path.resolve())
+            return None
+
         # Determine the filename from the variant
         gguf_filename = None
         gguf_extra_shards: list[str] = []
         if hf_variant:
+            cached_variant = _cached_variant_path()
+            if cached_variant is not None:
+                gguf_filename, gguf_extra_shards, local_path = cached_variant
+                logger.info("Resolved GGUF from local HF cache: %s", local_path)
+                return local_path
+
             try:
                 from huggingface_hub import list_repo_files
 
@@ -2207,61 +2295,27 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
-            # Offline: resolve variant -> filename from the local HF cache.
-            # The heuristic below assumes filenames echo the repo name,
-            # which breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP" in file).
-            # Match against the rel path (not just basename) so subdir
-            # layouts like ``BF16/foo.gguf`` are findable.
-            if not gguf_filename:
-                try:
-                    from utils.models.model_config import _iter_hf_cache_snapshots
-
-                    boundary = re.compile(
-                        r"(?<![a-zA-Z0-9])"
-                        + re.escape(hf_variant.lower())
-                        + r"(?![a-zA-Z0-9])"
-                    )
-                    for snap in _iter_hf_cache_snapshots(hf_repo):
-                        matches = sorted(
-                            p.relative_to(snap).as_posix()
-                            for p in snap.rglob("*.gguf")
-                            if "mmproj" not in p.name.lower()
-                            and boundary.search(p.relative_to(snap).as_posix().lower())
-                        )
-                        if not matches:
-                            continue
-                        gguf_filename = matches[0]
-                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
-                        if m:
-                            prefix = m.group(1)
-                            total = m.group(3)
-                            sibling_pat = re.compile(
-                                r"^"
-                                + re.escape(prefix)
-                                + r"-\d{5}-of-"
-                                + re.escape(total)
-                                + r"\.gguf$"
-                            )
-                            gguf_extra_shards = [
-                                f
-                                for f in matches[1:]
-                                if sibling_pat.match(Path(f).name)
-                            ]
-                        logger.info(
-                            "Resolved variant %s -> %s from local HF cache",
-                            hf_variant,
-                            gguf_filename,
-                        )
-                        break
-                except Exception as e:
-                    logger.debug(f"Offline cache lookup for variant failed: {e}")
-
             if not gguf_filename:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
         # Check disk space and fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
+        try:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            for snap in _iter_hf_cache_snapshots(hf_repo):
+                main_path = snap / gguf_filename
+                if not main_path.is_file():
+                    continue
+                if not all((snap / shard).is_file() for shard in gguf_extra_shards):
+                    continue
+                local_path = str(main_path.resolve())
+                logger.info("Resolved GGUF from local HF cache: %s", local_path)
+                return local_path
+        except Exception as e:
+            logger.debug(f"Local HF cache lookup for GGUF file failed: {e}")
+
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
@@ -2437,6 +2491,18 @@ class LlamaCppBackend:
 
         if target is None:
             return None
+
+        try:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            for snap in _iter_hf_cache_snapshots(hf_repo):
+                local_target = snap / target
+                if local_target.is_file():
+                    local_path = str(local_target.resolve())
+                    logger.info("Resolved mmproj from local HF cache: %s", local_path)
+                    return local_path
+        except Exception as e:
+            logger.debug(f"Local HF cache lookup for mmproj failed: {e}")
 
         try:
             from huggingface_hub import hf_hub_download
@@ -3205,16 +3271,9 @@ class LlamaCppBackend:
                     # unrelated failures like OOM or missing binaries.
                     if _is_ollama:
                         _output = "\n".join(self._stdout_lines[-50:]).lower()
-                        _gguf_compat_hints = (
-                            "key not found",
-                            "unknown model architecture",
-                            "failed to load model",
-                        )
-                        if any(h in _output for h in _gguf_compat_hints):
-                            raise RuntimeError(
-                                "Some Ollama models do not work with llama.cpp. "
-                                "Try a different model, or use this model directly through Ollama instead."
-                            )
+                        _ollama_message = _ollama_llama_cpp_load_error(_output)
+                        if _ollama_message:
+                            raise RuntimeError(_ollama_message)
                     raise RuntimeError(
                         "llama-server failed to start. "
                         "Check that the GGUF file is valid and you have enough memory."

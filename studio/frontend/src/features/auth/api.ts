@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl, isTauri } from "@/lib/api-base";
+import { apiUrl, getApiBase, isTauri, setApiBase } from "@/lib/api-base";
+import { isBrowserOffline } from "@/lib/network";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -20,6 +21,7 @@ type RefreshResponse = {
 let isRedirecting = false;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+const LOCAL_BACKEND_PORT = 8888;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,6 +44,48 @@ async function fetchWithTauriNetworkRetry(
       }
       await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
     }
+  }
+}
+
+function isLocalFrontendOrigin(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname === "::1"
+  );
+}
+
+function shouldRetryLocalBackend(
+  input: RequestInfo | URL,
+  response: Response,
+): input is string {
+  if (getApiBase()) return false;
+  if (typeof input !== "string") return false;
+  if (!input.startsWith("/api/") && !input.startsWith("/v1/")) return false;
+  if (response.status !== 404 && response.status !== 405) return false;
+  if (!isLocalFrontendOrigin()) return false;
+  return window.location.port !== String(LOCAL_BACKEND_PORT);
+}
+
+async function retryWithLocalBackendIfNeeded(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  headers: Headers,
+  response: Response,
+): Promise<Response> {
+  if (!shouldRetryLocalBackend(input, response)) return response;
+  const directInput = `http://127.0.0.1:${LOCAL_BACKEND_PORT}${input}`;
+  try {
+    const retry = await fetchWithTauriNetworkRetry(directInput, {
+      ...init,
+      headers,
+    });
+    if (retry.status === 404 || retry.status === 405) return response;
+    setApiBase(LOCAL_BACKEND_PORT);
+    return retry;
+  } catch {
+    return response;
   }
 }
 
@@ -162,7 +206,7 @@ export async function authFetch(
       // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
       // it's always backend-down; in the web build distinguish offline
       // so the user gets the right recovery path.
-      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+      if (!isTauri && isBrowserOffline()) {
         throw new Error(
           "You appear to be offline. Check your network connection and try again.",
         );
@@ -171,6 +215,13 @@ export async function authFetch(
     }
     throw err;
   }
+
+  response = await retryWithLocalBackendIfNeeded(
+    input,
+    init,
+    headers,
+    response,
+  );
 
   if (await isPasswordChangeRequiredResponse(response)) {
     if (isTauri) {

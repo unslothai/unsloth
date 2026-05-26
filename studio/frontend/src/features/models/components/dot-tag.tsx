@@ -3,7 +3,13 @@
 
 import { cn } from "@/lib/utils";
 
-type DotTagTone = "success" | "warning" | "danger" | "gguf" | "checkpoint";
+type DotTagTone =
+  | "success"
+  | "warning"
+  | "danger"
+  | "gguf"
+  | "checkpoint"
+  | "adapter";
 
 const TONE_CLASS: Record<DotTagTone, string> = {
   success: "bg-status-success",
@@ -11,6 +17,7 @@ const TONE_CLASS: Record<DotTagTone, string> = {
   danger: "bg-status-danger",
   gguf: "bg-format-gguf",
   checkpoint: "bg-format-checkpoint",
+  adapter: "bg-format-adapter",
 };
 
 export function DotTag({

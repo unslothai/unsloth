@@ -474,6 +474,7 @@ def load_model_config(
     use_auth: bool = False,
     token: Optional[str] = None,
     trust_remote_code: bool = True,
+    local_files_only: bool = False,
 ):
     """
     Load model config with optional authentication control.
@@ -483,7 +484,10 @@ def load_model_config(
     if token:
         # Explicit token provided - use it
         return AutoConfig.from_pretrained(
-            model_name, trust_remote_code = trust_remote_code, token = token
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            local_files_only = local_files_only,
         )
 
     if not use_auth:
@@ -493,12 +497,14 @@ def load_model_config(
                 model_name,
                 trust_remote_code = trust_remote_code,
                 token = None,
+                local_files_only = local_files_only,
             )
 
     # Use default authentication (cached tokens)
     return AutoConfig.from_pretrained(
         model_name,
         trust_remote_code = trust_remote_code,
+        local_files_only = local_files_only,
     )
 
 
@@ -532,6 +538,7 @@ venv_t5 = sys.argv[1]
 backend_dir = sys.argv[2]
 model_name = sys.argv[3]
 token = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
+local_files_only = len(sys.argv) > 5 and sys.argv[5] == "1"
 
 sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
@@ -539,7 +546,7 @@ if backend_dir not in sys.path:
 
 try:
     from transformers import AutoConfig
-    kwargs = {"trust_remote_code": True}
+    kwargs = {"trust_remote_code": True, "local_files_only": local_files_only}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
@@ -573,7 +580,7 @@ except Exception as exc:
 
 
 def _is_vision_model_subprocess(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
 ) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
@@ -598,6 +605,7 @@ def _is_vision_model_subprocess(
                 _BACKEND_DIR,
                 model_name,
                 token_arg,
+                "1" if local_files_only else "0",
             ],
             capture_output = True,
             text = True,
@@ -657,11 +665,15 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
 # Keyed by (normalized_model_name, token_fingerprint) to handle gated models correctly.
 # Only definitive results (True/False from successful detection) are cached;
 # transient failures (network errors, timeouts) are NOT cached so they can be retried.
-_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_detection_cache: Dict[tuple, bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> bool:
     """
     Detect vision-language models (VLMs) by checking architecture in config.
     Works for fine-tuned models since they inherit the base architecture.
@@ -692,7 +704,11 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             exc,
         )
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    cache_key = (
+        (resolved_name, _token_fingerprint(hf_token), True)
+        if local_files_only
+        else (resolved_name, _token_fingerprint(hf_token))
+    )
 
     # Lock-free fast path for cache hits. Uses a sentinel to distinguish
     # "key not found" from "value is False" in a single atomic dict.get() call.
@@ -706,7 +722,15 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # The tradeoff: two concurrent calls for the same uncached model may
     # both run detection, but they produce the same result and the second
     # write is a benign no-op.
-    result = _is_vision_model_uncached(resolved_name, hf_token)
+    result = (
+        _is_vision_model_uncached(
+            resolved_name,
+            hf_token,
+            local_files_only = True,
+        )
+        if local_files_only
+        else _is_vision_model_uncached(resolved_name, hf_token)
+    )
     # Only cache definitive results; None means a transient failure occurred
     # and we should retry on the next call instead of locking in a wrong answer.
     if result is not None:
@@ -717,7 +741,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 
 def _is_vision_model_uncached(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[bool]:
     """Uncached vision model detection -- called by is_vision_model().
 
@@ -737,10 +763,19 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        return _is_vision_model_subprocess(
+            model_name,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+        )
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(
+            model_name,
+            use_auth = True,
+            token = hf_token,
+            local_files_only = local_files_only,
+        )
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
@@ -809,7 +844,7 @@ def _is_vision_model_uncached(
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
 # Cache detection results per session to avoid repeated API calls
-_audio_detection_cache: Dict[str, Optional[str]] = {}
+_audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types detected from tokenizer_config.json)
 _AUDIO_TOKEN_PATTERNS = {
@@ -828,8 +863,52 @@ _AUDIO_TOKEN_PATTERNS = {
     ),
 }
 
+_TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 
-def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+
+def _iter_tokenizer_config_files(model_name: str):
+    roots: list[Path] = []
+    try:
+        if is_local_path(model_name):
+            local = Path(normalize_path(model_name)).expanduser()
+            if local.is_file():
+                roots.append(local.parent)
+            elif local.is_dir():
+                snapshots_dir = local / "snapshots"
+                if snapshots_dir.is_dir():
+                    roots.extend(
+                        p for p in snapshots_dir.iterdir() if p.is_dir()
+                    )
+                roots.append(local)
+        else:
+            repo_dir = get_cache_path(model_name)
+            if repo_dir is not None and repo_dir.exists():
+                snapshots_dir = repo_dir / "snapshots"
+                if snapshots_dir.exists():
+                    roots.extend(
+                        p for p in snapshots_dir.iterdir() if p.is_dir()
+                    )
+    except Exception as e:
+        logger.debug(f"Could not enumerate tokenizer_config cache for {model_name}: {e}")
+        return
+
+    seen: set[str] = set()
+    for root in roots:
+        for tok_path in _TOKENIZER_CONFIG_PATHS:
+            tok_file = root / tok_path
+            key = str(tok_file)
+            if key in seen:
+                continue
+            seen.add(key)
+            if tok_file.is_file():
+                yield tok_file
+
+
+def detect_audio_type(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Optional[str]:
     """
     Dynamically detect if a model is an audio model and return its type.
 
@@ -838,19 +917,27 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
 
     Returns: audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper', 'audio_vlm') or None.
     """
-    if model_name in _audio_detection_cache:
-        return _audio_detection_cache[model_name]
+    cache_key = (model_name, _token_fingerprint(hf_token), local_files_only)
+    if cache_key in _audio_detection_cache:
+        return _audio_detection_cache[cache_key]
 
-    result = _detect_audio_from_tokenizer(model_name, hf_token)
+    result = _detect_audio_from_tokenizer(
+        model_name,
+        hf_token,
+        local_files_only = local_files_only,
+    )
 
-    _audio_detection_cache[model_name] = result
+    if result is not None or not local_files_only:
+        _audio_detection_cache[cache_key] = result
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
     return result
 
 
 def _detect_audio_from_tokenizer(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[str]:
     """Detect audio type from tokenizer special tokens (for LLM-based audio models).
 
@@ -868,39 +955,33 @@ def _detect_audio_from_tokenizer(
                 return audio_type
         return None
 
-    # 1) Check local HF cache first (works for gated/offline models)
     try:
-        repo_dir = get_cache_path(model_name)
-        if repo_dir is not None and repo_dir.exists():
-            snapshots_dir = repo_dir / "snapshots"
-            if snapshots_dir.exists():
-                for snapshot in snapshots_dir.iterdir():
-                    for tok_path in [
-                        "tokenizer_config.json",
-                        "LLM/tokenizer_config.json",
-                    ]:
-                        tok_file = snapshot / tok_path
-                        if tok_file.exists():
-                            tok_config = json.loads(tok_file.read_text())
-                            result = _check_token_patterns(tok_config)
-                            if result:
-                                return result
+        for tok_file in _iter_tokenizer_config_files(model_name):
+            try:
+                tok_config = json.loads(tok_file.read_text())
+            except (OSError, ValueError) as exc:
+                logger.debug(f"Skipping unreadable tokenizer_config at {tok_file}: {exc}")
+                continue
+            result = _check_token_patterns(tok_config)
+            if result:
+                return result
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
-    # 2) Fall back to HuggingFace API
+    if local_files_only:
+        return None
+
     try:
         import requests
         import os
 
-        paths_to_try = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
         # Use provided token, or fall back to env
         token = hf_token or os.environ.get("HF_TOKEN")
         headers = {}
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        for tok_path in paths_to_try:
+        for tok_path in _TOKENIZER_CONFIG_PATHS:
             url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
             resp = requests.get(url, headers = headers, timeout = 15)
             if not resp.ok:
@@ -1018,7 +1099,7 @@ def _is_gguf_filename(filename: str) -> bool:
 # ── Chat template reader (no model load required) ────────────────────────────
 
 
-_CHAT_TEMPLATE_CACHE: "OrderedDict[Tuple[str, str], Optional[str]]" = OrderedDict()
+_CHAT_TEMPLATE_CACHE: "OrderedDict[Tuple[str, str, bool], Optional[str]]" = OrderedDict()
 _CHAT_TEMPLATE_CACHE_LOCK = threading.Lock()
 _CHAT_TEMPLATE_CACHE_MAX = 256
 
@@ -1149,46 +1230,42 @@ def _find_cached_gguf_for_repo(model_name: str) -> Optional[Path]:
 
 
 def _read_chat_template_from_tokenizer_config(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[str]:
     """Read `chat_template` from a model's tokenizer_config.json.
 
     Checks the local HF cache first, then falls back to the HuggingFace API.
     Handles the ``LLM/tokenizer_config.json`` layout used by some audio LLMs.
     """
-    candidate_paths = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
-
     try:
-        repo_dir = get_cache_path(model_name)
-        if repo_dir is not None and repo_dir.exists():
-            snapshots_dir = repo_dir / "snapshots"
-            if snapshots_dir.exists():
-                for snapshot in snapshots_dir.iterdir():
-                    for tok_path in candidate_paths:
-                        tok_file = snapshot / tok_path
-                        if tok_file.exists():
-                            try:
-                                tok_config = json.loads(tok_file.read_text())
-                            except (OSError, ValueError) as exc:
-                                logger.debug(
-                                    f"Skipping unreadable tokenizer_config "
-                                    f"at {tok_file}: {exc}"
-                                )
-                                continue
-                            tpl = tok_config.get("chat_template")
-                            if isinstance(tpl, str) and tpl:
-                                return tpl
+        for tok_file in _iter_tokenizer_config_files(model_name):
+            try:
+                tok_config = json.loads(tok_file.read_text())
+            except (OSError, ValueError) as exc:
+                logger.debug(
+                    f"Skipping unreadable tokenizer_config "
+                    f"at {tok_file}: {exc}"
+                )
+                continue
+            tpl = tok_config.get("chat_template")
+            if isinstance(tpl, str) and tpl:
+                return tpl
     except Exception as exc:
         logger.debug(
             f"Could not check local tokenizer_config cache for {model_name}: {exc}"
         )
+
+    if local_files_only:
+        return None
 
     try:
         import requests
 
         token = hf_token or os.environ.get("HF_TOKEN")
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        for tok_path in candidate_paths:
+        for tok_path in _TOKENIZER_CONFIG_PATHS:
             url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
             try:
                 resp = requests.get(url, headers = headers, timeout = 15)
@@ -1215,7 +1292,9 @@ def _read_chat_template_from_tokenizer_config(
 
 
 def read_model_chat_template(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[str]:
     """Best-effort fetch of a model's original chat template without loading it.
 
@@ -1233,7 +1312,7 @@ def read_model_chat_template(
     if not model_name:
         return None
 
-    cache_key = (_chat_template_token_fp(hf_token), model_name)
+    cache_key = (_chat_template_token_fp(hf_token), model_name, local_files_only)
     with _CHAT_TEMPLATE_CACHE_LOCK:
         if cache_key in _CHAT_TEMPLATE_CACHE:
             _CHAT_TEMPLATE_CACHE.move_to_end(cache_key)
@@ -1258,14 +1337,19 @@ def read_model_chat_template(
         if gguf_path is not None:
             template = read_chat_template_from_gguf(gguf_path)
 
-    if not template and not is_local_path(model_name):
-        template = _read_chat_template_from_tokenizer_config(model_name, hf_token)
+    if not template:
+        template = _read_chat_template_from_tokenizer_config(
+            model_name,
+            hf_token,
+            local_files_only = local_files_only,
+        )
 
-    with _CHAT_TEMPLATE_CACHE_LOCK:
-        _CHAT_TEMPLATE_CACHE[cache_key] = template
-        _CHAT_TEMPLATE_CACHE.move_to_end(cache_key)
-        while len(_CHAT_TEMPLATE_CACHE) > _CHAT_TEMPLATE_CACHE_MAX:
-            _CHAT_TEMPLATE_CACHE.popitem(last=False)
+    if template is not None or not local_files_only:
+        with _CHAT_TEMPLATE_CACHE_LOCK:
+            _CHAT_TEMPLATE_CACHE[cache_key] = template
+            _CHAT_TEMPLATE_CACHE.move_to_end(cache_key)
+            while len(_CHAT_TEMPLATE_CACHE) > _CHAT_TEMPLATE_CACHE_MAX:
+                _CHAT_TEMPLATE_CACHE.popitem(last=False)
     return template
 
 
@@ -1510,6 +1594,47 @@ class GgufVariantInfo:
     size_bytes: int  # file size
 
 
+def _sibling_filename(sibling) -> Optional[str]:
+    for attr in ("rfilename", "path"):
+        value = getattr(sibling, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _sibling_size(sibling) -> int:
+    size = getattr(sibling, "size", 0) or 0
+    try:
+        return int(size)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _repo_tree_siblings(repo_id: str, hf_token: Optional[str] = None) -> list:
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    try:
+        return list(
+            api.list_repo_tree(
+                repo_id,
+                recursive = True,
+                expand = True,
+                repo_type = "model",
+                token = hf_token,
+            )
+        )
+    except TypeError:
+        return list(
+            api.list_repo_tree(
+                repo_id,
+                recursive = True,
+                repo_type = "model",
+                token = hf_token,
+            )
+        )
+
+
 def _extract_quant_label(filename: str) -> str:
     """
     Extract quantization label like Q4_K_M, IQ4_XS, BF16 from a GGUF filename.
@@ -1555,51 +1680,120 @@ def _extract_quant_label(filename: str) -> str:
     return stem.split("-")[-1]
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
+def _snapshot_from_cache_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
+    if not local_path or not repo_id:
+        return None
+    try:
+        root = Path(local_path).expanduser()
+        if not root.exists():
+            return None
+        expected_repo_dir = f"models--{repo_id.replace('/', '--')}".lower()
+        if expected_repo_dir not in {part.lower() for part in root.parts}:
+            return None
+        if root.is_dir() and root.parent.name == "snapshots":
+            return root.resolve()
+        snapshots = root / "snapshots" if root.is_dir() else None
+        if snapshots is None or not snapshots.is_dir():
+            return None
+        candidates = [p for p in snapshots.iterdir() if p.is_dir()]
+        if not candidates:
+            return None
+        candidates.sort(
+            key = lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse = True,
+        )
+        return candidates[0].resolve()
+    except Exception:
+        return None
+
+
+def _iter_hf_cache_snapshots(repo_id: str, local_path: Optional[str] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
-    Empty generator if HF_HUB_CACHE is missing, the repo isn't cached,
-    or has no snapshots. Repo name match is case-insensitive to handle
-    casing drift between download time and lookup.
+    Empty generator if the repo isn't cached or has no snapshots. Repo name
+    match is case-insensitive to handle casing drift between download time
+    and lookup.
     """
     try:
-        from huggingface_hub import constants as hf_constants
+        from utils import hf_cache_scan
     except Exception:
         return
 
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
-    if not cache_dir.is_dir():
-        return
+    snap_dirs: list[Path] = []
+    local_snapshot = _snapshot_from_cache_path(local_path, repo_id)
+    if local_snapshot is not None:
+        snap_dirs.append(local_snapshot)
 
-    target = f"models--{repo_id.replace('/', '--')}".lower()
-    repo_dir: Optional[Path] = None
-    try:
-        for entry in cache_dir.iterdir():
-            if entry.is_dir() and entry.name.lower() == target:
-                repo_dir = entry
-                break
-    except OSError:
-        return
-    if repo_dir is None:
-        return
+    def _snapshot_key(path: Path) -> str:
+        try:
+            return str(path.resolve())
+        except OSError:
+            return str(path)
 
-    snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return
+    for repo_dir in hf_cache_scan.iter_repo_cache_dirs("model", repo_id):
+        snapshots = repo_dir / "snapshots"
+        if not snapshots.is_dir():
+            continue
 
-    try:
-        snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
-    except OSError:
-        return
-    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
+        try:
+            seen = {_snapshot_key(s) for s in snap_dirs}
+            snap_dirs.extend(
+                s
+                for s in snapshots.iterdir()
+                if s.is_dir() and _snapshot_key(s) not in seen
+            )
+        except OSError:
+            continue
+    def _snapshot_mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    snap_dirs.sort(key = _snapshot_mtime, reverse = True)
+    if local_snapshot is not None:
+        local_key = _snapshot_key(local_snapshot)
+        snap_dirs = [
+            local_snapshot,
+            *(s for s in snap_dirs if _snapshot_key(s) != local_key),
+        ]
     yield from snap_dirs
+
+
+def _is_transformers_weight_file(path: Path) -> bool:
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if suffix == ".safetensors":
+        return True
+    if suffix == ".bin":
+        return name.startswith(
+            ("pytorch_model", "model", "adapter_model", "consolidated")
+        )
+    return suffix in {".pt", ".pth", ".ckpt", ".h5", ".msgpack", ".npz"}
+
+
+def _cached_transformers_snapshot_path(
+    repo_id: str,
+    local_path: Optional[str] = None,
+) -> Optional[str]:
+    for snap in _iter_hf_cache_snapshots(repo_id, local_path):
+        try:
+            if any(
+                p.is_file() and _is_transformers_weight_file(p)
+                for p in snap.rglob("*")
+            ):
+                return str(snap.resolve())
+        except OSError:
+            continue
+    return None
 
 
 def _list_gguf_variants_from_hf_cache(
     repo_id: str,
+    local_path: Optional[str] = None,
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached."""
-    for snap in _iter_hf_cache_snapshots(repo_id):
+    for snap in _iter_hf_cache_snapshots(repo_id, local_path):
         variants, has_vision = list_local_gguf_variants(str(snap))
         if variants or has_vision:
             return variants, has_vision
@@ -1627,6 +1821,39 @@ def list_gguf_variants(
         if cached is not None:
             return cached
 
+    def _variants_from_siblings(siblings: list) -> tuple[list[GgufVariantInfo], bool]:
+        variants: list[GgufVariantInfo] = []
+        has_vision = False
+        quant_totals: dict[str, int] = {}
+        quant_first_file: dict[str, str] = {}
+
+        for sibling in siblings:
+            fname = _sibling_filename(sibling)
+            if not isinstance(fname, str) or not fname.lower().endswith(".gguf"):
+                continue
+            size = _sibling_size(sibling)
+
+            if "mmproj" in fname.lower():
+                has_vision = True
+                continue
+
+            quant = _extract_quant_label(fname)
+            quant_totals[quant] = quant_totals.get(quant, 0) + size
+            if quant not in quant_first_file:
+                quant_first_file[quant] = fname
+
+        for quant, total_size in quant_totals.items():
+            variants.append(
+                GgufVariantInfo(
+                    filename = quant_first_file[quant],
+                    quant = quant,
+                    size_bytes = total_size,
+                )
+            )
+
+        variants.sort(key = lambda v: -v.size_bytes)
+        return variants, has_vision
+
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
     except Exception as e:
@@ -1650,41 +1877,26 @@ def list_gguf_variants(
             )
             return cached
         raise
-    variants: list[GgufVariantInfo] = []
-    has_vision = False
-
-    quant_totals: dict[str, int] = {}  # quant -> total bytes
-    quant_first_file: dict[str, str] = {}  # quant -> first filename (for display)
-
-    for sibling in info.siblings:
-        fname = sibling.rfilename
-        if not fname.lower().endswith(".gguf"):
-            continue
-        size = sibling.size or 0
-
-        # mmproj files are vision projection models, not main model files
-        if "mmproj" in fname.lower():
-            has_vision = True
-            continue
-
-        quant = _extract_quant_label(fname)
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        if quant not in quant_first_file:
-            quant_first_file[quant] = fname
-
-    for quant, total_size in quant_totals.items():
-        variants.append(
-            GgufVariantInfo(
-                filename = quant_first_file[quant],
-                quant = quant,
-                size_bytes = total_size,
-            )
-        )
-
-    # Sort by size descending (largest = best quality first).
-    # Recommended pinning and OOM demotion are handled client-side
-    # where GPU VRAM info is available.
-    variants.sort(key = lambda v: -v.size_bytes)
+    variants, has_vision = _variants_from_siblings(
+        list(getattr(info, "siblings", None) or [])
+    )
+    if not variants:
+        try:
+            tree_siblings = _repo_tree_siblings(repo_id, hf_token)
+        except Exception as e:
+            cached = _list_gguf_variants_from_hf_cache(repo_id)
+            if cached is not None:
+                logger.warning(
+                    "HF repo tree unreachable for %s (%s); using local cache snapshot.",
+                    repo_id,
+                    e.__class__.__name__,
+                )
+                return cached
+            raise
+        tree_variants, tree_has_vision = _variants_from_siblings(tree_siblings)
+        if tree_variants or tree_has_vision:
+            variants = tree_variants
+            has_vision = tree_has_vision
 
     return variants, has_vision
 
@@ -1790,13 +2002,16 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     return None
 
 
-def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
+def _detect_gguf_from_hf_cache(
+    repo_id: str,
+    local_path: Optional[str] = None,
+) -> Optional[str]:
     """Best GGUF filename for *repo_id* from the local HF cache, or None.
 
     Excludes mmproj (vision projector) files so a partial cache that
     only has the projector cannot route the projector as the main model.
     """
-    for snap in _iter_hf_cache_snapshots(repo_id):
+    for snap in _iter_hf_cache_snapshots(repo_id, local_path):
         rel_files = [
             f.relative_to(snap).as_posix()
             for f in _iter_gguf_files(snap, recursive = True)
@@ -1805,6 +2020,18 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         if rel_files:
             return _pick_best_gguf(rel_files)
     return None
+
+
+def _find_cached_gguf_by_variant(
+    repo_id: str,
+    variant: str,
+    local_path: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    for snap in _iter_hf_cache_snapshots(repo_id, local_path):
+        gguf_file = _find_local_gguf_by_variant(str(snap), variant)
+        if gguf_file:
+            return gguf_file, str(snap)
+    return None, None
 
 
 def detect_gguf_model_remote(
@@ -1839,8 +2066,20 @@ def detect_gguf_model_remote(
     for attempt in range(3):
         try:
             info = hf_model_info(repo_id, token = hf_token)
-            repo_files = [s.rfilename for s in info.siblings]
-            return _pick_best_gguf(repo_files)
+            repo_files = [
+                filename
+                for sibling in info.siblings
+                if (filename := _sibling_filename(sibling)) is not None
+            ]
+            best = _pick_best_gguf(repo_files)
+            if best:
+                return best
+            tree_files = [
+                filename
+                for sibling in _repo_tree_siblings(repo_id, hf_token)
+                if (filename := _sibling_filename(sibling)) is not None
+            ]
+            return _pick_best_gguf(tree_files)
         except Exception as e:
             last_err = e
             # 404 / RepoNotFound is permanent -- don't waste attempts.
@@ -1896,7 +2135,11 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
+def is_embedding_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> bool:
     """
     Detect embedding/sentence-transformer models using HuggingFace model metadata.
 
@@ -1916,7 +2159,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         True if the model is an embedding model, False otherwise.
         Defaults to False for local paths or on errors.
     """
-    cache_key = (model_name, hf_token)
+    cache_key = (model_name, _token_fingerprint(hf_token), local_files_only)
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
 
@@ -1926,6 +2169,18 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
+
+    if local_files_only:
+        try:
+            is_emb = any(
+                (snap / "modules.json").is_file()
+                for snap in _iter_hf_cache_snapshots(model_name)
+            )
+            if is_emb:
+                _embedding_detection_cache[cache_key] = True
+            return is_emb
+        except Exception:
+            return False
 
     try:
         from huggingface_hub import model_info as hf_model_info
@@ -2482,6 +2737,9 @@ class ModelConfig:
         hf_token: Optional[str] = None,
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
+        local_files_only: bool = False,
+        local_path: Optional[str] = None,
+        model_format: Optional[str] = None,
     ) -> Optional["ModelConfig"]:
         """
         Create ModelConfig from a clean model identifier.
@@ -2509,6 +2767,19 @@ class ModelConfig:
         identifier = model_id.strip()
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
+        preferred_format = (model_format or "").strip().lower() or None
+        if preferred_format == "unknown":
+            preferred_format = None
+        if preferred_format not in {
+            None,
+            "gguf",
+            "safetensors",
+            "adapter",
+            "checkpoint",
+        }:
+            preferred_format = None
+        if preferred_format == "adapter":
+            is_lora = True
 
         # Add unsloth/ prefix for shorthand HF models
         if not is_local and "/" not in identifier:
@@ -2528,68 +2799,106 @@ class ModelConfig:
                 identifier = resolved_identifier
                 path = resolved_identifier
 
+        wants_gguf = preferred_format in {None, "gguf"}
+
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
-            if gguf_variant:
-                gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
-            else:
-                gguf_file = detect_gguf_model(path)
-            if gguf_file:
-                display_name = Path(gguf_file).stem
-                logger.info(f"Detected local GGUF model: {gguf_file}")
+            if wants_gguf:
+                if gguf_variant:
+                    gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
+                else:
+                    gguf_file = None
+                    if Path(path).is_dir():
+                        variants, _has_vision = list_local_gguf_variants(path)
+                        if len(variants) > 1:
+                            logger.warning(
+                                "Local GGUF directory %s has multiple variants; gguf_variant is required",
+                                path,
+                            )
+                            return None
+                        if len(variants) == 1:
+                            gguf_variant = variants[0].quant
+                            gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
+                    if not gguf_file:
+                        gguf_file = detect_gguf_model(path)
+                if gguf_file:
+                    display_name = Path(gguf_file).stem
+                    logger.info(f"Detected local GGUF model: {gguf_file}")
 
-                # Detect vision: check if base model is vision, then look for mmproj
-                mmproj_file = None
-                gguf_is_vision = False
-                gguf_dir = Path(gguf_file).parent
+                    # Detect vision: check if base model is vision, then look for mmproj
+                    mmproj_file = None
+                    gguf_is_vision = False
+                    gguf_dir = Path(gguf_file).parent
 
-                # Determine if this is a vision model from export metadata
-                base_is_vision = False
-                meta_path = gguf_dir / "export_metadata.json"
-                if meta_path.exists():
-                    try:
-                        meta = json.loads(meta_path.read_text())
-                        base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
-                            base_is_vision = True
-                            logger.info(f"GGUF base model '{base}' is a vision model")
-                    except Exception as e:
-                        logger.debug(f"Could not read export metadata: {e}")
+                    # Determine if this is a vision model from export metadata
+                    base_is_vision = False
+                    meta_path = gguf_dir / "export_metadata.json"
+                    if meta_path.exists():
+                        try:
+                            meta = json.loads(meta_path.read_text())
+                            base = meta.get("base_model")
+                            if base and is_vision_model(
+                                base,
+                                hf_token = hf_token,
+                                local_files_only = local_files_only,
+                            ):
+                                base_is_vision = True
+                                logger.info(f"GGUF base model '{base}' is a vision model")
+                        except Exception as e:
+                            logger.debug(f"Could not read export metadata: {e}")
 
-                # If vision (or mmproj happens to exist), find the mmproj
-                # file. The recursive variant scan in
-                # ``_find_local_gguf_by_variant`` may have returned a
-                # weight file inside a quant-named subdir (e.g.
-                # ``.../BF16/foo.gguf``) while ``mmproj-*.gguf`` lives
-                # at the snapshot root. Pass ``search_root=path`` so
-                # ``detect_mmproj_file`` walks up to the snapshot root
-                # instead of seeing only the weight file's immediate
-                # parent.
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
-                if mmproj_file:
-                    gguf_is_vision = True
-                    logger.info(f"Detected mmproj for vision: {mmproj_file}")
-                elif base_is_vision:
-                    logger.warning(
-                        f"Base model is vision but no mmproj file found in {gguf_dir}"
+                    # If vision (or mmproj happens to exist), find the mmproj
+                    # file. The recursive variant scan in
+                    # ``_find_local_gguf_by_variant`` may have returned a
+                    # weight file inside a quant-named subdir (e.g.
+                    # ``.../BF16/foo.gguf``) while ``mmproj-*.gguf`` lives
+                    # at the snapshot root. Pass ``search_root=path`` so
+                    # ``detect_mmproj_file`` walks up to the snapshot root
+                    # instead of seeing only the weight file's immediate
+                    # parent.
+                    mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
+                    if mmproj_file:
+                        gguf_is_vision = True
+                        logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                    elif base_is_vision:
+                        logger.warning(
+                            f"Base model is vision but no mmproj file found in {gguf_dir}"
+                        )
+
+                    return cls(
+                        identifier = identifier,
+                        display_name = display_name,
+                        path = path,
+                        is_local = True,
+                        is_cached = True,
+                        is_vision = gguf_is_vision,
+                        is_lora = False,
+                        is_gguf = True,
+                        gguf_file = gguf_file,
+                        gguf_mmproj_file = mmproj_file,
+                        gguf_variant = gguf_variant,
                     )
-
-                return cls(
-                    identifier = identifier,
-                    display_name = display_name,
-                    path = path,
-                    is_local = True,
-                    is_cached = True,
-                    is_vision = gguf_is_vision,
-                    is_lora = False,
-                    is_gguf = True,
-                    gguf_file = gguf_file,
-                    gguf_mmproj_file = mmproj_file,
-                )
+            if preferred_format == "gguf":
+                return None
         else:
             # Check if the HF repo contains GGUF files
-            gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
-            if gguf_filename:
+            gguf_filename = None
+            cached_gguf = None
+            if wants_gguf:
+                gguf_filename = (
+                    None
+                    if local_files_only
+                    else detect_gguf_model_remote(identifier, hf_token = hf_token)
+                )
+                cached_gguf = (
+                    _list_gguf_variants_from_hf_cache(identifier, local_path)
+                    if local_files_only and gguf_filename is None
+                    else None
+                )
+                if cached_gguf is not None:
+                    cached_variants, cached_has_vision = cached_gguf
+                    gguf_filename = cached_variants[0].filename if cached_variants else None
+            if wants_gguf and gguf_filename:
                 # Preflight: verify llama-server binary exists BEFORE user waits
                 # for a multi-GB download that llama-server handles natively
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -2601,7 +2910,13 @@ class ModelConfig:
                     )
 
                 # Use list_gguf_variants() to detect vision & resolve variant
-                variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
+                if cached_gguf is not None:
+                    variants, has_vision = cached_gguf
+                else:
+                    variants, has_vision = list_gguf_variants(
+                        identifier,
+                        hf_token = hf_token,
+                    )
                 variant = gguf_variant
                 if not variant:
                     # Auto-select best quantization
@@ -2613,6 +2928,31 @@ class ModelConfig:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
+                if local_files_only and cached_gguf is not None:
+                    gguf_file, snapshot_root = _find_cached_gguf_by_variant(
+                        identifier,
+                        variant,
+                        local_path,
+                    )
+                    if not gguf_file or not snapshot_root:
+                        return None
+                    mmproj_file = detect_mmproj_file(
+                        gguf_file,
+                        search_root = snapshot_root,
+                    )
+                    return cls(
+                        identifier = identifier,
+                        display_name = display_name,
+                        path = snapshot_root,
+                        is_local = False,
+                        is_cached = True,
+                        is_vision = has_vision,
+                        is_lora = False,
+                        is_gguf = True,
+                        gguf_file = gguf_file,
+                        gguf_mmproj_file = mmproj_file,
+                        gguf_variant = variant,
+                    )
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
                     f"variant={variant}, vision={has_vision}"
@@ -2630,6 +2970,8 @@ class ModelConfig:
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )
+            if preferred_format == "gguf":
+                return None
 
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
         if not is_lora and is_local:
@@ -2650,11 +2992,12 @@ class ModelConfig:
             try:
                 from huggingface_hub import model_info as hf_model_info
 
-                info = hf_model_info(identifier, token = hf_token)
-                repo_files = [s.rfilename for s in info.siblings]
-                if "adapter_config.json" in repo_files:
-                    is_lora = True
-                    logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
+                if not local_files_only:
+                    info = hf_model_info(identifier, token = hf_token)
+                    repo_files = [s.rfilename for s in info.siblings]
+                    if "adapter_config.json" in repo_files:
+                        is_lora = True
+                        logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
             except Exception as e:
                 logger.debug(
                     f"Could not check remote LoRA status for '{identifier}': {e}"
@@ -2662,7 +3005,7 @@ class ModelConfig:
 
             # API may have failed; adapter_config.json may still be cached.
             if not is_lora:
-                for snap in _iter_hf_cache_snapshots(identifier):
+                for snap in _iter_hf_cache_snapshots(identifier, local_path):
                     if (snap / "adapter_config.json").is_file():
                         is_lora = True
                         logger.info(
@@ -2678,41 +3021,83 @@ class ModelConfig:
                 base_model = get_base_model_from_lora(path)
             else:
                 # Remote LoRA: download adapter_config.json from HF
-                try:
-                    from huggingface_hub import hf_hub_download
+                if not local_files_only:
+                    try:
+                        from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(
-                        identifier, "adapter_config.json", token = hf_token
-                    )
-                    with open(config_path, "r") as f:
-                        adapter_config = json.load(f)
-                    base_model = adapter_config.get("base_model_name_or_path")
-                    if base_model:
-                        logger.info(f"Resolved remote LoRA base model: '{base_model}'")
-                except Exception as e:
-                    logger.warning(
-                        f"Could not download adapter_config.json for '{identifier}': {e}"
-                    )
+                        config_path = hf_hub_download(
+                            identifier, "adapter_config.json", token = hf_token
+                        )
+                        with open(config_path, "r") as f:
+                            adapter_config = json.load(f)
+                        base_model = adapter_config.get("base_model_name_or_path")
+                        if base_model:
+                            logger.info(f"Resolved remote LoRA base model: '{base_model}'")
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not download adapter_config.json for '{identifier}': {e}"
+                        )
 
             if not base_model:
-                logger.warning(f"Could not determine base model for LoRA '{path}'")
-                return None
+                for snap in _iter_hf_cache_snapshots(identifier, local_path):
+                    adapter_config_path = snap / "adapter_config.json"
+                    if not adapter_config_path.is_file():
+                        continue
+                    try:
+                        with adapter_config_path.open("r", encoding = "utf-8") as f:
+                            adapter_config = json.load(f)
+                        base_model = adapter_config.get("base_model_name_or_path")
+                    except Exception as e:
+                        logger.debug(
+                            f"Could not read cached adapter_config.json for '{identifier}': {e}"
+                        )
+                        continue
+                    if base_model:
+                        logger.info(f"Resolved cached LoRA base model: '{base_model}'")
+                        break
+                if not base_model:
+                    logger.warning(f"Could not determine base model for LoRA '{path}'")
+                    return None
             check_model = base_model
         else:
             check_model = identifier
 
-        vision = is_vision_model(check_model, hf_token = hf_token)
-        audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
+        cached_snapshot_path = (
+            _cached_transformers_snapshot_path(identifier, local_path)
+            if not is_local
+            else None
+        )
+        if local_files_only and not is_local and not is_lora:
+            if cached_snapshot_path is None:
+                return None
+            check_model = cached_snapshot_path
+
+        vision = is_vision_model(
+            check_model,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+        )
+        audio_type_val = detect_audio_type(
+            check_model,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+        )
         has_audio_in = is_audio_input_type(audio_type_val)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
+        if local_files_only and not is_local and cached_snapshot_path is None:
+            return None
+        load_path = cached_snapshot_path or path
 
         return cls(
             identifier = identifier,
             display_name = display_name,
-            path = path,
+            path = load_path,
             is_local = is_local,
-            is_cached = is_model_cached(identifier) if not is_local else True,
+            is_cached = (
+                cached_snapshot_path is not None
+                or (is_model_cached(identifier) if not is_local else True)
+            ),
             is_vision = vision,
             is_lora = is_lora,
             is_audio = audio_type_val is not None and audio_type_val != "audio_vlm",

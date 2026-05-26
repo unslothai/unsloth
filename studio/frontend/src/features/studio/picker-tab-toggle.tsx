@@ -1,28 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isHuggingFaceOffline } from "@/lib/network";
 import { cn } from "@/lib/utils";
 import { RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+export { looksLikeLocalPath } from "@/lib/local-path";
 
 const HF_AUTH_ERROR_RE =
   /\b401\b|unauthorized|invalid.*token|invalid.*credential|authentication|forbidden|\b403\b/i;
 
 export function isHfAuthError(message: string | null | undefined): boolean {
   return !!message && HF_AUTH_ERROR_RE.test(message);
-}
-
-/**
- * Heuristic for "this query looks like a filesystem path, not a Hugging Face
- * id" so the Train pickers can offer a "Use as local path" affordance. Shared
- * by the model and dataset pickers.
- */
-export function looksLikeLocalPath(query: string): boolean {
-  return (
-    /^[/.~]/.test(query) ||
-    query.includes("\\") ||
-    /^[a-zA-Z]:[\\/]/.test(query)
-  );
 }
 
 /**
@@ -43,24 +32,73 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-export type PickerTab = "device" | "hub";
+export const PICKER_TAB = {
+  DEVICE: "device",
+  HUB: "hub",
+} as const;
+
+export const PICKER_TAB_VALUES = [PICKER_TAB.DEVICE, PICKER_TAB.HUB] as const;
+export type PickerTab = (typeof PICKER_TAB_VALUES)[number];
 
 export const PICKER_TABS = [
-  { value: "device", label: "On Device" },
-  { value: "hub", label: "Hugging Face" },
+  { value: PICKER_TAB.DEVICE, label: "On Device" },
+  { value: PICKER_TAB.HUB, label: "Hugging Face" },
 ] as const satisfies readonly [
   { value: PickerTab; label: string },
   { value: PickerTab; label: string },
 ];
 
+function isPickerTab(value: unknown): value is PickerTab {
+  return (
+    typeof value === "string" &&
+    (PICKER_TAB_VALUES as readonly string[]).includes(value)
+  );
+}
+
+export function readPickerTabPreference(storageKey: string): PickerTab | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(storageKey);
+    return isPickerTab(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function defaultPickerTab(): PickerTab {
+  return isHuggingFaceOffline() ? PICKER_TAB.DEVICE : PICKER_TAB.HUB;
+}
+
+export function writePickerTabPreference(
+  storageKey: string,
+  tab: PickerTab,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey, tab);
+  } catch {
+    void 0;
+  }
+}
+
+export function pickerTabId(idBase: string, value: string): string {
+  return `${idBase}-tab-${value}`;
+}
+
 /**
  * Two-option pill toggle shared by the Train page's model + dataset pickers.
  * Generic over the tab key string so callers can use their own enum.
+ *
+ * `idBase` and `panelId` wire up the WAI-ARIA tablist/tabpanel contract: each
+ * tab gets a stable id derived from `idBase` and points at the panel via
+ * `aria-controls`, so screen readers announce the relationship.
  */
 export function PickerTabToggle<T extends string>({
   tab,
   options,
   onTabChange,
+  idBase,
+  panelId,
 }: {
   tab: T;
   options: readonly [
@@ -68,6 +106,8 @@ export function PickerTabToggle<T extends string>({
     { value: T; label: string },
   ];
   onTabChange: (tab: T) => void;
+  idBase: string;
+  panelId: string;
 }) {
   const [, second] = options;
   return (
@@ -82,23 +122,29 @@ export function PickerTabToggle<T extends string>({
           tab === second.value ? "translate-x-full" : "translate-x-0",
         )}
       />
-      {options.map((entry) => (
-        <button
-          key={entry.value}
-          type="button"
-          role="tab"
-          aria-selected={tab === entry.value}
-          onClick={() => onTabChange(entry.value)}
-          className={cn(
-            "relative z-10 inline-flex h-7 flex-1 select-none items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
-            tab === entry.value
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {entry.label}
-        </button>
-      ))}
+      {options.map((entry) => {
+        const selected = tab === entry.value;
+        return (
+          <button
+            key={entry.value}
+            id={pickerTabId(idBase, entry.value)}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            aria-controls={panelId}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onTabChange(entry.value)}
+            className={cn(
+              "relative z-10 inline-flex h-7 flex-1 select-none items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+              selected
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {entry.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

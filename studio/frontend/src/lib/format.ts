@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (!Number.isFinite(bytes) || bytes < 0) return "N/A";
+  if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.min(
     Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0),
@@ -13,12 +14,12 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatRate(bytesPerSec: number): string {
-  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "";
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "--";
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
 export function formatEta(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (!Number.isFinite(seconds) || seconds <= 0) return "--";
   const s = Math.round(seconds);
   if (s < 60) return `${s}s left`;
   if (s < 3600) {
@@ -38,7 +39,7 @@ export function formatEta(seconds: number): string {
 
 export function extractParamLabel(id: string): string | null {
   const name = id.split("/").pop() ?? id;
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
+  const match = name.match(/(?:^|[^A-Za-z0-9])(\d+(?:\.\d+)?)[Bb](?![A-Za-z0-9])/);
   return match ? `${match[1]}B` : null;
 }
 
@@ -63,7 +64,7 @@ export function formatRelativeShort(iso?: string): string {
   if (!iso) return "N/A";
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "N/A";
-  const diffMs = Date.now() - then;
+  const diffMs = Math.max(0, Date.now() - then);
   const minutes = Math.floor(diffMs / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;

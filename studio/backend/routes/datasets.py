@@ -27,6 +27,7 @@ _dataset_size_cache: "OrderedDict[str, tuple[int, bool, str]]" = OrderedDict()
 _dataset_size_neg_cache: "OrderedDict[str, float]" = OrderedDict()
 _DATASET_SIZE_CACHE_MAX = 256
 _DATASET_SIZE_NEG_TTL = 60.0
+_DATASET_SIZE_TIMEOUT_SECONDS = 5.0
 _dataset_size_cache_lock = threading.Lock()
 
 
@@ -49,19 +50,24 @@ def _get_dataset_size_cached(repo_id: str, hf_token: Optional[str] = None) -> in
             if neg_ts is not None and (time.monotonic() - neg_ts) < _DATASET_SIZE_NEG_TTL:
                 return 0
     try:
-        from huggingface_hub import dataset_info as hf_dataset_info
+        from huggingface_hub import HfApi
 
-        info = hf_dataset_info(repo_id, token = hf_token, files_metadata = True)
+        info = HfApi(token = hf_token).dataset_info(
+            repo_id,
+            files_metadata = True,
+            timeout = _DATASET_SIZE_TIMEOUT_SECONDS,
+        )
         total = sum(s.size for s in info.siblings if getattr(s, "size", None))
         restricted = bool(
             getattr(info, "private", False) or getattr(info, "gated", False)
         )
     except Exception:
-        with _dataset_size_cache_lock:
-            _dataset_size_neg_cache[repo_id] = time.monotonic()
-            _dataset_size_neg_cache.move_to_end(repo_id)
-            while len(_dataset_size_neg_cache) > _DATASET_SIZE_CACHE_MAX:
-                _dataset_size_neg_cache.popitem(last = False)
+        if not hf_token:
+            with _dataset_size_cache_lock:
+                _dataset_size_neg_cache[repo_id] = time.monotonic()
+                _dataset_size_neg_cache.move_to_end(repo_id)
+                while len(_dataset_size_neg_cache) > _DATASET_SIZE_CACHE_MAX:
+                    _dataset_size_neg_cache.popitem(last = False)
         return 0
     with _dataset_size_cache_lock:
         _dataset_size_cache[repo_id] = (total, restricted, token_fp)
@@ -79,6 +85,10 @@ if str(backend_path) not in sys.path:
 
 # Import dataset utilities
 from utils.datasets import check_dataset_format
+from utils.datasets.cache_paths import (
+    cached_dataset_candidates as _shared_cached_dataset_candidates,
+    latest_cached_dataset_snapshot as _shared_latest_cached_dataset_snapshot,
+)
 from auth.authentication import get_current_subject
 
 router = APIRouter()
@@ -233,7 +243,22 @@ def _safe_read_metadata_summary(payload: dict | None) -> dict | None:
     }
 
 
-def _build_local_dataset_items() -> list[LocalDatasetItem]:
+def _safe_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _display_uploaded_dataset_name(path: Path) -> str:
+    stem = path.stem
+    prefix, sep, rest = stem.partition("_")
+    if sep and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+        return f"{rest}{path.suffix}"
+    return path.name
+
+
+def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
     if not LOCAL_DATASETS_ROOT.exists():
         return []
 
@@ -253,22 +278,49 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
             rows = _safe_read_rows_from_metadata(metadata_payload)
             metadata_summary = _safe_read_metadata_summary(metadata_payload)
 
-        try:
-            updated_at = entry.stat().st_mtime
-        except OSError:
-            updated_at = None
-
         items.append(
             LocalDatasetItem(
                 id = entry.name,
                 label = entry.name,
                 path = str(parquet_dir.resolve()),
+                source = "recipe",
                 rows = rows,
-                updated_at = updated_at,
+                updated_at = _safe_mtime(entry),
                 metadata = metadata_summary,
             )
         )
 
+    return items
+
+
+def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
+    if not DATASET_UPLOAD_DIR.exists():
+        return []
+
+    items: list[LocalDatasetItem] = []
+    for path in DATASET_UPLOAD_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in LOCAL_UPLOAD_EXTS:
+            continue
+        try:
+            if path.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        label = _display_uploaded_dataset_name(path)
+        items.append(
+            LocalDatasetItem(
+                id = path.name,
+                label = label,
+                path = str(path.resolve()),
+                source = "upload",
+                updated_at = _safe_mtime(path),
+            )
+        )
+    return items
+
+
+def _build_local_dataset_items() -> list[LocalDatasetItem]:
+    items = _build_recipe_dataset_items() + _build_uploaded_dataset_items()
     items.sort(key = lambda item: item.updated_at or 0, reverse = True)
     return items
 
@@ -323,6 +375,131 @@ def _load_local_preview_slice(
     return preview_slice, total_rows
 
 
+def _latest_cached_dataset_snapshot(
+    repo_id: str,
+    local_path: Optional[str] = None,
+) -> Optional[Path]:
+    return _shared_latest_cached_dataset_snapshot(repo_id, local_path)
+
+
+def _cached_dataset_candidates(
+    snapshot: Path,
+    *,
+    subset: Optional[str],
+    train_split: str,
+) -> list[Path]:
+    return _shared_cached_dataset_candidates(
+        snapshot,
+        subset = subset,
+        train_split = train_split,
+        extensions = DATA_EXTS,
+        preferred_extensions = _TABULAR_EXTS,
+    )
+
+
+def _load_cached_file_preview_slice(path: Path, preview_size: int):
+    from itertools import islice
+    from datasets import Dataset, load_dataset
+
+    name = path.name.lower()
+    if name.endswith((".json", ".jsonl")):
+        loader = "json"
+    elif name.endswith((".csv", ".tsv")):
+        loader = "csv"
+    elif name.endswith(".parquet"):
+        loader = "parquet"
+    elif name.endswith(".arrow"):
+        loader = "arrow"
+    elif name.endswith(".txt"):
+        loader = "text"
+    else:
+        return None
+
+    streamed = load_dataset(
+        loader,
+        data_files = str(path),
+        split = "train",
+        streaming = True,
+    )
+    rows = list(islice(streamed, preview_size))
+    if not rows:
+        return None
+    return Dataset.from_list(rows), None
+
+
+def _load_cached_hf_preview_slice(
+    request: CheckFormatRequest,
+    preview_size: int,
+):
+    if not _is_valid_repo_id(request.dataset_name):
+        return None
+    snapshot = _latest_cached_dataset_snapshot(
+        request.dataset_name,
+        request.local_path,
+    )
+    if snapshot is None:
+        return None
+    train_split = request.train_split or "train"
+    for candidate in _cached_dataset_candidates(
+        snapshot,
+        subset = request.subset,
+        train_split = train_split,
+    ):
+        try:
+            preview = _load_cached_file_preview_slice(candidate, preview_size)
+        except Exception as exc:
+            logger.debug("Cached dataset preview failed for %s: %s", candidate, exc)
+            continue
+        if preview is not None:
+            return preview
+    return None
+
+
+def _load_processed_hf_preview_slice(
+    request: CheckFormatRequest,
+    preview_size: int,
+):
+    if not _is_valid_repo_id(request.dataset_name):
+        return None
+    try:
+        from datasets import DownloadConfig, load_dataset
+    except Exception:
+        return None
+
+    load_kwargs = {
+        "path": request.dataset_name,
+        "split": request.train_split or "train",
+        "download_config": DownloadConfig(local_files_only = True),
+    }
+    if request.subset:
+        load_kwargs["name"] = request.subset
+    if request.hf_token:
+        load_kwargs["token"] = request.hf_token
+
+    dataset = load_dataset(**load_kwargs)
+    total_rows = len(dataset)
+    preview_slice = dataset.select(range(min(preview_size, total_rows)))
+    return preview_slice, total_rows
+
+
+def _load_any_cached_hf_preview_slice(
+    request: CheckFormatRequest,
+    preview_size: int,
+):
+    cached_preview = _load_cached_hf_preview_slice(request, preview_size)
+    if cached_preview is not None:
+        return cached_preview
+    try:
+        return _load_processed_hf_preview_slice(request, preview_size)
+    except Exception as exc:
+        logger.debug(
+            "Processed dataset cache preview failed for %s: %s",
+            request.dataset_name,
+            exc,
+        )
+        return None
+
+
 def _sanitize_filename(filename: str) -> str:
     name = Path(filename).name.strip().replace("\x00", "")
     if not name:
@@ -369,34 +546,229 @@ def list_local_datasets(
 
 
 def _collect_hf_cache_scans() -> tuple[list, set[str]]:
-    """Scan the active + legacy + default HF cache roots, de-duplicated.
+    scans = hf_cache_scan.all_hf_cache_scans()
+    seen_roots = {
+        str(cache_dir)
+        for cache_dir in (getattr(scan, "cache_dir", None) for scan in scans)
+        if cache_dir is not None
+    }
+    return scans, seen_roots
 
-    Shared by the dataset listing and delete paths so they always walk the
-    same set of roots; divergence here is what causes a repo to be visible in
-    one but not deletable in the other.
-    """
-    from huggingface_hub import scan_cache_dir
+
+def _hf_hub_cache_roots() -> list[Path]:
+    """Return Hub cache roots that may contain ``datasets--owner--repo`` dirs."""
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
 
-    scans: list = []
-    seen_roots: set[str] = set()
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Optional[Path]) -> None:
+        if path is None or not path.is_dir():
+            return
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(path)
+
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
-        active_root = Path(HF_HUB_CACHE).resolve()
-        seen_roots.add(str(active_root))
-        if active_root.is_dir():
-            scans.append(scan_cache_dir())
-    except Exception as exc:
-        logger.warning("Could not scan active HF cache: %s", exc)
-    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-        extra = extra_fn()
-        if extra.is_dir() and str(extra.resolve()) not in seen_roots:
-            seen_roots.add(str(extra.resolve()))
+
+        _add(Path(HF_HUB_CACHE))
+    except Exception:
+        pass
+
+    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hf_hub_cache:
+        _add(Path(hf_hub_cache).expanduser())
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        _add(Path(hf_home).expanduser() / "hub")
+
+    _add(legacy_hf_cache_dir())
+    _add(hf_default_cache_dir())
+    return roots
+
+
+def _repo_id_from_hub_dataset_dir(name: str) -> str | None:
+    if not name.startswith("datasets--"):
+        return None
+    encoded = name.removeprefix("datasets--")
+    owner, sep, repo = encoded.partition("--")
+    if not sep or not owner or not repo:
+        return None
+    repo_id = f"{owner}/{repo}"
+    return repo_id if _is_valid_repo_id(repo_id) else None
+
+
+def _directory_size(path: Path) -> int:
+    total = 0
+    try:
+        for entry in path.rglob("*"):
             try:
-                scans.append(scan_cache_dir(cache_dir = str(extra)))
-            except Exception as exc:
-                logger.warning("Could not scan HF cache %s: %s", extra, exc)
-    return scans, seen_roots
+                if entry.is_file() and not entry.is_symlink():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    return total
+
+
+def _hub_dataset_snapshot_count(path: Path) -> int:
+    snapshots = path / "snapshots"
+    try:
+        return sum(1 for entry in snapshots.iterdir() if entry.is_dir())
+    except OSError:
+        return 0
+
+
+def _scan_hub_dataset_cache_dirs() -> list[dict]:
+    """Fallback scanner for HF Hub dataset cache directories.
+
+    ``scan_cache_dir()`` can fail or skip repos when one cache entry is partially
+    corrupt. The model scanner has several fallback paths already; datasets need
+    the same resilience so the On Device tab reflects what is actually on disk.
+    """
+    seen_lower: dict[str, dict] = {}
+    for root in _hf_hub_cache_roots():
+        try:
+            entries = [entry for entry in root.iterdir() if entry.is_dir()]
+        except OSError:
+            continue
+        for entry in entries:
+            repo_id = _repo_id_from_hub_dataset_dir(entry.name)
+            if repo_id is None:
+                continue
+            size_bytes = _directory_size(entry / "blobs")
+            if size_bytes <= 0:
+                size_bytes = _directory_size(entry)
+            if size_bytes <= 0:
+                continue
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            row = {
+                "repo_id": repo_id,
+                "size_bytes": size_bytes,
+                "cache_path": str(entry.resolve()),
+                "partial": _hub_dataset_snapshot_count(entry) == 0,
+            }
+            if existing is None or size_bytes > existing["size_bytes"]:
+                seen_lower[key] = row
+    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+
+
+def _hf_datasets_cache_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Optional[Path]) -> None:
+        if path is None or not path.is_dir():
+            return
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(path)
+
+    env_cache = os.environ.get("HF_DATASETS_CACHE")
+    if env_cache:
+        _add(Path(env_cache).expanduser())
+
+    try:
+        from datasets import config as datasets_config
+
+        _add(Path(datasets_config.HF_DATASETS_CACHE))
+    except Exception:
+        pass
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        _add(Path(hf_home).expanduser() / "datasets")
+
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    ).expanduser()
+    _add(xdg_cache / "huggingface" / "datasets")
+    return roots
+
+
+def _repo_id_from_datasets_cache_dir(name: str) -> str | None:
+    if "___" not in name:
+        return None
+    owner, repo = name.split("___", 1)
+    repo_id = f"{owner}/{repo}"
+    return repo_id if _is_valid_repo_id(repo_id) else None
+
+
+def _processed_dataset_cache_size(path: Path) -> int:
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    return total
+
+
+def _looks_like_processed_dataset_cache(path: Path) -> bool:
+    try:
+        for entry in path.rglob("*"):
+            if not entry.is_file():
+                continue
+            if entry.name in {"dataset_info.json", "state.json"}:
+                return True
+            if entry.suffix == ".arrow":
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _scan_processed_dataset_caches() -> list[dict]:
+    """Return HF datasets-library cache rows keyed by repo_id.
+
+    `datasets.load_dataset()` stores processed Arrow caches separately from the
+    Hub snapshot cache. Older Studio training runs can therefore have usable
+    on-device datasets that `huggingface_hub.scan_cache_dir()` never reports.
+    """
+    seen_lower: dict[str, dict] = {}
+    for root in _hf_datasets_cache_roots():
+        try:
+            entries = [entry for entry in root.iterdir() if entry.is_dir()]
+        except OSError:
+            continue
+        for entry in entries:
+            repo_id = _repo_id_from_datasets_cache_dir(entry.name)
+            if repo_id is None:
+                continue
+            if not _looks_like_processed_dataset_cache(entry):
+                continue
+            size_bytes = _processed_dataset_cache_size(entry)
+            if size_bytes <= 0:
+                continue
+            key = repo_id.lower()
+            existing = seen_lower.get(key)
+            if existing is None or size_bytes > existing["size_bytes"]:
+                seen_lower[key] = {
+                    "repo_id": repo_id,
+                    "size_bytes": size_bytes,
+                    "cache_path": str(entry.resolve()),
+                    "processed_cache": True,
+                    "partial": False,
+                }
+    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
 def _scan_hf_dataset_caches() -> list[dict]:
@@ -438,9 +810,27 @@ def _scan_hf_dataset_caches() -> list[dict]:
     )
     for row in seen_lower.values():
         row["partial"] = row["repo_id"] in partial
+    for row in _scan_hub_dataset_cache_dirs():
+        key = row["repo_id"].lower()
+        existing = seen_lower.get(key)
+        if existing is None:
+            seen_lower[key] = row
+        else:
+            existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
+            existing["cache_path"] = existing.get("cache_path") or row.get("cache_path")
+            existing["partial"] = bool(existing.get("partial")) or bool(
+                row.get("partial")
+            )
+    for row in _scan_processed_dataset_caches():
+        key = row["repo_id"].lower()
+        existing = seen_lower.get(key)
+        if existing is None:
+            seen_lower[key] = row
+        else:
+            existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
     logger.info(
         "Cached dataset scan: roots=%d inspected=%d returned=%d",
-        len(seen_roots), inspected, len(seen_lower),
+        len(seen_roots) or len(scans), inspected, len(seen_lower),
     )
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
@@ -479,6 +869,7 @@ async def delete_cached_dataset(
         return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_id)
     finally:
         _registry.end_delete(repo_key)
+        hf_cache_scan.invalidate_hf_cache_scans()
 
 
 def _delete_cached_dataset_blocking(repo_id: str) -> dict:
@@ -506,17 +897,50 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
                     detail = f"Failed to delete dataset: {exc}",
                 ) from exc
 
-    if not deleted:
+    processed_deleted = _delete_processed_dataset_cache(repo_id)
+    if not deleted and not processed_deleted:
         if hf_cache_scan.purge_partial_repo("dataset", repo_id):
             return {"status": "deleted", "repo_id": repo_id}
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}
 
 
+def _delete_processed_dataset_cache(repo_id: str) -> bool:
+    import shutil
+
+    target = repo_id.replace("/", "___").lower()
+    deleted = False
+    for root in _hf_datasets_cache_roots():
+        try:
+            entries = [entry for entry in root.iterdir() if entry.is_dir()]
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.lower() != target:
+                continue
+            try:
+                shutil.rmtree(entry)
+                deleted = True
+            except Exception as exc:
+                logger.error(
+                    "Failed deleting processed dataset cache %s: %s",
+                    repo_id,
+                    exc,
+                )
+                raise HTTPException(
+                    status_code = 500,
+                    detail = f"Failed to delete dataset: {exc}",
+                ) from exc
+    return deleted
+
+
 @router.get("/download-progress")
 async def get_dataset_download_progress(
     repo_id: str = Query(
         ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
+    ),
+    expected_bytes: int = Query(
+        0, description = "Expected total download size in bytes",
     ),
     hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
@@ -533,7 +957,7 @@ async def get_dataset_download_progress(
     """
     _empty = {
         "downloaded_bytes": 0,
-        "expected_bytes": 0,
+        "expected_bytes": max(expected_bytes, 0),
         "progress": 0,
         "cache_path": None,
     }
@@ -581,8 +1005,10 @@ async def get_dataset_download_progress(
         if downloaded_bytes == 0:
             return {**_empty, "cache_path": cache_path}
 
-        expected_bytes = _get_dataset_size_cached(repo_id, hf_token)
-        if expected_bytes <= 0:
+        expected_total = max(expected_bytes, 0)
+        if expected_total <= 0:
+            expected_total = _get_dataset_size_cached(repo_id, hf_token)
+        if expected_total <= 0:
             return {
                 "downloaded_bytes": downloaded_bytes,
                 "expected_bytes": 0,
@@ -593,13 +1019,13 @@ async def get_dataset_download_progress(
         # Same 95% completion threshold as the model endpoint -- HF blob
         # dedup makes completed_bytes drift slightly under expected_bytes,
         # and inter-file gaps would otherwise look like "done".
-        if completed_bytes >= expected_bytes * 0.95:
+        if completed_bytes >= expected_total * 0.95:
             progress = 1.0
         else:
-            progress = min(downloaded_bytes / expected_bytes, 0.99)
+            progress = min(downloaded_bytes / expected_total, 0.99)
         return {
             "downloaded_bytes": downloaded_bytes,
-            "expected_bytes": expected_bytes,
+            "expected_bytes": expected_total,
             "progress": round(progress, 3),
             "cache_path": cache_path,
         }
@@ -667,7 +1093,12 @@ async def download_dataset(
     transport = (
         hf_cache_scan.TRANSPORT_XET if body.use_xet else hf_cache_scan.TRANSPORT_HTTP
     )
+    unavailable_reason = hf_cache_scan.download_transport_unavailable_reason(transport)
+    if unavailable_reason is not None:
+        raise HTTPException(status_code = 400, detail = unavailable_reason)
+
     claimed, claim_state = _registry.claim(repo_id, transport)
+    generation = _registry.current_generation(repo_id)
     if not claimed:
         # A rejected claim for this repo's own in-flight job is pollable; one
         # blocked by an in-progress delete leaves no job, so flag it.
@@ -675,6 +1106,7 @@ async def download_dataset(
             "repo_id": repo_id,
             "state": claim_state,
             "accepted": _registry.adoptable(repo_id),
+            "generation": generation,
         }
 
     backend_dir = Path(__file__).resolve().parent.parent
@@ -695,39 +1127,46 @@ async def download_dataset(
         ) from e
 
     if not _registry.register_process(repo_id, proc):
-        # Cancel landed during the claim→register window; honor it now.
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        except Exception as e:
-            logger.warning(f"Cancel SIGKILL for dataset {repo_id} failed: {e}")
-
-    worker_token = hf_token
-    def _watch() -> None:
-        hf_cache_scan.finalize_worker_exit(
-            _registry,
-            repo_id,
+        hf_cache_scan.kill_and_reap_process(
             proc,
-            hf_token = worker_token,
-            label = repo_id,
-            log_prefix = "Dataset download",
+            label = f"dataset {repo_id}",
             logger = logger,
         )
-        if _registry.get_job(repo_id).state in ("error", "cancelled"):
-            hf_cache_scan.purge_empty_marker_dir("dataset", repo_id)
+    else:
+        worker_token = hf_token
+        def _watch() -> None:
+            hf_cache_scan.finalize_worker_exit(
+                _registry,
+                repo_id,
+                proc,
+                hf_token = worker_token,
+                label = repo_id,
+                log_prefix = "Dataset download",
+                logger = logger,
+                repo_type = None if body.use_xet else "dataset",
+                repo_id = None if body.use_xet else repo_id,
+            )
+            if _registry.get_job(repo_id).state in ("error", "cancelled"):
+                hf_cache_scan.purge_empty_marker_dir("dataset", repo_id)
+            hf_cache_scan.invalidate_hf_cache_scans()
 
-    threading.Thread(
-        target = _watch,
-        name = f"hf-dataset-download-watch-{repo_id}",
-        daemon = True,
-    ).start()
+        threading.Thread(
+            target = _watch,
+            name = f"hf-dataset-download-watch-{repo_id}",
+            daemon = True,
+        ).start()
 
-    return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state, "accepted": True}
+    return {
+        "repo_id": repo_id,
+        "state": _registry.get_job(repo_id).state,
+        "accepted": True,
+        "generation": generation,
+    }
 
 
 class CancelDatasetDownloadRequest(BaseModel):
     repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
+    generation: Optional[int] = Field(None, description = "Download generation")
 
 
 @router.post("/download/cancel", status_code = 202)
@@ -747,11 +1186,11 @@ async def cancel_dataset_download(
     if proc is None or proc.poll() is not None:
         # The worker may be mid-spawn (claim→register window): arm a pending
         # cancel so register_process kills it on arrival.
-        if _registry.mark_pending_cancel(repo_id):
+        if _registry.mark_pending_cancel(repo_id, body.generation):
             return {"repo_id": repo_id, "state": "cancelling"}
         return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state}
 
-    if not _registry.request_cancel(repo_id, proc):
+    if not _registry.request_cancel(repo_id, proc, body.generation):
         return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state}
 
     try:
@@ -793,8 +1232,8 @@ async def get_dataset_transport_status(
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
     return {
-        "has_partial": hf_cache_scan.has_incomplete_blobs("dataset", repo_id),
-        "last_transport": hf_cache_scan.read_transport_marker("dataset", repo_id),
+        "has_partial": hf_cache_scan.has_active_incomplete_blobs("dataset", repo_id),
+        "last_transport": hf_cache_scan.read_active_transport_marker("dataset", repo_id),
         "resumable": hf_cache_scan.is_resumable_partial("dataset", repo_id),
     }
 
@@ -840,82 +1279,104 @@ def check_format(
         else:
             # ── HuggingFace dataset ─────────────────────────────────
             # Tier 1: list_repo_files → load only the first data file
-            preview_slice = None
-
-            try:
-                from huggingface_hub import HfApi
-
-                api = HfApi()
-                repo_files = api.list_repo_files(
-                    request.dataset_name,
-                    repo_type = "dataset",
-                    token = request.hf_token or None,
+            cached_preview = (
+                _load_any_cached_hf_preview_slice(request, PREVIEW_SIZE)
+                if request.prefer_local_cache
+                else None
+            )
+            if cached_preview is not None:
+                preview_slice, total_rows = cached_preview
+            elif request.prefer_local_cache:
+                raise HTTPException(
+                    status_code = 404,
+                    detail = "Dataset is not available in the local cache.",
                 )
-                data_files = [
-                    f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
-                ]
+            else:
+                preview_slice = None
 
-                # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
-                # with synthetic image/label columns that don't match the real schema).
-                tabular_files = [
-                    f
-                    for f in data_files
-                    if any(f.endswith(ext) for ext in _TABULAR_EXTS)
-                ]
-                candidates = tabular_files or data_files
+                try:
+                    from huggingface_hub import HfApi
 
-                # When a subset is specified, narrow to files whose name matches
-                # (e.g. subset="testmini" → prefer "testmini.parquet").
-                if request.subset and candidates:
-                    subset_matches = [
-                        f for f in candidates if request.subset in Path(f).stem
+                    api = HfApi()
+                    repo_files = api.list_repo_files(
+                        request.dataset_name,
+                        repo_type = "dataset",
+                        token = request.hf_token or None,
+                    )
+                    data_files = [
+                        f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
                     ]
-                    if subset_matches:
-                        candidates = subset_matches
 
-                if candidates:
-                    first_file = candidates[0]
-                    logger.info(f"Tier 1: loading single file {first_file}")
-                    load_kwargs = {
-                        "path": request.dataset_name,
-                        "data_files": [first_file],
-                        "split": "train",
-                        "streaming": True,
-                    }
-                    if request.hf_token:
-                        load_kwargs["token"] = request.hf_token
+                    # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
+                    # with synthetic image/label columns that don't match the real schema).
+                    tabular_files = [
+                        f
+                        for f in data_files
+                        if any(f.endswith(ext) for ext in _TABULAR_EXTS)
+                    ]
+                    candidates = tabular_files or data_files
 
-                    streamed_ds = load_dataset(**load_kwargs)
-                    rows = list(islice(streamed_ds, PREVIEW_SIZE))
-                    if rows:
-                        preview_slice = Dataset.from_list(rows)
-            except Exception as e:
-                logger.warning(f"Tier 1 (single-file) failed: {e}")
+                    # When a subset is specified, narrow to files whose name matches
+                    # (e.g. subset="testmini" → prefer "testmini.parquet").
+                    if request.subset and candidates:
+                        subset_matches = [
+                            f for f in candidates if request.subset in Path(f).stem
+                        ]
+                        if subset_matches:
+                            candidates = subset_matches
+
+                    if candidates:
+                        first_file = candidates[0]
+                        logger.info(f"Tier 1: loading single file {first_file}")
+                        load_kwargs = {
+                            "path": request.dataset_name,
+                            "data_files": [first_file],
+                            "split": "train",
+                            "streaming": True,
+                        }
+                        if request.hf_token:
+                            load_kwargs["token"] = request.hf_token
+
+                        streamed_ds = load_dataset(**load_kwargs)
+                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                        if rows:
+                            preview_slice = Dataset.from_list(rows)
+                except Exception as e:
+                    logger.warning(f"Tier 1 (single-file) failed: {e}")
 
             if preview_slice is None:
                 # Tier 2: full streaming (resolves all files — slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
-                load_kwargs = {
-                    "path": request.dataset_name,
-                    "split": request.train_split,
-                    "streaming": True,
-                }
-                if request.subset:
-                    load_kwargs["name"] = request.subset
-                if request.hf_token:
-                    load_kwargs["token"] = request.hf_token
+                try:
+                    load_kwargs = {
+                        "path": request.dataset_name,
+                        "split": request.train_split,
+                        "streaming": True,
+                    }
+                    if request.subset:
+                        load_kwargs["name"] = request.subset
+                    if request.hf_token:
+                        load_kwargs["token"] = request.hf_token
 
-                streamed_ds = load_dataset(**load_kwargs)
+                    streamed_ds = load_dataset(**load_kwargs)
 
-                rows = list(islice(streamed_ds, PREVIEW_SIZE))
-                if not rows:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Dataset appears to be empty or could not be streamed",
+                    rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                    if not rows:
+                        raise HTTPException(
+                            status_code = 400,
+                            detail = "Dataset appears to be empty or could not be streamed",
+                        )
+
+                    preview_slice = Dataset.from_list(rows)
+                    total_rows = None
+                except Exception:
+                    cached_preview = _load_any_cached_hf_preview_slice(
+                        request,
+                        PREVIEW_SIZE,
                     )
-
-                preview_slice = Dataset.from_list(rows)
-            total_rows = None
+                    if cached_preview is None:
+                        raise
+                    preview_slice, total_rows = cached_preview
 
         # Run lightweight format check on the preview slice
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)

@@ -6,6 +6,8 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const studioApiBase = process.env.VITE_STUDIO_API_BASE || "http://127.0.0.1:8888";
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -17,11 +19,11 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8888",
+        target: studioApiBase,
         changeOrigin: true,
       },
       "/v1": {
-        target: "http://127.0.0.1:8888",
+        target: studioApiBase,
         changeOrigin: true,
       },
       "/seed/inspect": {

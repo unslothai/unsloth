@@ -443,6 +443,46 @@ def get_display_names_by_output_dirs(
         conn.close()
 
 
+def get_run_metadata_by_output_dirs(
+    output_dirs: list[str],
+) -> dict[str, dict[str, str]]:
+    if not output_dirs:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(output_dirs))
+        rows = conn.execute(
+            f"""
+            SELECT r.output_dir, r.display_name, r.config_json
+            FROM training_runs r
+            WHERE r.output_dir IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1 FROM training_runs newer
+                  WHERE newer.output_dir = r.output_dir
+                    AND newer.started_at > r.started_at
+              )
+            """,
+            output_dirs,
+        ).fetchall()
+        metadata: dict[str, dict[str, str]] = {}
+        for row in rows:
+            entry: dict[str, str] = {}
+            display_name = row["display_name"]
+            if display_name:
+                entry["display_name"] = display_name
+            try:
+                config = json.loads(row["config_json"] or "{}")
+            except Exception:
+                config = {}
+            training_type = config.get("training_type")
+            if isinstance(training_type, str) and training_type.strip():
+                entry["training_method"] = training_type.strip()
+            metadata[row["output_dir"]] = entry
+        return metadata
+    finally:
+        conn.close()
+
+
 def get_run_metrics(id: str) -> dict:
     """Return metric arrays for a run, using paired step arrays per metric."""
     conn = get_connection()

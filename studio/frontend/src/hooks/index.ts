@@ -22,6 +22,7 @@ export {
 export { useHfDatasetSplits } from "./use-hf-dataset-splits";
 export { useHfTokenValidation } from "./use-hf-token-validation";
 export { useInfiniteScroll } from "./use-infinite-scroll";
+export { useLatestRef } from "./use-latest-ref";
 export { useOnlineStatus } from "./use-online-status";
 export { useTauriBackend } from "./use-tauri-backend";
 export { useCollapseScrollLock } from "./use-collapse-scroll-lock";

@@ -31,8 +31,8 @@ try:
         normalize_resume_output_dir,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
+    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.paths import is_local_path, resolve_dataset_path
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
@@ -45,8 +45,8 @@ except ImportError:
         normalize_resume_output_dir,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
+    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.paths import is_local_path, resolve_dataset_path
 
 # Auth
 from auth.authentication import get_current_subject
@@ -90,6 +90,81 @@ def _validate_local_dataset_paths(
             detail = f"{label} not found: {missing_detail}",
         )
     return validated
+
+
+def _has_trainable_local_weights(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        files = [entry for entry in path.iterdir() if entry.is_file()]
+    except OSError:
+        return False
+    has_config = (path / "config.json").is_file()
+    if not has_config:
+        return False
+    for file in files:
+        lower = file.name.lower()
+        if lower.endswith(".safetensors") and not lower.startswith("adapter_model"):
+            return True
+        if lower.endswith((".pt", ".pth", ".ckpt", ".h5", ".msgpack", ".npz")):
+            return True
+        if lower.endswith(".bin") and lower.startswith(
+            ("pytorch_model", "model", "consolidated")
+        ):
+            return True
+    return False
+
+
+def _has_adapter_local_weights(path: Path) -> bool:
+    if not path.is_dir() or not (path / "adapter_config.json").is_file():
+        return False
+    try:
+        return any(
+            entry.is_file()
+            and entry.name.lower().startswith("adapter_model")
+            and entry.name.lower().endswith((".safetensors", ".bin"))
+            for entry in path.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
+    model_format = (request.model_format or "").strip().lower()
+    if model_format == "gguf":
+        raise HTTPException(
+            status_code = 400,
+            detail = "GGUF models are inference-only and cannot be trained.",
+        )
+    if model_format == "adapter":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Adapter models are inference-only and cannot be trained as base models.",
+        )
+    if model_format in {"safetensors", "checkpoint"}:
+        return
+    candidate = request.model_local_path or request.model_name
+    if not candidate or not is_local_path(candidate):
+        return
+    try:
+        path = Path(candidate).expanduser()
+    except Exception:
+        return
+    has_trainable_weights = _has_trainable_local_weights(path)
+    if _has_adapter_local_weights(path) and not has_trainable_weights:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Adapter-only local models are inference-only and cannot be trained as base models.",
+        )
+    try:
+        has_gguf = detect_gguf_model(str(path)) is not None
+    except Exception:
+        return
+    if has_gguf and not has_trainable_weights:
+        raise HTTPException(
+            status_code = 400,
+            detail = "GGUF-only local models are inference-only and cannot be trained.",
+        )
 
 
 @router.get("/hardware")
@@ -164,6 +239,7 @@ async def start_training(
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
+        _reject_untrainable_model_request(request)
         resume_output_dir: Optional[str] = None
         if request.resume_from_checkpoint:
             try:
@@ -194,7 +270,12 @@ async def start_training(
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
             "max_seq_length": request.max_seq_length,
+            "model_known_cached": request.model_known_cached,
+            "model_local_path": request.model_local_path,
+            "model_format": request.model_format,
             "hf_dataset": request.hf_dataset or "",
+            "dataset_known_cached": request.dataset_known_cached,
+            "dataset_local_path": request.dataset_local_path,
             "local_datasets": request.local_datasets,
             "local_eval_datasets": request.local_eval_datasets,
             "format_type": request.format_type,

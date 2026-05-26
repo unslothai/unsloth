@@ -18,6 +18,7 @@ _MAX_SEQ_LENGTH = 2_000_000
 _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
+ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 
 
 def _parse_lr(v: Any) -> float:
@@ -62,10 +63,30 @@ class TrainingStartRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    model_known_cached: bool = Field(
+        False,
+        description = "True when the selected HF model was chosen from the local cache.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        description = "Known local HF cache path for the selected model.",
+    )
+    model_format: Optional[ModelFormat] = Field(
+        None,
+        description = "Selected inventory format for mixed-format entries.",
+    )
 
     # Dataset parameters
     hf_dataset: Optional[str] = Field(
         None, description = "HuggingFace dataset identifier"
+    )
+    dataset_known_cached: bool = Field(
+        False,
+        description = "True when the selected HF dataset was chosen from the local cache.",
+    )
+    dataset_local_path: Optional[str] = Field(
+        None,
+        description = "Known local HF cache path for the selected dataset.",
     )
     local_datasets: List[str] = Field(
         default_factory = list, description = "List of local dataset paths"

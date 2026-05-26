@@ -9,13 +9,15 @@ import { apiUrl } from "@/lib/api-base";
 import { getHfToken } from "@/stores/hf-token-store";
 import {
   generateAudio,
-  listCachedGguf,
-  listCachedModels,
-  listGgufVariants,
   loadModel,
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import {
+  listCachedGguf,
+  listCachedModels,
+  listGgufVariants,
+} from "@/features/inventory";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   createOpenAIContainer,
@@ -446,9 +448,8 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  const store = useChatRuntimeStore.getState();
   const hfToken = getHfToken() || null;
-  const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const trustRemoteCode = false;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -489,7 +490,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path ?? null,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded)
             .sort((a, b) => a.size_bytes - b.size_bytes);
@@ -520,7 +524,11 @@ async function autoLoadSmallestModel(): Promise<{
             store.setModelRequiresTrustRemoteCode(
               loadResp.requires_trust_remote_code ?? false,
             );
-            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            store.setParams({
+              ...store.params,
+              maxTokens: loadResp.context_length ?? 131072,
+              trustRemoteCode,
+            });
             // Add model to store so the selector shows the name
             const autoModel: ChatModelSummary = {
               id: repo.repo_id,
@@ -595,7 +603,7 @@ async function autoLoadSmallestModel(): Promise<{
           store.setModelRequiresTrustRemoteCode(
             sfLoadResp.requires_trust_remote_code ?? false,
           );
-          store.setParams({ ...store.params, maxTokens: 4096 });
+          store.setParams({ ...store.params, maxTokens: 4096, trustRemoteCode });
           useChatRuntimeStore.setState({
             supportsReasoning: sfLoadResp.supports_reasoning ?? false,
             reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
@@ -676,7 +684,11 @@ async function autoLoadSmallestModel(): Promise<{
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
-      store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+      store.setParams({
+        ...store.params,
+        maxTokens: loadResp.context_length ?? 131072,
+        trustRemoteCode,
+      });
       const defaultModel: ChatModelSummary = {
         id: "unsloth/gemma-4-E2B-it-GGUF",
         name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",

@@ -11,12 +11,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import type { TransportConflictInfo } from "@/features/download-jobs";
 
-export interface TransportConflictInfo {
-  previous: "http" | "xet";
-  next: "http" | "xet";
-  resumable: boolean;
-}
+export type { TransportConflictInfo } from "@/features/download-jobs";
 
 export function TransportConflictDialog({
   conflict,
@@ -47,17 +44,18 @@ export function TransportConflictDialog({
     <>
       Your previous download used{" "}
       <span className="font-medium text-foreground">{previousLabel}</span>,
-      which can't pick up where it stopped, so this one will start from the
-      beginning either way. Stay on {previousLabel} to keep it usually faster,
-      or switch to {nextLabel} so future cancels can resume.
+      which can't resume its partial files, so the existing partial will be
+      discarded and this download will start from the beginning either way.
+      Restart with {previousLabel} to keep it usually faster, or restart with{" "}
+      {nextLabel} so future cancels can resume.
     </>
   );
   const primaryLabel = conflict?.resumable
     ? `Resume with ${previousLabel}`
-    : `Continue with ${previousLabel}`;
+    : `Restart with ${previousLabel}`;
   const secondaryLabel = conflict?.resumable
     ? `Restart with ${nextLabel}`
-    : `Switch to ${nextLabel}`;
+    : `Restart with ${nextLabel}`;
   return (
     <AlertDialog
       open={conflict !== null}

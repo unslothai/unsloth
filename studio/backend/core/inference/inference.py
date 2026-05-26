@@ -27,6 +27,11 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
+from core.inference.load_settings import (
+    build_transformers_load_settings,
+    load_settings_match,
+    normalize_chat_template_override,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -240,6 +245,70 @@ class InferenceBackend:
         # API supports -1 as "disable top-k"; transformers expects 0 to disable.
         return 0 if top_k < 0 else top_k
 
+    def _chat_template_targets(self, model_name: str) -> list:
+        entry = self.models.get(model_name) or {}
+        candidates = [
+            entry.get("tokenizer"),
+            entry.get("processor"),
+        ]
+        for candidate in list(candidates):
+            if candidate is not None:
+                candidates.append(getattr(candidate, "tokenizer", None))
+        targets = []
+        seen = set()
+        for candidate in candidates:
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            targets.append(candidate)
+        return targets
+
+    def _apply_chat_template_override(
+        self,
+        model_name: str,
+        chat_template_override: Optional[str],
+    ) -> Optional[str]:
+        override = normalize_chat_template_override(chat_template_override)
+        if override is None:
+            self.models[model_name]["chat_template_override"] = None
+            return None
+        applied = False
+        for target in self._chat_template_targets(model_name):
+            try:
+                setattr(target, "chat_template", override)
+                applied = True
+            except Exception as exc:
+                logger.debug(
+                    "Could not set chat_template on %s for %s: %s",
+                    type(target).__name__,
+                    model_name,
+                    exc,
+                )
+        if not applied:
+            raise RuntimeError(
+                f"Model '{model_name}' does not expose a tokenizer chat_template field."
+            )
+        self.models[model_name]["chat_template_override"] = override
+        return override
+
+    def _finalize_chat_template_state(
+        self,
+        model_name: str,
+        chat_template_override: Optional[str],
+        load_settings: dict,
+    ) -> None:
+        self._load_chat_template_info(model_name)
+        template_info = self.models[model_name].get("chat_template_info")
+        if isinstance(template_info, dict):
+            self.models[model_name]["default_chat_template_info"] = dict(template_info)
+        applied_override = self._apply_chat_template_override(
+            model_name,
+            chat_template_override,
+        )
+        if applied_override is not None:
+            self._load_chat_template_info(model_name)
+        self.models[model_name]["load_settings"] = load_settings
+
     def load_model(
         self,
         config: ModelConfig,
@@ -249,6 +318,7 @@ class InferenceBackend:
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        chat_template_override: Optional[str] = None,
     ) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
@@ -260,11 +330,25 @@ class InferenceBackend:
         try:
             model_name = config.identifier
 
-            # Check if already loaded
+            requested_load_settings = build_transformers_load_settings(
+                config = config,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                trust_remote_code = trust_remote_code,
+                gpu_ids = gpu_ids,
+                chat_template_override = chat_template_override,
+            )
+
             if model_name in self.models and self.models[model_name].get("model"):
-                logger.info(f"Model {model_name} already loaded")
-                self.active_model_name = model_name
-                return True
+                if load_settings_match(
+                    self.models[model_name].get("load_settings"),
+                    requested_load_settings,
+                ):
+                    logger.info(f"Model {model_name} already loaded")
+                    self.active_model_name = model_name
+                    return True
+                logger.info(f"Reloading model {model_name} with updated load settings")
+                self.unload_model(model_name)
 
             # Check if currently loading
             if model_name in self.loading_models:
@@ -447,6 +531,11 @@ class InferenceBackend:
                     self.models[model_name]["model"], device_map, "Inference"
                 )
 
+                self._finalize_chat_template_state(
+                    model_name,
+                    chat_template_override,
+                    requested_load_settings,
+                )
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
                 logger.info(f"Successfully loaded audio model: {model_name}")
@@ -540,8 +629,11 @@ class InferenceBackend:
                 self.models[model_name]["model"], device_map, "Inference"
             )
 
-            # Load chat template info
-            self._load_chat_template_info(model_name)
+            self._finalize_chat_template_state(
+                model_name,
+                chat_template_override,
+                requested_load_settings,
+            )
 
             self.active_model_name = model_name
             self.loading_models.discard(model_name)
@@ -1033,7 +1125,11 @@ class InferenceBackend:
             model_name_lower = self.active_model_name.lower()
 
             # Check if model has a registered template
-            if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
+            if model_info.get("chat_template_override"):
+                logger.info(
+                    f"Using custom chat template override for {self.active_model_name}"
+                )
+            elif model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
                 template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
                 logger.info(
                     f"Applying chat template '{template_name}' for {self.active_model_name}"
@@ -2125,6 +2221,12 @@ class InferenceBackend:
             return
 
         tokenizer = self.models[model_name]["tokenizer"]
+        nested_tokenizer = getattr(tokenizer, "tokenizer", None)
+        if (
+            not getattr(tokenizer, "chat_template", None)
+            and getattr(nested_tokenizer, "chat_template", None)
+        ):
+            tokenizer = nested_tokenizer
         chat_template_info = {
             "has_template": False,
             "template": None,

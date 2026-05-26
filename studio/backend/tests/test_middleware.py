@@ -38,7 +38,7 @@ def _make_protected_app(max_bytes: int, main_module):
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes = max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/train"),
+        protected_prefixes = ("/v1/chat/completions", "/api/train", "/api/models"),
     )
 
     @app.post("/v1/chat/completions")
@@ -52,6 +52,10 @@ def _make_protected_app(max_bytes: int, main_module):
     @app.get("/api/train/status")
     async def status_get():
         return {"ok": True, "get": True}
+
+    @app.delete("/api/models/delete-cached")
+    async def delete_cached(payload: dict):
+        return {"ok": True, "n": len(payload.get("text", ""))}
 
     return app
 
@@ -120,6 +124,20 @@ class TestMaxBodyMiddleware:
         c = TestClient(app)
         r = c.get("/api/train/status")
         assert r.status_code == 200
+
+    def test_delete_body_over_cap_rejected_on_protected_prefix(self, main_module):
+        app = _make_protected_app(1024, main_module)
+        c = TestClient(app)
+        r = c.request(
+            "DELETE",
+            "/api/models/delete-cached",
+            json = {"text": "x" * 5000},
+        )
+        assert r.status_code == 413
+        assert "too large" in r.json()["detail"].lower()
+
+    def test_models_prefix_is_body_protected(self, main_module):
+        assert "/api/models" in main_module._BODY_PROTECTED_PREFIXES
 
 
 # =====================================================================

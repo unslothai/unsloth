@@ -57,8 +57,19 @@ export {
   emitTrainingRunsChanged,
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
-export { validateTrainingConfig } from "./lib/validation";
+export { isRawTextDatasetFormat } from "./lib/training-methods";
 export {
+  inferTrainingModelTypeFromCapabilityKeys,
+  inferTrainingModelTypeFromFlags,
+  inferTrainingModelTypeFromMetadata,
+  resolvePickerInferredModelType,
+} from "./lib/model-type-inference";
+export { isMissingLocalDatasetCacheError } from "./lib/local-cache-errors";
+export { validateTrainingConfig } from "./lib/validation";
+export type { TrainingConfigStore } from "./types/config";
+export {
+  selectTrainingReadiness,
   useTrainingReadiness,
   type TrainingReadiness,
 } from "./hooks/use-training-readiness";
+export { useTrainingResourceNotices } from "./hooks/use-training-resource-notices";

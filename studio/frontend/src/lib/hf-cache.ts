@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ModelEntry, modelInfo } from "@huggingface/hub";
 import { LruMap } from "@/lib/lru-map";
+import { fetchWithTimeout } from "@/lib/network";
+import { fingerprintToken } from "@/lib/token-fingerprint";
+import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
 /**
  * Thin caching + throttling layer over `modelInfo()` from @huggingface/hub.
@@ -18,6 +20,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // failing or throttled repo isn't re-requested by every caller and re-render.
 // Short enough to recover quickly once the cause clears.
 const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
+const MODEL_INFO_TIMEOUT_MS = 15_000;
 // HF API allows bursts but rate-limits sustained traffic. 6 parallel requests
 // keeps clicking through several models snappy while staying polite (matches the
 // avatar limiter); higher would risk the sustained-traffic throttle.
@@ -45,7 +48,6 @@ export type CachedResult = ModelEntry & {
   config?: HfConfig;
 };
 
-
 interface CacheEntry {
   // `null` data with an `error` marks a negative-cache entry: a recent failed
   // lookup we replay (by re-throwing) instead of re-fetching until it expires.
@@ -59,6 +61,10 @@ interface CacheEntry {
 const MAX_CACHE_ENTRIES = 512;
 const cache = new LruMap<string, CacheEntry>(MAX_CACHE_ENTRIES);
 const inflight = new Map<string, Promise<CachedResult>>();
+
+type CachedModelInfoOptions = {
+  signal?: AbortSignal;
+};
 
 // ── Concurrency semaphore ───────────────────────────────────────
 
@@ -107,14 +113,7 @@ function isStale(key: string): boolean {
 }
 
 function cacheKey(name: string, token: string | undefined): string {
-  if (!token) {
-    return `${name}::anon`;
-  }
-  // Scope by the full token so two tokens never share a cache slot — a
-  // truncated fingerprint could collide and cross-serve gated/private
-  // metadata between tokens. The token already lives in memory (auth store),
-  // so this adds no exposure, and the keys are never logged or persisted.
-  return `${name}::${token}`;
+  return `${name}::${fingerprintToken(token)}`;
 }
 
 function extractToken(
@@ -131,6 +130,36 @@ function extractToken(
     return params.credentials.accessToken;
   }
   return undefined;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function createAbortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("The operation was aborted.", "AbortError");
+  }
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function modelInfoFetch(
+  params: Parameters<typeof modelInfo>[0],
+  signal?: AbortSignal,
+): typeof fetch {
+  return (input, init) => {
+    const nextInit = signal ? { ...init, signal } : init;
+    return params.fetch
+      ? params.fetch(input, nextInit)
+      : fetchWithTimeout(input, nextInit, MODEL_INFO_TIMEOUT_MS);
+  };
 }
 
 /**
@@ -152,9 +181,11 @@ export function primeCacheFromListing(
 
 export async function cachedModelInfo(
   params: Parameters<typeof modelInfo>[0],
+  options: CachedModelInfoOptions = {},
 ): Promise<CachedResult> {
   const token = extractToken(params);
   const key = cacheKey(params.name, token);
+  const shareInflight = options.signal === undefined;
 
   // 1. Return from cache if fresh -- replaying a cached failure as a throw.
   const hit = cache.get(key);
@@ -164,18 +195,28 @@ export async function cachedModelInfo(
   }
 
   // 2. Share in-flight request if one exists
-  const flying = inflight.get(key);
-  if (flying) {
-    return flying;
+  if (shareInflight) {
+    const flying = inflight.get(key);
+    if (flying) {
+      return flying;
+    }
+  }
+
+  if (options.signal?.aborted) {
+    throw createAbortError();
   }
 
   // 3. New request, gated by concurrency semaphore
   const promise = (async () => {
     await acquire();
     try {
+      if (options.signal?.aborted) {
+        throw createAbortError();
+      }
       const result = await modelInfo({
         ...params,
         additionalFields: ALL_FIELDS,
+        fetch: modelInfoFetch(params, options.signal),
       });
       const entry: CacheEntry = {
         data: result as CachedResult,
@@ -187,7 +228,10 @@ export async function cachedModelInfo(
       // cache slot so the VRAM hook (which reads without credentials) gets a
       // cache hit. We skip gated/private models to avoid leaking auth-scoped
       // metadata into the anonymous slot.
-      const r = result as CachedResult & { gated?: false | "auto" | "manual"; private?: boolean };
+      const r = result as CachedResult & {
+        gated?: false | "auto" | "manual";
+        private?: boolean;
+      };
       if (token && !r.private && !r.gated) {
         const anonKey = cacheKey(params.name, undefined);
         if (isStale(anonKey)) {
@@ -196,6 +240,9 @@ export async function cachedModelInfo(
       }
       return result as CachedResult;
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       // Negative-cache the failure so concurrent and follow-up callers don't
       // re-hammer a failing or rate-limited repo until the entry expires.
       cache.set(key, {
@@ -207,10 +254,14 @@ export async function cachedModelInfo(
       throw err;
     } finally {
       release();
-      inflight.delete(key);
+      if (shareInflight) {
+        inflight.delete(key);
+      }
     }
   })();
 
-  inflight.set(key, promise);
+  if (shareInflight) {
+    inflight.set(key, promise);
+  }
   return promise;
 }

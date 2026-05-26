@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LruMap } from "@/lib/lru-map";
+import { fetchWithTimeout } from "@/lib/network";
+import { fingerprintToken } from "@/lib/token-fingerprint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
 
 export type ReadmeKind = "model" | "dataset";
@@ -53,11 +55,14 @@ async function fetchReadmeOnce(
   for (const branch of ["main", "master"] as const) {
     try {
       const url = `https://huggingface.co/${prefix}${repoId}/raw/${branch}/README.md`;
-      const res = await fetch(url, {
-        mode: "cors",
-        headers,
-        signal: AbortSignal.timeout(README_FETCH_TIMEOUT_MS),
-      });
+      const res = await fetchWithTimeout(
+        url,
+        {
+          mode: "cors",
+          headers,
+        },
+        README_FETCH_TIMEOUT_MS,
+      );
       if (res.ok) {
         return { markdown: await res.text(), branch };
       }
@@ -77,7 +82,7 @@ export function fetchReadme(
   kind: ReadmeKind = "model",
   token: string | null = null,
 ): Promise<FetchedReadme | null> {
-  const key = `${kind}::${repoId}::${token ?? ""}`;
+  const key = `${kind}::${repoId}::${fingerprintToken(token)}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
 
@@ -99,6 +104,7 @@ export function fetchReadme(
 }
 
 const ABSOLUTE_URL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|data:|mailto:|tel:)/i;
+const BLOCKED_README_PROTOCOLS = new Set(["javascript:", "vbscript:"]);
 
 function resolveAgainstBase(src: string, baseUrl: string): string {
   if (!src) return src;
@@ -110,11 +116,35 @@ function resolveAgainstBase(src: string, baseUrl: string): string {
   }
 }
 
+function readmeUrlProtocol(src: string): string | null {
+  try {
+    return new URL(src, "https://huggingface.co").protocol.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isBlockedReadmeUrl(
+  src: string,
+  node: Readonly<{ tagName?: unknown }>,
+): boolean {
+  const protocol = readmeUrlProtocol(src.trim());
+  if (!protocol) return false;
+  if (BLOCKED_README_PROTOCOLS.has(protocol)) return true;
+  if (protocol !== "data:") return false;
+  return String(node.tagName ?? "").toLowerCase() !== "img";
+}
+
 // Resolves relative asset URLs against the repo base, then delegates to
 // defaultUrlTransform so unsafe schemes (javascript:, etc.) stay stripped.
 export function createReadmeUrlTransform(baseUrl: string): UrlTransform {
-  return (url, key, node) =>
-    defaultUrlTransform(resolveAgainstBase(url, baseUrl), key, node);
+  return (url, key, node) => {
+    const resolved = resolveAgainstBase(url, baseUrl);
+    if (isBlockedReadmeUrl(resolved, node)) {
+      return undefined;
+    }
+    return defaultUrlTransform(resolved, key, node);
+  };
 }
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;

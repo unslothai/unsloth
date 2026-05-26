@@ -4,6 +4,7 @@
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 import type { InventoryHint } from "./download-types";
+import type { ModelInventoryFormat } from "@/features/inventory";
 
 export type { InventoryHint } from "./download-types";
 
@@ -12,12 +13,15 @@ export function DownloadSection({
   isGguf,
   isDownloaded,
   isPartial = false,
+  modelFormat,
+  canRun = true,
   isActive,
   activeQuant,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
   cachePath,
+  knownBytes,
   onLoad,
   onUseInChat,
   onTrain,
@@ -27,12 +31,15 @@ export function DownloadSection({
   isGguf: boolean;
   isDownloaded: boolean;
   isPartial?: boolean;
+  modelFormat?: ModelInventoryFormat | null;
+  canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
   cachePath?: string | null;
+  knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onUseInChat?: () => void;
   onTrain?: () => void;
@@ -59,9 +66,12 @@ export function DownloadSection({
       repoId={repoId}
       isDownloaded={isDownloaded}
       isPartial={isPartial}
+      modelFormat={modelFormat}
+      canRun={canRun}
       isActive={isActive}
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
+      knownBytes={knownBytes}
       onLoad={onLoad}
       onUseInChat={onUseInChat}
       onTrain={onTrain}

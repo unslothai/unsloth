@@ -5,6 +5,11 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import type { ModelInventoryFormat } from "@/features/inventory";
+import {
+  ggufVariantsMatch,
+  modelIdsMatch,
+} from "../model-config/model-identity";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 
@@ -297,6 +302,7 @@ export function mergeBackendRecommendedInference({
 export function resolveLoadMaxSeqLength({
   modelId,
   ggufVariant,
+  modelFormat,
   customContextLength,
   ggufContextLength,
   currentCheckpoint,
@@ -306,6 +312,7 @@ export function resolveLoadMaxSeqLength({
 }: {
   modelId: string;
   ggufVariant?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
   customContextLength: number | null;
   ggufContextLength: number | null;
   currentCheckpoint: string;
@@ -313,12 +320,16 @@ export function resolveLoadMaxSeqLength({
   maxSeqLength: number;
   presetSource: ChatPresetSource;
 }): number {
-  const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
-  const isGgufLoad = ggufVariant != null || isDirectGgufFile;
+  const lowerModelId = modelId.toLowerCase();
+  const isDirectGgufFile =
+    lowerModelId.endsWith(".gguf") ||
+    lowerModelId.startsWith("ollama-manifest:");
+  const isGgufLoad =
+    modelFormat === "gguf" || ggufVariant != null || isDirectGgufFile;
   const isReloadingCurrentGguf =
     isGgufLoad &&
-    currentCheckpoint === modelId &&
-    (ggufVariant ?? null) === (activeGgufVariant ?? null);
+    modelIdsMatch(currentCheckpoint, modelId) &&
+    ggufVariantsMatch(ggufVariant, activeGgufVariant);
 
   if (isGgufLoad && customContextLength != null) {
     return customContextLength;

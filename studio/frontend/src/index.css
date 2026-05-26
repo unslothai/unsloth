@@ -171,6 +171,7 @@
 	   a glance on white surfaces. */
 	--format-gguf: #60a5fa;
 	--format-checkpoint: #f472b6;
+	--format-adapter: #8b5cf6;
 	--status-warning: #eab308;
 	--status-danger: #ef4444;
 	--status-success: #11b686;
@@ -283,6 +284,7 @@
 	   stay legible on dark surfaces. */
 	--format-gguf: #60a5fa;
 	--format-checkpoint: #f472b6;
+	--format-adapter: #a78bfa;
 	--status-warning: #fbbf24;
 	--status-danger: #ef4444;
 	--status-success: #11b686;
@@ -372,6 +374,7 @@
 
 	--color-format-gguf: var(--format-gguf);
 	--color-format-checkpoint: var(--format-checkpoint);
+	--color-format-adapter: var(--format-adapter);
 	--color-status-warning: var(--status-warning);
 	--color-status-danger: var(--status-danger);
 	--color-status-success: var(--status-success);
@@ -740,13 +743,13 @@
 
 	.download-card {
 		@apply flex w-full flex-col gap-2 rounded-[22px] p-2;
-		background-color: rgba(17, 24, 39, 0.03);
-		border: 1px solid rgba(17, 24, 39, 0.055);
+		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
 		box-shadow: none;
 	}
 	.dark .download-card {
-		background-color: rgba(255, 255, 255, 0.035);
-		border: 1px solid rgba(255, 255, 255, 0.055);
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
 		box-shadow: none;
 	}
 
@@ -764,8 +767,8 @@
 	   without bumping ours we'd lose the cascade tie inconsistently
 	   depending on which utility was applied last to the element. */
 	.field-soft {
-		background-color: rgba(17, 24, 39, 0.03);
-		border: 1px solid rgba(17, 24, 39, 0.05);
+		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
 		box-shadow: none;
 		transition:
 			background-color 160ms ease,
@@ -773,52 +776,52 @@
 	}
 	.field-soft:hover,
 	.field-soft[data-state="open"] {
-		background-color: rgba(17, 24, 39, 0.05);
-		border-color: rgba(17, 24, 39, 0.08);
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
 	.field-soft:focus,
 	.field-soft:focus-visible,
 	.field-soft:focus-within {
-		background-color: rgba(17, 24, 39, 0.04);
-		border-color: rgba(17, 24, 39, 0.15);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 15%, transparent);
 		box-shadow: none !important;
 		outline: none;
 	}
 	.dark .field-soft {
-		background-color: rgba(255, 255, 255, 0.04);
-		border-color: rgba(255, 255, 255, 0.06);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	.dark .field-soft:hover,
 	.dark .field-soft[data-state="open"] {
-		background-color: rgba(255, 255, 255, 0.05);
-		border-color: rgba(255, 255, 255, 0.08);
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
 	.dark .field-soft:focus,
 	.dark .field-soft:focus-visible,
 	.dark .field-soft:focus-within {
-		background-color: rgba(255, 255, 255, 0.07);
-		border-color: rgba(255, 255, 255, 0.15);
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 15%, transparent);
 	}
 
 
 	html:not(.dark) .hub-page {
-		background-color: #ffffff;
+		background-color: var(--background);
 	}
 
 	html:not(.dark) .hub-page > div > section .border-b,
 	html:not(.dark) .hub-page > div > section .border-r,
 	html:not(.dark) .hub-page > div > section .border-t.border-border {
-		border-color: rgba(17, 24, 39, 0.06);
+		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	html:not(.dark) .hub-page .hub-side-surface {
-		background-color: #ffffff;
+		background-color: var(--background);
 	}
 
 	html:not(.dark) .hub-page .tag-soft,
 	html:not(.dark) .hub-page .tag-meta {
 		background-color: transparent;
 		--tw-ring-shadow: 0 0 #0000;
-		border: 1px solid rgba(17, 24, 39, 0.09);
+		border: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
 		box-shadow: none;
 		transition:
 			background-color 160ms ease,
@@ -826,21 +829,21 @@
 	}
 	html:not(.dark) .hub-page .tag-soft:hover,
 	html:not(.dark) .hub-page .tag-meta:hover {
-		background-color: rgba(17, 24, 39, 0.04);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
 
 	html.dark .hub-page {
-		background-color: #1f2023;
+		background-color: var(--background);
 	}
 
 	html.dark .hub-page > div > section [class*="bg-card"],
 	html.dark .hub-page > div > section [class*="bg-background"] {
-		background-color: #34353a;
+		background-color: var(--popover);
 	}
 	html.dark .hub-page > div > section .border-b,
 	html.dark .hub-page > div > section .border-r,
 	html.dark .hub-page > div > section .border-t.border-border {
-		border-color: rgba(255, 255, 255, 0.05);
+		border-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 	}
 	html.dark .hub-page .hub-side-surface {
 		background-color: transparent;
@@ -856,16 +859,16 @@
 			border-color 160ms ease;
 	}
 	html.dark .hub-page .tag-soft {
-		border: 1px solid rgba(255, 255, 255, 0.06);
-		color: rgba(255, 255, 255, 0.55);
+		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+		color: var(--muted-foreground);
 	}
 	html.dark .hub-page .tag-meta {
-		border: 1px solid rgba(255, 255, 255, 0.06);
-		color: rgba(255, 255, 255, 0.55);
+		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+		color: var(--muted-foreground);
 	}
 	html.dark .hub-page .tag-soft:hover,
 	html.dark .hub-page .tag-meta:hover {
-		background-color: rgba(255, 255, 255, 0.04);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
 
 	.menu-instant {
@@ -878,12 +881,12 @@
 	}
 	.menu-instant [data-slot="select-item"]:focus,
 	.menu-instant [data-slot="select-item"][data-highlighted] {
-		background-color: rgba(17, 24, 39, 0.06);
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 		color: var(--foreground);
 	}
 	html.dark .menu-instant [data-slot="select-item"]:focus,
 	html.dark .menu-instant [data-slot="select-item"][data-highlighted] {
-		background-color: rgba(255, 255, 255, 0.08);
+		background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 		color: var(--foreground);
 	}
 	html.dark .menu-instant {
@@ -915,27 +918,27 @@
 
 	html:not(.dark) .hub-page .tab-toggle,
 	html:not(.dark) .tab-toggle {
-		background-color: rgba(17, 24, 39, 0.05);
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
 	html.dark .hub-page .tab-toggle,
 	html.dark .tab-toggle {
-		background-color: rgba(255, 255, 255, 0.045);
+		background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
 	html:not(.dark) .hub-page .tab-toggle-pill,
 	html:not(.dark) .tab-toggle-pill {
-		background-color: #ffffff;
+		background-color: var(--background);
 		border: 0;
 		box-shadow:
-			0 1px 2px rgba(17, 24, 39, 0.08),
-			0 4px 10px -3px rgba(17, 24, 39, 0.06);
+			0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent),
+			0 4px 10px -3px color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	html.dark .hub-page .tab-toggle-pill,
 	html.dark .tab-toggle-pill {
-		background-color: rgba(255, 255, 255, 0.1);
+		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
 		border: 0;
 		box-shadow:
 			0 1px 2px rgba(0, 0, 0, 0.14),
@@ -949,16 +952,16 @@
 		transition: background-color 160ms ease;
 	}
 	html:not(.dark) .hub-page .catalog-row:hover {
-		background-color: rgba(17, 24, 39, 0.035);
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 	html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
-		background-color: rgba(17, 24, 39, 0.06);
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	/* Currently-loaded checkpoint: a brand-green left stripe plus a faint
 	   green wash, orthogonal to the neutral selected tint so a row that is
 	   both loaded and selected still reads as loaded. */
 	html:not(.dark) .hub-page .catalog-row[data-active="true"] {
-		background-color: rgba(17, 182, 134, 0.07);
+		background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
 		box-shadow: inset 2px 0 0 0 var(--primary);
 	}
 
@@ -969,13 +972,13 @@
 		transition: background-color 160ms ease;
 	}
 	html.dark .hub-page .catalog-row:hover {
-		background-color: rgba(255, 255, 255, 0.035);
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 	html.dark .hub-page .catalog-row[data-selected="true"] {
-		background-color: rgba(255, 255, 255, 0.07);
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 	}
 	html.dark .hub-page .catalog-row[data-active="true"] {
-		background-color: rgba(17, 182, 134, 0.12);
+		background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
 		box-shadow: inset 2px 0 0 0 var(--primary);
 	}
 
@@ -989,22 +992,22 @@
 		transition: background-color 160ms ease;
 	}
 	html:not(.dark) .picker-row:hover {
-		background-color: rgba(17, 24, 39, 0.035);
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 	html:not(.dark) .picker-row[data-selected="true"],
 	html:not(.dark) .picker-row[aria-expanded="true"] {
-		background-color: rgba(17, 24, 39, 0.06);
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	html.dark .picker-row {
 		background-color: transparent;
 		transition: background-color 160ms ease;
 	}
 	html.dark .picker-row:hover {
-		background-color: rgba(255, 255, 255, 0.035);
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
 	html.dark .picker-row[data-selected="true"],
 	html.dark .picker-row[aria-expanded="true"] {
-		background-color: rgba(255, 255, 255, 0.07);
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 	}
 
 	/* Picker popover scoping — softens the scrollbar inside the model
@@ -1032,10 +1035,10 @@
 	   Light theme leans on shadow + ring; dark theme uses a stronger shadow
 	   and a near-invisible ring since shadows are harder to see on dark. */
 	.hub-avatar-tile {
-		box-shadow: 0 0 0 0.5px rgba(17, 24, 39, 0.06);
+		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 	.dark .hub-avatar-tile {
-		box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
 
 	/* Verified badge: solid badge shape with a check-shaped hole punched
@@ -1051,45 +1054,87 @@
 	}
 
 
-	@keyframes hub-loading-strip-1 {
-		0%   { left: -35%; right: 100%; }
-		60%  { left: 100%; right: -90%; }
-		100% { left: 100%; right: -90%; }
-	}
-	@keyframes hub-loading-strip-2 {
-		0%   { left: -200%; right: 100%; }
-		60%  { left: 107%; right: -8%; }
-		100% { left: 107%; right: -8%; }
+	@keyframes hub-loading-sweep {
+		0% {
+			opacity: 0;
+			transform: translate3d(-120%, 0, 0);
+		}
+		16% {
+			opacity: 0.92;
+		}
+		78% {
+			opacity: 0.92;
+		}
+		100% {
+			opacity: 0;
+			transform: translate3d(520%, 0, 0);
+		}
 	}
 	.hub-loading-bar {
 		pointer-events: none;
 		position: relative;
 		overflow: hidden;
-		height: 2px;
-		background-color: rgba(17, 24, 39, 0.06);
+		width: 100%;
+		height: 3px;
 	}
-	html.dark .hub-loading-bar {
-		background-color: rgba(255, 255, 255, 0.06);
-	}
-	.hub-loading-bar::before,
 	.hub-loading-bar::after {
 		content: "";
+		display: none;
 		position: absolute;
-		top: 0;
-		bottom: 0;
-		background: rgba(17, 24, 39, 0.55);
-		will-change: left, right;
+		inset-block: 0;
+		left: 0;
+		width: 36%;
+		background: linear-gradient(
+			90deg,
+			transparent,
+			color-mix(in srgb, var(--foreground) 20%, transparent),
+			color-mix(in srgb, var(--foreground) 58%, transparent),
+			color-mix(in srgb, var(--foreground) 20%, transparent),
+			transparent
+		);
+		will-change: opacity, transform;
 	}
-	html.dark .hub-loading-bar::before,
 	html.dark .hub-loading-bar::after {
-		background: rgba(255, 255, 255, 0.65);
+		background: linear-gradient(
+			90deg,
+			transparent,
+			color-mix(in srgb, var(--foreground) 22%, transparent),
+			color-mix(in srgb, var(--foreground) 60%, transparent),
+			color-mix(in srgb, var(--foreground) 22%, transparent),
+			transparent
+		);
 	}
-	.hub-loading-bar::before {
-		animation: hub-loading-strip-1 2.1s cubic-bezier(0.65, 0.815, 0.735, 0.395) infinite;
+	.hub-loading-bar[data-active="true"]::after {
+		display: block;
+		animation: hub-loading-sweep 2.6s cubic-bezier(0.22, 0.72, 0.18, 1) infinite;
 	}
-	.hub-loading-bar::after {
-		animation: hub-loading-strip-2 2.1s cubic-bezier(0.165, 0.84, 0.44, 1) infinite;
-		animation-delay: 1.15s;
+
+	/* README markdown can be thousands of nodes. Keep its paint/layout work
+	   scoped so unrelated overlays, like the sidebar account menu, do less
+	   route-wide recalculation while the Hub is open. */
+	.hub-readme-prose {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 640px;
+	}
+	.hub-readme-prose > * {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 140px;
+	}
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
+		display: none;
+	}
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a {
+		display: inline-flex;
+		align-items: center;
+	}
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img {
+		margin-block: 0;
 	}
 
 	/* Inspector action pills (Download / Run / Train / Cancel) for the hub
@@ -1119,10 +1164,10 @@
 		transition: color 150ms, background-color 150ms;
 	}
 	.hub-action-btn:hover:not(:disabled) {
-		background-color: rgba(17, 24, 39, 0.04);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
 	.dark .hub-action-btn:hover:not(:disabled) {
-		background-color: rgba(255, 255, 255, 0.05);
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 	}
 	.hub-action-btn:disabled {
 		cursor: not-allowed;
@@ -1138,8 +1183,8 @@
 
 	/* Primary "Run" action — confirms loading/running a model. Pill shape
 	   (rounded-full) so it reads as the unmistakable CTA in a row of
-	   ghost actions, and emerald-500 so it matches the live-model
-	   indicator dot used elsewhere in the app. Same h-9 geometry, 13px
+	   ghost actions and matches the live-model status-success token used
+	   elsewhere in the app. Same h-9 geometry, 13px
 	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
 	   so the height aligns with adjacent ghost buttons. */
 	.run-action-btn {
@@ -1151,21 +1196,21 @@
 		gap: 0.4rem;
 		white-space: nowrap;
 		border-radius: 9999px;
-		background-color: #10b981; /* emerald-500 */
+		background-color: var(--status-success);
 		padding-left: 1rem;
 		padding-right: 1rem;
 		font-size: 13px;
 		font-weight: 600;
 		line-height: 18px;
 		letter-spacing: -0.025em;
-		color: white;
+		color: var(--primary-foreground);
 		transition: background-color 150ms, transform 150ms;
 		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.18),
-			0 1px 2px rgba(16, 185, 129, 0.22);
+			inset 0 1px 0 color-mix(in srgb, var(--primary-foreground) 18%, transparent),
+			0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
 	}
 	.run-action-btn:hover:not(:disabled) {
-		background-color: #059669; /* emerald-600 */
+		background-color: color-mix(in srgb, var(--status-success) 88%, black);
 	}
 	.run-action-btn:active:not(:disabled) {
 		transform: scale(0.98);
@@ -1433,12 +1478,12 @@
 	.slider-field:has(.panel-slider:hover) .panel-number-input,
 	.slider-field:has(.panel-slider:focus-within) .panel-number-input,
 	.slider-field:has(.panel-slider:active) .panel-number-input {
-		background-color: rgba(0, 0, 0, 0.04);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
 	.dark .slider-field:has(.panel-slider:hover) .panel-number-input,
 	.dark .slider-field:has(.panel-slider:focus-within) .panel-number-input,
 	.dark .slider-field:has(.panel-slider:active) .panel-number-input {
-		background-color: rgba(255, 255, 255, 0.04);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
 
 	/* Hide native number-input spinner buttons across the app. The
@@ -1459,7 +1504,7 @@
 
 	.menu-soft-surface,
 	.menu-soft-surface-up {
-		--menu-soft-edge: rgba(0, 0, 0, 0.14);
+		--menu-soft-edge: color-mix(in srgb, var(--foreground) 14%, transparent);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.18);
 		--menu-soft-offset-y: 8px;
 		--menu-soft-blur: 28px;
@@ -1476,7 +1521,7 @@
 	}
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
-		--menu-soft-edge: rgba(255, 255, 255, 0.07);
+		--menu-soft-edge: color-mix(in srgb, var(--foreground) 7%, transparent);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
 	}
 
@@ -1788,16 +1833,16 @@
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-html:not(.dark) .hub-page * {
+html:not(.dark) .hub-page [data-hub-scroll="true"] {
 	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 }
-html.dark .hub-page * {
+html.dark .hub-page [data-hub-scroll="true"] {
 	scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
 }
-html:not(.dark) .hub-page *::-webkit-scrollbar-thumb {
+html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.22);
 }
-html.dark .hub-page *::-webkit-scrollbar-thumb {
+html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 	background: oklch(0.55 0 0 / 0.16);
 }
 
@@ -1926,6 +1971,11 @@ html.dark .hub-page *::-webkit-scrollbar-thumb {
 
 	.animate-spin {
 		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.hub-loading-bar[data-active="true"]::after {
+		animation-duration: 3s !important;
 		animation-iteration-count: infinite !important;
 	}
 }

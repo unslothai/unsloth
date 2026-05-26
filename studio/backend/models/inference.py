@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -41,6 +43,16 @@ class LoadRequest(BaseModel):
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    model_format: Optional[ModelFormat] = Field(
+        None, description = "Selected inventory format for mixed-format entries"
+    )
+    local_files_only: bool = Field(
+        False,
+        description = "Resolve model files from local cache without contacting Hugging Face",
+    )
+    local_path: Optional[str] = Field(
+        None, description = "Known local cache path for this model"
     )
     trust_remote_code: bool = Field(
         False,
@@ -128,6 +140,16 @@ class ValidateModelRequest(BaseModel):
     )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    model_format: Optional[ModelFormat] = Field(
+        None, description = "Selected inventory format for mixed-format entries"
+    )
+    local_files_only: bool = Field(
+        False,
+        description = "Resolve model files from local cache without contacting Hugging Face",
+    )
+    local_path: Optional[str] = Field(
+        None, description = "Known local cache path for this model"
     )
 
 
@@ -236,6 +258,10 @@ class LoadResponse(BaseModel):
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Active chat template override applied at load time, or None if model is using its default",
     )
     speculative_type: Optional[str] = Field(
         None,

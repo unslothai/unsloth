@@ -15,7 +15,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type BrowseFoldersResponse,
   browseFolders,
-} from "@/features/chat";
+} from "@/features/inventory";
 import { cn } from "@/lib/utils";
 import { ArrowUp02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

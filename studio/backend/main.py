@@ -126,6 +126,7 @@ from routes import (
 )
 from auth import storage
 from auth.authentication import get_current_subject
+from utils import hf_cache_scan
 from utils.hardware import (
     detect_hardware,
     get_device,
@@ -398,7 +399,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+# Cap upload body on protected mutating requests; default 500 MB, env-tunable.
 import json as _json_for_413  # noqa: E402
 
 
@@ -409,6 +410,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
+    "/api/models",
     "/api/train",
     "/api/export",
 )
@@ -437,7 +439,7 @@ async def _send_413(send, total_bytes: int) -> None:
 
 
 class MaxBodyMiddleware:
-    """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
+    """Reject oversized bodies on protected mutating requests; raw ASGI so chunked uploads cannot bypass the cap."""
 
     def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
         self.app = app
@@ -450,7 +452,7 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -636,6 +638,23 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     """Return source-aware manual update status for browser-served Studio."""
     return get_studio_update_status(UNSLOTH_VERSION)
+
+
+@app.get("/api/studio/download-transport-capabilities")
+def studio_download_transport_capabilities(
+    _current_subject: str = Depends(get_current_subject),
+):
+    caps = hf_cache_scan.get_download_transport_capabilities()
+    return {
+        "http": {
+            "available": caps.http.available,
+            "reason": caps.http.reason,
+        },
+        "xet": {
+            "available": caps.xet.available,
+            "reason": caps.xet.reason,
+        },
+    }
 
 
 @app.post("/api/shutdown")

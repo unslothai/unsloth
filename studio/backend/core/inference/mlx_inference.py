@@ -7,6 +7,10 @@ instead of torch/transformers for model loading and generation.
 
 import threading
 from typing import Optional, Generator
+from core.inference.load_settings import (
+    build_transformers_load_settings,
+    normalize_chat_template_override,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +76,7 @@ class MLXInferenceBackend:
         trust_remote_code = False,
         gpu_ids = None,
         dtype = None,
+        chat_template_override = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -107,6 +112,14 @@ class MLXInferenceBackend:
         self._configure_memory_limits()
 
         is_lora = getattr(config, "is_lora", False)
+        load_settings = build_transformers_load_settings(
+            config = config,
+            max_seq_length = max_seq_length,
+            load_in_4bit = load_in_4bit,
+            trust_remote_code = trust_remote_code,
+            gpu_ids = gpu_ids,
+            chat_template_override = chat_template_override,
+        )
 
         logger.info(
             "Loading %s via %s (is_lora=%s)",
@@ -156,14 +169,67 @@ class MLXInferenceBackend:
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
+            "load_settings": load_settings,
         }
-        # Capture chat_template_info so the worker IPC reply can ship
-        # it back to the parent and the route layer classifies
-        # capabilities the same way as the transformers / GGUF paths.
         self._populate_chat_template_info(model_name)
+        default_info = self.models[model_name].get("chat_template_info")
+        if isinstance(default_info, dict):
+            self.models[model_name]["default_chat_template_info"] = dict(default_info)
+        applied_override = self._apply_chat_template_override(
+            model_name,
+            chat_template_override,
+        )
+        if applied_override is not None:
+            self._populate_chat_template_info(model_name)
 
         logger.info("Model %s loaded successfully", model_name)
         return True
+
+    def _chat_template_targets(self, model_name: str) -> list:
+        entry = self.models.get(model_name) or {}
+        candidates = [
+            entry.get("tokenizer"),
+            entry.get("processor"),
+        ]
+        for candidate in list(candidates):
+            if candidate is not None:
+                candidates.append(getattr(candidate, "tokenizer", None))
+        targets = []
+        seen = set()
+        for candidate in candidates:
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            targets.append(candidate)
+        return targets
+
+    def _apply_chat_template_override(
+        self,
+        model_name: str,
+        chat_template_override: Optional[str],
+    ) -> Optional[str]:
+        override = normalize_chat_template_override(chat_template_override)
+        if override is None:
+            self.models[model_name]["chat_template_override"] = None
+            return None
+        applied = False
+        for target in self._chat_template_targets(model_name):
+            try:
+                setattr(target, "chat_template", override)
+                applied = True
+            except Exception as exc:
+                logger.debug(
+                    "Could not set chat_template on %s for %s: %s",
+                    type(target).__name__,
+                    model_name,
+                    exc,
+                )
+        if not applied:
+            raise RuntimeError(
+                f"Model '{model_name}' does not expose a tokenizer chat_template field."
+            )
+        self.models[model_name]["chat_template_override"] = override
+        return override
 
     def _populate_chat_template_info(self, model_name: str) -> None:
         """Mirror InferenceBackend._load_chat_template_info for MLX.

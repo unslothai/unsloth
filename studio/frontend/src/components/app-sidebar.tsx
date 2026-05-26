@@ -121,7 +121,7 @@ function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   }
 }
 
-function formatRelativeShort(iso: string): string {
+function formatRelativeCompact(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";
   const diffMs = Date.now() - then;
@@ -213,10 +213,14 @@ export function AppSidebar() {
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
-    if (isChatRoute) setChatOpen(true);
+    if (!isChatRoute) return;
+    const timer = window.setTimeout(() => setChatOpen(true), 0);
+    return () => window.clearTimeout(timer);
   }, [isChatRoute]);
   useEffect(() => {
-    if (isStudioRoute) setRunsOpen(true);
+    if (!isStudioRoute) return;
+    const timer = window.setTimeout(() => setRunsOpen(true), 0);
+    return () => window.clearTimeout(timer);
   }, [isStudioRoute]);
 
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
@@ -316,12 +320,6 @@ export function AppSidebar() {
     null,
   );
   const [deleteRunArtifacts, setDeleteRunArtifacts] = useState(false);
-
-  useEffect(() => {
-    if (confirmingDelete?.kind === "run") {
-      setDeleteRunArtifacts(false);
-    }
-  }, [confirmingDelete]);
 
   async function commitDelete() {
     const target = confirmingDelete;
@@ -693,7 +691,7 @@ export function AppSidebar() {
                                   {run.display_name ?? run.model_name}
                                 </span>
                                 <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                                  {formatRelativeShort(run.started_at)}
+                                  {formatRelativeCompact(run.started_at)}
                                 </span>
                               </div>
                               <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
@@ -735,9 +733,10 @@ export function AppSidebar() {
                                 <DropdownMenuItem
                                   variant="destructive"
                                   disabled={run.status === "running"}
-                                  onSelect={() =>
-                                    setConfirmingDelete({ kind: "run", run })
-                                  }
+                                  onSelect={() => {
+                                    setDeleteRunArtifacts(false);
+                                    setConfirmingDelete({ kind: "run", run });
+                                  }}
                                 >
                                   <HugeiconsIcon
                                     icon={Delete02Icon}
@@ -762,7 +761,7 @@ export function AppSidebar() {
         <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-transparent group-data-[collapsible=icon]:px-0">
           <SidebarMenu>
             <SidebarMenuItem>
-              <DropdownMenu>
+              <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild={true}>
                   <SidebarMenuButton
                     size="lg"

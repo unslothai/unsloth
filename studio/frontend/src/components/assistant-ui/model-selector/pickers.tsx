@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FormatDot, type FormatDotTone } from "@/components/format-dot";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { matchTokens, tokenizeQuery } from "@/lib/search-text";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -10,42 +11,63 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useRecentRank } from "@/features/chat";
 import {
-  listCachedGguf,
-  listCachedModels,
-  listGgufVariants,
-  listLocalModels,
-  buildRecentRank,
-  type CachedGgufRepo,
-  type CachedModelRepo,
+  createActiveModelDownloadRefsSelector,
+  type ManagedDownload,
+  useDownloadManagerStore,
+} from "@/features/download-jobs";
+import {
+  type CachedInventoryRow,
   type GgufVariantDetail,
-  type LocalModelInfo,
-} from "@/features/chat";
+  type LocalInventoryRow,
+  type LocalSource,
+  listGgufVariants,
+  useGgufVariantsCacheVersion,
+} from "@/features/inventory";
+import { useGpuInfo } from "@/hooks";
 import { formatBytes } from "@/lib/format";
-import { useInventoryVersion } from "@/stores/inventory-events";
-import { classifyUnslothSupport, useGpuInfo } from "@/hooks";
+import { type GgufFitTier, classifyGgufFit, ggufFitTier } from "@/lib/gguf-fit";
+import { looksLikeLocalPath } from "@/lib/local-path";
+import { hasGgufRepoSuffix } from "@/lib/model-identifiers";
+import { matchTokens, tokenizeQuery } from "@/lib/search-text";
+import { fingerprintToken } from "@/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
-import { classifyGgufFit, ggufFitTier, type GgufFitTier } from "@/lib/gguf-fit";
 import type { VramFitStatus } from "@/lib/vram";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import {
   ArrowRight01Icon,
+  CubeIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactNode,
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
+import {
+  isStudioTrainedModel,
+  trainedOutputMeta,
+  trainingMethodLabel,
+} from "./model-output-labels";
 import type {
   LoraModelOption,
   ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./types";
+import {
+  localModelDisplayName,
+  localModelGroupLabel,
+  useChatPickerInventory,
+} from "./use-chat-picker-inventory";
+import {
+  cachedInventoryRowCanChat,
+  localInventoryRowCanChat,
+} from "./chat-picker-compatibility";
 
 function ListLabel({ children }: { children: ReactNode }) {
   return (
@@ -53,6 +75,43 @@ function ListLabel({ children }: { children: ReactNode }) {
       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
         {children}
       </span>
+    </div>
+  );
+}
+
+function InventoryScanNotice({
+  error,
+  hasRows,
+  onRetry,
+}: {
+  error: string;
+  hasRows: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "mx-2.5 mb-1 rounded-[8px] border px-3 py-2 text-[12px] text-muted-foreground",
+        hasRows
+          ? "border-amber-500/30 bg-amber-500/10"
+          : "border-destructive/30 bg-destructive/10",
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span>
+          {hasRows
+            ? "Some on-device sources couldn't be scanned."
+            : "Couldn't scan on-device models."}
+        </span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 text-[12px] font-medium text-foreground transition-colors hover:text-primary"
+        >
+          Retry
+        </button>
+      </div>
+      {!hasRows && <div className="mt-1 break-words text-[11px]">{error}</div>}
     </div>
   );
 }
@@ -79,7 +138,9 @@ function FormatChip({ meta }: { meta: string }) {
       </span>
     );
   }
-  return <span className={cn(FORMAT_CHIP_BASE, FORMAT_CHIP_DEFAULT)}>{meta}</span>;
+  return (
+    <span className={cn(FORMAT_CHIP_BASE, FORMAT_CHIP_DEFAULT)}>{meta}</span>
+  );
 }
 
 function ModelLabel({
@@ -114,6 +175,7 @@ function ModelRow({
   tooltipText,
   showChevron = true,
   expanded,
+  formatTone,
 }: {
   label: string;
   meta?: string;
@@ -125,6 +187,8 @@ function ModelRow({
   tooltipText?: ReactNode;
   showChevron?: boolean;
   expanded?: boolean;
+  /** When set, renders a Hub-style 5px format dot at the leftmost edge. */
+  formatTone?: FormatDotTone | null;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -146,12 +210,10 @@ function ModelRow({
       aria-expanded={expanded || undefined}
       className="picker-row group/row flex w-full items-center gap-2 rounded-[14px] px-3 py-2 text-left text-[13.5px]"
     >
+      {formatTone ? <FormatDot tone={formatTone} /> : null}
       <ModelLabel
         label={label}
-        className={cn(
-          "block min-w-0 flex-1",
-          exceeds && "opacity-60",
-        )}
+        className={cn("block min-w-0 flex-1", exceeds && "opacity-60")}
       />
       <span className="ml-auto flex items-center gap-1.5 shrink-0">
         {vramStatus === "exceeds" && (
@@ -169,9 +231,7 @@ function ModelRow({
             strokeWidth={1.75}
             className={cn(
               "size-3.5 shrink-0 text-muted-foreground/50 transition-all group-hover/row:text-foreground",
-              expanded
-                ? "rotate-90"
-                : "group-hover/row:translate-x-0.5",
+              expanded ? "rotate-90" : "group-hover/row:translate-x-0.5",
             )}
           />
         )}
@@ -179,35 +239,90 @@ function ModelRow({
     </button>
   );
 
-  if (vramTooltipText) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
-        >
-          {label}
-          <span className="block text-[10px] mt-1">{vramTooltipText}</span>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
+      <TooltipContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        className="tooltip-compact max-w-xs break-all"
+      >
+        <span className="block break-words">{label}</span>
+        {vramTooltipText ? (
+          <span className="mt-1 block text-[10px]">{vramTooltipText}</span>
+        ) : null}
+        {tooltipText ? (
+          <span className="mt-1 block break-words text-[10px] text-muted-foreground">
+            {tooltipText}
+          </span>
+        ) : null}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
-  if (tooltipText) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
-        >
-          {tooltipText}
-        </TooltipContent>
-      </Tooltip>
-    );
+function isActiveModelDownload(job: ManagedDownload): boolean {
+  return (
+    job.kind === "model" &&
+    (job.state === "running" || job.state === "cancelling")
+  );
+}
+
+function downloadStatusLabel(job: ManagedDownload): string {
+  if (job.state === "cancelling") return "Cancelling";
+  if (job.fraction > 0) {
+    return `Downloading ${Math.round(Math.min(job.fraction, 0.99) * 100)}%`;
   }
-  return content;
+  return "Downloading";
+}
+
+function DownloadingModelRow({ jobKey }: { jobKey: string }) {
+  const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
+  if (!job || !isActiveModelDownload(job)) return null;
+
+  const meta = job.variant ? `GGUF · ${job.variant}` : "Safetensors";
+  const bytes =
+    job.expectedBytes > 0
+      ? `${formatBytes(job.downloadedBytes)} / ${formatBytes(job.expectedBytes)}`
+      : job.downloadedBytes > 0
+        ? formatBytes(job.downloadedBytes)
+        : null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <div className="picker-row flex w-full items-center gap-2 rounded-[14px] px-3 py-2 text-left text-[13.5px]">
+          <FormatDot tone={job.variant ? "gguf" : "checkpoint"} />
+          <ModelLabel label={job.repoId} className="block min-w-0 flex-1" />
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            <span className="rounded-[6px] border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {downloadStatusLabel(job)}
+            </span>
+            <FormatChip meta={meta} />
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        className="tooltip-compact max-w-xs break-all"
+      >
+        <span className="block break-words">{job.repoId}</span>
+        {job.variant ? (
+          <span className="mt-1 block break-words text-[10px]">
+            Quantization: {job.variant}
+          </span>
+        ) : null}
+        {bytes ? (
+          <span className="mt-1 block text-[10px] text-muted-foreground">
+            {bytes}
+          </span>
+        ) : null}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 // ── GGUF Variant Expander ────────────────────────────────────
@@ -219,6 +334,9 @@ function GgufVariantExpander({
   gpuGb,
   systemRamGb,
   sourceOverride,
+  exportType,
+  preferLocalCache = false,
+  localPath = null,
 }: {
   repoId: string;
   displayName: string;
@@ -226,9 +344,16 @@ function GgufVariantExpander({
   gpuGb?: number;
   systemRamGb?: number;
   sourceOverride?: ModelSelectorChangeMeta["source"];
+  exportType?: ModelSelectorChangeMeta["exportType"];
+  preferLocalCache?: boolean;
+  localPath?: string | null;
 }) {
   const hfToken = useHfTokenStore((s) => s.token) || undefined;
-  const variantKey = `${repoId}::${hfToken ?? ""}`;
+  const variantsVersion = useGgufVariantsCacheVersion(repoId);
+  const localVariantPath = localPath?.trim() || null;
+  const variantKey = `${repoId}::${fingerprintToken(hfToken)}::${
+    preferLocalCache || localVariantPath ? "local" : "remote"
+  }::${localVariantPath ?? ""}::${variantsVersion}`;
   const [variantState, setVariantState] = useState<{
     key: string;
     variants: GgufVariantDetail[] | null;
@@ -261,7 +386,10 @@ function GgufVariantExpander({
   useEffect(() => {
     let canceled = false;
 
-    listGgufVariants(repoId, hfToken)
+    listGgufVariants(repoId, hfToken, {
+      preferLocalCache,
+      localPath: localVariantPath,
+    })
       .then((res) => {
         if (canceled) return;
         setVariantState({
@@ -288,30 +416,46 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId, hfToken, variantKey]);
+  }, [repoId, hfToken, variantKey, preferLocalCache, localVariantPath]);
 
-  // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
-  const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
-    repoId,
-  );
+  const isLocalModelPath = looksLikeLocalPath(repoId);
 
   const handleVariantClick = useCallback(
-    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
+    (
+      quant: string,
+      downloaded?: boolean,
+      partial?: boolean,
+      expectedBytes?: number,
+    ) => {
       onPick({
         id: repoId,
         displayName,
         isGguf: true,
         supportsTrustRemoteCode: false,
         meta: {
-          source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
+          source: sourceOverride ?? (isLocalModelPath ? "local" : "hub"),
           isLora: false,
+          exportType,
           ggufVariant: quant,
-          isDownloaded: isLocalPath ? true : downloaded,
-          expectedBytes: sizeBytes,
+          modelFormat: "gguf",
+          isDownloaded: isLocalModelPath ? true : downloaded,
+          isPartial: isLocalModelPath ? false : partial === true,
+          preferLocalCache,
+          localPath: localVariantPath ?? (isLocalModelPath ? repoId : null),
+          expectedBytes,
         },
       });
     },
-    [displayName, isLocalPath, onPick, repoId, sourceOverride],
+    [
+      displayName,
+      isLocalModelPath,
+      localVariantPath,
+      onPick,
+      preferLocalCache,
+      repoId,
+      sourceOverride,
+      exportType,
+    ],
   );
 
   const getGgufFit = useCallback(
@@ -320,16 +464,22 @@ function GgufVariantExpander({
     [gpuGb, systemRamGb],
   );
 
-  const downloadedVariants = useMemo(
-    () => (variants ?? []).filter((v) => v.downloaded),
+  const availableVariants = useMemo(
+    () => (variants ?? []).filter((v) => v.downloaded || v.partial),
     [variants],
   );
+  const downloadedVariants = useMemo(
+    () => availableVariants.filter((v) => v.downloaded && !v.partial),
+    [availableVariants],
+  );
+  const recentRank = useRecentRank();
 
   const effectiveRecommended = useMemo(() => {
     if (downloadedVariants.length === 0) return null;
     if (!gpuGb || gpuGb <= 0) return defaultVariant;
     const defaultV = downloadedVariants.find((v) => v.quant === defaultVariant);
-    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom") return defaultVariant;
+    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
+      return defaultVariant;
     const fitting = downloadedVariants.filter(
       (v) => getGgufFit(v.size_bytes) !== "oom",
     );
@@ -350,10 +500,23 @@ function GgufVariantExpander({
       if (f === "tight") return 1;
       return 0;
     };
-    return [...downloadedVariants].sort((a, b) => {
+    const statusOf = (v: GgufVariantDetail) =>
+      v.downloaded && !v.partial ? 0 : v.partial ? 1 : 2;
+    return [...availableVariants].sort((a, b) => {
+      const aStatus = statusOf(a);
+      const bStatus = statusOf(b);
+      if (aStatus !== bStatus) return aStatus - bStatus;
       const aTier = tierOf(a);
       const bTier = tierOf(b);
       if (aTier !== bTier) return aTier - bTier;
+      const aRecent = recentRank.rank(repoId, a.quant);
+      const bRecent = recentRank.rank(repoId, b.quant);
+      if (aRecent !== bRecent) {
+        if (Number.isFinite(aRecent) && Number.isFinite(bRecent)) {
+          return aRecent - bRecent;
+        }
+        return Number.isFinite(aRecent) ? -1 : 1;
+      }
       const aIsRec = a.quant === effectiveRecommended;
       const bIsRec = b.quant === effectiveRecommended;
       if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
@@ -361,7 +524,7 @@ function GgufVariantExpander({
         ? b.size_bytes - a.size_bytes
         : a.size_bytes - b.size_bytes;
     });
-  }, [downloadedVariants, effectiveRecommended, getGgufFit]);
+  }, [availableVariants, effectiveRecommended, getGgufFit, recentRank, repoId]);
 
   if (loading) {
     return (
@@ -403,7 +566,12 @@ function GgufVariantExpander({
             key={v.filename}
             type="button"
             onClick={() =>
-              handleVariantClick(v.quant, v.downloaded, v.size_bytes)
+              handleVariantClick(
+                v.quant,
+                v.downloaded,
+                v.partial,
+                v.download_size_bytes ?? v.size_bytes,
+              )
             }
             className="picker-row group/qrow flex w-full min-w-0 items-center justify-between gap-2 rounded-[12px] px-3 py-1.5 text-left"
           >
@@ -433,6 +601,11 @@ function GgufVariantExpander({
                   TIGHT
                 </span>
               )}
+              {v.partial && (
+                <span className="text-[9px] font-medium text-status-warning">
+                  partial
+                </span>
+              )}
               <span className="text-[10px] text-muted-foreground tabular-nums">
                 {formatBytes(v.size_bytes)}
               </span>
@@ -451,33 +624,16 @@ function GgufVariantExpander({
 
 // ── Detect GGUF repos by naming convention or hub tag ────────────────────
 
-function hasGgufSuffix(id: string): boolean {
-  return /-GGUF(?:$|-)/i.test(id);
-}
-
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
-  return Boolean(hintedIsGguf) || hasGgufSuffix(id);
+  return Boolean(hintedIsGguf) || hasGgufRepoSuffix(id);
 }
 
-// Module-level caches so re-mounting the popover shows results instantly
-let _cachedGgufCache: CachedGgufRepo[] = [];
-let _cachedModelsCache: CachedModelRepo[] = [];
-let _lmStudioCache: LocalModelInfo[] = [];
-let _cachedInventoryVersion = -1;
-// The cached-repo lists are HF-token-scoped (gated repos differ per token), so
-// the cache is only fresh when both the inventory version AND the token match.
-let _cachedToken: string | null = null;
-
-/** Sort external (lmstudio-source) models with unsloth publisher first. */
-function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
-  return [...models].sort((a, b) => {
-    const aUnsloth = (a.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
-    const bUnsloth = (b.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
-    if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
-    return (a.model_id ?? a.display_name).localeCompare(
-      b.model_id ?? b.display_name,
-    );
-  });
+function formatToneForModel(
+  modelFormat: LocalInventoryRow["modelFormat"],
+): FormatDotTone {
+  if (modelFormat === "gguf") return "gguf";
+  if (modelFormat === "adapter") return "adapter";
+  return "checkpoint";
 }
 
 // ── Hub Model Picker ──────────────────────────────────────────
@@ -485,10 +641,16 @@ function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
 export function HubModelPicker({
   value,
   onPick,
+  trainedModels = [],
+  enabled = true,
 }: {
   value?: string;
   onPick: (target: ModelPickTarget) => void;
+  /** Studio training & export outputs forwarded from the Train tab data source. */
+  trainedModels?: LoraModelOption[];
+  enabled?: boolean;
 }) {
+  const navigate = useNavigate();
   const gpu = useGpuInfo();
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -496,76 +658,26 @@ export function HubModelPicker({
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
-  const hfToken = useHfTokenStore((s) => s.token) || undefined;
-  const inventoryVersion = useInventoryVersion();
-  const cacheFresh =
-    _cachedInventoryVersion === inventoryVersion &&
-    _cachedToken === (hfToken ?? null);
+  const {
+    cachedGguf,
+    cachedModels,
+    cachedReady,
+    inventoryError,
+    localModels,
+    refreshInventory,
+  } = useChatPickerInventory({ enabled });
+  const selectActiveDownloadRefs = useMemo(
+    () => createActiveModelDownloadRefsSelector(),
+    [],
+  );
+  const activeDownloadRefs = useDownloadManagerStore(selectActiveDownloadRefs);
 
-  const [cachedGguf, setCachedGguf] =
-    useState<CachedGgufRepo[]>(_cachedGgufCache);
-  const [cachedModels, setCachedModels] =
-    useState<CachedModelRepo[]>(_cachedModelsCache);
-  const alreadyCached =
-    cacheFresh &&
-    (_cachedGgufCache.length > 0 || _cachedModelsCache.length > 0);
-  const [cachedReady, setCachedReady] = useState(alreadyCached);
-  const [lmStudioModels, setLmStudioModels] =
-    useState<LocalModelInfo[]>(_lmStudioCache);
-
-  const refreshLocalModelsList = useCallback(() => {
-    listLocalModels()
-      .then((res) => {
-        const lm = sortLmStudio(
-          res.models.filter((m) => m.source === "lmstudio"),
-        );
-        _lmStudioCache = lm;
-        setLmStudioModels(lm);
-      })
-      .catch(() => {});
-  }, []);
-
-  const loadedKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const loadKey = `${inventoryVersion}::${hfToken ?? ""}`;
-    if (loadedKeyRef.current === loadKey) return;
-    loadedKeyRef.current = loadKey;
-    const controller = new AbortController();
-    const { signal } = controller;
-    refreshLocalModelsList();
-    let done = 0;
-    const check = () => {
-      if (signal.aborted) return;
-      if (++done >= 2) {
-        setCachedReady(true);
-        _cachedInventoryVersion = inventoryVersion;
-        _cachedToken = hfToken ?? null;
-      }
-    };
-    listCachedGguf(hfToken, signal)
-      .then((v) => {
-        if (signal.aborted) return;
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {})
-      .finally(check);
-    listCachedModels(hfToken, signal)
-      .then((v) => {
-        if (signal.aborted) return;
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {})
-      .finally(check);
-    return () => {
-      controller.abort();
-      // Reset so a same-key remount (StrictMode/Fast Refresh) reloads instead
-      // of skipping past the guard onto the aborted run, stuck loading.
-      loadedKeyRef.current = null;
-    };
-  }, [refreshLocalModelsList, inventoryVersion, hfToken]);
+  const handleManageOnDevice = useCallback(() => {
+    void navigate({
+      to: "/models",
+      search: { tab: "downloaded" },
+    });
+  }, [navigate]);
 
   const filterTokens = useMemo(() => tokenizeQuery(filter), [filter]);
   const matchesFilter = useCallback(
@@ -573,270 +685,418 @@ export function HubModelPicker({
     [filterTokens],
   );
 
-  const isRepoCompatible = useCallback(
-    (
-      repo: {
-        repo_id: string;
-        pipeline_tag?: string | null;
-        tags?: string[];
-        library_name?: string | null;
-      },
-    ): boolean => {
-      return (
-        classifyUnslothSupport({
-          modelId: repo.repo_id,
-          pipelineTag: repo.pipeline_tag,
-          tags: repo.tags,
-          libraryName: repo.library_name,
-          deviceType,
-        }).status !== "unsupported"
-      );
-    },
-    [deviceType],
-  );
-
-  const isLocalCompatible = useCallback(
-    (...candidates: ReadonlyArray<string | null | undefined>): boolean => {
-      for (const candidate of candidates) {
-        if (!candidate) continue;
-        if (
-          classifyUnslothSupport({ modelId: candidate, deviceType }).status ===
-          "unsupported"
-        ) {
-          return false;
-        }
-      }
-      return true;
-    },
+  const isCachedChatCompatible = useCallback(
+    (repo: CachedInventoryRow): boolean =>
+      cachedInventoryRowCanChat(repo, deviceType),
     [deviceType],
   );
 
   const filteredGguf = useMemo(
     () =>
       cachedGguf.filter(
-        (c) => matchesFilter(c.repo_id) && isRepoCompatible(c),
+        (c) => matchesFilter(c.repoId) && isCachedChatCompatible(c),
       ),
-    [cachedGguf, isRepoCompatible, matchesFilter],
+    [cachedGguf, isCachedChatCompatible, matchesFilter],
   );
   const filteredModels = useMemo(
     () =>
       cachedModels.filter(
-        (c) => !c.partial && matchesFilter(c.repo_id) && isRepoCompatible(c),
+        (c) => matchesFilter(c.repoId) && isCachedChatCompatible(c),
       ),
-    [cachedModels, isRepoCompatible, matchesFilter],
+    [cachedModels, isCachedChatCompatible, matchesFilter],
   );
-  const filteredLmStudio = useMemo(
+  const filteredLocalModels = useMemo(
     () =>
-      lmStudioModels.filter((m) => {
-        const label = m.model_id ?? m.display_name;
-        if (!matchesFilter(label)) return false;
-        const pathBase = m.path.split(/[/\\]/).pop() ?? "";
-        const isGgufEntry =
-          isGgufRepo(m.id) ||
-          isGgufRepo(m.display_name) ||
-          m.path.toLowerCase().endsWith(".gguf");
-        if (isGgufEntry) return true;
-        return isLocalCompatible(m.model_id, m.display_name, pathBase);
+      localModels.filter((m) => {
+        if (m.partial) return false;
+        const label = localModelDisplayName(m);
+        const searchText = `${label} ${m.title} ${m.repoId ?? ""} ${
+          m.loadId
+        } ${m.baseModel ?? ""} ${m.path}`;
+        if (!matchesFilter(searchText)) return false;
+        return localInventoryRowCanChat(m, deviceType);
       }),
-    [isLocalCompatible, lmStudioModels, matchesFilter],
+    [deviceType, localModels, matchesFilter],
   );
 
-  const recentRank = useMemo(() => buildRecentRank(), []);
+  const recentRank = useRecentRank();
   const sortedGguf = useMemo(
     () =>
       [...filteredGguf].sort((a, b) => {
-        const ra = recentRank.rank(a.repo_id);
-        const rb = recentRank.rank(b.repo_id);
+        const ra = recentRank.rank(a.repoId);
+        const rb = recentRank.rank(b.repoId);
         if (ra !== rb) return ra - rb;
-        return a.repo_id.localeCompare(b.repo_id);
+        return a.repoId.localeCompare(b.repoId);
       }),
     [filteredGguf, recentRank],
   );
   const sortedModels = useMemo(
     () =>
       [...filteredModels].sort((a, b) => {
-        const ra = recentRank.rank(a.repo_id);
-        const rb = recentRank.rank(b.repo_id);
+        const ra = recentRank.rank(a.repoId);
+        const rb = recentRank.rank(b.repoId);
         if (ra !== rb) return ra - rb;
-        return a.repo_id.localeCompare(b.repo_id);
+        return a.repoId.localeCompare(b.repoId);
       }),
     [filteredModels, recentRank],
   );
-  const sortedLmStudio = useMemo(
+  const sortedLocalModels = useMemo(
     () =>
-      [...filteredLmStudio].sort((a, b) => {
+      [...filteredLocalModels].sort((a, b) => {
         const ra = recentRank.rank(a.id);
         const rb = recentRank.rank(b.id);
         if (ra !== rb) return ra - rb;
-        const aLabel = a.model_id ?? a.display_name;
-        const bLabel = b.model_id ?? b.display_name;
-        return aLabel.localeCompare(bLabel);
+        return localModelDisplayName(a).localeCompare(localModelDisplayName(b));
       }),
-    [filteredLmStudio, recentRank],
+    [filteredLocalModels, recentRank],
+  );
+
+  // Studio outputs that are standalone full models also belong in On Device.
+  // Adapters remain Train-only because they need a base model at load time.
+  const sortedTrainedOutputs = useMemo(() => {
+    const candidates = trainedModels.filter(
+      (m) => isStudioTrainedModel(m) && m.exportType !== "lora",
+    );
+    return candidates
+      .filter((m) => {
+        const text = `${m.runDisplayName ?? ""} ${m.name} ${m.id} ${
+          m.baseModel ?? ""
+        }`;
+        return matchesFilter(text);
+      })
+      .sort((a, b) => {
+        const ra = recentRank.rank(a.id);
+        const rb = recentRank.rank(b.id);
+        if (ra !== rb) return ra - rb;
+        const at = a.updatedAt ?? -1;
+        const bt = b.updatedAt ?? -1;
+        if (at !== bt) return bt - at;
+        return (a.runDisplayName ?? a.name).localeCompare(
+          b.runDisplayName ?? b.name,
+        );
+      });
+  }, [trainedModels, matchesFilter, recentRank]);
+
+  const activeDownloads = useMemo(
+    () =>
+      activeDownloadRefs.filter((job) =>
+        matchesFilter(`${job.repoId} ${job.variant ?? ""}`),
+      ),
+    [activeDownloadRefs, matchesFilter],
   );
 
   const hasFilteredDownloaded =
-    sortedGguf.length > 0 || (!chatOnly && sortedModels.length > 0);
-  const hasFilteredLmStudio = chatOnly && sortedLmStudio.length > 0;
+    sortedGguf.length > 0 || sortedModels.length > 0;
+  const hasFilteredLocalModels = sortedLocalModels.length > 0;
+  const hasFilteredTrainedOutputs = sortedTrainedOutputs.length > 0;
+  const hasActiveDownloads = activeDownloads.length > 0;
+  const hasAnyInventoryRows =
+    cachedGguf.length > 0 ||
+    cachedModels.length > 0 ||
+    localModels.length > 0 ||
+    sortedTrainedOutputs.length > 0 ||
+    hasActiveDownloads;
+  const localModelGroups = useMemo(
+    () =>
+      ["hf_cache", "lmstudio", "ollama", "models_dir", "custom"]
+        .map((source) => ({
+          label: localModelGroupLabel(source as LocalSource),
+          models: sortedLocalModels.filter((model) => model.source === source),
+        }))
+        .filter((group) => group.models.length > 0),
+    [sortedLocalModels],
+  );
 
   return (
     <div className="space-y-2">
-      <div className="relative">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          strokeWidth={1.8}
-          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <Input
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-          placeholder="Search on-device models"
-          className="field-soft h-9 rounded-full pl-10 pr-3 text-[12.5px] placeholder:text-muted-foreground/80"
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            strokeWidth={1.8}
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Search on-device models"
+            className="field-soft h-9 rounded-full pl-10 pr-3 text-[12.5px] placeholder:text-muted-foreground/80"
+          />
+        </div>
+        {chatOnly ? null : (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleManageOnDevice}
+                aria-label="Manage on-device models in Hub"
+                className="h-9 rounded-full border-border/70 bg-background/70 px-3 text-[12.5px] text-muted-foreground shadow-none hover:bg-muted/70 hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={CubeIcon}
+                  strokeWidth={1.75}
+                  data-icon="inline-start"
+                  className="size-3.5"
+                />
+                Manage
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="right"
+              sideOffset={8}
+              className="tooltip-compact"
+            >
+              Open Hub On Device
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       <div className="max-h-72 overflow-y-auto">
         <div className="py-1">
-          {!cachedReady ? (
+          {hasActiveDownloads && (
+            <div>
+              <ListLabel>Downloading</ListLabel>
+              {activeDownloads.map((job) => (
+                <DownloadingModelRow key={job.key} jobKey={job.key} />
+              ))}
+            </div>
+          )}
+
+          {cachedReady ? (
+            <>
+              {inventoryError && (
+                <InventoryScanNotice
+                  error={inventoryError}
+                  hasRows={hasAnyInventoryRows}
+                  onRetry={() => void refreshInventory()}
+                />
+              )}
+
+              {hasFilteredDownloaded && (
+                <>
+                  {sortedGguf.map((c) => (
+                    <div key={c.id}>
+                      <ModelRow
+                        label={c.repoId}
+                        meta={formatBytes(c.bytes)}
+                        selected={value === c.loadId}
+                        expanded={expandedGguf === c.id}
+                        formatTone="gguf"
+                        onClick={() =>
+                          setExpandedGguf((prev) =>
+                            prev === c.id ? null : c.id,
+                          )
+                        }
+                        vramStatus={null}
+                      />
+                      {expandedGguf === c.id && (
+                        <GgufVariantExpander
+                          repoId={c.loadId}
+                          displayName={c.repoId}
+                          onPick={onPick}
+                          preferLocalCache={true}
+                          localPath={c.cachePath ?? null}
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={
+                            gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  ))}
+                  {sortedModels.map((c) => (
+                    <ModelRow
+                      key={c.id}
+                      label={c.repoId}
+                      meta={formatBytes(c.bytes)}
+                      selected={value === c.loadId}
+                      formatTone={formatToneForModel(c.modelFormat)}
+                      showChevron={false}
+                      onClick={() =>
+                        onPick({
+                          id: c.loadId,
+                          displayName: c.repoId,
+                          isGguf: false,
+                          supportsTrustRemoteCode: true,
+                          meta: {
+                            source: "hub",
+                            isLora: false,
+                            isDownloaded: true,
+                            preferLocalCache: true,
+                            localPath: c.cachePath ?? null,
+                            modelFormat: c.modelFormat,
+                          },
+                        })
+                      }
+                      vramStatus={null}
+                    />
+                  ))}
+                </>
+              )}
+
+              {hasFilteredLocalModels && (
+                <>
+                  {localModelGroups.map((group) => (
+                    <div key={group.label}>
+                      <ListLabel>{group.label}</ListLabel>
+                      {group.models.map((m) => {
+                        const isGguf = m.modelFormat === "gguf";
+                        const isGgufDir =
+                          isGguf && m.capabilities.requiresVariant;
+                        const label = localModelDisplayName(m);
+                        return (
+                          <div key={m.id}>
+                            <ModelRow
+                              label={label}
+                              meta={localModelGroupLabel(m.source)}
+                              selected={value === m.loadId}
+                              expanded={isGgufDir && expandedGguf === m.id}
+                              formatTone={formatToneForModel(m.modelFormat)}
+                              showChevron={isGgufDir}
+                              onClick={() => {
+                                if (isGgufDir) {
+                                  setExpandedGguf((prev) =>
+                                    prev === m.id ? null : m.id,
+                                  );
+                                } else {
+                                  onPick({
+                                    id: m.loadId,
+                                    displayName: label,
+                                    isGguf,
+                                    supportsTrustRemoteCode: !isGguf,
+                                    meta: {
+                                      source: "local",
+                                      isLora: false,
+                                      isDownloaded: true,
+                                      localPath: m.path,
+                                      modelFormat: m.modelFormat,
+                                    },
+                                  });
+                                }
+                              }}
+                              vramStatus={null}
+                            />
+                            {isGgufDir && expandedGguf === m.id && (
+                              <GgufVariantExpander
+                                repoId={m.loadId}
+                                displayName={label}
+                                onPick={onPick}
+                                sourceOverride="local"
+                                localPath={m.path}
+                                gpuGb={
+                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                }
+                                systemRamGb={
+                                  gpu.available
+                                    ? gpu.systemRamAvailableGb
+                                    : undefined
+                                }
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {hasFilteredTrainedOutputs && (
+                <div>
+                  <ListLabel>Trained outputs</ListLabel>
+                  {sortedTrainedOutputs.map((m) => {
+                    const isGguf = m.exportType === "gguf";
+                    const label = m.runDisplayName?.trim() || m.name;
+                    const sourceLabel = trainedOutputMeta(m);
+                    // Map LoraModelOption.source onto the picker meta vocab so the
+                    // downstream delete flow keeps working: "training" outputs are
+                    // routed through meta.source="lora" (the existing convention
+                    // for studio training-runs in pickerSourceToDeleteSource) and
+                    // "exported" stays "exported".
+                    const pickSource: ModelSelectorChangeMeta["source"] =
+                      m.source === "exported" ? "exported" : "lora";
+                    return (
+                      <div key={m.id}>
+                        <ModelRow
+                          label={label}
+                          meta={sourceLabel}
+                          selected={value === m.id}
+                          expanded={isGguf && expandedGguf === m.id}
+                          formatTone={isGguf ? "gguf" : "checkpoint"}
+                          showChevron={isGguf}
+                          tooltipText={
+                            m.baseModel ? `Base: ${m.baseModel}` : undefined
+                          }
+                          onClick={() => {
+                            if (isGguf) {
+                              setExpandedGguf((prev) =>
+                                prev === m.id ? null : m.id,
+                              );
+                              return;
+                            }
+                            onPick({
+                              id: m.id,
+                              displayName: label,
+                              isGguf,
+                              supportsTrustRemoteCode: !isGguf,
+                              meta: {
+                                source: pickSource,
+                                isLora: false,
+                                exportType: m.exportType,
+                                isDownloaded: true,
+                                localPath: m.id,
+                                modelFormat: "safetensors",
+                              },
+                            });
+                          }}
+                          vramStatus={null}
+                        />
+                        {isGguf && expandedGguf === m.id && (
+                          <GgufVariantExpander
+                            repoId={m.id}
+                            displayName={label}
+                            onPick={onPick}
+                            sourceOverride={pickSource}
+                            exportType="gguf"
+                            gpuGb={
+                              gpu.available ? gpu.memoryTotalGb : undefined
+                            }
+                            systemRamGb={
+                              gpu.available
+                                ? gpu.systemRamAvailableGb
+                                : undefined
+                            }
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!hasActiveDownloads &&
+                !hasFilteredDownloaded &&
+                !hasFilteredLocalModels &&
+                !hasFilteredTrainedOutputs && (
+                  <div className="px-2.5 py-3 text-xs text-muted-foreground">
+                    {filter.trim().length > 0
+                      ? "No matching models."
+                      : inventoryError
+                        ? "No models could be shown."
+                        : "No on-device models yet."}
+                  </div>
+                )}
+            </>
+          ) : (
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
                 Loading models…
               </span>
             </div>
-          ) : (
-            <>
-              {hasFilteredDownloaded && (
-                <>
-                  {sortedGguf.map((c) => (
-                    <div key={c.repo_id}>
-                      <ModelRow
-                        label={c.repo_id}
-                        meta={`GGUF · ${formatBytes(c.size_bytes)}`}
-                        selected={value === c.repo_id}
-                        expanded={expandedGguf === c.repo_id}
-                        onClick={() =>
-                          setExpandedGguf((prev) =>
-                            prev === c.repo_id ? null : c.repo_id,
-                          )
-                        }
-                        vramStatus={null}
-                      />
-                      {expandedGguf === c.repo_id && (
-                        <GgufVariantExpander
-                          repoId={c.repo_id}
-                          displayName={c.repo_id}
-                          onPick={onPick}
-                          gpuGb={
-                            gpu.available ? gpu.memoryTotalGb : undefined
-                          }
-                          systemRamGb={
-                            gpu.available
-                              ? gpu.systemRamAvailableGb
-                              : undefined
-                          }
-                        />
-                      )}
-                    </div>
-                  ))}
-                  {!chatOnly &&
-                    sortedModels.map((c) => (
-                      <ModelRow
-                        key={c.repo_id}
-                        label={c.repo_id}
-                        meta={formatBytes(c.size_bytes)}
-                        selected={value === c.repo_id}
-                        onClick={() =>
-                          onPick({
-                            id: c.repo_id,
-                            displayName: c.repo_id,
-                            isGguf: false,
-                            supportsTrustRemoteCode: true,
-                            meta: {
-                              source: "hub",
-                              isLora: false,
-                              isDownloaded: true,
-                            },
-                          })
-                        }
-                        vramStatus={null}
-                      />
-                    ))}
-                </>
-              )}
-
-              {hasFilteredLmStudio && (
-                <>
-                  <ListLabel>External</ListLabel>
-                  {sortedLmStudio.map((m) => {
-                      // A standalone .gguf file is one weight to load directly;
-                      // only a GGUF repo/directory (named *-GGUF) holds multiple
-                      // variants to expand. Detecting both keeps the label and
-                      // the click path in agreement.
-                      const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
-                      const isGgufDir =
-                        !isGgufFile &&
-                        (isGgufRepo(m.id) || isGgufRepo(m.display_name));
-                      const isGguf = isGgufFile || isGgufDir;
-                      return (
-                        <div key={m.id}>
-                          <ModelRow
-                            label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
-                            selected={value === m.id}
-                            expanded={isGgufDir && expandedGguf === m.id}
-                            onClick={() => {
-                              if (isGgufDir) {
-                                setExpandedGguf((prev) =>
-                                  prev === m.id ? null : m.id,
-                                );
-                              } else {
-                                onPick({
-                                  id: m.id,
-                                  displayName: m.model_id ?? m.display_name,
-                                  isGguf: isGgufFile,
-                                  supportsTrustRemoteCode: !isGgufFile,
-                                  meta: {
-                                    source: "local",
-                                    isLora: false,
-                                    isDownloaded: true,
-                                  },
-                                });
-                              }
-                            }}
-                            vramStatus={null}
-                          />
-                          {isGgufDir && expandedGguf === m.id && (
-                            <GgufVariantExpander
-                              repoId={m.id}
-                              displayName={m.model_id ?? m.display_name}
-                              onPick={onPick}
-                              gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
-                              }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                </>
-              )}
-
-              {!hasFilteredDownloaded && !hasFilteredLmStudio && (
-                <div className="px-2.5 py-3 text-xs text-muted-foreground">
-                  {filter.trim().length > 0
-                    ? "No matching models."
-                    : chatOnly
-                      ? "No external models found."
-                      : "No on-device models yet."}
-                </div>
-              )}
-            </>
           )}
         </div>
       </div>
@@ -848,37 +1108,38 @@ function describeAdapter(adapter: LoraModelOption) {
   const isLocal = adapter.source === "local";
   const isTraining = adapter.source === "training";
   const isExported = adapter.source === "exported";
+  const isStudioTrained = isStudioTrainedModel(adapter);
   const isMerged = adapter.exportType === "merged";
   const isGguf = adapter.exportType === "gguf";
   const isExportedGguf = isExported && isGguf;
   const isTrainingFull = isTraining && isMerged;
   const isLocalGgufDir =
     isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+  const trainedMeta = isStudioTrained ? trainedOutputMeta(adapter) : null;
   const tag = isLocal
     ? isLocalGgufDir
       ? "GGUF"
       : "Local"
     : isGguf
       ? "GGUF"
-      : isTrainingFull
-        ? "Full"
-        : isExported
-          ? isMerged
-            ? "Merged"
-            : "LoRA"
+      : isMerged
+        ? "Safetensors"
+        : trainedMeta
+          ? (trainingMethodLabel(adapter.trainingMethod) ?? "Adapter")
           : "LoRA";
   const meta = isLocal
     ? isLocalGgufDir
       ? "GGUF"
       : "Local"
     : isTrainingFull
-      ? "Full finetune"
+      ? (trainedMeta ?? "Full · Safetensors")
       : isExported
-        ? `${tag} · Exported`
-        : tag;
+        ? (trainedMeta ?? `${tag} · Exported`)
+        : (trainedMeta ?? tag);
   return {
     isLocal,
     isExported,
+    isTraining,
     isMerged,
     isGguf,
     isExportedGguf,
@@ -909,11 +1170,18 @@ export function LoraModelPicker({
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   const gpu = useGpuInfo();
 
-  const recentRank = useMemo(() => buildRecentRank(), []);
+  const recentRank = useRecentRank();
+
+  // Train is the user's training-output history. It includes adapters and
+  // standalone trained checkpoints, while arbitrary local/base models stay out.
+  const trainedOutputs = useMemo(
+    () => loraModels.filter((m) => isStudioTrainedModel(m)),
+    [loraModels],
+  );
 
   const normalized = useMemo(
     () =>
-      loraModels
+      trainedOutputs
         .map((model) => ({
           ...model,
           baseModel:
@@ -932,7 +1200,7 @@ export function LoraModelPicker({
           if (aTime !== bTime) return bTime - aTime;
           return a.name.localeCompare(b.name);
         }),
-    [loraModels],
+    [trainedOutputs],
   );
 
   const queryTokens = useMemo(() => tokenizeQuery(query), [query]);
@@ -965,12 +1233,8 @@ export function LoraModelPicker({
     }
 
     return [...out.entries()].sort((a, b) => {
-      const aRank = Math.min(
-        ...a[1].map((model) => recentRank.rank(model.id)),
-      );
-      const bRank = Math.min(
-        ...b[1].map((model) => recentRank.rank(model.id)),
-      );
+      const aRank = Math.min(...a[1].map((model) => recentRank.rank(model.id)));
+      const bRank = Math.min(...b[1].map((model) => recentRank.rank(model.id)));
       if (aRank !== bRank) return aRank - bRank;
       const aLatest = Math.max(...a[1].map((model) => model.updatedAt ?? -1));
       const bLatest = Math.max(...b[1].map((model) => model.updatedAt ?? -1));
@@ -990,7 +1254,7 @@ export function LoraModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search fine-tuned models"
+          placeholder="Search trained models"
           className="field-soft h-9 rounded-full pl-10 pr-3 text-[12.5px] placeholder:text-muted-foreground/80"
         />
       </div>
@@ -1033,8 +1297,7 @@ export function LoraModelPicker({
                           !!adapter.runDisplayName &&
                           adapter.runDisplayName !== adapter.name;
                         const ggufExpanded =
-                          info.isExpandableGguf &&
-                          expandedGguf === adapter.id;
+                          info.isExpandableGguf && expandedGguf === adapter.id;
                         return (
                           <div key={adapter.id}>
                             <Tooltip>
@@ -1048,9 +1311,7 @@ export function LoraModelPicker({
                                   onClick={() => {
                                     if (info.isExpandableGguf) {
                                       setExpandedGguf((prev) =>
-                                        prev === adapter.id
-                                          ? null
-                                          : adapter.id,
+                                        prev === adapter.id ? null : adapter.id,
                                       );
                                       return;
                                     }
@@ -1061,8 +1322,8 @@ export function LoraModelPicker({
                                         : "lora";
                                     onPick({
                                       id: adapter.id,
-                                      displayName: adapter.name,
-                                      isGguf: false,
+                                      displayName: title,
+                                      isGguf: info.isGguf,
                                       supportsTrustRemoteCode:
                                         !info.isLocal && !info.isGguf,
                                       meta: {
@@ -1071,7 +1332,13 @@ export function LoraModelPicker({
                                           !info.isLocal &&
                                           !info.isMerged &&
                                           !info.isGguf,
+                                        exportType: adapter.exportType,
                                         isDownloaded: true,
+                                        modelFormat: info.isGguf
+                                          ? "gguf"
+                                          : info.isMerged
+                                            ? "safetensors"
+                                            : "adapter",
                                       },
                                     });
                                   }}
@@ -1103,7 +1370,9 @@ export function LoraModelPicker({
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent
-                                side="left"
+                                side="right"
+                                align="start"
+                                sideOffset={8}
                                 className="tooltip-compact max-w-xs break-all"
                               >
                                 <span className="block break-words">
@@ -1122,12 +1391,10 @@ export function LoraModelPicker({
                             {ggufExpanded && (
                               <GgufVariantExpander
                                 repoId={adapter.id}
-                                displayName={adapter.name}
+                                displayName={title}
                                 onPick={onPick}
                                 gpuGb={
-                                  gpu.available
-                                    ? gpu.memoryTotalGb
-                                    : undefined
+                                  gpu.available ? gpu.memoryTotalGb : undefined
                                 }
                                 systemRamGb={
                                   gpu.available
@@ -1136,6 +1403,9 @@ export function LoraModelPicker({
                                 }
                                 sourceOverride={
                                   info.isExportedGguf ? "exported" : undefined
+                                }
+                                exportType={
+                                  info.isExportedGguf ? "gguf" : undefined
                                 }
                               />
                             )}
@@ -1150,7 +1420,6 @@ export function LoraModelPicker({
           )}
         </div>
       </div>
-
     </div>
   );
 }

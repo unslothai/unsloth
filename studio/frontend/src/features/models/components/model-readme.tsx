@@ -2,11 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
+import { useOnlineStatus } from "@/hooks";
+import { LruMap } from "@/lib/lru-map";
+import { isBrowserOffline } from "@/lib/network";
+import { fingerprintToken } from "@/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import { useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  startTransition,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { ComponentProps } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, type Components } from "streamdown";
 import {
   createReadmeUrlTransform,
   fetchReadme,
@@ -25,6 +36,9 @@ interface ReadmeState {
   error: string | null;
   plugins: ReadmePlugins | null;
 }
+
+type ReadmeCacheEntry = Pick<ReadmeState, "body" | "baseUrl" | "error">;
+type ReadmeSubject = "model" | "dataset" | "baseModel";
 
 const README_ALLOWED_TAGS: NonNullable<
   ComponentProps<typeof Streamdown>["allowedTags"]
@@ -47,6 +61,53 @@ const README_ALLOWED_TAGS: NonNullable<
 
 const READMEX_NEEDS_MATH = /\$\$|\\\(|\\\[/;
 const READMEX_NEEDS_MERMAID = /```mermaid\b/;
+const README_RENDER_CHAR_LIMIT = 120_000;
+const README_TRUNCATED_NOTICE =
+  "\n\n---\n\nCard truncated for performance. Open the repository on Hugging Face to read the full README.";
+const readmeCache = new LruMap<
+  string,
+  ReadmeCacheEntry | Promise<ReadmeCacheEntry>
+>(64);
+const ReadmeOnlineContext = createContext(true);
+
+function isReadmeCachePromise(
+  entry: ReadmeCacheEntry | Promise<ReadmeCacheEntry>,
+): entry is Promise<ReadmeCacheEntry> {
+  return typeof (entry as Promise<ReadmeCacheEntry>).then === "function";
+}
+
+function readResolvedReadmeCache(cacheKey: string): ReadmeCacheEntry | null {
+  const cached = readmeCache.get(cacheKey);
+  if (!cached || isReadmeCachePromise(cached)) {
+    return null;
+  }
+  return cached;
+}
+
+function readmeStateFromEntry(
+  key: string,
+  entry: ReadmeCacheEntry,
+): ReadmeState {
+  return {
+    key,
+    body: entry.body,
+    baseUrl: entry.baseUrl,
+    loading: false,
+    error: entry.error,
+    plugins: null,
+  };
+}
+
+function hasReadmeContent(state: Pick<ReadmeState, "body" | "error">): boolean {
+  return state.error == null && state.body != null;
+}
+
+function prepareReadmeBody(markdown: string): string {
+  const { body } = stripFrontmatter(markdown);
+  const cleaned = stripChromeHeadings(body).trim();
+  if (cleaned.length <= README_RENDER_CHAR_LIMIT) return cleaned;
+  return `${cleaned.slice(0, README_RENDER_CHAR_LIMIT).trimEnd()}${README_TRUNCATED_NOTICE}`;
+}
 
 const PROSE = cn(
   "max-w-none text-[13.5px] leading-[1.7] text-foreground/85",
@@ -68,6 +129,215 @@ const PROSE = cn(
   "[&_hr]:my-4 [&_hr]:border-border/40",
 );
 
+function ReadmeLink({
+  node,
+  href,
+  target,
+  rel,
+  className,
+  title,
+  children,
+  ...props
+}: ComponentProps<"a"> & { node?: unknown }) {
+  void node;
+  const online = useContext(ReadmeOnlineContext);
+  const rawHref = typeof href === "string" ? href.trim() : "";
+  const disabledExternal =
+    !online &&
+    rawHref.length > 0 &&
+    !rawHref.startsWith("#") &&
+    (/^(https?:)?\/\//i.test(rawHref) || rawHref.startsWith("/"));
+  if (disabledExternal) {
+    return (
+      <span
+        aria-disabled="true"
+        title={title ?? "Unavailable offline"}
+        className={cn(className, "cursor-not-allowed opacity-60")}
+      >
+        {children}
+      </span>
+    );
+  }
+  return (
+    <a
+      {...props}
+      href={href}
+      rel={rel ?? "noreferrer noopener"}
+      target={target ?? "_blank"}
+      className={className}
+      title={title}
+    >
+      {children}
+    </a>
+  );
+}
+
+function ReadmeImage({
+  node,
+  alt,
+  loading,
+  decoding,
+  ...props
+}: ComponentProps<"img"> & { node?: unknown }) {
+  void node;
+  return (
+    <img
+      {...props}
+      alt={alt ?? ""}
+      decoding={decoding ?? "async"}
+      loading={loading ?? "lazy"}
+    />
+  );
+}
+
+const README_COMPONENTS: Components = {
+  a: ReadmeLink,
+  img: ReadmeImage,
+};
+
+function readmeLoadingMessage(subject: ReadmeSubject): string {
+  if (subject === "dataset") return "Loading dataset card...";
+  if (subject === "baseModel") return "Loading base model card...";
+  return "Loading model card...";
+}
+
+function readmePreparingMessage(subject: ReadmeSubject): string {
+  if (subject === "dataset") return "Preparing dataset card...";
+  if (subject === "baseModel") return "Preparing base model card...";
+  return "Preparing model card...";
+}
+
+function readmeOfflineMessage(subject: ReadmeSubject): string {
+  if (subject === "dataset") return "Dataset card unavailable offline.";
+  if (subject === "baseModel") return "Base model card unavailable offline.";
+  return "Model card unavailable offline.";
+}
+
+function readmeMissingMessage(subject: ReadmeSubject): string {
+  if (subject === "dataset") return "This dataset has no README.";
+  if (subject === "baseModel") return "This base model has no README.";
+  return "This repository has no README.";
+}
+
+function readmeUnavailableMessage(subject: ReadmeSubject): string {
+  if (subject === "dataset") {
+    return "Dataset card unavailable. It may be private, gated, or temporarily unreachable.";
+  }
+  if (subject === "baseModel") {
+    return "Base model card unavailable. It may be private, gated, or temporarily unreachable.";
+  }
+  return "Model card unavailable. It may be private, gated, or temporarily unreachable.";
+}
+
+function isMissingReadmeError(error: string): boolean {
+  return /^No (dataset|model) card available\.$/.test(error);
+}
+
+function scheduleIdleTask(callback: () => void, timeout = 250): () => void {
+  let canceled = false;
+  const run = () => {
+    if (!canceled) callback();
+  };
+
+  if (typeof window === "undefined") {
+    run();
+    return () => {
+      canceled = true;
+    };
+  }
+
+  const idleWindow = window as Window & {
+    requestIdleCallback?: Window["requestIdleCallback"];
+    cancelIdleCallback?: Window["cancelIdleCallback"];
+  };
+
+  if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+    const handle = idleWindow.requestIdleCallback(run, { timeout });
+    return () => {
+      canceled = true;
+      idleWindow.cancelIdleCallback?.(handle);
+    };
+  }
+
+  const handle = globalThis.setTimeout(run, Math.min(timeout, 120));
+  return () => {
+    canceled = true;
+    globalThis.clearTimeout(handle);
+  };
+}
+
+function ReadmePlaceholder({
+  kind,
+  message,
+}: {
+  kind: "model" | "dataset";
+  message?: string;
+}) {
+  return (
+    <div
+      className="min-h-[108px] space-y-3 py-0.5"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+        <Spinner className="size-3.5" />
+        {message ?? `Loading ${kind === "dataset" ? "dataset" : "model"} card…`}
+      </div>
+      <div className="space-y-2" aria-hidden="true">
+        <div className="h-2.5 w-11/12 rounded-full bg-muted/60" />
+        <div className="h-2.5 w-4/5 rounded-full bg-muted/50" />
+        <div className="h-2.5 w-2/3 rounded-full bg-muted/40" />
+      </div>
+    </div>
+  );
+}
+
+async function loadReadmeFromCache({
+  cacheKey,
+  repoId,
+  kind,
+  hfToken,
+}: {
+  cacheKey: string;
+  repoId: string;
+  kind: "model" | "dataset";
+  hfToken: string | undefined;
+}): Promise<ReadmeCacheEntry> {
+  const cached = readmeCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = fetchReadme(repoId, kind, hfToken || null).then((fetched) => {
+    if (fetched == null) {
+      return {
+        body: null,
+        baseUrl: null,
+        error: `No ${kind === "dataset" ? "dataset" : "model"} card available.`,
+      };
+    }
+    return {
+      body: prepareReadmeBody(fetched.markdown),
+      baseUrl: readmeBaseUrl(repoId, kind, fetched.branch),
+      error: null,
+    };
+  });
+
+  readmeCache.set(cacheKey, promise);
+  try {
+    const entry = await promise;
+    if (entry.error == null) {
+      readmeCache.set(cacheKey, entry);
+    } else if (readmeCache.get(cacheKey) === promise) {
+      readmeCache.delete(cacheKey);
+    }
+    return entry;
+  } catch (err) {
+    if (readmeCache.get(cacheKey) === promise) {
+      readmeCache.delete(cacheKey);
+    }
+    throw err;
+  }
+}
+
 async function loadPlugins(needs: {
   math: boolean;
   mermaid: boolean;
@@ -86,127 +356,228 @@ async function loadPlugins(needs: {
 export function ModelReadme({
   repoId,
   kind = "model",
+  subject = kind,
 }: {
   repoId: string;
   kind?: "model" | "dataset";
+  subject?: ReadmeSubject;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const stateKey = `${kind}::${repoId}::${hfToken ?? ""}`;
-  const [state, setState] = useState<ReadmeState>(() => ({
-    key: stateKey,
-    body: null,
-    baseUrl: null,
-    loading: true,
-    error: null,
-    plugins: null,
-  }));
-  const current =
-    state.key === stateKey
-      ? state
-      : {
-          key: stateKey,
-          body: null,
-          baseUrl: null,
-          loading: true,
-          error: null,
-          plugins: null,
-        };
+  const online = useOnlineStatus();
+  const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
+  const stateKey = useMemo(
+    () => `${kind}::${repoId}::${tokenFingerprint}`,
+    [kind, repoId, tokenFingerprint],
+  );
+  const [state, setState] = useState<ReadmeState>(() => {
+    const cached = readResolvedReadmeCache(stateKey);
+    if (cached) return readmeStateFromEntry(stateKey, cached);
+    return {
+      key: stateKey,
+      body: null,
+      baseUrl: null,
+      loading: !isBrowserOffline(),
+      error: null,
+      plugins: null,
+    };
+  });
+  const matchingState = state.key === stateKey ? state : null;
+  const cachedEntry = readResolvedReadmeCache(stateKey);
+  const cachedState = cachedEntry
+    ? readmeStateFromEntry(stateKey, cachedEntry)
+    : null;
+  const current = matchingState && hasReadmeContent(matchingState)
+    ? matchingState
+    : cachedState && hasReadmeContent(cachedState)
+      ? cachedState
+      : !online
+        ? {
+            key: stateKey,
+            body: null,
+            baseUrl: null,
+            loading: false,
+            error: readmeOfflineMessage(subject),
+            plugins: null,
+          }
+        : matchingState ?? {
+            key: stateKey,
+            body: null,
+            baseUrl: null,
+            loading: true,
+            error: null,
+            plugins: null,
+          };
 
   const urlTransform = useMemo(
     () =>
       current.baseUrl ? createReadmeUrlTransform(current.baseUrl) : undefined,
     [current.baseUrl],
   );
+  const [renderGate, setRenderGate] = useState(() => ({
+    key: "",
+    body: null as string | null,
+    ready: false,
+  }));
+  const renderReady =
+    renderGate.key === current.key &&
+    renderGate.body === current.body &&
+    renderGate.ready;
 
   useEffect(() => {
     let canceled = false;
-    fetchReadme(repoId, kind, hfToken || null)
-      .then((fetched) => {
+    if (!online) return;
+    void loadReadmeFromCache({
+      cacheKey: stateKey,
+      repoId,
+      kind,
+      hfToken,
+    })
+      .then((entry) => {
         if (canceled) return;
-        if (fetched == null) {
+        startTransition(() => {
+          setState({
+            key: stateKey,
+            body: entry.body,
+            baseUrl: entry.baseUrl,
+            loading: false,
+            error: entry.error,
+            plugins: null,
+          });
+        });
+      })
+      .catch((err) => {
+        if (canceled) return;
+        startTransition(() => {
           setState({
             key: stateKey,
             body: null,
             baseUrl: null,
             loading: false,
-            error: "No model card available.",
+            error:
+              err instanceof Error ? err.message : "Failed to load model card",
             plugins: null,
           });
-          return;
-        }
-        const { body } = stripFrontmatter(fetched.markdown);
-        const cleaned = stripChromeHeadings(body).trim();
-        setState({
-          key: stateKey,
-          body: cleaned,
-          baseUrl: readmeBaseUrl(repoId, kind, fetched.branch),
-          loading: false,
-          error: null,
-          plugins: null,
-        });
-
-        void loadPlugins({
-          math: READMEX_NEEDS_MATH.test(cleaned),
-          mermaid: READMEX_NEEDS_MERMAID.test(cleaned),
-        }).then((next) => {
-          if (!canceled) {
-            setState((prev) =>
-              prev.key === stateKey ? { ...prev, plugins: next } : prev,
-            );
-          }
-        });
-      })
-      .catch((err) => {
-        if (canceled) return;
-        setState({
-          key: stateKey,
-          body: null,
-          baseUrl: null,
-          loading: false,
-          error:
-            err instanceof Error ? err.message : "Failed to load model card",
-          plugins: null,
         });
       });
     return () => {
       canceled = true;
     };
-  }, [repoId, kind, hfToken, stateKey]);
+  }, [repoId, kind, hfToken, stateKey, online]);
+
+  useEffect(() => {
+    let canceled = false;
+    if (!online || state.key !== stateKey || !state.body || state.error) return;
+    const body = state.body;
+    const cancelIdle = scheduleIdleTask(() => {
+      void loadPlugins({
+        math: READMEX_NEEDS_MATH.test(body),
+        mermaid: READMEX_NEEDS_MERMAID.test(body),
+      })
+        .then((next) => {
+          if (!canceled) {
+            startTransition(() => {
+              setState((prev) =>
+                prev.key === stateKey ? { ...prev, plugins: next } : prev,
+              );
+            });
+          }
+        })
+        .catch((err) => {
+          if (!canceled) {
+            startTransition(() => {
+              setState((prev) =>
+                prev.key === stateKey ? { ...prev, plugins: {} } : prev,
+              );
+            });
+            if (import.meta.env.DEV) {
+              console.debug("Hub README plugin load failed", err);
+            }
+          }
+        });
+    }, 400);
+    return () => {
+      canceled = true;
+      cancelIdle();
+    };
+  }, [online, state.body, state.error, state.key, stateKey]);
+
+  useEffect(() => {
+    if (!current.body || current.loading || current.error || !current.plugins) {
+      return;
+    }
+
+    let canceled = false;
+    const body = current.body;
+    const markReady = () => {
+      if (canceled) return;
+      startTransition(() => {
+        setRenderGate({ key: current.key, body, ready: true });
+      });
+    };
+
+    const cancelIdle = scheduleIdleTask(markReady, 250);
+    return () => {
+      canceled = true;
+      cancelIdle();
+    };
+  }, [
+    current.body,
+    current.error,
+    current.key,
+    current.loading,
+    current.plugins,
+  ]);
 
   if (current.loading) {
     return (
-      <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
-        <Spinner className="size-3.5" />
-        Loading {kind === "dataset" ? "dataset" : "model"} card…
-      </div>
+      <ReadmePlaceholder kind={kind} message={readmeLoadingMessage(subject)} />
     );
   }
 
   if (current.error) {
+    const errorMessage = isMissingReadmeError(current.error)
+      ? readmeMissingMessage(subject)
+      : current.error.toLowerCase().includes("offline")
+        ? current.error
+        : readmeUnavailableMessage(subject);
     return (
-      <p className="text-[12.5px] text-muted-foreground">{current.error}</p>
+      <p className="min-h-[44px] text-[12.5px] text-muted-foreground">
+        {errorMessage}
+      </p>
     );
   }
 
   if (!current.body) {
     return (
-      <p className="text-[12.5px] text-muted-foreground">
-        This repository has no README.
+      <p className="min-h-[44px] text-[12.5px] text-muted-foreground">
+        {readmeMissingMessage(subject)}
       </p>
     );
   }
 
+  if (!current.plugins || !renderReady) {
+    return (
+      <ReadmePlaceholder
+        kind={kind}
+        message={readmePreparingMessage(subject)}
+      />
+    );
+  }
+
   return (
-    <div className={PROSE}>
-      <Streamdown
-        mode="static"
-        plugins={current.plugins ?? undefined}
-        controls={false}
-        allowedTags={README_ALLOWED_TAGS}
-        urlTransform={urlTransform}
-      >
-        {current.body}
-      </Streamdown>
+    <div className={cn("hub-readme-prose", PROSE)}>
+      <ReadmeOnlineContext.Provider value={online}>
+        <Streamdown
+          mode="static"
+          plugins={current.plugins}
+          controls={false}
+          components={README_COMPONENTS}
+          allowedTags={README_ALLOWED_TAGS}
+          urlTransform={urlTransform}
+        >
+          {current.body}
+        </Streamdown>
+      </ReadmeOnlineContext.Provider>
     </div>
   );
 }

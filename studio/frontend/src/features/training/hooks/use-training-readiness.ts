@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useShallow } from "zustand/react/shallow";
-import { useTrainingConfigStore } from "../stores/training-config-store";
 import {
   type StartValidationResult,
   validateTrainingConfig,
 } from "../lib/validation";
+import { useTrainingConfigStore } from "../stores/training-config-store";
+import type { TrainingConfigState } from "../types/config";
 
 export interface TrainingReadiness {
   isReady: boolean;
@@ -16,79 +16,80 @@ export interface TrainingReadiness {
   hasDataset: boolean;
   isIncompatible: boolean;
   datasetUnverified: boolean;
+  datasetMetadataStale: boolean;
   configValidation: StartValidationResult;
 }
 
-export function useTrainingReadiness(): TrainingReadiness {
-  const {
-    selectedModel,
-    isLoadingModelDefaults,
-    isCheckingVision,
-    isCheckingDataset,
-    isVisionModel,
-    isAudioModel,
-    isDatasetImage,
-    isDatasetAudio,
-    datasetCheckFailed,
-    datasetKnownCached,
-    dataset,
-    uploadedFile,
-    datasetSource,
-  } = useTrainingConfigStore(
-    useShallow((s) => ({
-      selectedModel: s.selectedModel,
-      isLoadingModelDefaults: s.isLoadingModelDefaults,
-      isCheckingVision: s.isCheckingVision,
-      isCheckingDataset: s.isCheckingDataset,
-      isVisionModel: s.isVisionModel,
-      isAudioModel: s.isAudioModel,
-      isDatasetImage: s.isDatasetImage,
-      isDatasetAudio: s.isDatasetAudio,
-      datasetCheckFailed: s.datasetCheckFailed,
-      datasetKnownCached: s.datasetKnownCached,
-      dataset: s.dataset,
-      uploadedFile: s.uploadedFile,
-      datasetSource: s.datasetSource,
-    })),
-  );
-  const configValidation = useTrainingConfigStore(
-    useShallow((s) => validateTrainingConfig(s)),
-  );
+let readinessCache: Readonly<TrainingReadiness> | null = null;
+let readinessStateCache: TrainingConfigState | null = null;
 
-  const hasModel = !!selectedModel;
+function stableReadiness(next: TrainingReadiness): Readonly<TrainingReadiness> {
+  if (
+    readinessCache &&
+    readinessCache.isReady === next.isReady &&
+    readinessCache.isLoadingModel === next.isLoadingModel &&
+    readinessCache.isCheckingDataset === next.isCheckingDataset &&
+    readinessCache.hasModel === next.hasModel &&
+    readinessCache.hasDataset === next.hasDataset &&
+    readinessCache.isIncompatible === next.isIncompatible &&
+    readinessCache.datasetUnverified === next.datasetUnverified &&
+    readinessCache.datasetMetadataStale === next.datasetMetadataStale &&
+    readinessCache.configValidation === next.configValidation
+  ) {
+    return readinessCache;
+  }
+  readinessCache = Object.freeze(next);
+  return readinessCache;
+}
+
+export function selectTrainingReadiness(
+  state: TrainingConfigState,
+): Readonly<TrainingReadiness> {
+  if (state === readinessStateCache && readinessCache) {
+    return readinessCache;
+  }
+  const configValidation = validateTrainingConfig(state);
+  const hasModel = !!state.selectedModel;
   const hasDataset =
-    datasetSource === "upload" ? !!uploadedFile : !!dataset;
-  const isLoadingModel = isLoadingModelDefaults || isCheckingVision;
+    state.datasetSource === "upload" ? !!state.uploadedFile : !!state.dataset;
+  const isLoadingModel = state.isLoadingModelDefaults || state.isCheckingVision;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
     isModelCapabilitiesSettled &&
-    ((!isVisionModel && isDatasetImage === true) ||
-      (!isAudioModel && isDatasetAudio === true));
-  const modelHandlesAllModalities = isVisionModel && isAudioModel;
+    ((!state.isVisionModel && state.isDatasetImage === true) ||
+      (!state.isAudioModel && state.isDatasetAudio === true));
+  const hasDatasetModalityMetadata = state.isDatasetImage !== null;
+  const modelHandlesAllModalities = state.isVisionModel && state.isAudioModel;
   const datasetUnverified =
     isModelCapabilitiesSettled &&
-    !isCheckingDataset &&
-    datasetCheckFailed &&
-    !modelHandlesAllModalities &&
-    !datasetKnownCached;
+    !state.isCheckingDataset &&
+    state.datasetCheckFailed &&
+    !(hasDatasetModalityMetadata && modelHandlesAllModalities);
 
   const isReady =
     hasModel &&
     hasDataset &&
     !isLoadingModel &&
-    !isCheckingDataset &&
+    !state.isCheckingDataset &&
     !isIncompatible &&
     !datasetUnverified &&
     configValidation.ok;
 
-  return {
+  const readiness = stableReadiness({
     isReady,
     isLoadingModel,
-    isCheckingDataset,
+    isCheckingDataset: state.isCheckingDataset,
     hasModel,
     hasDataset,
     isIncompatible,
     datasetUnverified,
+    datasetMetadataStale: state.datasetMetadataStale,
     configValidation,
-  };
+  });
+  readinessStateCache = state;
+  return readiness;
+}
+
+export function useTrainingReadiness(): Readonly<TrainingReadiness> {
+  return useTrainingConfigStore(selectTrainingReadiness);
 }

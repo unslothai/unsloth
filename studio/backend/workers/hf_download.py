@@ -33,6 +33,7 @@ import argparse
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -54,28 +55,77 @@ from utils.hf_snapshot_filters import (
 # perception short on flaky connections. The file download itself is governed
 # separately by huggingface_hub's own download timeout.
 _METADATA_REQUEST_TIMEOUT = 10.0
+_METADATA_RETRY_TIMEOUT = 30.0
+_METADATA_RETRY_DELAY = 1.0
 
 
 def _on_signal(signum, frame):
-    # 130 is the POSIX exit code for "Script terminated by Control-C"
-    # and is what `classify_exit` maps to the "cancelled" job state.
+    # 130 is what `classify_exit` maps to the "cancelled" job state.
     sys.exit(130)
 
 
 def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+    sigpipe = getattr(signal, "SIGPIPE", None)
+    if sigpipe is not None:
+        signal.signal(sigpipe, _on_signal)
+
+
+def _model_info_with_retry(
+    repo_id: str,
+    hf_token: str | None,
+    *,
+    files_metadata: bool = False,
+):
+    from huggingface_hub import model_info as hf_model_info
+
+    for attempt, timeout in enumerate(
+        (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
+    ):
+        try:
+            kwargs = {"token": hf_token, "timeout": timeout}
+            if files_metadata:
+                kwargs["files_metadata"] = True
+            return hf_model_info(repo_id, **kwargs)
+        except Exception as e:
+            if attempt == 1:
+                raise
+            print(
+                f"Metadata request failed for {repo_id} "
+                f"({type(e).__name__}: {e}); retrying.",
+                file = sys.stderr,
+            )
+            time.sleep(_METADATA_RETRY_DELAY)
+    raise RuntimeError(f"Metadata unavailable for {repo_id}")
+
+
+def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
+    from huggingface_hub import HfApi
+
+    api = HfApi(token = hf_token)
+    for attempt, timeout in enumerate(
+        (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
+    ):
+        try:
+            return api.dataset_info(repo_id, timeout = timeout)
+        except Exception as e:
+            if attempt == 1:
+                raise
+            print(
+                f"Dataset metadata request failed for {repo_id} "
+                f"({type(e).__name__}: {e}); retrying.",
+                file = sys.stderr,
+            )
+            time.sleep(_METADATA_RETRY_DELAY)
+    raise RuntimeError(f"Dataset metadata unavailable for {repo_id}")
 
 
 def _repo_ships_transformers_weights(repo_id: str, hf_token: str | None) -> bool:
     """True when the repo provides standard transformers-format weights
     (``model*.safetensors``/``pytorch_model*.bin`` or their sharded variants),
     which make a sibling ``consolidated.*`` copy redundant."""
-    from huggingface_hub import model_info as hf_model_info
-
-    info = hf_model_info(
-        repo_id, token = hf_token, timeout = _METADATA_REQUEST_TIMEOUT,
-    )
+    info = _model_info_with_retry(repo_id, hf_token)
     return repo_ships_transformers_weights(
         sibling.rfilename for sibling in info.siblings
     )
@@ -91,8 +141,8 @@ def _resolve_snapshot_ignore_patterns(
         redundant = _repo_ships_transformers_weights(repo_id, hf_token)
     except Exception as e:
         print(
-            f"Could not inspect weight layout for {repo_id} "
-            f"({type(e).__name__}: {e}); keeping consolidated.* weights.",
+            f"metadata unavailable, downloading full snapshot for {repo_id} "
+            f"({type(e).__name__}: {e})",
             file = sys.stderr,
         )
         redundant = False
@@ -121,26 +171,60 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     )
 
 
-def _gguf_variant_patterns(repo_id: str, variant: str, hf_token: str | None) -> list[str]:
-    from huggingface_hub import model_info as hf_model_info
+def _gguf_variant_patterns(
+    repo_id: str,
+    variant: str,
+    hf_token: str | None,
+) -> list[str]:
     from utils.models.model_config import _extract_quant_label
 
-    info = hf_model_info(
-        repo_id,
-        token = hf_token,
-        files_metadata = True,
-        timeout = _METADATA_REQUEST_TIMEOUT,
-    )
+    try:
+        info = _model_info_with_retry(repo_id, hf_token, files_metadata = True)
+    except Exception as e:
+        print(
+            f"metadata unavailable, cannot resolve GGUF variant '{variant}' "
+            f"for {repo_id} ({type(e).__name__}: {e})",
+            file = sys.stderr,
+        )
+        raise RuntimeError(
+            f"Metadata unavailable while resolving GGUF variant '{variant}' "
+            f"for {repo_id}"
+        ) from e
     targets: list[str] = []
+    mmproj_candidates: list[str] = []
     for sibling in info.siblings:
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
             continue
         if "mmproj" in fname.lower():
+            mmproj_candidates.append(fname)
             continue
         if _extract_quant_label(fname) != variant:
             continue
         targets.append(fname)
+    # Bundle the vision projector with the variant so offline vision use works
+    # and the Hub "downloaded" status reflects the full capability of the repo.
+    # Prefer F16 (canonical), then any mmproj. Use the parsed quant label so
+    # "F16" matches only mmproj-F16 — a substring check matches "bf16" too
+    # and silently bundled the wrong precision whenever mmproj-BF16 appeared
+    # first in the sibling order.
+    if targets and mmproj_candidates:
+        preferred_f16 = next(
+            (
+                f
+                for f in mmproj_candidates
+                if _extract_quant_label(f).upper() == "F16"
+            ),
+            None,
+        )
+        preferred = preferred_f16 or mmproj_candidates[0]
+        if preferred_f16 is None:
+            print(
+                f"No F16 mmproj found for {repo_id}; bundling {preferred} "
+                f"with GGUF variant '{variant}'.",
+                file = sys.stderr,
+            )
+        targets.append(preferred)
     return targets
 
 
@@ -174,6 +258,15 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     from huggingface_hub import snapshot_download
     from utils.hf_cache_scan import prepare_cache_for_transport
 
+    try:
+        _dataset_info_with_retry(repo_id, hf_token)
+    except Exception as e:
+        print(
+            f"dataset metadata unavailable for {repo_id} "
+            f"({type(e).__name__}: {e})",
+            file = sys.stderr,
+        )
+        raise RuntimeError(f"Dataset metadata unavailable for {repo_id}") from e
     purged = prepare_cache_for_transport("dataset", repo_id, mode)
     if purged:
         print(

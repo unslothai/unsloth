@@ -9,7 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { bumpInventoryVersion } from "@/stores/inventory-events";
+import { notifyInventoryChanged } from "@/stores/inventory-events";
 import {
   HfDatasetSubsetSplitSelectors,
   parseYamlConfig,
@@ -215,18 +215,28 @@ function ModelPanel() {
 }
 
 function DatasetPanel() {
-  const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
-  const dataset = useTrainingConfigStore((s) => s.dataset);
-  const datasetSubset = useTrainingConfigStore((s) => s.datasetSubset);
-  const datasetSplit = useTrainingConfigStore((s) => s.datasetSplit);
-  const datasetEvalSplit = useTrainingConfigStore((s) => s.datasetEvalSplit);
-  const setDatasetSubset = useTrainingConfigStore((s) => s.setDatasetSubset);
-  const setDatasetSplit = useTrainingConfigStore((s) => s.setDatasetSplit);
-  const setDatasetEvalSplit = useTrainingConfigStore(
-    (s) => s.setDatasetEvalSplit,
-  );
-  const selectLocalDataset = useTrainingConfigStore(
-    (s) => s.selectLocalDataset,
+  const {
+    datasetSource,
+    dataset,
+    datasetSubset,
+    datasetSplit,
+    datasetEvalSplit,
+    setDatasetSubset,
+    setDatasetSplit,
+    setDatasetEvalSplit,
+    selectLocalDataset,
+  } = useTrainingConfigStore(
+    useShallow((s) => ({
+      datasetSource: s.datasetSource,
+      dataset: s.dataset,
+      datasetSubset: s.datasetSubset,
+      datasetSplit: s.datasetSplit,
+      datasetEvalSplit: s.datasetEvalSplit,
+      setDatasetSubset: s.setDatasetSubset,
+      setDatasetSplit: s.setDatasetSplit,
+      setDatasetEvalSplit: s.setDatasetEvalSplit,
+      selectLocalDataset: s.selectLocalDataset,
+    })),
   );
   const hfToken = useHfTokenStore((s) => s.token);
 
@@ -283,7 +293,7 @@ function DatasetDropZone({
       setIsUploading(true);
       try {
         const result = await uploadTrainingDataset(file);
-        bumpInventoryVersion();
+        notifyInventoryChanged();
         onUploaded(result.stored_path);
         toast.success("Dataset uploaded", { description: result.filename });
       } catch (err) {
@@ -374,6 +384,8 @@ function resolveStartTrainingError(input: {
   isAudioModel: boolean;
   isDatasetAudio: boolean | null | undefined;
   datasetUnverified: boolean;
+  hasModel: boolean;
+  hasDataset: boolean;
   configValidation: { ok: boolean; message?: string | null };
 }): string | null {
   const {
@@ -382,6 +394,8 @@ function resolveStartTrainingError(input: {
     isAudioModel,
     isDatasetAudio,
     datasetUnverified,
+    hasModel,
+    hasDataset,
     configValidation,
   } = input;
   if (startError) return startError;
@@ -393,6 +407,7 @@ function resolveStartTrainingError(input: {
   if (datasetUnverified) {
     return "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token, then reselect the dataset.";
   }
+  if (!hasModel || !hasDataset) return null;
   if (!configValidation.ok && configValidation.message) {
     return configValidation.message;
   }
@@ -412,6 +427,9 @@ export function StartTrainingCta() {
     isCheckingDataset,
     isIncompatible,
     datasetUnverified,
+    datasetMetadataStale,
+    hasModel,
+    hasDataset,
     configValidation,
   } = useTrainingReadiness();
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
@@ -422,9 +440,17 @@ export function StartTrainingCta() {
     ? "Starting training…"
     : isLoadingModel
       ? "Loading model…"
-      : isCheckingDataset
-        ? "Checking dataset…"
-        : "Start training";
+        : isCheckingDataset
+          ? "Checking dataset…"
+          : !hasModel && !hasDataset
+            ? "Choose model and dataset"
+            : !hasModel
+              ? "Choose a model"
+              : !hasDataset
+                ? "Choose a dataset"
+                : datasetMetadataStale
+                  ? "Start with cached metadata"
+                  : "Start training";
 
   const errorMessage = resolveStartTrainingError({
     startError,
@@ -432,6 +458,8 @@ export function StartTrainingCta() {
     isAudioModel,
     isDatasetAudio,
     datasetUnverified,
+    hasModel,
+    hasDataset,
     configValidation,
   });
 
@@ -460,6 +488,11 @@ export function StartTrainingCta() {
       {errorMessage && (
         <p className="text-[11.5px] leading-relaxed text-destructive">
           {errorMessage}
+        </p>
+      )}
+      {!errorMessage && datasetMetadataStale && (
+        <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+          Using cached dataset metadata because the dataset could not be rechecked online.
         </p>
       )}
     </div>

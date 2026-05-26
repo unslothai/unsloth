@@ -64,11 +64,13 @@ class TestTrainingRawSupport(unittest.TestCase):
                 format_type = "raw",
                 load_in_4bit = True,
                 embedding_learning_rate = 1e-5,
+                model_format = "safetensors",
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertTrue(config["load_in_4bit"])
         self.assertEqual(config["embedding_learning_rate"], 1e-5)
+        self.assertEqual(config["model_format"], "safetensors")
 
     def test_training_backend_forwards_grad_clipping_controls(self):
         backend = TrainingBackend()
@@ -111,6 +113,21 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertEqual(config["max_grad_norm"], 0.7)
+
+    def test_training_worker_rejects_inference_only_model_formats(self):
+        from core.training.worker import _untrainable_model_format_error
+
+        self.assertEqual(
+            _untrainable_model_format_error({"model_format": "gguf"}),
+            "GGUF models are inference-only and cannot be trained.",
+        )
+        self.assertEqual(
+            _untrainable_model_format_error({"model_format": "adapter"}),
+            "Adapter models are inference-only and cannot be trained as base models.",
+        )
+        self.assertIsNone(
+            _untrainable_model_format_error({"model_format": "safetensors"})
+        )
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(

@@ -50,4 +50,5 @@ export interface ChatLoraSummary {
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
   runDisplayName?: string;
+  trainingMethod?: string;
 }

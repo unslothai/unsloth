@@ -12,13 +12,20 @@ function inventoryRowHaystack(
   if (row.kind === "cache")
     return [
       row.repoId,
+      row.modelFormat,
       row.pipelineTag ?? "",
       row.libraryName ?? "",
       ...(row.tags ?? []),
     ].join(" ");
-  return [row.title, row.owner, row.sourceLabel, row.path, row.repoId ?? ""].join(
-    " ",
-  );
+  return [
+    row.title,
+    row.owner,
+    row.sourceLabel,
+    row.path,
+    row.loadId,
+    row.modelFormat,
+    row.repoId ?? "",
+  ].join(" ");
 }
 
 export function inventoryRowMatches(

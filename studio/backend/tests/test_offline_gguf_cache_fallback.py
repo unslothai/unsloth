@@ -98,6 +98,7 @@ from core.inference.llama_cpp import (
     _probe_dns_dead,
 )
 from utils.models.model_config import (
+    ModelConfig,
     _detect_gguf_from_hf_cache,
     _extract_quant_label,
     _iter_hf_cache_snapshots,
@@ -105,6 +106,7 @@ from utils.models.model_config import (
     detect_gguf_model_remote,
     list_gguf_variants,
 )
+from utils import hf_cache_scan
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +193,21 @@ class TestIterHfCacheSnapshots:
         out = list(_iter_hf_cache_snapshots("UNSLOTH/foo-gguf"))
         assert len(out) == 1
 
+    def test_yields_from_secondary_cache_roots(self, tmp_path, monkeypatch):
+        active = tmp_path / "active"
+        secondary = tmp_path / "secondary"
+        active.mkdir()
+        secondary.mkdir()
+        snap = _build_cache(secondary, "unsloth/secondary", {"model-Q4_K_M.gguf": 1})
+        monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
+        monkeypatch.setattr(
+            hf_cache_scan,
+            "_hf_cache_roots",
+            lambda: [active, secondary],
+        )
+
+        assert list(_iter_hf_cache_snapshots("unsloth/secondary")) == [snap]
+
 
 # ---------------------------------------------------------------------------
 # _list_gguf_variants_from_hf_cache / list_gguf_variants
@@ -215,6 +232,49 @@ class TestListGgufVariantsFromCache:
 
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
+
+
+class TestModelConfigLocalOnly:
+    def test_cached_gguf_resolves_to_local_file(self, hf_cache):
+        snap = _build_cache(
+            hf_cache,
+            "unsloth/text-GGUF",
+            {"text-Q4_K_M.gguf": 1},
+        )
+
+        with (
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._find_llama_server_binary",
+                return_value = "llama-server",
+            ),
+            patch(
+                "huggingface_hub.model_info",
+                side_effect = AssertionError("local-only config must not call HF"),
+            ),
+        ):
+            cfg = ModelConfig.from_identifier(
+                "unsloth/text-GGUF",
+                gguf_variant = "Q4_K_M",
+                local_files_only = True,
+                local_path = str(snap.parent.parent),
+            )
+
+        assert cfg is not None
+        assert cfg.is_gguf is True
+        assert cfg.gguf_hf_repo is None
+        assert cfg.gguf_file == str((snap / "text-Q4_K_M.gguf").resolve())
+
+    def test_local_only_missing_cache_returns_none(self, hf_cache):
+        with patch(
+            "huggingface_hub.model_info",
+            side_effect = AssertionError("missing local-only config must not call HF"),
+        ):
+            cfg = ModelConfig.from_identifier(
+                "unsloth/missing",
+                local_files_only = True,
+            )
+
+        assert cfg is None
 
 
 class TestListGgufVariantsOffline:
@@ -265,6 +325,30 @@ class TestListGgufVariantsOffline:
         with patch("huggingface_hub.model_info", hf_info):
             variants, _has = list_gguf_variants("unsloth/a")
         assert sorted(v.quant for v in variants) == ["Q2_K", "UD-Q4_K_XL"]
+
+    def test_repo_tree_fallback_when_model_info_has_no_files(
+        self, hf_cache, clean_offline_env
+    ):
+        def hf_info(*a, **k):
+            return _siblings({})
+
+        class FakeHfApi:
+            def list_repo_tree(self, *a, **k):
+                return [
+                    _types.SimpleNamespace(path = "BF16/model.gguf", size = 10),
+                    _types.SimpleNamespace(path = "mmproj-F16.gguf", size = 3),
+                ]
+
+        with (
+            patch("huggingface_hub.model_info", hf_info),
+            patch("huggingface_hub.HfApi", FakeHfApi),
+        ):
+            variants, has_vision = list_gguf_variants("unsloth/a")
+
+        assert has_vision is True
+        assert [(v.filename, v.quant, v.size_bytes) for v in variants] == [
+            ("BF16/model.gguf", "BF16", 10)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +414,25 @@ class TestDetectGgufModelRemoteOffline:
         ):
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
+
+    def test_empty_model_info_uses_repo_tree(self, hf_cache, clean_offline_env):
+        def hf_info(*a, **k):
+            return _siblings({})
+
+        class FakeHfApi:
+            def list_repo_tree(self, *a, **k):
+                return [
+                    _types.SimpleNamespace(path = "Q8_0/model.gguf", size = 8),
+                    _types.SimpleNamespace(path = "Q4_K_M/model.gguf", size = 4),
+                ]
+
+        with (
+            patch("huggingface_hub.model_info", hf_info),
+            patch("huggingface_hub.HfApi", FakeHfApi),
+        ):
+            out = detect_gguf_model_remote("unsloth/a")
+
+        assert out == "Q4_K_M/model.gguf"
 
     def test_repository_not_found_does_not_consult_cache(
         self,
@@ -520,13 +623,12 @@ class TestDownloadMmprojOfflineCacheFallback:
         def boom_list(*a, **k):
             raise OSError("offline")
 
-        def fake_download(*, repo_id, filename, token = None):
-            # Echo back so the test can verify the cache-resolved filename
-            return f"/fake/cache/{repo_id}/{filename}"
-
         with (
             patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch(
+                "huggingface_hub.hf_hub_download",
+                side_effect = AssertionError("cached mmproj must not call HF download"),
+            ),
         ):
             out = backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",
@@ -549,21 +651,13 @@ class TestDownloadMmprojOfflineCacheFallback:
         def boom_list(*a, **k):
             raise OSError("offline")
 
-        captured = {}
-
-        def fake_download(*, repo_id, filename, token = None):
-            captured["filename"] = filename
-            return f"/fake/{filename}"
-
-        with (
-            patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
-        ):
-            backend._download_mmproj(
+        with patch("huggingface_hub.list_repo_files", boom_list):
+            out = backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",
                 hf_token = None,
             )
-        assert captured.get("filename") == "mmproj-vision-F16.gguf"
+        assert out is not None
+        assert out.endswith("mmproj-vision-F16.gguf")
 
     def test_no_mmproj_in_cache_returns_none(self, hf_cache):
         _build_cache(
@@ -582,6 +676,34 @@ class TestDownloadMmprojOfflineCacheFallback:
                 hf_token = None,
             )
         assert out is None
+
+
+class TestDownloadGgufCacheFallback:
+    def test_cached_variant_returns_snapshot_path_without_hf_download(self, hf_cache):
+        snap = _build_cache(
+            hf_cache,
+            "unsloth/text-GGUF",
+            {"text-Q4_K_M.gguf": 1},
+        )
+        backend = LlamaCppBackend()
+
+        with (
+            patch(
+                "huggingface_hub.list_repo_files",
+                side_effect = AssertionError("cached GGUF must not call HF list"),
+            ),
+            patch(
+                "huggingface_hub.hf_hub_download",
+                side_effect = AssertionError("cached GGUF must not call HF download"),
+            ),
+        ):
+            out = backend._download_gguf(
+                hf_repo = "unsloth/text-GGUF",
+                hf_variant = "Q4_K_M",
+                hf_token = None,
+            )
+
+        assert out == str((snap / "text-Q4_K_M.gguf").resolve())
 
 
 class TestListLocalGgufVariantsSubdir:

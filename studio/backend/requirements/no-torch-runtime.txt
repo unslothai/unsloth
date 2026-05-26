@@ -62,6 +62,8 @@ idna
 anyio
 sniffio
 h11
+jinja2
+markupsafe
 
 # Unpinned resolves to 0.23.1+ which breaks `from transformers import
 # AutoConfig`; transformers 4.56..5.3 declares tokenizers<=0.23.0.

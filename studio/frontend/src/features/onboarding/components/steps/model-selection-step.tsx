@@ -33,7 +33,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
+import {
+  MODEL_TYPE_TO_HF_TASKS,
+  PRIORITY_TRAINING_MODELS,
+  applyPriorityOrdering,
+} from "@/config/training";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -41,6 +45,7 @@ import {
   useHfTokenValidation,
   useInfiniteScroll,
 } from "@/hooks";
+import { extractParamLabel } from "@/lib/format";
 import { formatCompact } from "@/lib/utils";
 import {
   type TrainingMethod as VramTrainingMethod,
@@ -58,13 +63,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
-function extractParamLabel(id: string): string | null {
-  const name = id.split("/").pop() ?? id;
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
-  return match ? `${match[1]}B` : null;
-}
 
 export function ModelSelectionStep() {
   const gpu = useGpuInfo();
@@ -92,7 +90,7 @@ export function ModelSelectionStep() {
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
-  const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
+  const task = modelType ? MODEL_TYPE_TO_HF_TASKS[modelType] : undefined;
   const {
     results: hfResults,
     isLoading,

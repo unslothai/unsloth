@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useHfOwnerAvatar } from "../lib/hf-owner-avatar";
 import {
   type ProviderLogo,
@@ -38,6 +38,22 @@ const SIZES: Record<AvatarSize, string> = {
   md: "size-9 rounded-[10px] text-[13px]",
   lg: "size-12 rounded-[13px] text-[16px]",
 };
+
+const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;
+const AVATAR_IMAGE_RETRY_MAX_MS = 30 * 60_000;
+
+interface FailedAvatarImage {
+  url: string;
+  failures: number;
+  retryReady: boolean;
+}
+
+function avatarImageRetryDelay(failures: number): number {
+  return Math.min(
+    AVATAR_IMAGE_RETRY_BASE_MS * 2 ** Math.max(failures - 1, 0),
+    AVATAR_IMAGE_RETRY_MAX_MS,
+  );
+}
 
 export function OwnerAvatar({
   owner,
@@ -149,8 +165,31 @@ function DefaultAvatar({
   const initial = owned[0]?.toUpperCase() ?? "?";
   const color = PALETTE[hashOwner(owned) % PALETTE.length];
   const remoteUrl = useHfOwnerAvatar(owned);
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const showImage = Boolean(remoteUrl) && failedUrl !== remoteUrl;
+  const [failedImage, setFailedImage] = useState<FailedAvatarImage | null>(
+    null,
+  );
+  const imageBlocked =
+    Boolean(remoteUrl) &&
+    failedImage?.url === remoteUrl &&
+    !failedImage.retryReady;
+  const showImage = Boolean(remoteUrl) && !imageBlocked;
+
+  useEffect(() => {
+    const activeFailure =
+      remoteUrl && failedImage?.url === remoteUrl ? failedImage : null;
+    if (!activeFailure || activeFailure.retryReady) {
+      return;
+    }
+
+    const timer = globalThis.setTimeout(() => {
+      setFailedImage((current) =>
+        current?.url === remoteUrl && !current.retryReady
+          ? { ...current, retryReady: true }
+          : current,
+      );
+    }, avatarImageRetryDelay(activeFailure.failures));
+    return () => globalThis.clearTimeout(timer);
+  }, [remoteUrl, failedImage]);
 
   return (
     <span
@@ -168,7 +207,17 @@ function DefaultAvatar({
           alt=""
           loading="lazy"
           className="size-full object-cover"
-          onError={() => setFailedUrl(remoteUrl)}
+          onLoad={() => setFailedImage(null)}
+          onError={() => {
+            if (!remoteUrl) {
+              return;
+            }
+            setFailedImage((current) => ({
+              url: remoteUrl,
+              failures: current?.url === remoteUrl ? current.failures + 1 : 1,
+              retryReady: false,
+            }));
+          }}
         />
       ) : (
         initial

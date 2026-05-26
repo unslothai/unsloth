@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { TransportConflictInfo } from "../components/transport-conflict-dialog";
+import { useLatestRef } from "@/hooks/use-latest-ref";
+import type { TransportConflictInfo } from "./types";
 import {
   type DownloadKind,
   type JobListeners,
@@ -35,7 +36,7 @@ export interface DownloadJob {
   requestStartDownload: (variant: string | null, expectedBytes: number) => void;
   cancelDownload: (variant: string | null) => void;
   adoptRunningJob: (variant: string | null, expectedBytes: number) => void;
-  setExpectedBytes: (bytes: number) => void;
+  setExpectedBytes: (bytes: number, variant?: string | null) => void;
   resumeConflict: () => void;
   restartConflict: () => void;
   cancelConflict: () => void;
@@ -61,11 +62,10 @@ export interface RepoDownloadConfig {
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const { kind, repoId, onComplete, onCancelled, onError, autoAdopt } = config;
 
-  // Keep the latest callbacks in a ref so the subscription only re-binds when
-  // the repo identity changes, not on every render that passes fresh closures.
-  const handlersRef = useRef<JobListeners>({});
-  useEffect(() => {
-    handlersRef.current = { onComplete, onCancelled, onError };
+  const handlersRef = useLatestRef<JobListeners>({
+    onComplete,
+    onCancelled,
+    onError,
   });
   useEffect(() => {
     return subscribeJobListeners(kind, repoId, {
@@ -131,7 +131,8 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const setExpectedBytes = useCallback(
-    (bytes: number) => downloadManager.setExpected(kind, repoId, bytes),
+    (bytes: number, variant: string | null = null) =>
+      downloadManager.setExpected(kind, repoId, variant, bytes),
     [kind, repoId],
   );
 

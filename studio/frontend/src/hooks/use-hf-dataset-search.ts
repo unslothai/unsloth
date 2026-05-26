@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { fetchWithTimeout } from "@/lib/network";
+import type { ModelType } from "@/types/training";
 import { listDatasets } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
-import type { ModelType } from "@/types/training";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 
 interface DatasetInfoSplit {
@@ -89,6 +90,7 @@ type DatasetSortKey =
 type DatasetSortDirection = "desc" | "asc";
 
 const DESC_ONLY_DATASET_SORTS = new Set<DatasetSortKey>(["trendingScore"]);
+const HF_DATASET_SEARCH_TIMEOUT_MS = 15_000;
 
 function makeDatasetSortFetch(
   sortBy: DatasetSortKey,
@@ -116,7 +118,11 @@ function makeDatasetSortFetch(
         : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
-    return fetch(url, signal ? { ...init, signal } : init);
+    return fetchWithTimeout(
+      url,
+      signal ? { ...init, signal } : init,
+      HF_DATASET_SEARCH_TIMEOUT_MS,
+    );
   };
 }
 

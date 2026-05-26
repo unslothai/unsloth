@@ -1,55 +1,44 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Input } from "@/components/ui/input";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { type CachedInventoryRow, useHubInventory } from "@/features/inventory";
 import { useTrainingConfigStore } from "@/features/training";
 import {
-  type CachedDatasetRepo,
-  listCachedDatasets,
-  listLocalDatasets,
-  type LocalDatasetInfo,
-} from "@/features/training";
-import {
-  useDebouncedValue,
   useHfDatasetSearch,
   useInfiniteScroll,
+  useLatestRef,
+  useOnlineStatus,
 } from "@/hooks";
-import { useInventoryVersion } from "@/stores/inventory-events";
-import { cn } from "@/lib/utils";
 import { matchTokens, tokenizeQuery } from "@/lib/search-text";
+import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import {
-  ArrowDown01Icon,
-  ArrowRight01Icon,
-  Database02Icon,
-  FolderSearchIcon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useMemo } from "react";
+import { PickerShell } from "./hub-picker-shell";
 import {
-  PICKER_TABS,
-  type PickerTab,
-  PickerTabToggle,
   RetryButton,
   isHfAuthError,
   looksLikeLocalPath,
 } from "./picker-tab-toggle";
+import { SelectablePickerItem } from "./selectable-picker-item";
 import { useHfErrorToast } from "./use-hf-error-toast";
+import { useHubPickerState } from "./use-hub-picker-state";
+
+const DATASET_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.datasetPickerTab";
 
 const TRIGGER_BASE = cn(
   "menu-trigger field-soft inline-flex h-9 w-full items-center gap-1.5 rounded-[12px] px-3 text-[12.5px] text-muted-foreground transition-colors",
   "focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
 );
 
+const PATH_SEPARATOR_RE = /[\\/]/;
+const UPLOADED_DATASET_HASH_PREFIX_RE = /^[0-9a-f]{32}_(.+)$/i;
+
 function datasetDisplayName(value: string): string {
-  return value.split("/").pop() ?? value;
+  const leaf = value.split(PATH_SEPARATOR_RE).pop() ?? value;
+  return leaf.replace(UPLOADED_DATASET_HASH_PREFIX_RE, "$1");
 }
 
 type DeviceDatasetItem =
@@ -66,6 +55,7 @@ type DeviceDatasetItem =
       title: string;
       detail: string;
       repoId: string;
+      cachePath: string | null;
     };
 
 export function TrainDatasetPicker() {
@@ -78,22 +68,76 @@ export function TrainDatasetPicker() {
     (s) => s.selectLocalDataset,
   );
   const hfToken = useHfTokenStore((s) => s.token);
+  const online = useOnlineStatus();
+  const picker = useHubPickerState({
+    storageKey: DATASET_PICKER_TAB_STORAGE_KEY,
+    hfToken,
+    online,
+  });
+  const {
+    cachedRows,
+    localRows,
+    downloadedReady,
+    inventoryError,
+    inventoryWarning,
+    refreshInventory,
+  } = useHubInventory({ kind: "datasets", enabled: picker.open });
+  const isLoadingLocal = !downloadedReady;
+  const localError =
+    inventoryError && localRows.length === 0 && cachedRows.length === 0
+      ? "Couldn't scan local datasets"
+      : null;
+  const retryLocalDatasets = useCallback(() => {
+    void refreshInventory();
+  }, [refreshInventory]);
 
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<PickerTab>("hub");
-  const [hubQuery, setHubQuery] = useState("");
-  const [deviceQuery, setDeviceQuery] = useState("");
+  const cachedDatasetById = useMemo(() => {
+    const map = new Map<string, CachedInventoryRow>();
+    for (const row of cachedRows) {
+      if (!row.partial) map.set(row.repoId.toLowerCase(), row);
+    }
+    return map;
+  }, [cachedRows]);
 
-  const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
-  const [cachedDatasets, setCachedDatasets] = useState<CachedDatasetRepo[]>([]);
-  const [isLoadingLocal, setIsLoadingLocal] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [localRetryToken, setLocalRetryToken] = useState(0);
-  const inventoryVersion = useInventoryVersion();
-  const loadedInventoryVersionRef = useRef<number>(-1);
+  const selectHubDataset = useCallback(
+    (id: string) => {
+      const cached = cachedDatasetById.get(id.trim().toLowerCase());
+      selectHfDataset(id, {
+        knownCached: cached !== undefined,
+        localPath: cached?.cachePath ?? null,
+      });
+    },
+    [selectHfDataset, cachedDatasetById],
+  );
 
-  const debouncedHubQuery = useDebouncedValue(hubQuery);
-  const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const deviceItems = useMemo<DeviceDatasetItem[]>(() => {
+    const cachedItems: DeviceDatasetItem[] = cachedRows
+      .filter((d) => !d.partial)
+      .map((d) => ({
+        kind: "cached",
+        key: `cached:${d.repoId}`,
+        title: d.repoId,
+        detail: "Hugging Face cache",
+        repoId: d.repoId,
+        cachePath: d.cachePath ?? null,
+      }));
+    const localItems: DeviceDatasetItem[] = localRows.map((d) => ({
+      kind: "local",
+      key: `local:${d.path}`,
+      title: d.title || d.id,
+      detail: d.sourceLabel,
+      path: d.path,
+    }));
+    return [...cachedItems, ...localItems].sort((a, b) =>
+      a.title.localeCompare(b.title),
+    );
+  }, [cachedRows, localRows]);
+
+  const pickerView = picker.getViewState({
+    hasDeviceItems: deviceItems.length > 0,
+    isLoadingDevice: isLoadingLocal,
+  });
+  const { activeQuery, handleQueryChange, tab } = pickerView;
 
   const {
     results: hfResults,
@@ -102,94 +146,30 @@ export function TrainDatasetPicker() {
     fetchMore: fetchMoreHf,
     retry: retryHf,
     error: hfError,
-  } = useHfDatasetSearch(debouncedHubQuery, {
+  } = useHfDatasetSearch(picker.debouncedHubQuery, {
     modelType,
-    enabled: open && tab === "hub",
-    accessToken: debouncedHfToken || undefined,
+    enabled: online && picker.open && tab === "hub",
+    accessToken: picker.debouncedHfToken || undefined,
   });
 
-  useHfErrorToast(hfError, "datasets");
+  const hubSearchActive = online && picker.open && tab === "hub";
+  const hubSearchActiveRef = useLatestRef(hubSearchActive);
+  const fetchMoreHfRef = useLatestRef(fetchMoreHf);
+  useHfErrorToast(hubSearchActive ? hfError : null, "datasets");
 
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMoreHf,
-    hfResults.length,
-    open && tab === "hub",
-  );
-
-  useEffect(() => {
-    if (!open) return;
-    if (loadedInventoryVersionRef.current === inventoryVersion) return;
-    let cancelled = false;
-    setIsLoadingLocal(true);
-    setLocalError(null);
-    void Promise.all([listLocalDatasets(), listCachedDatasets()])
-      .then(([localResponse, cached]) => {
-        if (cancelled) return;
-        setLocalDatasets(localResponse.datasets);
-        setCachedDatasets(cached);
-        loadedInventoryVersionRef.current = inventoryVersion;
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setLocalError(
-          err instanceof Error ? err.message : "Couldn't scan local datasets",
-        );
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setIsLoadingLocal(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, inventoryVersion, localRetryToken]);
-
-  const retryLocalDatasets = useCallback(() => {
-    loadedInventoryVersionRef.current = -1;
-    setLocalRetryToken((token) => token + 1);
+  const fetchMoreOpenHf = useCallback(() => {
+    if (!hubSearchActiveRef.current) return;
+    fetchMoreHfRef.current();
   }, []);
 
-  const cachedRepoSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const d of cachedDatasets) {
-      if (!d.partial) set.add(d.repo_id.toLowerCase());
-    }
-    return set;
-  }, [cachedDatasets]);
-
-  const selectHubDataset = useCallback(
-    (id: string) => {
-      selectHfDataset(id, {
-        knownCached: cachedRepoSet.has(id.trim().toLowerCase()),
-      });
-    },
-    [selectHfDataset, cachedRepoSet],
+  const { scrollRef, sentinelRef } = useInfiniteScroll(
+    fetchMoreOpenHf,
+    hfResults.length,
+    hubSearchActive,
   );
 
-  const deviceItems = useMemo<DeviceDatasetItem[]>(() => {
-    const cachedItems: DeviceDatasetItem[] = cachedDatasets
-      .filter((d) => !d.partial)
-      .map((d) => ({
-        kind: "cached",
-        key: `cached:${d.repo_id}`,
-        title: d.repo_id,
-        detail: "Hugging Face cache",
-        repoId: d.repo_id,
-      }));
-    const localItems: DeviceDatasetItem[] = localDatasets.map((d) => ({
-      kind: "local",
-      key: `local:${d.path}`,
-      title: d.label || d.id,
-      detail: d.path,
-      path: d.path,
-    }));
-    return [...cachedItems, ...localItems].sort((a, b) =>
-      a.title.localeCompare(b.title),
-    );
-  }, [cachedDatasets, localDatasets]);
-
   const filteredDevice = useMemo(() => {
-    const tokens = tokenizeQuery(deviceQuery);
+    const tokens = tokenizeQuery(picker.deviceQuery);
     if (tokens.length === 0) return deviceItems;
     return deviceItems.filter((item) =>
       matchTokens(
@@ -197,9 +177,8 @@ export function TrainDatasetPicker() {
         tokens,
       ),
     );
-  }, [deviceItems, deviceQuery]);
+  }, [deviceItems, picker.deviceQuery]);
 
-  const activeQuery = (tab === "hub" ? hubQuery : deviceQuery).trim();
   const hasExactMatch =
     activeQuery.length === 0
       ? false
@@ -222,21 +201,50 @@ export function TrainDatasetPicker() {
     if (!next) return;
     if (tab === "hub") selectHubDataset(next);
     else selectLocalDataset(next);
-    setOpen(false);
+    picker.closePicker();
   };
+
+  const selectedLocalDatasetTitle = useMemo(() => {
+    if (datasetSource !== "upload" || !uploadedFile) {
+      return null;
+    }
+    const selected = deviceItems.find(
+      (item) => item.kind === "local" && item.path === uploadedFile,
+    );
+    return selected?.title ?? null;
+  }, [datasetSource, uploadedFile, deviceItems]);
 
   const display =
     datasetSource === "upload"
       ? uploadedFile
-        ? datasetDisplayName(uploadedFile)
+        ? (selectedLocalDatasetTitle ?? datasetDisplayName(uploadedFile))
         : null
       : dataset
         ? datasetDisplayName(dataset)
         : null;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild={true}>
+    <PickerShell
+      open={picker.open}
+      onOpenChange={picker.handleOpenChange}
+      tab={tab}
+      onTabChange={picker.handleTabChange}
+      hubQuery={picker.hubQuery}
+      deviceQuery={picker.deviceQuery}
+      activeQuery={activeQuery}
+      onQueryChange={handleQueryChange}
+      online={online}
+      noun="datasets"
+      isHubLoading={isLoadingHf}
+      showUseThis={showUseThis}
+      useThisLabel={useThisLabel}
+      onUseThis={() => commitRaw(activeQuery)}
+      placeholder={{
+        hub: "Search Hugging Face datasets...",
+        device: "Search local datasets...",
+      }}
+      scrollRef={scrollRef}
+      trigger={
         <button
           type="button"
           data-tour="studio-dataset"
@@ -263,119 +271,46 @@ export function TrainDatasetPicker() {
             className="size-3.5 shrink-0 text-muted-foreground"
           />
         </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        sideOffset={8}
-        collisionPadding={16}
-        className="w-[min(420px,calc(100vw-2rem))] rounded-2xl p-4"
-      >
-        <PickerTabToggle
-          tab={tab}
-          options={PICKER_TABS}
-          onTabChange={setTab}
+      }
+      deviceContent={
+        <DeviceList
+          items={filteredDevice}
+          isLoading={isLoadingLocal}
+          error={localError}
+          warning={inventoryWarning}
+          hasQuery={activeQuery.length > 0}
+          onRetry={retryLocalDatasets}
+          selectedLocalPath={datasetSource === "upload" ? uploadedFile : null}
+          selectedHfRepoId={datasetSource === "huggingface" ? dataset : null}
+          onPick={(item) => {
+            if (item.kind === "local") selectLocalDataset(item.path);
+            else {
+              selectHfDataset(item.repoId, {
+                knownCached: true,
+                localPath: item.cachePath,
+              });
+            }
+            picker.closePicker();
+          }}
         />
-        <div className="mt-2.5 flex flex-col gap-2">
-          <div className="relative">
-            <HugeiconsIcon
-              icon={Search01Icon}
-              strokeWidth={1.75}
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              autoFocus={true}
-              value={tab === "hub" ? hubQuery : deviceQuery}
-              onChange={(e) =>
-                tab === "hub"
-                  ? setHubQuery(e.target.value)
-                  : setDeviceQuery(e.target.value)
-              }
-              onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
-                e.preventDefault();
-                if (showUseThis) commitRaw(activeQuery);
-              }}
-              placeholder={
-                tab === "hub"
-                  ? "Search Hugging Face datasets..."
-                  : "Search local datasets..."
-              }
-              className="field-soft h-9 rounded-full pl-9 text-[12.5px]"
-            />
-            {tab === "hub" && isLoadingHf && (
-              <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            )}
-          </div>
-
-          <div
-            ref={scrollRef}
-            className="max-h-[320px] overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
-          >
-            {showUseThis && (
-              <button
-                type="button"
-                onClick={() => commitRaw(activeQuery)}
-                className="mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-[12.5px] transition-colors hover:bg-primary/[0.08]"
-              >
-                <HugeiconsIcon
-                  icon={tab === "hub" ? Search01Icon : FolderSearchIcon}
-                  strokeWidth={1.75}
-                  className="size-3.5 shrink-0 text-primary"
-                />
-                <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                  <span className="truncate font-medium text-foreground">
-                    {activeQuery}
-                  </span>
-                  <span className="text-[10.5px] text-muted-foreground/80">
-                    {useThisLabel}
-                  </span>
-                </span>
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
-                  strokeWidth={1.5}
-                  className="size-3.5 shrink-0 text-muted-foreground/70"
-                />
-              </button>
-            )}
-            {tab === "device" ? (
-              <DeviceList
-                items={filteredDevice}
-                isLoading={isLoadingLocal}
-                error={localError}
-                hasQuery={activeQuery.length > 0}
-                onRetry={retryLocalDatasets}
-                selectedLocalPath={
-                  datasetSource === "upload" ? uploadedFile : null
-                }
-                selectedHfRepoId={
-                  datasetSource === "huggingface" ? dataset : null
-                }
-                onPick={(item) => {
-                  if (item.kind === "local") selectLocalDataset(item.path);
-                  else selectHfDataset(item.repoId, { knownCached: true });
-                  setOpen(false);
-                }}
-              />
-            ) : (
-              <HubList
-                items={hfResults}
-                isLoading={isLoadingHf}
-                isLoadingMore={isLoadingHfMore}
-                value={dataset}
-                hasQuery={activeQuery.length > 0}
-                error={hfError}
-                onPick={(id) => {
-                  selectHubDataset(id);
-                  setOpen(false);
-                }}
-                onRetry={retryHf}
-                sentinelRef={sentinelRef}
-              />
-            )}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
+      }
+      hubContent={
+        <HubList
+          items={hfResults}
+          isLoading={isLoadingHf}
+          isLoadingMore={isLoadingHfMore}
+          value={dataset}
+          hasQuery={activeQuery.length > 0}
+          error={hfError}
+          onPick={(id) => {
+            selectHubDataset(id);
+            picker.closePicker();
+          }}
+          onRetry={retryHf}
+          sentinelRef={sentinelRef}
+        />
+      }
+    />
   );
 }
 
@@ -383,6 +318,7 @@ function DeviceList({
   items,
   isLoading,
   error,
+  warning,
   hasQuery,
   onRetry,
   selectedLocalPath,
@@ -392,6 +328,7 @@ function DeviceList({
   items: DeviceDatasetItem[];
   isLoading: boolean;
   error: string | null;
+  warning: boolean;
   hasQuery: boolean;
   onRetry: () => void;
   selectedLocalPath: string | null;
@@ -436,24 +373,22 @@ function DeviceList({
             : selectedHfRepoId === item.repoId;
         return (
           <li key={item.key}>
-            <button
-              type="button"
-              onClick={() => onPick(item)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] transition-colors hover:bg-foreground/[0.05]",
-                active && "bg-foreground/[0.06]",
-              )}
-            >
-              <span className="block min-w-0 flex-1 truncate">
+            <SelectablePickerItem active={active} onSelect={() => onPick(item)}>
+              <span className="block min-w-0 flex-1 cursor-text select-text truncate">
                 {item.title}
               </span>
               <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                {item.kind === "cached" ? "HF cache" : "Local"}
+                {item.kind === "cached" ? "HF cache" : item.detail}
               </span>
-            </button>
+            </SelectablePickerItem>
           </li>
         );
       })}
+      {warning && (
+        <li className="px-2 py-1 text-[10.5px] text-muted-foreground/80">
+          Some dataset locations could not be scanned.
+        </li>
+      )}
     </ul>
   );
 }
@@ -477,7 +412,7 @@ function HubList({
   error: string | null;
   onPick: (id: string) => void;
   onRetry: () => void;
-  sentinelRef: React.RefObject<HTMLDivElement | null>;
+  sentinelRef: RefObject<HTMLDivElement | null>;
 }) {
   if (isLoading && items.length === 0) {
     return (
@@ -492,7 +427,9 @@ function HubList({
       return (
         <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
           <p className="text-[12.5px] font-medium text-foreground">
-            {isAuth ? "Hugging Face token rejected" : "Couldn't reach Hugging Face"}
+            {isAuth
+              ? "Hugging Face token rejected"
+              : "Couldn't reach Hugging Face"}
           </p>
           <p className="text-[11px] leading-snug text-muted-foreground">
             {isAuth
@@ -516,16 +453,11 @@ function HubList({
         const active = value === d.id;
         return (
           <li key={d.id}>
-            <button
-              type="button"
-              onClick={() => onPick(d.id)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12.5px] transition-colors hover:bg-foreground/[0.05]",
-                active && "bg-foreground/[0.06]",
-              )}
-            >
-              <span className="block min-w-0 flex-1 truncate">{d.id}</span>
-            </button>
+            <SelectablePickerItem active={active} onSelect={() => onPick(d.id)}>
+              <span className="block min-w-0 flex-1 cursor-text select-text truncate">
+                {d.id}
+              </span>
+            </SelectablePickerItem>
           </li>
         );
       })}

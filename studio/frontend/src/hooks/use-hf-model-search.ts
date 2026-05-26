@@ -9,14 +9,30 @@ import {
   cachedModelInfo,
   primeCacheFromListing,
 } from "@/lib/hf-cache";
-import { useCallback, useMemo } from "react";
+import { fetchWithTimeout } from "@/lib/network";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 import { usePlatformStore } from "@/config/env";
 import {
   EMBEDDING_TAGS,
   estimateSizeFromDtypes,
-  isGgufLike,
-} from "@/features/models/lib/hf-model-meta";
+} from "@/lib/hf-model-meta";
+import { isGgufLike } from "@/lib/model-identifiers";
+import {
+  classifyUnslothSupport,
+  excludedFormatTagsForDevice,
+  type UnslothSupport,
+  type UnslothSupportStatus,
+} from "@/lib/unsloth-support";
+
+export { classifyUnslothSupport };
+export type { UnslothSupport, UnslothSupportStatus };
 
 export type HfSortKey =
   | "trendingScore"
@@ -26,6 +42,42 @@ export type HfSortKey =
   | "createdAt";
 
 export type HfSortDirection = "desc" | "asc";
+export type HfTaskFilter = PipelineType | readonly PipelineType[] | undefined;
+
+function normalizeTaskFilter(task: HfTaskFilter): readonly PipelineType[] {
+  if (!task) return [];
+  return typeof task === "string" ? [task] : task;
+}
+
+function taskMatches(
+  pipelineTag: string | undefined,
+  tasks: readonly PipelineType[],
+): boolean {
+  return (
+    tasks.length === 0 ||
+    !pipelineTag ||
+    tasks.includes(pipelineTag as PipelineType)
+  );
+}
+
+async function* mergeTaskIterators(
+  tasks: readonly PipelineType[],
+  createIter: (task?: PipelineType) => AsyncGenerator<unknown>,
+): AsyncGenerator<unknown> {
+  const seen = new Set<string>();
+  const taskList = tasks.length > 0 ? tasks : [undefined];
+  for (const task of taskList) {
+    for await (const model of createIter(task)) {
+      const name = (model as { name?: string }).name;
+      if (name) {
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      yield model;
+    }
+  }
+}
 
 export interface HfModelResult {
   id: string;
@@ -41,248 +93,18 @@ export interface HfModelResult {
   quantMethod?: string;
 }
 
-/** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
-const EXCLUDED_TAGS_GPU = new Set([
-  "gptq",
-  "awq",
-  "exl2",
-  "mlx",
-  "onnx",
-  "openvino",
-  "coreml",
-  "tflite",
-  "ctranslate2",
-]);
-
-/** Tags to exclude on MLX (Mac) — GPU-only quant formats won't load on MLX. */
-const EXCLUDED_TAGS_MLX = new Set([
-  "gptq",
-  "awq",
-  "exl2",
-  "onnx",
-  "openvino",
-  "coreml",
-  "tflite",
-  "ctranslate2",
-]);
-
-const UNSUPPORTED_PIPELINE_TAGS: ReadonlySet<string> = new Set([
-  "text-to-image",
-  "image-to-image",
-  "image-text-to-image",
-  "text-to-video",
-  "video-to-video",
-  "image-to-video",
-  "video-text-to-text",
-  "video-classification",
-  "unconditional-image-generation",
-  "text-to-3d",
-  "image-to-3d",
-  "image-segmentation",
-  "object-detection",
-  "depth-estimation",
-  "mask-generation",
-  "zero-shot-image-classification",
-  "zero-shot-object-detection",
-  "image-classification",
-  "keypoint-detection",
-  "image-feature-extraction",
-  "robotics",
-  "reinforcement-learning",
-  "graph-ml",
-  "tabular-classification",
-  "tabular-regression",
-  "time-series-forecasting",
-]);
-
-const UNSUPPORTED_LIBRARY_TAGS: ReadonlySet<string> = new Set([
-  "diffusers",
-  "stable-diffusion",
-  "stable-diffusion-xl",
-  "flux",
-  "controlnet",
-  "lora-diffusers",
-]);
-
-const FORMAT_TAG_LABEL: Record<string, string> = {
-  gptq: "GPTQ quantization",
-  awq: "AWQ quantization",
-  exl2: "EXL2 quantization",
-  mlx: "MLX-format weights",
-  onnx: "ONNX-format weights",
-  openvino: "OpenVINO-format weights",
-  coreml: "Core ML-format weights",
-  tflite: "TensorFlow Lite-format weights",
-  ctranslate2: "CTranslate2-format weights",
-};
-
-const FORMAT_ALIAS_TAGS: Record<string, string> = {
-  "auto-gptq": "gptq",
-};
-
-const FORMAT_NAME_PATTERNS: ReadonlyArray<{ key: string; pattern: RegExp }> = [
-  { key: "awq", pattern: /(?:^|[-_./])awq(?:\d+(?:bit)?)?(?:$|[-_./])/i },
-  { key: "gptq", pattern: /(?:^|[-_./])gptq(?:\d+(?:bit)?)?(?:$|[-_./])/i },
-  { key: "exl2", pattern: /(?:^|[-_./])exl2(?:$|[-_./])/i },
-  { key: "mlx", pattern: /(?:^|[-_./])mlx(?:$|[-_./])/i },
-  { key: "onnx", pattern: /(?:^|[-_./])onnx(?:$|[-_./])/i },
-  { key: "openvino", pattern: /(?:^|[-_./])openvino(?:$|[-_./])/i },
-  { key: "coreml", pattern: /(?:^|[-_./])coreml(?:$|[-_./])/i },
-  { key: "tflite", pattern: /(?:^|[-_./])tflite(?:$|[-_./])/i },
-  { key: "ctranslate2", pattern: /(?:^|[-_./])ctranslate2(?:$|[-_./])/i },
-];
-
-function detectFormatKey(
-  modelId: string | null | undefined,
-  lowerTags: ReadonlySet<string>,
-): string | null {
-  for (const tag of lowerTags) {
-    if (FORMAT_TAG_LABEL[tag]) return tag;
-    const alias = FORMAT_ALIAS_TAGS[tag];
-    if (alias) return alias;
-  }
-  if (modelId) {
-    for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
-      if (pattern.test(modelId)) return key;
-    }
-  }
-  return null;
-}
-
-/**
- * `config.quantization_config.quant_method` values Unsloth can load natively.
- * Anything matching one of these stays unflagged regardless of the model name
- * or tags — this is the authoritative signal because it comes from the model's
- * own config.json. See
- * https://huggingface.co/docs/transformers/quantization/overview.
- */
-const SUPPORTED_QUANT_METHODS: ReadonlySet<string> = new Set([
-  "bitsandbytes",
-  "bnb",
-  "bnb_4bit",
-  "bnb_8bit",
-]);
-
-/**
- * `quant_method` values that Unsloth's runtime cannot load today. Maps to the
- * label rendered to the user. Methods not in this map and not in
- * `SUPPORTED_QUANT_METHODS` are treated as "unknown" and *not* flagged, so a
- * brand-new method (or a publisher typo) never produces a false negative
- * support claim.
- */
-const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
-  awq: "AWQ quantization",
-  gptq: "GPTQ quantization",
-  exl2: "EXL2 quantization",
-  "compressed-tensors": "compressed-tensors quantization",
-  aqlm: "AQLM quantization",
-  eetq: "EETQ quantization",
-  hqq: "HQQ quantization",
-  fbgemm_fp8: "FBGEMM FP8 quantization",
-  finegrained_fp8: "fine-grained FP8 quantization",
-  quark: "Quark quantization",
-  vptq: "VPTQ quantization",
-  spqr: "SpQR quantization",
-  higgs: "HIGGS quantization",
-  sinq: "SINQ quantization",
-  torchao: "torchao quantization",
-  quanto: "optimum-quanto quantization",
-  auto_round: "AutoRound quantization",
-  autoround: "AutoRound quantization",
-  metal: "Metal-kernel quantization",
-  fouroversix: "Four Over Six quantization",
-  fp_quant: "FP-Quant quantization",
-};
-
-function normalizeQuantMethod(value: string | null | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.toLowerCase().trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export type UnslothSupportStatus = "supported" | "unsupported";
-
-export interface UnslothSupport {
-  status: UnslothSupportStatus;
-  reason: string | null;
-}
-
-/**
- * Classify a Hugging Face model as supported by Unsloth on the active device.
- * The Hub uses this to render a non-blocking notice; the training picker
- * filters out unsupported models via separate task/format filters.
- */
-export function classifyUnslothSupport({
-  modelId,
-  pipelineTag,
-  tags,
-  libraryName,
-  deviceType,
-  quantMethod,
-}: {
-  modelId?: string | null;
-  pipelineTag?: string | null;
-  tags?: readonly string[] | null;
-  libraryName?: string | null;
-  deviceType?: string | null;
-  quantMethod?: string | null;
-}): UnslothSupport {
-  const pipeline = pipelineTag?.toLowerCase().trim() || null;
-  const lowerTags = new Set(
-    (tags ?? []).map((tag) => tag.toLowerCase().trim()).filter(Boolean),
-  );
-  const library = libraryName?.toLowerCase().trim() || null;
-  const formatTags =
-    deviceType?.toLowerCase() === "mac"
-      ? EXCLUDED_TAGS_MLX
-      : EXCLUDED_TAGS_GPU;
-  const normalizedQuant = normalizeQuantMethod(quantMethod);
-
-  if (normalizedQuant) {
-    if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
-      return { status: "supported", reason: null };
-    }
-    if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
-      return {
-        status: "unsupported",
-        reason: `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`,
-      };
-    }
-  }
-
-  if (pipeline && UNSUPPORTED_PIPELINE_TAGS.has(pipeline)) {
-    return {
-      status: "unsupported",
-      reason: `Pipeline task: ${pipeline}.`,
-    };
-  }
-  for (const tag of lowerTags) {
-    if (UNSUPPORTED_LIBRARY_TAGS.has(tag)) {
-      return {
-        status: "unsupported",
-        reason: `Library: ${tag}.`,
-      };
-    }
-  }
-  if (library && UNSUPPORTED_LIBRARY_TAGS.has(library)) {
-    return {
-      status: "unsupported",
-      reason: `Library: ${library}.`,
-    };
-  }
-  const formatKey = detectFormatKey(modelId, lowerTags);
-  if (formatKey && formatTags.has(formatKey)) {
-    const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
-    return {
-      status: "unsupported",
-      reason: `Detected ${label}.`,
-    };
-  }
-  return { status: "supported", reason: null };
-}
-
 // HF rejects direction=1 (asc) for trendingScore — only descending is supported.
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
+const HF_SEARCH_TIMEOUT_MS = 15_000;
+
+function makeHfFetch(signal?: AbortSignal): typeof fetch {
+  return (input, init) =>
+    fetchWithTimeout(
+      input,
+      signal ? { ...init, signal } : init,
+      HF_SEARCH_TIMEOUT_MS,
+    );
+}
 
 function makeSortFetch(
   sortBy: HfSortKey | undefined,
@@ -308,17 +130,20 @@ function makeSortFetch(
       effectiveSort && DESC_ONLY_SORTS.has(effectiveSort) ? "desc" : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
-    return fetch(url, signal ? { ...init, signal } : init);
+    return fetchWithTimeout(
+      url,
+      signal ? { ...init, signal } : init,
+      HF_SEARCH_TIMEOUT_MS,
+    );
   };
 }
-
-const withPopularitySort = makeSortFetch("downloads", "desc");
 
 function makeMapModel(
   excludeGguf: boolean,
   excludedTags: ReadonlySet<string>,
   keepUnsupportedTags: boolean,
   idSuffix: string,
+  deviceType: string | null,
 ) {
   const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
@@ -352,6 +177,26 @@ function makeMapModel(
     if (excludeGguf && isGguf) {
       return null;
     }
+    const pipelineTag = m.task ?? m.pipeline_tag;
+    const quantMethod = m.config?.quantization_config?.quant_method;
+    // Hub-side filtering (Train picker / channel-scoped views) drops models
+    // the Unsloth runtime cannot load before they ever reach the row list.
+    // The Hub Discover surface opts out via `keepUnsupportedTags=true` so it
+    // can still render them with a "may not be supported" dot. Embeddings
+    // skip the gate the same way the raw-tag filter does — their pipeline
+    // tag (`feature-extraction`/`sentence-similarity`) lives in the
+    // unsupported set for chat, but they are explicitly trainable.
+    if (!keepUnsupportedTags && !isEmbedding) {
+      const support = classifyUnslothSupport({
+        modelId: m.name,
+        pipelineTag,
+        tags: m.tags,
+        libraryName: m.library_name,
+        deviceType,
+        quantMethod,
+      });
+      if (support.status === "unsupported") return null;
+    }
     const updatedAtIso =
       m.updatedAt instanceof Date
         ? m.updatedAt.toISOString()
@@ -366,10 +211,10 @@ function makeMapModel(
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
       tags: m.tags,
-      pipelineTag: m.task ?? m.pipeline_tag,
+      pipelineTag,
       updatedAt: updatedAtIso,
       libraryName: m.library_name,
-      quantMethod: m.config?.quantization_config?.quant_method,
+      quantMethod,
     };
   };
 }
@@ -409,7 +254,7 @@ function primeFromListing(
  */
 async function* mergedModelIterator(
   query: string,
-  task?: PipelineType,
+  task?: HfTaskFilter,
   accessToken?: string,
   pinnedId?: string,
   sortBy: HfSortKey = "downloads",
@@ -417,21 +262,25 @@ async function* mergedModelIterator(
   signal?: AbortSignal,
 ): AsyncGenerator<unknown> {
   const sortFetch = makeSortFetch(sortBy, direction, signal);
+  const tasks = normalizeTaskFilter(task);
   const common = {
     additionalFields: ALL_FIELDS,
     fetch: sortFetch,
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
-  // Fire both iterators immediately (parallel network requests on first pull)
-  const unslothIter = listModels({
-    search: { query, owner: "unsloth", ...(task ? { task } : {}) },
-    ...common,
-  });
-  const generalIter = listModels({
-    search: { query, ...(task ? { task } : {}) },
-    ...common,
-  });
+  const unslothIter = mergeTaskIterators(tasks, (task) =>
+    listModels({
+      search: { query, owner: "unsloth", ...(task ? { task } : {}) },
+      ...common,
+    }) as AsyncGenerator<unknown>,
+  );
+  const generalIter = mergeTaskIterators(tasks, (task) =>
+    listModels({
+      search: { query, ...(task ? { task } : {}) },
+      ...common,
+    }) as AsyncGenerator<unknown>,
+  );
 
   // Start pinned model lookup immediately so it can run in parallel with
   // the Phase 1 unsloth iteration instead of blocking Phase 2.
@@ -439,6 +288,7 @@ async function* mergedModelIterator(
     ? cachedModelInfo({
         name: pinnedId,
         additionalFields: ALL_FIELDS,
+        fetch: makeHfFetch(signal),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }).catch(() => null)
     : null;
@@ -496,12 +346,13 @@ async function* mergedModelIterator(
  */
 async function* priorityThenListingIterator(
   priorityIds: readonly string[],
-  task?: PipelineType,
+  task?: HfTaskFilter,
   accessToken?: string,
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
 ): AsyncGenerator<unknown> {
+  const tasks = normalizeTaskFilter(task);
   const common = {
     additionalFields: ALL_FIELDS,
     fetch: makeSortFetch(sortBy, direction, signal),
@@ -515,6 +366,7 @@ async function* priorityThenListingIterator(
       cachedModelInfo({
         name: id,
         additionalFields: ALL_FIELDS,
+        fetch: makeHfFetch(signal),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }),
     ),
@@ -522,18 +374,18 @@ async function* priorityThenListingIterator(
   for (const result of settled) {
     if (result.status === "fulfilled") {
       const m = result.value as { name?: string; pipeline_tag?: string };
-      // Skip models that don't match the selected task filter
-      if (task && m.pipeline_tag && m.pipeline_tag !== task) continue;
+      if (!taskMatches(m.pipeline_tag, tasks)) continue;
       if (m.name) seen.add(m.name);
       yield result.value;
     }
   }
 
-  // Phase 2: yield general unsloth listing, skipping already-seen
-  const generalIter = listModels({
-    search: { owner: "unsloth", ...(task ? { task } : {}) },
-    ...common,
-  });
+  const generalIter = mergeTaskIterators(tasks, (task) =>
+    listModels({
+      search: { owner: "unsloth", ...(task ? { task } : {}) },
+      ...common,
+    }) as AsyncGenerator<unknown>,
+  );
   for await (const model of generalIter) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
@@ -556,7 +408,7 @@ export interface HfModelSearchChannel {
 export function useHfModelSearch(
   query: string,
   options?: {
-    task?: PipelineType;
+    task?: HfTaskFilter;
     accessToken?: string;
     excludeGguf?: boolean;
     priorityIds?: readonly string[];
@@ -636,13 +488,15 @@ export function useHfModelSearch(
             signal,
           ) as AsyncGenerator<unknown>;
         }
-        return listModels({
-          search: { ...(task ? { task } : {}) },
-          additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection, signal),
-          sort: sortBy,
-          ...(accessToken ? { credentials: { accessToken } } : {}),
-        }) as AsyncGenerator<unknown>;
+        return mergeTaskIterators(normalizeTaskFilter(task), (task) =>
+          listModels({
+            search: { ...(task ? { task } : {}) },
+            additionalFields: ALL_FIELDS,
+            fetch: makeSortFetch(sortBy, sortDirection, signal),
+            sort: sortBy,
+            ...(accessToken ? { credentials: { accessToken } } : {}),
+          }) as AsyncGenerator<unknown>,
+        );
       }
       // Typed query: disable task filter so explicitly searched models still
       // appear even if HF task metadata is wrong/missing.
@@ -677,8 +531,7 @@ export function useHfModelSearch(
   );
 
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const excludedTags =
-    deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
+  const excludedTags = excludedFormatTagsForDevice(deviceType);
   const mapModel = useMemo(
     () =>
       makeMapModel(
@@ -686,8 +539,9 @@ export function useHfModelSearch(
         excludedTags,
         keepUnsupportedTags,
         channelIdSuffix,
+        deviceType,
       ),
-    [excludeGguf, excludedTags, keepUnsupportedTags, channelIdSuffix],
+    [excludeGguf, excludedTags, keepUnsupportedTags, channelIdSuffix, deviceType],
   );
   const search = useHfPaginatedSearch(createIter, mapModel, { enabled });
 
@@ -695,18 +549,100 @@ export function useHfModelSearch(
   // iterator already floats a small number of unsloth results to the top —
   // re-sorting all loaded results would bury the user's actual search matches.
   // Channel scoping has its own ordering, so the re-sort is also disabled there.
+  //
+  // STABLE-APPEND CONTRACT: when a later page lands (search.results grew),
+  // we keep the previously-sorted prefix verbatim and append only the new tail
+  // in its natural order. Re-sorting the merged array would let a freshly
+  // arrived unsloth/* repo slip into an earlier index, shifting every other
+  // item forward and visibly bumping the user's viewport during infinite
+  // scroll. Sorting is therefore applied ONLY when the listing resets (length
+  // shrinks or zeros), which is when re-ordering is safe (the user has scrolled
+  // back to the top or initiated a new search).
+  //
   const channelActive = Boolean(channelOwner || channelTagsKey);
-  const results = useMemo(
-    () =>
-      !pinUnslothFirst || isPublisherQuery || trimmed || channelActive
-        ? search.results
-        : [...search.results].sort((a, b) => {
-            const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
-            const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
-            return aFirst - bFirst;
-          }),
-    [search.results, isPublisherQuery, trimmed, channelActive, pinUnslothFirst],
-  );
+  const [stableCache, setStableCache] = useState<{
+    source: HfModelResult[] | null;
+    length: number;
+    results: HfModelResult[];
+    sorted: boolean;
+  }>({ source: null, length: 0, results: [], sorted: false });
+
+  const incoming = search.results;
+  const sortingDisabled =
+    !pinUnslothFirst || isPublisherQuery || trimmed || channelActive;
+  let results: HfModelResult[];
+  let nextCache = stableCache;
+
+  if (sortingDisabled) {
+    results = incoming;
+    if (stableCache.results !== incoming || stableCache.sorted) {
+      nextCache = {
+        source: incoming,
+        length: incoming.length,
+        results: incoming,
+        sorted: false,
+      };
+    }
+  } else if (incoming.length === 0) {
+    results = incoming;
+    if (
+      stableCache.length !== 0 ||
+      stableCache.results !== incoming ||
+      !stableCache.sorted
+    ) {
+      nextCache = {
+        source: incoming,
+        length: 0,
+        results: incoming,
+        sorted: true,
+      };
+    }
+  } else if (
+    !stableCache.sorted ||
+    stableCache.length === 0 ||
+    incoming.length < stableCache.length ||
+    (incoming.length === stableCache.length && stableCache.source !== incoming)
+  ) {
+    // Listing reset / shrunk / replaced — safe to re-sort from scratch.
+    const sorted = [...incoming].sort((a, b) => {
+      const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
+      const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
+      return aFirst - bFirst;
+    });
+    results = sorted;
+    nextCache = {
+      source: incoming,
+      length: incoming.length,
+      results: sorted,
+      sorted: true,
+    };
+  } else if (incoming.length === stableCache.length) {
+    // No new pages since the cache was last produced.
+    results = stableCache.results;
+  } else {
+    // Listing grew — keep the prior sorted prefix and append the new tail in
+    // its natural order so existing virtualized rows don't shift index.
+    const newTail = incoming.slice(stableCache.length);
+    const merged = stableCache.results.concat(newTail);
+    results = merged;
+    nextCache = {
+      source: incoming,
+      length: incoming.length,
+      results: merged,
+      sorted: true,
+    };
+  }
+
+  const cacheNeedsUpdate = nextCache !== stableCache;
+  useEffect(() => {
+    if (!cacheNeedsUpdate) return;
+    const handle = globalThis.setTimeout(() => {
+      startTransition(() => {
+        setStableCache(nextCache);
+      });
+    }, 0);
+    return () => globalThis.clearTimeout(handle);
+  }, [cacheNeedsUpdate, nextCache]);
 
   return { ...search, results };
 }

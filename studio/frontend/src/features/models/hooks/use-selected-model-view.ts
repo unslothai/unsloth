@@ -8,6 +8,7 @@ import type {
   CachedInventoryRow,
   DiscoverRow,
   LocalInventoryRow,
+  SelectedResourceRef,
   SelectedModelView,
 } from "../types";
 
@@ -20,6 +21,57 @@ function detectViewCapabilities(
 ) {
   const modelId = identifiers.filter(Boolean).join(" ");
   return detectCapabilities(tags, pipelineTag, modelId);
+}
+
+function cachedResource(row: CachedInventoryRow): SelectedResourceRef {
+  return {
+    repoId: row.repoId,
+    localPath: row.cachePath ?? null,
+    source: "hub_cache",
+    cacheState: row.partial ? "partial" : "cached",
+    runId: row.loadId,
+    trainId: row.loadId,
+  };
+}
+
+function localResource(
+  row: LocalInventoryRow,
+  repoId: string | null = row.repoId,
+): SelectedResourceRef {
+  const cacheState = row.partial
+    ? "partial"
+    : row.source === "hf_cache"
+      ? "cached"
+      : "local";
+  const id =
+    row.source === "hf_cache" && repoId && !row.partial ? repoId : row.loadId;
+  return {
+    repoId,
+    localPath: row.path,
+    source: row.source,
+    cacheState,
+    runId: id,
+    trainId: id,
+  };
+}
+
+function remoteResource(row: DiscoverRow): SelectedResourceRef {
+  return {
+    repoId: row.result.id,
+    localPath: null,
+    source: "huggingface",
+    cacheState: row.isPartialOnDevice ? "partial" : "remote",
+    runId: row.result.id,
+    trainId: row.result.id,
+  };
+}
+
+function localFormatLabel(row: LocalInventoryRow): string {
+  if (row.modelFormat === "gguf") return "local GGUF";
+  if (row.modelFormat === "adapter") return "local adapter";
+  if (row.modelFormat === "safetensors") return "local safetensors model";
+  if (row.modelFormat === "checkpoint") return "local checkpoint";
+  return "local model";
 }
 
 export function useSelectedModelView({
@@ -37,26 +89,102 @@ export function useSelectedModelView({
 }): SelectedModelView | null {
   return useMemo<SelectedModelView | null>(() => {
     if (selectedDiscoverRow) {
+      if (
+        !selectedCachedRow &&
+        selectedLocalRow &&
+        selectedLocalRow.source !== "hf_cache"
+      ) {
+        const resource = localResource(
+          selectedLocalRow,
+          selectedDiscoverRow.result.id,
+        );
+        return {
+          id: resource.runId,
+          kind: "local",
+          resource,
+          displayId: selectedDiscoverRow.id,
+          hubRepoId: selectedDiscoverRow.result.id,
+          owner: selectedDiscoverRow.owner,
+          title: selectedDiscoverRow.repo,
+          summary: selectedHfResult
+            ? buildSummary(selectedHfResult)
+            : selectedDiscoverRow.summary,
+          sourceLabel: selectedLocalRow.sourceLabel,
+          path: selectedLocalRow.path,
+          localSource: selectedLocalRow.source,
+          isLocal: true,
+          isGguf: selectedLocalRow.isGguf || selectedDiscoverRow.result.isGguf,
+          requiresVariant: selectedLocalRow.capabilities.requiresVariant,
+          modelFormat:
+            selectedLocalRow.modelFormat !== "unknown"
+              ? selectedLocalRow.modelFormat
+              : selectedDiscoverRow.result.isGguf
+                ? "gguf"
+                : null,
+          isDownloaded: !selectedLocalRow.partial,
+          isPartial: selectedLocalRow.partial ?? false,
+          runtimeCapabilities: selectedLocalRow.capabilities,
+          capabilities: selectedDiscoverRow.capabilities,
+          license: detectLicense(selectedDiscoverRow.result.tags),
+          pipelineTag: selectedDiscoverRow.result.pipelineTag,
+          libraryName: selectedDiscoverRow.result.libraryName,
+          downloads: selectedDiscoverRow.result.downloads,
+          likes: selectedDiscoverRow.result.likes,
+          totalParams: selectedDiscoverRow.result.totalParams,
+          estimatedSizeBytes: selectedDiscoverRow.result.estimatedSizeBytes,
+          updatedAt: selectedDiscoverRow.result.updatedAt,
+          localUpdatedAt: selectedLocalRow.updatedAt,
+          tags: selectedDiscoverRow.result.tags,
+          quantMethod: selectedDiscoverRow.result.quantMethod,
+        };
+      }
+
       const onDevicePath =
         selectedCachedRow?.cachePath ?? selectedLocalRow?.path ?? null;
+      const resource = selectedCachedRow
+        ? cachedResource(selectedCachedRow)
+        : selectedLocalRow?.source === "hf_cache"
+          ? localResource(selectedLocalRow, selectedDiscoverRow.result.id)
+        : remoteResource(selectedDiscoverRow);
+      const isResolvedPartial = resource.cacheState === "partial";
+      const isResolvedOnDevice =
+        resource.cacheState === "cached" || resource.cacheState === "local";
+      const resolvedModelFormat =
+        selectedCachedRow?.modelFormat ??
+        (selectedLocalRow?.modelFormat && selectedLocalRow.modelFormat !== "unknown"
+          ? selectedLocalRow.modelFormat
+          : selectedDiscoverRow.result.isGguf
+            ? "gguf"
+            : null);
       return {
         id: selectedDiscoverRow.id,
         kind: "discover",
+        resource,
         displayId: selectedDiscoverRow.id,
         hubRepoId: selectedDiscoverRow.result.id,
         owner: selectedDiscoverRow.owner,
         title: selectedDiscoverRow.repo,
         summary: selectedDiscoverRow.summary,
-        sourceLabel: selectedDiscoverRow.isAvailableOnDevice
+        sourceLabel: isResolvedOnDevice
           ? "On device"
-          : "Hugging Face",
+          : isResolvedPartial
+            ? "Partial on device"
+            : "Hugging Face",
         path: onDevicePath,
         isLocal: false,
-        isGguf: selectedDiscoverRow.result.isGguf,
-        isDownloaded:
-          selectedDiscoverRow.isAvailableOnDevice &&
-          !selectedDiscoverRow.isPartialOnDevice,
-        isPartial: selectedDiscoverRow.isPartialOnDevice,
+        isGguf:
+          selectedCachedRow?.isGguf ??
+          selectedLocalRow?.isGguf ??
+          selectedDiscoverRow.result.isGguf,
+        requiresVariant:
+          selectedCachedRow?.capabilities.requiresVariant ??
+          selectedLocalRow?.capabilities.requiresVariant ??
+          selectedDiscoverRow.result.isGguf,
+        modelFormat: resolvedModelFormat,
+        isDownloaded: isResolvedOnDevice,
+        isPartial: isResolvedPartial,
+        runtimeCapabilities:
+          selectedCachedRow?.capabilities ?? selectedLocalRow?.capabilities,
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
@@ -73,6 +201,7 @@ export function useSelectedModelView({
     }
 
     if (selectedCachedRow) {
+      const resource = cachedResource(selectedCachedRow);
       const cachedSummary = isDatasetMode
         ? "Cached dataset, ready to use."
         : selectedCachedRow.isGguf
@@ -88,6 +217,7 @@ export function useSelectedModelView({
       return {
         id: selectedCachedRow.repoId,
         kind: "cache",
+        resource,
         displayId: selectedCachedRow.repoId,
         hubRepoId: selectedCachedRow.repoId,
         owner: selectedCachedRow.owner,
@@ -99,13 +229,16 @@ export function useSelectedModelView({
         path: selectedCachedRow.cachePath ?? null,
         isLocal: false,
         isGguf: selectedCachedRow.isGguf,
+        requiresVariant: selectedCachedRow.capabilities.requiresVariant,
+        modelFormat: selectedCachedRow.modelFormat,
         isDownloaded: !selectedCachedRow.partial,
         isPartial: selectedCachedRow.partial ?? false,
+        runtimeCapabilities: selectedCachedRow.capabilities,
         capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,
           selectedCachedRow.repoId,
-          selectedCachedRow.id,
+          selectedCachedRow.loadId,
           selectedCachedRow.repo,
         ),
         license: detectLicense(mergedTags),
@@ -123,16 +256,37 @@ export function useSelectedModelView({
     }
 
     if (selectedLocalRow) {
-      const localDisplayId = selectedLocalRow.repoId ?? selectedLocalRow.id;
+      const localHubRepoId =
+        selectedLocalRow.source === "hf_cache" ? selectedLocalRow.repoId : null;
+      const resource = localResource(selectedLocalRow, localHubRepoId);
+      const localDisplayId = selectedLocalRow.repoId ?? selectedLocalRow.loadId;
       const isPartialHubCache =
         selectedLocalRow.source === "hf_cache" &&
         !!selectedLocalRow.partial &&
         !!selectedLocalRow.repoId;
+      const mergedTags = selectedHfResult?.tags ?? selectedLocalRow.tags;
+      const mergedPipelineTag =
+        selectedHfResult?.pipelineTag ??
+        selectedLocalRow.pipelineTag ??
+        undefined;
+      const mergedLibraryName =
+        selectedHfResult?.libraryName ??
+        selectedLocalRow.libraryName ??
+        undefined;
+      const mergedQuantMethod =
+        selectedHfResult?.quantMethod ??
+        selectedLocalRow.quantMethod ??
+        undefined;
+      const baseModelSummary = selectedLocalRow.baseModel && selectedHfResult
+        ? buildSummary(selectedHfResult)
+        : null;
+      const localHubMetadata = localHubRepoId ? selectedHfResult : null;
 
       if (isPartialHubCache && selectedLocalRow.repoId) {
         return {
           id: selectedLocalRow.repoId,
           kind: "cache",
+          resource,
           displayId: selectedLocalRow.repoId,
           hubRepoId: selectedLocalRow.repoId,
           owner: selectedLocalRow.owner,
@@ -144,66 +298,78 @@ export function useSelectedModelView({
           path: selectedLocalRow.path,
           isLocal: false,
           isGguf: selectedLocalRow.isGguf,
+          requiresVariant: selectedLocalRow.capabilities.requiresVariant,
+          modelFormat: selectedLocalRow.modelFormat,
           isDownloaded: false,
           isPartial: true,
+          runtimeCapabilities: selectedLocalRow.capabilities,
           capabilities: detectViewCapabilities(
-            selectedHfResult?.tags,
-            selectedHfResult?.pipelineTag,
+            mergedTags,
+            mergedPipelineTag,
             selectedLocalRow.repoId,
-            selectedLocalRow.id,
+            selectedLocalRow.loadId,
             selectedLocalRow.title,
             selectedLocalRow.path,
           ),
-          license: detectLicense(selectedHfResult?.tags),
-          pipelineTag: selectedHfResult?.pipelineTag,
-          libraryName: selectedHfResult?.libraryName,
+          license: detectLicense(mergedTags),
+          pipelineTag: mergedPipelineTag,
+          libraryName: mergedLibraryName,
           downloads: selectedHfResult?.downloads,
           likes: selectedHfResult?.likes,
           totalParams: selectedHfResult?.totalParams,
           estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
           updatedAt: selectedHfResult?.updatedAt,
           localUpdatedAt: selectedLocalRow.updatedAt,
-          tags: selectedHfResult?.tags,
-          quantMethod: selectedHfResult?.quantMethod,
+          tags: mergedTags,
+          quantMethod: mergedQuantMethod,
         };
       }
 
       return {
-        id: selectedLocalRow.id,
+        id: selectedLocalRow.loadId,
         kind: "local",
+        resource,
         displayId: localDisplayId,
-        hubRepoId: selectedLocalRow.repoId,
+        hubRepoId: localHubRepoId,
         owner: selectedLocalRow.owner,
         title: selectedLocalRow.title,
-        summary: selectedHfResult
-          ? buildSummary(selectedHfResult)
-          : `${localSourceLabel(selectedLocalRow.source)} · ${
-              selectedLocalRow.isGguf ? "local GGUF" : "local checkpoint"
-            }`,
+        summary: `${localSourceLabel(selectedLocalRow.source)} · ${localFormatLabel(
+          selectedLocalRow,
+        )}`,
         sourceLabel: selectedLocalRow.sourceLabel,
         path: selectedLocalRow.path,
         localSource: selectedLocalRow.source,
         isLocal: true,
         isGguf: selectedLocalRow.isGguf,
+        requiresVariant: selectedLocalRow.capabilities.requiresVariant,
+        modelFormat: selectedLocalRow.modelFormat,
+        baseModel: selectedLocalRow.baseModel ?? null,
+        baseModelSource: selectedLocalRow.baseModelSource ?? null,
+        baseModelHubId: selectedLocalRow.baseModelHubId ?? null,
+        baseModelSummary,
+        adapterType: selectedLocalRow.adapterType ?? null,
+        trainingMethod: selectedLocalRow.trainingMethod ?? null,
         isDownloaded: true,
+        runtimeCapabilities: selectedLocalRow.capabilities,
         capabilities: detectViewCapabilities(
-          selectedHfResult?.tags,
-          selectedHfResult?.pipelineTag,
+          mergedTags,
+          mergedPipelineTag,
           selectedLocalRow.repoId ?? selectedLocalRow.title,
-          selectedLocalRow.id,
+          selectedLocalRow.baseModel,
+          selectedLocalRow.loadId,
           selectedLocalRow.path,
         ),
-        license: detectLicense(selectedHfResult?.tags),
-        pipelineTag: selectedHfResult?.pipelineTag,
-        libraryName: selectedHfResult?.libraryName,
-        downloads: selectedHfResult?.downloads,
-        likes: selectedHfResult?.likes,
-        totalParams: selectedHfResult?.totalParams,
-        estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
-        updatedAt: selectedHfResult?.updatedAt,
+        license: detectLicense(mergedTags),
+        pipelineTag: mergedPipelineTag,
+        libraryName: mergedLibraryName,
+        downloads: localHubMetadata?.downloads,
+        likes: localHubMetadata?.likes,
+        totalParams: localHubMetadata?.totalParams,
+        estimatedSizeBytes: localHubMetadata?.estimatedSizeBytes,
+        updatedAt: localHubMetadata?.updatedAt,
         localUpdatedAt: selectedLocalRow.updatedAt,
-        tags: selectedHfResult?.tags,
-        quantMethod: selectedHfResult?.quantMethod,
+        tags: mergedTags,
+        quantMethod: mergedQuantMethod,
       };
     }
 

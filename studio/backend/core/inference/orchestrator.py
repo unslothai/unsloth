@@ -28,6 +28,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
+from core.inference.load_settings import build_transformers_load_settings
 from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
@@ -612,6 +613,7 @@ class InferenceOrchestrator:
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        chat_template_override: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -636,7 +638,16 @@ class InferenceOrchestrator:
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": gpu_ids,
+                "chat_template_override": chat_template_override,
             }
+            requested_load_settings = build_transformers_load_settings(
+                config = config,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                trust_remote_code = trust_remote_code,
+                gpu_ids = gpu_ids,
+                chat_template_override = chat_template_override,
+            )
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
                 model_name = model_name,
@@ -706,6 +717,10 @@ class InferenceOrchestrator:
                         "is_audio": model_info.get("is_audio", False),
                         "audio_type": model_info.get("audio_type"),
                         "has_audio_input": model_info.get("has_audio_input", False),
+                        "chat_template_override": model_info.get(
+                            "chat_template_override"
+                        ),
+                        "load_settings": requested_load_settings,
                     }
                     # Mirror chat_template_info so routes can classify
                     # capabilities without re-entering the subprocess.
@@ -714,6 +729,11 @@ class InferenceOrchestrator:
                         self.models[self.active_model_name]["chat_template_info"] = (
                             _tpl_info
                         )
+                    _default_tpl_info = model_info.get("default_chat_template_info")
+                    if isinstance(_default_tpl_info, dict):
+                        self.models[self.active_model_name][
+                            "default_chat_template_info"
+                        ] = _default_tpl_info
                     self.loading_models.discard(model_name)
                     logger.info(
                         "Model '%s' loaded successfully in subprocess", model_name

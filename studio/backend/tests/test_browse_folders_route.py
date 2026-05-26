@@ -59,6 +59,17 @@ def test_resolve_browse_target_rejects_file_path(tmp_path):
     assert exc_info.value.status_code == 400
 
 
+def test_resolve_browse_target_rejects_null_byte(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+
+    with pytest.raises(HTTPException) as exc_info:
+        models_route._resolve_browse_target(f"{allowed}\x00nested", [allowed])
+
+    assert exc_info.value.status_code == 400
+    assert "null bytes" in exc_info.value.detail
+
+
 def test_resolve_browse_target_allows_symlink_into_other_allowed_root(tmp_path):
     home_root = tmp_path / "home"
     scan_root = tmp_path / "scan"

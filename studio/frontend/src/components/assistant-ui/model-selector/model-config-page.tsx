@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { InfoHint } from "@/components/ui/info-hint";
+import { NumericValueInput } from "@/components/ui/numeric-value-input";
 import {
   Select,
   SelectContent,
@@ -10,8 +12,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { NumericValueInput } from "@/components/ui/numeric-value-input";
-import { InfoHint } from "@/components/ui/info-hint";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -19,23 +19,28 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  fetchModelDefaults,
-  isAbortError,
-  useChatRuntimeStore,
-  useModelDefaults,
-} from "@/features/chat";
-import {
   DEFAULT_PER_MODEL_CONFIG,
   KV_CACHE_DTYPES,
+  MAX_CHAT_TEMPLATE_BYTES,
   MAX_CHAT_TEMPLATE_LENGTH,
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
   SPECULATIVE_TYPES,
-  deletePerModelConfigsForModel,
+  chatTemplateByteLength,
+  clampChatTemplateToByteLimit,
+  fetchModelDefaults,
+  ggufVariantsMatch,
   hasPerModelConfig,
+  isAbortError,
+  isChatTemplateWithinLimit,
   isDefaultConfig,
+  modelIdsMatch,
+  modelStorageKey,
   resolveInitialConfig,
-} from "@/features/chat/model-config/per-model-config";
+  useChatRuntimeStore,
+  useModelDefaults,
+  validateChatTemplate,
+} from "@/features/chat";
 import {
   ArrowDown01Icon,
   ArrowLeft01Icon,
@@ -45,9 +50,18 @@ import {
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
+import { clampLines } from "./chat-template-preview";
 import {
   DeleteFineTuneDialog,
   type DeleteFineTuneTarget,
@@ -64,10 +78,16 @@ interface ConfigState {
   advancedOpen: boolean;
 }
 
+interface TemplateFetchRef {
+  controller: AbortController;
+  requestKey: string;
+}
+
 const SPECULATIVE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> = {
   auto: "Auto",
   mtp: "MTP",
   ngram: "Ngram",
+  "ngram-simple": "Ngram Simple",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
 };
@@ -129,27 +149,6 @@ function modelLeaf(id: string): string {
   return id;
 }
 
-function clampLines(text: string, maxLines = 3, maxCharsPerLine = 88): string {
-  if (!text) return "";
-  const out: string[] = [];
-  let truncated = false;
-  for (const raw of text.split("\n")) {
-    if (out.length >= maxLines) {
-      truncated = true;
-      break;
-    }
-    if (raw.length <= maxCharsPerLine) {
-      out.push(raw);
-      continue;
-    }
-    out.push(`${raw.slice(0, maxCharsPerLine - 1)}…`);
-    truncated = true;
-    break;
-  }
-  if (!truncated) return out.join("\n");
-  return `${out.join("\n")}\n…`;
-}
-
 export function ModelConfigPage({
   target,
   onBack,
@@ -159,7 +158,15 @@ export function ModelConfigPage({
   deleteDisabled = false,
 }: ModelConfigPageProps) {
   const deleteSource = pickerSourceToDeleteSource(target.meta.source);
-  const canDelete = !deleteDisabled && deleteSource !== null && !target.isGguf;
+  const canDeleteGgufExport =
+    target.isGguf &&
+    deleteSource === "exported" &&
+    target.meta.exportType === "gguf" &&
+    !!target.meta.ggufVariant;
+  const canDelete =
+    !deleteDisabled &&
+    deleteSource !== null &&
+    (!target.isGguf || canDeleteGgufExport);
   const [deletePending, setDeletePending] = useState<DeleteFineTuneTarget | null>(
     null,
   );
@@ -168,31 +175,44 @@ export function ModelConfigPage({
     [target.id, target.meta.ggufVariant],
   );
   const initialIsDefault = isDefaultConfig(initial.config);
-  const configKey = `${target.id}::${target.meta.ggufVariant ?? ""}`;
-  const defaultConfigState = (): ConfigState => ({
-    key: configKey,
-    config: initial.config,
-    remember: initial.remembered,
-    advancedOpen: !initialIsDefault,
-  });
+  const configKey = modelStorageKey(target.id, target.meta.ggufVariant);
+  const initialConfigState = useMemo<ConfigState>(
+    () => ({
+      key: configKey,
+      config: initial.config,
+      remember: initial.remembered,
+      advancedOpen: !initialIsDefault,
+    }),
+    [configKey, initial.config, initial.remembered, initialIsDefault],
+  );
   const [configState, setConfigState] =
-    useState<ConfigState>(defaultConfigState);
+    useState<ConfigState>(() => initialConfigState);
   const activeConfigState =
-    configState.key === configKey ? configState : defaultConfigState();
+    configState.key === configKey ? configState : initialConfigState;
   const { config, remember, advancedOpen } = activeConfigState;
+  const rememberSettingsId = useId();
   const [contextEditingState, setContextEditingState] = useState<{
     key: string;
     value: boolean;
   }>({ key: configKey, value: false });
   const contextEditing =
     contextEditingState.key === configKey ? contextEditingState.value : false;
-  const setContextEditing = (value: boolean) => {
+  const setContextEditing = useCallback((value: boolean) => {
     setContextEditingState({ key: configKey, value });
-  };
+  }, [configKey]);
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState("");
   const [templateInitialDraft, setTemplateInitialDraft] = useState("");
   const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateValidating, setTemplateValidating] = useState(false);
+  const templateDraftTouchedRef = useRef(false);
+  const templateLimitToastShownRef = useRef(false);
+  const templateFetchAbortRef = useRef<TemplateFetchRef | null>(null);
+
+  useEffect(() => {
+    setConfigState(initialConfigState);
+    setContextEditingState({ key: configKey, value: false });
+  }, [configKey, initialConfigState]);
 
   const defaultTemplateFromStore = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
@@ -206,14 +226,50 @@ export function ModelConfigPage({
     (s) => s.ggufContextLength,
   );
   const sameAsLoaded =
-    loadedCheckpoint === target.id &&
-    (loadedVariant ?? null) === (target.meta.ggufVariant ?? null);
+    modelIdsMatch(loadedCheckpoint, target.id) &&
+    ggufVariantsMatch(loadedVariant, target.meta.ggufVariant);
+  const canUseVerifiedLocalDefaults =
+    target.meta.source === "local" ||
+    target.meta.source === "lora" ||
+    target.meta.source === "exported" ||
+    (target.meta.source === "hub" &&
+      target.meta.preferLocalCache === true &&
+      target.meta.isDownloaded === true &&
+      target.meta.isPartial !== true);
+  const defaultsFetchOptions = useMemo(
+    () => ({
+      preferLocalCache: canUseVerifiedLocalDefaults,
+      localPath: canUseVerifiedLocalDefaults
+        ? (target.meta.localPath ?? null)
+        : null,
+      modelFormat: target.meta.modelFormat ?? (target.isGguf ? "gguf" : null),
+    }),
+    [
+      canUseVerifiedLocalDefaults,
+      target.isGguf,
+      target.meta.localPath,
+      target.meta.modelFormat,
+    ],
+  );
+  const defaultsFetchRequestKey = useMemo(
+    () =>
+      `${target.id}\0${defaultsFetchOptions.preferLocalCache ? "local" : "remote"}\0${defaultsFetchOptions.localPath ?? ""}\0${defaultsFetchOptions.modelFormat ?? ""}`,
+    [
+      target.id,
+      defaultsFetchOptions.preferLocalCache,
+      defaultsFetchOptions.localPath,
+      defaultsFetchOptions.modelFormat,
+    ],
+  );
 
   const {
     maxContext: fetchedMaxContext,
     chatTemplate: fetchedChatTemplate,
     setChatTemplate: setFetchedChatTemplate,
-  } = useModelDefaults(target.id, { skip: sameAsLoaded });
+  } = useModelDefaults(target.id, {
+    skip: sameAsLoaded || (target.isGguf && !canUseVerifiedLocalDefaults),
+    ...defaultsFetchOptions,
+  });
 
   const defaultTemplate = sameAsLoaded
     ? defaultTemplateFromStore
@@ -226,6 +282,23 @@ export function ModelConfigPage({
       mountedRef.current = false;
     };
   }, []);
+
+  const abortTemplateFetch = useCallback(() => {
+    templateFetchAbortRef.current?.controller.abort();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      abortTemplateFetch();
+    };
+  }, [abortTemplateFetch]);
+
+  useEffect(() => {
+    const active = templateFetchAbortRef.current;
+    if (active && active.requestKey !== defaultsFetchRequestKey) {
+      active.controller.abort();
+    }
+  }, [defaultsFetchRequestKey]);
 
   const isGguf = target.isGguf;
   const nativeMaxContext = sameAsLoaded
@@ -243,7 +316,7 @@ export function ModelConfigPage({
     value: PerModelConfig[K],
   ) {
     setConfigState((prev) => {
-      const base = prev.key === configKey ? prev : defaultConfigState();
+      const base = prev.key === configKey ? prev : initialConfigState;
       return { ...base, config: { ...base.config, [key]: value } };
     });
   }
@@ -251,14 +324,17 @@ export function ModelConfigPage({
   function resetToDefaults() {
     setContextEditing(false);
     setConfigState((prev) => {
-      const base = prev.key === configKey ? prev : defaultConfigState();
+      const base = prev.key === configKey ? prev : initialConfigState;
       return { ...base, config: { ...DEFAULT_PER_MODEL_CONFIG } };
     });
   }
 
   async function openTemplateEditor() {
+    abortTemplateFetch();
+    setTemplateLoading(false);
     const initialSync =
       config.chatTemplateOverride ?? defaultTemplate ?? "";
+    templateDraftTouchedRef.current = false;
     setTemplateDraft(initialSync);
     setTemplateInitialDraft(initialSync);
     setTemplateEditorOpen(true);
@@ -268,54 +344,113 @@ export function ModelConfigPage({
       defaultTemplate == null &&
       !sameAsLoaded
     ) {
+      const controller = new AbortController();
+      templateFetchAbortRef.current = {
+        controller,
+        requestKey: defaultsFetchRequestKey,
+      };
       setTemplateLoading(true);
       try {
-        const defaults = await fetchModelDefaults(target.id);
-        if (!mountedRef.current) return;
+        const defaults = await fetchModelDefaults(
+          target.id,
+          controller.signal,
+          defaultsFetchOptions,
+        );
+        if (!mountedRef.current || controller.signal.aborted) return;
         if (defaults.chatTemplate != null) {
           setFetchedChatTemplate(defaults.chatTemplate);
-          setTemplateDraft((current) =>
-            current.length === 0 ? defaults.chatTemplate ?? "" : current,
-          );
-          setTemplateInitialDraft((current) =>
-            current.length === 0 ? defaults.chatTemplate ?? "" : current,
-          );
+          if (!templateDraftTouchedRef.current) {
+            setTemplateDraft(defaults.chatTemplate);
+            setTemplateInitialDraft(defaults.chatTemplate);
+          }
         }
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || controller.signal.aborted) return;
         if (!isAbortError(err)) {
           toast.error("Couldn't load chat template", {
             description: err instanceof Error ? err.message : undefined,
           });
         }
       } finally {
-        if (mountedRef.current) setTemplateLoading(false);
+        if (templateFetchAbortRef.current?.controller === controller) {
+          templateFetchAbortRef.current = null;
+          if (mountedRef.current) setTemplateLoading(false);
+        }
       }
     }
   }
 
-  function saveTemplateEditor() {
-    if (templateDraft.length > MAX_CHAT_TEMPLATE_LENGTH) {
-      toast.error("Chat template is too large", {
-        description: `Keep it under ${MAX_CHAT_TEMPLATE_LENGTH.toLocaleString()} characters.`,
-      });
-      return;
+  function handleTemplateEditorOpenChange(open: boolean) {
+    setTemplateEditorOpen(open);
+    if (open) {
+      templateLimitToastShownRef.current = false;
     }
+    if (!open) {
+      abortTemplateFetch();
+      setTemplateLoading(false);
+    }
+  }
+
+  async function saveTemplateEditor() {
     const trimmed = templateDraft.trim();
     const next =
       trimmed.length === 0 ||
       (defaultTemplate != null && templateDraft === defaultTemplate)
         ? null
         : templateDraft;
+    if (next != null && !isChatTemplateWithinLimit(next)) {
+      toast.error("Chat template is too large", {
+        description: `Keep it under ${MAX_CHAT_TEMPLATE_BYTES.toLocaleString()} bytes.`,
+      });
+      return;
+    }
+    if (next != null) {
+      setTemplateValidating(true);
+      try {
+        const result = await validateChatTemplate(next);
+        if (!mountedRef.current) return;
+        if (!result.valid) {
+          toast.error("Invalid chat template", {
+            description:
+              result.error ?? "Check the Jinja syntax and try again.",
+          });
+          return;
+        }
+      } catch (error) {
+        if (!mountedRef.current) return;
+        toast.error("Couldn't validate chat template", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      } finally {
+        if (mountedRef.current) setTemplateValidating(false);
+      }
+    }
     update("chatTemplateOverride", next);
-    setTemplateEditorOpen(false);
+    handleTemplateEditorOpenChange(false);
   }
 
   function resetTemplateDraftToDefault() {
+    templateDraftTouchedRef.current = true;
     setTemplateDraft(defaultTemplate ?? "");
   }
 
+  function updateTemplateDraft(value: string) {
+    templateDraftTouchedRef.current = true;
+    const next = clampChatTemplateToByteLimit(value);
+    if (next !== value && !templateLimitToastShownRef.current) {
+      templateLimitToastShownRef.current = true;
+      toast.warning("Chat template limit reached", {
+        description: `Keep it under ${MAX_CHAT_TEMPLATE_BYTES.toLocaleString()} bytes.`,
+      });
+    } else if (next === value) {
+      templateLimitToastShownRef.current = false;
+    }
+    setTemplateDraft(next);
+  }
+
   const templateDraftDirty = templateDraft !== templateInitialDraft;
+  const templateDraftBytes = chatTemplateByteLength(templateDraft);
   const draftIsDefault =
     defaultTemplate != null && templateDraft === defaultTemplate;
   const leaf = modelLeaf(target.displayName);
@@ -396,9 +531,15 @@ export function ModelConfigPage({
                     id: target.id,
                     displayName: target.displayName,
                     source: deleteSource,
+                    exportType: target.meta.exportType,
+                    ggufVariant: target.meta.ggufVariant,
                   })
                 }
-                aria-label="Delete fine-tuned model"
+                aria-label={
+                  canDeleteGgufExport
+                    ? "Delete GGUF quantization"
+                    : "Delete fine-tuned model"
+                }
                 className="flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
                 <HugeiconsIcon
@@ -444,7 +585,7 @@ export function ModelConfigPage({
           type="button"
           onClick={() =>
             setConfigState((prev) => {
-              const base = prev.key === configKey ? prev : defaultConfigState();
+              const base = prev.key === configKey ? prev : initialConfigState;
               return { ...base, advancedOpen: !base.advancedOpen };
             })
           }
@@ -535,7 +676,7 @@ export function ModelConfigPage({
               info={
                 <>
                   Lower KV cache precision to save VRAM at the cost of some
-                  quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
+                  quality. f16/bf16 are full precision; q8_0/q5_1/q4_1/q4_0 are
                   quantized.
                 </>
               }
@@ -700,13 +841,16 @@ export function ModelConfigPage({
           )}
         </section>
 
-        <label className="flex cursor-pointer items-start gap-2.5">
+        <label
+          htmlFor={rememberSettingsId}
+          className="flex cursor-pointer items-start gap-2.5"
+        >
           <Checkbox
+            id={rememberSettingsId}
             checked={remember}
             onCheckedChange={(v) =>
               setConfigState((prev) => {
-                const base =
-                  prev.key === configKey ? prev : defaultConfigState();
+                const base = prev.key === configKey ? prev : initialConfigState;
                 return { ...base, remember: v === true };
               })
             }
@@ -752,26 +896,35 @@ export function ModelConfigPage({
         onOpenChange={(open) => {
           if (!open) setDeletePending(null);
         }}
-        onDeleted={(deleted) => {
+        onDeleted={(deleted, deletedRunIds) => {
           setDeletePending(null);
-          deletePerModelConfigsForModel(deleted.id);
-          onDeleted?.({ id: deleted.id });
+          onDeleted?.({
+            id: deleted.id,
+            ...(deleted.ggufVariant !== undefined
+              ? { ggufVariant: deleted.ggufVariant }
+              : {}),
+            ...(deletedRunIds.length > 0 ? { deletedRunIds } : {}),
+          });
           onBack();
         }}
       />
 
       <ChatTemplateEditorDialog
         open={templateEditorOpen}
-        onOpenChange={setTemplateEditorOpen}
+        onOpenChange={handleTemplateEditorOpenChange}
         hasOverride={config.chatTemplateOverride != null}
         defaultTemplate={defaultTemplate}
         draft={templateDraft}
-        onDraftChange={setTemplateDraft}
+        draftBytes={templateDraftBytes}
+        draftByteLimit={MAX_CHAT_TEMPLATE_BYTES}
+        maxLength={MAX_CHAT_TEMPLATE_LENGTH}
+        onDraftChange={updateTemplateDraft}
         loading={templateLoading}
         draftDirty={templateDraftDirty}
         draftIsDefault={draftIsDefault}
         onResetToDefault={resetTemplateDraftToDefault}
         onSave={saveTemplateEditor}
+        saving={templateValidating}
       />
     </div>
   );

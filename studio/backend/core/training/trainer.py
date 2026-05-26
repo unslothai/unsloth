@@ -64,6 +64,7 @@ from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.cache_paths import cached_dataset_training_files
 from utils.datasets.raw_text import prepare_raw_text_dataset
 from utils.paths import (
     ensure_dir,
@@ -79,6 +80,23 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
+
+
+def _set_offline_env(keys: tuple[str, ...], enabled: bool) -> dict[str, Optional[str]]:
+    if not enabled:
+        return {}
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ[key] = "1"
+    return previous
+
+
+def _restore_env(previous: dict[str, Optional[str]]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -167,6 +185,8 @@ class UnslothTrainer:
         is_dataset_image: bool = False,
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
+        model_load_name: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> None:
         """Lightweight detection and tokenizer load — no model weights, no VRAM.
 
@@ -179,63 +199,81 @@ class UnslothTrainer:
         load_model() may be called afterwards — it will re-detect and load
         the full model + tokenizer, overwriting the lightweight one set here.
         """
+        lookup_name = model_load_name or model_name
+        previous_env = _set_offline_env(
+            ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"),
+            local_files_only,
+        )
         self.model_name = model_name
         self.max_seq_length = max_seq_length
         self.trust_remote_code = trust_remote_code
 
-        if hf_token:
-            os.environ["HF_TOKEN"] = hf_token
+        try:
+            if hf_token:
+                os.environ["HF_TOKEN"] = hf_token
 
-        # --- Detect audio type (reads config.json only, no VRAM) ---
-        self._audio_type = detect_audio_type(model_name, hf_token)
-        if self._audio_type == "audio_vlm":
-            self.is_audio = False
-            self.is_audio_vlm = is_dataset_audio
-            self._audio_type = None
-        else:
-            self.is_audio = self._audio_type is not None
-            self.is_audio_vlm = False
-
-        if not self.is_audio and not self.is_audio_vlm:
-            self._cuda_audio_used = False
-
-        # --- Detect VLM ---
-        vision = (
-            is_vision_model(model_name, hf_token = hf_token)
-            if not self.is_audio
-            else False
-        )
-        self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
-
-        logger.info(
-            "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s",
-            self._audio_type,
-            self.is_audio,
-            self.is_audio_vlm,
-            self.is_vlm,
-        )
-
-        # --- Load lightweight tokenizer/processor (CPU only, no VRAM) ---
-        # Whisper needs AutoProcessor (has feature_extractor + tokenizer).
-        # All others work with AutoTokenizer (CSM loads its own processor inline).
-        if self._audio_type == "whisper":
-            from transformers import AutoProcessor
-
-            self.tokenizer = AutoProcessor.from_pretrained(
-                model_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
+            # --- Detect audio type (reads config.json only, no VRAM) ---
+            self._audio_type = detect_audio_type(
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
             )
-        else:
-            from transformers import AutoTokenizer
+            if self._audio_type == "audio_vlm":
+                self.is_audio = False
+                self.is_audio_vlm = is_dataset_audio
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
 
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
+            if not self.is_audio and not self.is_audio_vlm:
+                self._cuda_audio_used = False
+
+            # --- Detect VLM ---
+            vision = (
+                is_vision_model(
+                    lookup_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                )
+                if not self.is_audio
+                else False
+            )
+            self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+
+            logger.info(
+                "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s",
+                self._audio_type,
+                self.is_audio,
+                self.is_audio_vlm,
+                self.is_vlm,
             )
 
-        logger.info("Pre-loaded tokenizer for %s", model_name)
+            # --- Load lightweight tokenizer/processor (CPU only, no VRAM) ---
+            # Whisper needs AutoProcessor (has feature_extractor + tokenizer).
+            # All others work with AutoTokenizer (CSM loads its own processor inline).
+            if self._audio_type == "whisper":
+                from transformers import AutoProcessor
+
+                self.tokenizer = AutoProcessor.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                )
+            else:
+                from transformers import AutoTokenizer
+
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                )
+
+            logger.info("Pre-loaded tokenizer for %s", model_name)
+        finally:
+            _restore_env(previous_env)
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         """Add callback for training progress updates"""
@@ -510,11 +548,18 @@ class UnslothTrainer:
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        model_load_name: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # Store for training_meta.json
         self.trust_remote_code = (
             trust_remote_code  # For AutoProcessor etc. used during training
+        )
+        lookup_name = model_load_name or model_name
+        previous_env = _set_offline_env(
+            ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"),
+            local_files_only,
         )
         try:
             if self.model is not None:
@@ -557,7 +602,11 @@ class UnslothTrainer:
             )
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
-            self._audio_type = detect_audio_type(model_name, hf_token)
+            self._audio_type = detect_audio_type(
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
+            )
             # audio_vlm is detected as an audio_type now, handle it separately
             if self._audio_type == "audio_vlm":
                 self.is_audio = False
@@ -574,7 +623,11 @@ class UnslothTrainer:
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
             vision = (
-                is_vision_model(model_name, hf_token = hf_token)
+                is_vision_model(
+                    lookup_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                )
                 if not self.is_audio
                 else False
             )
@@ -620,7 +673,7 @@ class UnslothTrainer:
             # Proactive gated-model check: verify access BEFORE from_pretrained.
             # Catches ALL gated/private models (text, vision, audio) globally.
             # Skip when offline -- from_pretrained will use the cache.
-            if "/" in model_name and not _env_offline():
+            if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
@@ -664,7 +717,7 @@ class UnslothTrainer:
                 from transformers import CsmForConditionalGeneration
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = None,
                     auto_model = CsmForConditionalGeneration,
@@ -682,7 +735,7 @@ class UnslothTrainer:
                 from transformers import WhisperForConditionalGeneration
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     dtype = None,
                     load_in_4bit = False,
                     device_map = device_map,
@@ -703,7 +756,7 @@ class UnslothTrainer:
             elif self._audio_type == "snac":
                 # Orpheus: language model with audio codec tokens
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
@@ -736,7 +789,11 @@ class UnslothTrainer:
                     local_dir = model_name.split("/")[-1]
                     llm_path = f"{local_dir}/LLM"
 
-                repo_path = snapshot_download(hf_repo, local_dir = local_dir)
+                repo_path = snapshot_download(
+                    hf_repo,
+                    local_dir = local_dir,
+                    local_files_only = local_files_only,
+                )
                 self._spark_tts_repo_dir = os.path.abspath(
                     repo_path
                 )  # Absolute path for sys.path
@@ -759,7 +816,7 @@ class UnslothTrainer:
                 from unsloth import FastModel
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name,
+                    lookup_name,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
                     device_map = device_map,
@@ -775,7 +832,7 @@ class UnslothTrainer:
                 from unsloth import FastModel
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = None,
                     load_in_4bit = load_in_4bit,
@@ -789,7 +846,7 @@ class UnslothTrainer:
             elif self.is_vlm:
                 # Load vision model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
@@ -822,7 +879,7 @@ class UnslothTrainer:
             else:
                 # Load text model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = None,  # Auto-detect
                     load_in_4bit = load_in_4bit,
@@ -868,6 +925,8 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     full_finetuning = full_finetuning,
                     gpu_ids = gpu_ids,
+                    model_load_name = model_load_name,
+                    local_files_only = local_files_only,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -912,6 +971,7 @@ class UnslothTrainer:
             self._update_progress(error = error_msg, is_training = False)
             return False
         finally:
+            _restore_env(previous_env)
             self._source_code_retried = False
 
     def prepare_model_for_training(
@@ -2353,6 +2413,8 @@ class UnslothTrainer:
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
         is_cpt: bool = False,
+        dataset_local_files_only: bool = False,
+        dataset_local_path: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         Load and prepare dataset for training.
@@ -2373,8 +2435,28 @@ class UnslothTrainer:
             eval_enabled = eval_steps is not None and eval_steps > 0
             raw_text_mode = is_cpt or format_type == "raw"
 
+            def _load_hf_dataset(**load_kwargs):
+                previous_env = _set_offline_env(
+                    ("HF_DATASETS_OFFLINE", "HF_HUB_OFFLINE"),
+                    dataset_local_files_only,
+                )
+                try:
+                    return load_dataset(**load_kwargs)
+                finally:
+                    _restore_env(previous_env)
+
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
+
+            def _selected_cached_files(split_name: str) -> list[str]:
+                if not dataset_source or not dataset_local_path:
+                    return []
+                return cached_dataset_training_files(
+                    dataset_source,
+                    dataset_local_path,
+                    subset = subset,
+                    train_split = split_name or "train",
+                )
 
             def _apply_raw_text_prep(ds: Dataset, split_name: str) -> Dataset:
                 try:
@@ -2444,10 +2526,23 @@ class UnslothTrainer:
                     load_kwargs["name"] = subset
 
                 _slice_start = dataset_slice_start or 0
-                if (
+                cached_files = (
+                    _selected_cached_files(split_name)
+                    if dataset_local_files_only
+                    else []
+                )
+                if cached_files:
+                    loader = self._loader_for_files(cached_files)
+                    dataset = load_dataset(
+                        loader,
+                        data_files = cached_files,
+                        split = "train",
+                    )
+                elif (
                     dataset_slice_end is not None
                     and dataset_slice_end >= 0
                     and dataset_slice_end >= _slice_start
+                    and not dataset_local_files_only
                 ):
                     # Manual slice — stream only the rows we need instead of
                     # downloading the entire dataset.
@@ -2457,7 +2552,7 @@ class UnslothTrainer:
                         f"(start={dataset_slice_start}, end={dataset_slice_end}), "
                         f"streaming {rows_to_stream} rows\n"
                     )
-                    stream = load_dataset(**load_kwargs, streaming = True)
+                    stream = _load_hf_dataset(**load_kwargs, streaming = True)
                     dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
                     logger.info(
                         f"[dataset-slice] Downloaded {len(dataset)} rows "
@@ -2467,10 +2562,15 @@ class UnslothTrainer:
                         status_message = f"Streamed {len(dataset)} rows from HuggingFace"
                     )
                 else:
-                    self._update_progress(
-                        status_message = f"Downloading dataset: {dataset_source}..."
+                    action = (
+                        "Loading cached dataset"
+                        if dataset_local_files_only
+                        else "Downloading dataset"
                     )
-                    dataset = load_dataset(**load_kwargs)
+                    self._update_progress(
+                        status_message = f"{action}: {dataset_source}..."
+                    )
+                    dataset = _load_hf_dataset(**load_kwargs)
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
@@ -2491,10 +2591,26 @@ class UnslothTrainer:
                     if eval_split and eval_split != effective_train:
                         # Explicit eval split provided - load it directly
                         logger.info(f"Loading explicit eval split: '{eval_split}'\n")
-                        eval_load_kwargs = {"path": dataset_source, "split": eval_split}
-                        if subset:
-                            eval_load_kwargs["name"] = subset
-                        eval_dataset = load_dataset(**eval_load_kwargs)
+                        cached_eval_files = (
+                            _selected_cached_files(eval_split)
+                            if dataset_local_files_only
+                            else []
+                        )
+                        if cached_eval_files:
+                            eval_loader = self._loader_for_files(cached_eval_files)
+                            eval_dataset = load_dataset(
+                                eval_loader,
+                                data_files = cached_eval_files,
+                                split = "train",
+                            )
+                        else:
+                            eval_load_kwargs = {
+                                "path": dataset_source,
+                                "split": eval_split,
+                            }
+                            if subset:
+                                eval_load_kwargs["name"] = subset
+                            eval_dataset = _load_hf_dataset(**eval_load_kwargs)
                         has_separate_eval_source = True
                         logger.info(
                             f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n"
@@ -2506,10 +2622,17 @@ class UnslothTrainer:
                         )
                     else:
                         # Auto-detect eval split from HF (returns a separate dataset, or None)
-                        eval_dataset = self._auto_detect_eval_split_from_hf(
-                            dataset_source = dataset_source,
-                            subset = subset,
+                        previous_env = _set_offline_env(
+                            ("HF_DATASETS_OFFLINE", "HF_HUB_OFFLINE"),
+                            dataset_local_files_only,
                         )
+                        try:
+                            eval_dataset = self._auto_detect_eval_split_from_hf(
+                                dataset_source = dataset_source,
+                                subset = subset,
+                            )
+                        finally:
+                            _restore_env(previous_env)
                         if eval_dataset is not None:
                             has_separate_eval_source = True
                 else:

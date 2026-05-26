@@ -8,15 +8,7 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
-
-export function parseSliceValue(value: string | null): number | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const num = Number(trimmed);
-  if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) return null;
-  return num;
-}
+import { parseSliceValue } from "../lib/dataset-slices";
 
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
@@ -32,7 +24,7 @@ export function buildTrainingStartPayload(
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
-  let customFormatMapping: Record<string, unknown> | undefined =
+  const customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
       : undefined;
@@ -57,7 +49,12 @@ export function buildTrainingStartPayload(
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
     trust_remote_code: config.trustRemoteCode ?? false,
+    model_known_cached: config.modelKnownCached,
+    model_local_path: config.modelLocalPath,
+    model_format: config.modelFormat,
     hf_dataset: hfDataset,
+    dataset_known_cached: config.datasetKnownCached,
+    dataset_local_path: config.datasetLocalPath,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,

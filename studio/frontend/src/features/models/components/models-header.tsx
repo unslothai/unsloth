@@ -53,6 +53,7 @@ function StatPill({
 export function ModelsHeader({
   cachedCount,
   localCount,
+  isDataset,
   gpuLabel,
   ramLabel,
   activeCheckpoint,
@@ -61,6 +62,7 @@ export function ModelsHeader({
 }: {
   cachedCount: number;
   localCount: number;
+  isDataset: boolean;
   gpuLabel: string;
   ramLabel: string;
   activeCheckpoint: string | null;
@@ -71,7 +73,11 @@ export function ModelsHeader({
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
         title="Hub"
-        subtitle="Discover, download, and run inference models locally."
+        subtitle={
+          isDataset
+            ? "Discover, download, and train on datasets locally."
+            : "Discover, download, and run inference models locally."
+        }
       />
 
       <div className="flex flex-wrap items-center gap-1.5">

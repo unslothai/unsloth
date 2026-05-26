@@ -6,8 +6,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  useDownloadTransportCapabilities,
+  useTransportMode,
+} from "@/features/download-jobs";
 import { cn } from "@/lib/utils";
-import { useTransportMode } from "../lib/transport-preference";
+import { useEffect } from "react";
 
 const OPTIONS: { value: "http" | "xet"; label: string; hint: string }[] = [
   {
@@ -24,26 +28,42 @@ const OPTIONS: { value: "http" | "xet"; label: string; hint: string }[] = [
 
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
+  const { capabilities } = useDownloadTransportCapabilities();
+  const xetUnavailable = capabilities?.xet.available === false;
+
+  useEffect(() => {
+    if (mode === "xet" && xetUnavailable) {
+      setMode("http");
+    }
+  }, [mode, setMode, xetUnavailable]);
+
   return (
-    <div
-      role="group"
+    <fieldset
       aria-label="Download transport"
-      className="tag-soft inline-flex h-[26px] items-center gap-0.5 rounded-[11px] p-0.5 text-[11px]"
+      className="tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-[11px] border-0 p-0.5 text-[11px]"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
+        const disabled = opt.value === "xet" && xetUnavailable;
+        const hint =
+          disabled && capabilities?.xet.reason
+            ? capabilities.xet.reason
+            : opt.hint;
         return (
           <Tooltip key={opt.value}>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild={true}>
               <button
                 type="button"
+                disabled={disabled}
                 onClick={() => setMode(opt.value)}
                 aria-pressed={active}
                 className={cn(
                   "inline-flex h-[22px] cursor-pointer items-center justify-center rounded-[8px] px-2 font-medium tracking-tight transition-colors",
                   active
                     ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.08]"
-                    : "text-muted-foreground hover:text-foreground/80",
+                    : disabled
+                      ? "cursor-not-allowed text-muted-foreground/45"
+                      : "text-muted-foreground hover:text-foreground/80",
                 )}
               >
                 {opt.label}
@@ -54,11 +74,11 @@ export function TransportToggle() {
               sideOffset={6}
               className="tooltip-compact"
             >
-              {opt.hint}
+              {hint}
             </TooltipContent>
           </Tooltip>
         );
       })}
-    </div>
+    </fieldset>
   );
 }

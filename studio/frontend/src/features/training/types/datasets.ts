@@ -34,6 +34,7 @@ export type LocalDatasetInfo = {
   id: string;
   label: string;
   path: string;
+  source?: "recipe" | "upload" | string | null;
   rows?: number | null;
   updated_at?: number | null;
 };

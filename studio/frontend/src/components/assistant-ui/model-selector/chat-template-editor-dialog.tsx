@@ -27,12 +27,16 @@ interface ChatTemplateEditorDialogProps {
   hasOverride: boolean;
   defaultTemplate: string | null;
   draft: string;
+  draftBytes: number;
+  draftByteLimit: number;
+  maxLength: number;
   onDraftChange: (value: string) => void;
   loading: boolean;
   draftDirty: boolean;
   draftIsDefault: boolean;
   onResetToDefault: () => void;
   onSave: () => void;
+  saving: boolean;
 }
 
 export function ChatTemplateEditorDialog({
@@ -41,12 +45,16 @@ export function ChatTemplateEditorDialog({
   hasOverride,
   defaultTemplate,
   draft,
+  draftBytes,
+  draftByteLimit,
+  maxLength,
   onDraftChange,
   loading,
   draftDirty,
   draftIsDefault,
   onResetToDefault,
   onSave,
+  saving,
 }: ChatTemplateEditorDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -82,6 +90,17 @@ export function ChatTemplateEditorDialog({
                 any active override.
               </p>
             </div>
+            <span
+              className={cn(
+                "shrink-0 text-[11px] tabular-nums",
+                draftBytes > draftByteLimit
+                  ? "text-destructive"
+                  : "text-muted-foreground",
+              )}
+            >
+              {draftBytes.toLocaleString()} /{" "}
+              {draftByteLimit.toLocaleString()} bytes
+            </span>
             {defaultTemplate != null && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -118,6 +137,7 @@ export function ChatTemplateEditorDialog({
             <Textarea
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
+              maxLength={maxLength}
               fieldSizing="fixed"
               className="min-h-[24rem] max-h-[50vh] overflow-y-auto corner-squircle font-mono text-xs leading-5 focus-visible:border-input focus-visible:ring-0"
               rows={14}
@@ -148,7 +168,7 @@ export function ChatTemplateEditorDialog({
           >
             Cancel
           </Button>
-          <Button type="button" onClick={onSave} disabled={!draftDirty}>
+          <Button type="button" onClick={onSave} disabled={!draftDirty || saving}>
             Save
           </Button>
         </DialogFooter>

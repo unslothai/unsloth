@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 const PREV_MAX_STEPS_KEY = "unsloth_prev_max_steps";
 const PREV_SAVE_STEPS_KEY = "unsloth_prev_save_steps";
@@ -62,46 +62,52 @@ export function useMaxStepsEpochsToggle({
   defaultEpochs = DEFAULT_EPOCHS,
 }: UseMaxStepsEpochsToggleParams): UseMaxStepsEpochsToggleResult {
   const useEpochs = maxSteps === 0;
-  const [prevMaxSteps, setPrevMaxSteps] = useState(() =>
-    normalizePrevMaxSteps(readStoredNumber(PREV_MAX_STEPS_KEY, DEFAULT_MAX_STEPS)),
+  const prevMaxStepsRef = useRef(
+    normalizePrevMaxSteps(
+      readStoredNumber(PREV_MAX_STEPS_KEY, DEFAULT_MAX_STEPS),
+    ),
   );
-  const [prevSaveSteps, setPrevSaveSteps] = useState(() => {
-    if (maxSteps === 0 && saveSteps > 0) {
-      return normalizePrevSaveSteps(saveSteps);
-    }
-    return normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0));
-  });
+  const prevSaveStepsRef = useRef(
+    (() => {
+      if (maxSteps === 0 && saveSteps > 0) {
+        return normalizePrevSaveSteps(saveSteps);
+      }
+      return normalizePrevSaveSteps(readStoredNumber(PREV_SAVE_STEPS_KEY, 0));
+    })(),
+  );
 
   useEffect(() => {
     if (maxSteps > 0) {
-      const normalized = normalizePrevMaxSteps(maxSteps);
-      setPrevMaxSteps(normalized);
-      writeStoredNumber(PREV_MAX_STEPS_KEY, normalized);
+      prevMaxStepsRef.current = normalizePrevMaxSteps(maxSteps);
     }
   }, [maxSteps]);
 
   useEffect(() => {
     if (!useEpochs) {
-      const normalized = normalizePrevSaveSteps(saveSteps);
-      setPrevSaveSteps(normalized);
-      writeStoredNumber(PREV_SAVE_STEPS_KEY, normalized);
+      prevSaveStepsRef.current = normalizePrevSaveSteps(saveSteps);
     }
   }, [saveSteps, useEpochs]);
 
   const toggleUseEpochs = useCallback(() => {
     if (useEpochs) {
-      setMaxSteps(normalizePrevMaxSteps(prevMaxSteps));
-      setSaveSteps(normalizePrevSaveSteps(prevSaveSteps));
+      setMaxSteps(normalizePrevMaxSteps(prevMaxStepsRef.current));
+      setSaveSteps(normalizePrevSaveSteps(prevSaveStepsRef.current));
       return;
     }
 
+    const nextPrevMaxSteps = normalizePrevMaxSteps(maxSteps);
+    const nextPrevSaveSteps = normalizePrevSaveSteps(saveSteps);
+    prevMaxStepsRef.current = nextPrevMaxSteps;
+    prevSaveStepsRef.current = nextPrevSaveSteps;
+    writeStoredNumber(PREV_MAX_STEPS_KEY, nextPrevMaxSteps);
+    writeStoredNumber(PREV_SAVE_STEPS_KEY, nextPrevSaveSteps);
     setMaxSteps(0);
     setEpochs(epochs || defaultEpochs);
   }, [
     defaultEpochs,
     epochs,
-    prevMaxSteps,
-    prevSaveSteps,
+    maxSteps,
+    saveSteps,
     setEpochs,
     setMaxSteps,
     setSaveSteps,

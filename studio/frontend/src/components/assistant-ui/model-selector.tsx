@@ -9,7 +9,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { usePlatformStore } from "@/config/env";
-import { isCustomProviderType } from "@/features/chat/external-providers";
+import {
+  isCustomProviderType,
+  savePerModelConfig,
+  touchRecentModel,
+  validateChatTemplate,
+  type PerModelConfig,
+} from "@/features/chat";
+import { apiProviderLogoSrc } from "@/features/chat/api-provider-logo";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -30,35 +37,11 @@ import type {
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { trainedModelDescription } from "./model-selector/model-output-labels";
 import { toast } from "sonner";
 import { ModelConfigPage } from "./model-selector/model-config-page";
-import type { PerModelConfig } from "@/features/chat/model-config/per-model-config";
-import { savePerModelConfig } from "@/features/chat/model-config/per-model-config";
-import { touchRecentModel } from "@/features/chat/model-config/recent-models";
 import { normalizeForSearch } from "@/lib/search-text";
 import { Input } from "../ui/input";
-
-const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
-  openai: "svg",
-  mistral: "svg",
-  gemini: "svg",
-  anthropic: "svg",
-  deepseek: "svg",
-  huggingface: "svg",
-  kimi: "jpg",
-  qwen: "png",
-  openrouter: "svg",
-  vllm: "svg",
-  ollama: "svg",
-  llama_cpp: "svg",
-};
-
-function providerLogoSrc(providerType: string | undefined): string | undefined {
-  if (!providerType) return undefined;
-  const ext = PROVIDER_LOGO_EXT[providerType];
-  if (!ext) return undefined;
-  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
-}
 
 function ExternalProviderLogo({
   providerType,
@@ -69,7 +52,7 @@ function ExternalProviderLogo({
   className?: string;
   title?: string;
 }) {
-  const src = providerLogoSrc(providerType);
+  const src = apiProviderLogoSrc(providerType);
   if (!src && isCustomProviderType(providerType)) {
     return (
       <span title={title} aria-hidden={true} className="inline-flex shrink-0">
@@ -107,6 +90,7 @@ export type {
 
 interface ModelSelectorProps {
   models: ModelOption[];
+  localModels?: ModelOption[];
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
   value?: string;
@@ -151,6 +135,7 @@ function ModelSelectorTrigger({
       <button
         type="button"
         data-tour={dataTour}
+        title={currentModel?.id ?? currentModel?.name}
         className={cn(
           "flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
@@ -207,7 +192,7 @@ type PickerTab = "hub" | "lora" | "external";
 
 const PICKER_TAB_LABELS: Record<PickerTab, string> = {
   hub: "On Device",
-  lora: "Fine-tuned",
+  lora: "Train",
   external: "External",
 };
 
@@ -266,6 +251,7 @@ function ModelSelectorListView({
   onPickLocalModel,
   tab,
   onTabChange,
+  enabled,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -278,6 +264,7 @@ function ModelSelectorListView({
   onPickLocalModel?: () => void;
   tab: PickerTab;
   onTabChange: (tab: PickerTab) => void;
+  enabled: boolean;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -295,7 +282,12 @@ function ModelSelectorListView({
         <>
           <PickerTabToggle tabs={tabs} tab={activeTab} onTabChange={onTabChange} />
           {activeTab === "hub" ? (
-            <HubModelPicker value={value} onPick={onPick} />
+            <HubModelPicker
+              value={value}
+              onPick={onPick}
+              trainedModels={loraModels}
+              enabled={enabled}
+            />
           ) : activeTab === "lora" ? (
             <LoraModelPicker
               loraModels={loraModels}
@@ -311,7 +303,12 @@ function ModelSelectorListView({
           )}
         </>
       ) : (
-        <HubModelPicker value={value} onPick={onPick} />
+        <HubModelPicker
+          value={value}
+          onPick={onPick}
+          trainedModels={loraModels}
+          enabled={enabled}
+        />
       )}
 
       {onPickLocalModel ? (
@@ -346,6 +343,7 @@ function ModelSelectorListView({
 
 export function ModelSelector({
   models,
+  localModels = [],
   loraModels = [],
   externalModels = [],
   value,
@@ -380,26 +378,24 @@ export function ModelSelector({
     for (const model of models) {
       all.set(model.id, model);
     }
+    for (const localModel of localModels) {
+      all.set(localModel.id, localModel);
+    }
     for (const lora of loraModels) {
-      const displayName = lora.name.includes("/")
-        ? lora.name.split("/")[0].trim()
-        : lora.name;
+      const runName = lora.runDisplayName?.trim();
+      const displayName =
+        runName && runName.length > 0
+          ? runName
+          : lora.name.includes("/")
+            ? (lora.name.split("/").pop()?.trim() ?? lora.name)
+            : lora.name;
       const isLocal = lora.source === "local";
-      const isTraining = lora.source === "training";
-      const isExported = lora.source === "exported";
-      const isMerged = lora.exportType === "merged";
       const isGguf = lora.exportType === "gguf";
       const tag = isLocal
         ? isGguf
           ? "GGUF"
           : "Local"
-        : isTraining && isMerged
-          ? "Full finetune"
-          : isExported
-            ? isMerged
-              ? "Merged · Exported"
-              : "LoRA · Exported"
-            : "LoRA";
+        : trainedModelDescription(lora);
       all.set(lora.id, {
         ...lora,
         name: displayName,
@@ -420,7 +416,7 @@ export function ModelSelector({
       });
     }
     return all;
-  }, [externalModels, loraModels, models]);
+  }, [externalModels, localModels, loraModels, models]);
 
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
@@ -480,8 +476,25 @@ export function ModelSelector({
   }, [handleOpenChange, onPickLocalModel]);
 
   const handleRun = useCallback(
-    (config: PerModelConfig, remember: boolean) => {
+    async (config: PerModelConfig, remember: boolean) => {
       if (!target) return;
+      if (config.chatTemplateOverride != null) {
+        try {
+          const result = await validateChatTemplate(config.chatTemplateOverride);
+          if (!result.valid) {
+            toast.error("Invalid chat template", {
+              description:
+                result.error ?? "Check the Jinja syntax and try again.",
+            });
+            return;
+          }
+        } catch (error) {
+          toast.error("Couldn't validate chat template", {
+            description: error instanceof Error ? error.message : undefined,
+          });
+          return;
+        }
+      }
       if (remember) {
         const saved = savePerModelConfig(
           target.id,
@@ -491,8 +504,9 @@ export function ModelSelector({
         if (!saved) {
           toast.error("Couldn't save these settings", {
             description:
-              "Browser storage may be full. The model still loads with them now, but they won't persist.",
+              "Browser storage may be full or this model may have settings from a newer app version. Nothing was changed.",
           });
+          return;
         }
       }
       touchRecentModel({
@@ -546,6 +560,7 @@ export function ModelSelector({
               onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
               tab={pickerTab}
               onTabChange={setPickerTab}
+              enabled={open}
             />
           </div>
         ) : target ? (

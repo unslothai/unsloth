@@ -17,14 +17,46 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
-import { DownloadProgressBar } from "../components/download-progress-bar";
+import { DownloadProgressBar } from "./download-progress-bar";
 import {
   type ManagedDownload,
   downloadManager,
   hydrateDownloadManager,
   useDownloadManagerStore,
 } from "./download-manager-store";
+
+function createOrderedJobKeysSelector(): (state: {
+  jobs: Record<string, ManagedDownload>;
+}) => string[] {
+  let cache: { signature: string; keys: string[] } = {
+    signature: "",
+    keys: [],
+  };
+  return (state) => {
+    const ordered = Object.values(state.jobs)
+      .map((job) => ({ key: job.key, startedAt: job.startedAt }))
+      .sort((a, b) => a.startedAt - b.startedAt);
+    const signature = ordered
+      .map((job) => `${job.key}\u0001${job.startedAt}`)
+      .join("\u0002");
+    if (signature === cache.signature) {
+      return cache.keys;
+    }
+    const keys = ordered.map((job) => job.key);
+    cache = { signature, keys };
+    return keys;
+  };
+}
+
+function selectActiveJobCount(state: {
+  jobs: Record<string, ManagedDownload>;
+}): number {
+  let count = 0;
+  for (const job of Object.values(state.jobs)) {
+    if (job.state === "running" || job.state === "cancelling") count += 1;
+  }
+  return count;
+}
 
 function variantSuffix(job: ManagedDownload): string {
   return job.variant ? ` · ${job.variant}` : "";
@@ -48,7 +80,9 @@ function StatusLine({ job }: { job: ManagedDownload }) {
   return null;
 }
 
-function DownloadRow({ job }: { job: ManagedDownload }) {
+function DownloadRow({ jobKey }: { jobKey: string }) {
+  const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
+  if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
   const terminal =
     job.state === "complete" ||
@@ -129,20 +163,11 @@ export function DownloadManagerPanel() {
     hydrateDownloadManager();
   }, []);
 
-  const jobs = useDownloadManagerStore(
-    useShallow((state) =>
-      Object.values(state.jobs).sort((a, b) => a.startedAt - b.startedAt),
-    ),
-  );
+  const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
+  const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
+  const activeCount = useDownloadManagerStore(selectActiveJobCount);
 
-  const activeCount = useMemo(
-    () =>
-      jobs.filter((j) => j.state === "running" || j.state === "cancelling")
-        .length,
-    [jobs],
-  );
-
-  if (jobs.length === 0) return null;
+  if (jobKeys.length === 0) return null;
 
   const headerLabel =
     activeCount > 0
@@ -176,8 +201,8 @@ export function DownloadManagerPanel() {
         </div>
         {!collapsed && (
           <ul className="max-h-[60vh] divide-y divide-border overflow-y-auto [scrollbar-width:thin]">
-            {jobs.map((job) => (
-              <DownloadRow key={job.key} job={job} />
+            {jobKeys.map((jobKey) => (
+              <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}
           </ul>
         )}

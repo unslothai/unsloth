@@ -4,12 +4,14 @@
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { getHfToken } from "@/stores/hf-token-store";
 import { useCallback } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
+import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
@@ -39,8 +41,12 @@ function normalizeTrainingStartError(message: string): string {
 }
 
 export function useTrainingActions() {
-  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
-  const startError = useTrainingRuntimeStore((state) => state.startError);
+  const { isStarting, startError } = useTrainingRuntimeStore(
+    useShallow((state) => ({
+      isStarting: state.isStarting,
+      startError: state.startError,
+    })),
+  );
 
   const startTrainingRun = useCallback(async (): Promise<boolean> => {
     const config = useTrainingConfigStore.getState();
@@ -74,51 +80,73 @@ export function useTrainingActions() {
           subset: config.datasetSubset,
           split: config.datasetSplit,
           isVlm,
+          preferLocalCache: config.datasetKnownCached,
+          localPath: config.datasetLocalPath,
+        }).catch((error) => {
+          const latestConfig = useTrainingConfigStore.getState();
+          if (canUseStaleDatasetMetadata(latestConfig, error)) {
+            useTrainingConfigStore.setState({
+              isCheckingDataset: false,
+              datasetCheckFailed: false,
+              datasetMetadataStale: true,
+            });
+            return null;
+          }
+          useTrainingConfigStore.setState({
+            isDatasetImage: null,
+            isDatasetAudio: false,
+            isCheckingDataset: false,
+            datasetCheckFailed: true,
+            datasetMetadataStale: false,
+          });
+          throw error;
         });
 
-        // Backend auto-detects image/audio from dataset content.
-        // Sync these flags into the store so buildTrainingStartPayload picks them up.
-        const isAudio = !!check.is_audio;
-        const isImage = !!check.is_image;
+        if (check) {
+          // Backend auto-detects image/audio from dataset content.
+          // Sync these flags into the store so buildTrainingStartPayload picks them up.
+          const isAudio = !!check.is_audio;
+          const isImage = !!check.is_image;
 
-        if (isImage && config.isVisionModel) {
-          isVlm = true;
-        }
-        if (isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio) {
+          if (isImage && config.isVisionModel) {
+            isVlm = true;
+          }
           useTrainingConfigStore.setState({
             isDatasetImage: isImage,
             isDatasetAudio: isAudio,
+            datasetCheckFailed: false,
+            datasetMetadataStale: false,
           });
-        }
 
-        const isRawFormat = isRawTextDatasetFormat(config.datasetFormat);
-        const needsReview =
-          !isRawFormat &&
-          (check.requires_manual_mapping || check.detected_format === "custom_heuristic");
-        if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
-          // Pre-fill from suggested_mapping or VLM detected columns
-          const hint: Record<string, string> = {};
-          if (check.suggested_mapping) {
-            const table = ROLE_REMAP[config.datasetFormat];
-            for (const [col, role] of Object.entries(check.suggested_mapping)) {
-              hint[col] = table ? (table[role] ?? role) : role;
+          const isRawFormat = isRawTextDatasetFormat(config.datasetFormat);
+          const needsReview =
+            !isRawFormat &&
+            (check.requires_manual_mapping || check.detected_format === "custom_heuristic");
+          if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
+            // Pre-fill from suggested_mapping or VLM detected columns
+            const hint: Record<string, string> = {};
+            if (check.suggested_mapping) {
+              const table = ROLE_REMAP[config.datasetFormat];
+              for (const [col, role] of Object.entries(check.suggested_mapping)) {
+                hint[col] = table ? (table[role] ?? role) : role;
+              }
+            } else if (isAudio) {
+              if (check.detected_audio_column) hint[check.detected_audio_column] = "audio";
+              if (check.detected_text_column) hint[check.detected_text_column] = "text";
+              if (check.detected_speaker_column) hint[check.detected_speaker_column] = "speaker_id";
+            } else if (isVlm) {
+              if (check.detected_image_column) hint[check.detected_image_column] = "image";
+              if (check.detected_text_column) hint[check.detected_text_column] = "text";
             }
-          } else if (isAudio) {
-            if (check.detected_audio_column) hint[check.detected_audio_column] = "audio";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
-            if (check.detected_speaker_column) hint[check.detected_speaker_column] = "speaker_id";
-          } else if (isVlm) {
-            if (check.detected_image_column) hint[check.detected_image_column] = "image";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
-          }
 
-          if (Object.keys(hint).length > 0) {
-            useTrainingConfigStore.getState().setDatasetManualMapping(hint);
-          }
+            if (Object.keys(hint).length > 0) {
+              useTrainingConfigStore.getState().setDatasetManualMapping(hint);
+            }
 
-          runtimeStore.setStarting(false);
-          dialogStore.openMapping(check);
-          return false;
+            runtimeStore.setStarting(false);
+            dialogStore.openMapping(check);
+            return false;
+          }
         }
       }
 
@@ -255,6 +283,17 @@ function getDatasetName(config: TrainingConfigState): string | null {
 
 function getHfDatasetName(config: TrainingConfigState): string | null {
   return config.datasetSource === "huggingface" ? config.dataset : null;
+}
+
+function canUseStaleDatasetMetadata(
+  config: TrainingConfigState,
+  error: unknown,
+): boolean {
+  return (
+    config.datasetKnownCached &&
+    config.isDatasetImage !== null &&
+    !isMissingLocalDatasetCacheError(error)
+  );
 }
 
 function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = false): boolean {

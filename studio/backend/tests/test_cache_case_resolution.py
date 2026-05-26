@@ -20,6 +20,7 @@ if "structlog" not in sys.modules:
 
 from utils.paths.path_utils import (
     resolve_cached_repo_id_case,
+    get_cache_path,
     get_cache_case_resolution_stats,
     reset_cache_case_resolution_state,
 )
@@ -57,6 +58,34 @@ def test_resolve_cached_repo_id_case_variant_hit(tmp_path, monkeypatch):
     stats = get_cache_case_resolution_stats()
     assert stats["variant_hits"] == 1
     assert stats["tie_breaks"] == 0
+
+
+def test_resolve_cached_repo_id_case_secondary_root(tmp_path, monkeypatch):
+    reset_cache_case_resolution_state()
+    active = tmp_path / "active"
+    secondary = tmp_path / "secondary"
+    active.mkdir()
+    secondary.mkdir()
+    _mk_cache_repo(secondary, "Org/Model")
+    monkeypatch.setattr(path_utils, "_hf_hub_cache_dirs", lambda: [active, secondary])
+
+    resolved = resolve_cached_repo_id_case("org/model")
+
+    assert resolved == "Org/Model"
+    stats = get_cache_case_resolution_stats()
+    assert stats["variant_hits"] == 1
+
+
+def test_get_cache_path_checks_secondary_roots(tmp_path, monkeypatch):
+    reset_cache_case_resolution_state()
+    active = tmp_path / "active"
+    secondary = tmp_path / "secondary"
+    active.mkdir()
+    secondary.mkdir()
+    repo = _mk_cache_repo(secondary, "Org/Model")
+    monkeypatch.setattr(path_utils, "_hf_hub_cache_dirs", lambda: [active, secondary])
+
+    assert get_cache_path("org/model") == repo
 
 
 def test_resolve_cached_repo_id_case_tie_break_deterministic(tmp_path, monkeypatch):

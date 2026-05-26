@@ -33,12 +33,15 @@ always sees a consistent provenance signal.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import re
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
@@ -56,6 +59,149 @@ _VALID_TRANSPORTS = frozenset({TRANSPORT_HTTP, TRANSPORT_XET})
 _MARKER_NAME = ".transport"
 _INCOMPLETE_SUFFIX = ".incomplete"
 CacheProgressReading = tuple[int, int, Optional[str]]
+
+
+@dataclass(frozen = True)
+class DownloadTransportCapability:
+    available: bool
+    reason: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class DownloadTransportCapabilities:
+    http: DownloadTransportCapability
+    xet: DownloadTransportCapability
+
+
+def get_download_transport_capabilities() -> DownloadTransportCapabilities:
+    xet_available = importlib.util.find_spec("hf_xet") is not None
+    return DownloadTransportCapabilities(
+        http = DownloadTransportCapability(available = True),
+        xet = DownloadTransportCapability(
+            available = xet_available,
+            reason = None if xet_available else "Xet transport is unavailable because hf_xet is not installed.",
+        ),
+    )
+
+
+def download_transport_unavailable_reason(transport: str) -> Optional[str]:
+    if transport == TRANSPORT_HTTP:
+        return None
+    if transport == TRANSPORT_XET:
+        caps = get_download_transport_capabilities().xet
+        return None if caps.available else caps.reason
+    return f"Unsupported download transport: {transport}"
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+_DOWNLOAD_STALL_TIMEOUT_SECONDS = _float_env(
+    "UNSLOTH_HF_DOWNLOAD_STALL_TIMEOUT_SECONDS", 300.0
+)
+_DOWNLOAD_STALL_POLL_SECONDS = _float_env(
+    "UNSLOTH_HF_DOWNLOAD_STALL_POLL_SECONDS", 15.0
+)
+_DOWNLOAD_STALL_STARTUP_GRACE_SECONDS = _float_env(
+    "UNSLOTH_HF_DOWNLOAD_STALL_STARTUP_GRACE_SECONDS", 30.0
+)
+_HF_CACHE_SCANS_TTL_SECONDS = 3.0
+_hf_cache_scans_lock = threading.Lock()
+
+
+@dataclass
+class _HfCacheScanFlight:
+    event: threading.Event
+    result: Optional[list] = None
+    error: Optional[BaseException] = None
+
+
+_hf_cache_scans_flight: Optional[_HfCacheScanFlight] = None
+_hf_cache_scans_result: Optional[list] = None
+_hf_cache_scans_cached_at: float = 0.0
+
+
+def invalidate_hf_cache_scans() -> None:
+    global _hf_cache_scans_result, _hf_cache_scans_cached_at
+    with _hf_cache_scans_lock:
+        _hf_cache_scans_result = None
+        _hf_cache_scans_cached_at = 0.0
+
+
+def all_hf_cache_scans() -> list:
+    global _hf_cache_scans_flight, _hf_cache_scans_result, _hf_cache_scans_cached_at
+
+    now = time.monotonic()
+    with _hf_cache_scans_lock:
+        if (
+            _hf_cache_scans_result is not None
+            and (now - _hf_cache_scans_cached_at) < _HF_CACHE_SCANS_TTL_SECONDS
+        ):
+            return list(_hf_cache_scans_result)
+        flight = _hf_cache_scans_flight
+        if flight is None:
+            flight = _HfCacheScanFlight(event = threading.Event())
+            _hf_cache_scans_flight = flight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        flight.event.wait()
+        if flight.error is not None:
+            raise flight.error
+        return list(flight.result or [])
+
+    try:
+        scans = _compute_all_hf_cache_scans()
+        with _hf_cache_scans_lock:
+            _hf_cache_scans_result = scans
+            _hf_cache_scans_cached_at = time.monotonic()
+            flight.result = scans
+        return scans
+    except Exception as exc:
+        with _hf_cache_scans_lock:
+            _hf_cache_scans_result = None
+            _hf_cache_scans_cached_at = 0.0
+            flight.error = exc
+        raise
+    finally:
+        with _hf_cache_scans_lock:
+            if _hf_cache_scans_flight is flight:
+                _hf_cache_scans_flight = None
+            flight.event.set()
+
+
+def _compute_all_hf_cache_scans() -> list:
+    from huggingface_hub import scan_cache_dir
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
+
+    scans: list = []
+    seen: set[str] = set()
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        active = Path(HF_HUB_CACHE).resolve()
+        seen.add(str(active))
+        if active.is_dir():
+            scans.append(scan_cache_dir())
+    except Exception as exc:
+        logger.warning("Could not scan active HF cache: %s", exc)
+
+    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        extra = extra_fn()
+        if extra.is_dir() and str(extra.resolve()) not in seen:
+            seen.add(str(extra.resolve()))
+            try:
+                scans.append(scan_cache_dir(cache_dir = str(extra)))
+            except Exception as exc:
+                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+    return scans
 
 
 def token_fingerprint(hf_token: Optional[str]) -> str:
@@ -90,6 +236,46 @@ def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         return None
 
 
+def latest_snapshot_from_cache_path(
+    local_path: Optional[str],
+    repo_type: str,
+    repo_id: str,
+    metadata_filenames: tuple[str, ...] = (),
+) -> Optional[str]:
+    if not local_path or not repo_id:
+        return None
+    try:
+        root = Path(local_path).expanduser()
+        if not root.exists():
+            return None
+        expected_repo_dir = _target_dir_name(repo_type, repo_id)
+        if expected_repo_dir not in {part.lower() for part in root.parts}:
+            return None
+
+        def has_metadata(path: Path) -> bool:
+            if not metadata_filenames:
+                return True
+            return any((path / name).is_file() for name in metadata_filenames)
+
+        candidates: list[Path] = []
+        if root.is_dir() and has_metadata(root):
+            candidates.append(root)
+        snapshots = root / "snapshots" if root.is_dir() else None
+        if snapshots is not None and snapshots.is_dir():
+            candidates.extend(
+                p for p in snapshots.iterdir() if p.is_dir() and has_metadata(p)
+            )
+        if not candidates:
+            return None
+        candidates.sort(
+            key = lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse = True,
+        )
+        return str(candidates[0].resolve())
+    except Exception:
+        return None
+
+
 def _hf_cache_root(*, create: bool = False) -> Optional[Path]:
     try:
         from huggingface_hub import constants as hf_constants
@@ -106,15 +292,7 @@ def _hf_cache_root(*, create: bool = False) -> Optional[Path]:
 
 
 def _hf_cache_roots() -> list[Path]:
-    """Every existing HF hub cache the listing also scans: the active
-    ``HF_HUB_CACHE``, the legacy Unsloth cache, and the platform default.
-
-    Status detection (partial / resumable / transport marker) must cover
-    the same roots the model and dataset listings draw from, otherwise a
-    repo cached under the legacy or default root is shown but its partial
-    state is read from the active root only and reported as complete.
-    Deduped by resolved path. Write operations stay on the active root via
-    :func:`_hf_cache_root`."""
+    """Existing HF hub caches used by read-only inventory scans."""
     from utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
 
     roots: list[Path] = []
@@ -146,6 +324,23 @@ def _blob_dir_is_partial(blobs_dir: Path) -> bool:
     try:
         for blob in blobs_dir.iterdir():
             if blob.is_file() and blob.name.endswith(_INCOMPLETE_SUFFIX):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
+    snapshots_dir = repo_dir / "snapshots"
+    if not snapshots_dir.is_dir():
+        return False
+    try:
+        snapshots = [entry for entry in snapshots_dir.iterdir() if entry.is_dir()]
+        if not snapshots:
+            return False
+        latest = max(snapshots, key = lambda entry: entry.stat().st_mtime)
+        for entry in latest.rglob("*"):
+            if entry.is_symlink() and not entry.exists():
                 return True
     except OSError:
         return False
@@ -203,12 +398,56 @@ def select_best_cache_progress(
     )
 
 
+def _repo_incomplete_blob_progress_marker(
+    repo_type: str, repo_id: str
+) -> Optional[tuple[int, int, int]]:
+    count = 0
+    total = 0
+    latest_mtime_ns = 0
+    for entry in preferred_repo_cache_dirs(repo_type, repo_id, force_active = True):
+        blobs_dir = entry / "blobs"
+        if not blobs_dir.is_dir():
+            continue
+        try:
+            blob_entries = list(blobs_dir.iterdir())
+        except OSError:
+            continue
+        for blob in blob_entries:
+            if not blob.name.endswith(_INCOMPLETE_SUFFIX):
+                continue
+            try:
+                blob_stat = blob.stat()
+            except OSError:
+                continue
+            if not stat_module.S_ISREG(blob_stat.st_mode):
+                continue
+            count += 1
+            total += blob_stat.st_size
+            latest_mtime_ns = max(latest_mtime_ns, blob_stat.st_mtime_ns)
+    if count == 0:
+        return None
+    return count, total, latest_mtime_ns
+
+
 def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
     for entry in iter_repo_cache_dirs(repo_type, repo_id):
-        blobs_dir = entry / "blobs"
-        if blobs_dir.is_dir() and _blob_dir_is_partial(blobs_dir):
+        if repo_cache_dir_has_incomplete_blobs(entry):
             return True
     return False
+
+
+def has_active_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+        if repo_cache_dir_has_incomplete_blobs(entry):
+            return True
+    return False
+
+
+def repo_cache_dir_has_incomplete_blobs(repo_dir: Path) -> bool:
+    blobs_dir = repo_dir / "blobs"
+    return (blobs_dir.is_dir() and _blob_dir_is_partial(blobs_dir)) or (
+        _repo_dir_has_broken_snapshot_symlinks(repo_dir)
+    )
 
 
 def partial_repo_ids(repo_type: str, repo_ids: Iterable[str]) -> set[str]:
@@ -253,6 +492,22 @@ def purge_partial_repo(repo_type: str, repo_id: str) -> bool:
                 p.is_file() and not _is_marker(p) for p in entry.rglob("*")
             ):
                 shutil.rmtree(entry, ignore_errors = True)
+                removed = True
+        except OSError:
+            pass
+    return removed
+
+
+def purge_repo_cache_dirs(repo_type: str, repo_id: str) -> bool:
+    import shutil
+
+    removed = False
+    for entry in iter_repo_cache_dirs(repo_type, repo_id):
+        try:
+            if not entry.is_dir():
+                continue
+            shutil.rmtree(entry, ignore_errors = True)
+            if not entry.exists():
                 removed = True
         except OSError:
             pass
@@ -446,6 +701,17 @@ def _cancellation_return_codes() -> frozenset[int]:
 _CANCELLATION_RETURN_CODES = _cancellation_return_codes()
 
 
+def _sigpipe_return_codes() -> frozenset[int]:
+    sig = getattr(signal, "SIGPIPE", None)
+    if sig is None:
+        return frozenset()
+    value = int(sig)
+    return frozenset({-value, 128 + value})
+
+
+_SIGPIPE_RETURN_CODES = _sigpipe_return_codes()
+
+
 def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     """Map a worker process exit code to a job state.
 
@@ -456,6 +722,8 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
       only when *we* asked for it. The OOM killer also sends SIGKILL, so an
       unrequested signal kill is surfaced as an error rather than masquerading
       as a user cancel.
+    - rc killed by SIGPIPE or shell-style 128+SIGPIPE: parent pipe is gone, so
+      the worker can no longer report progress and is treated as cancelled.
     - any other non-zero rc, including crash signals (SIGSEGV, SIGABRT):
       worker errored out.
 
@@ -469,6 +737,8 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
         return "complete"
     if rc == EXIT_CANCELLED:
         return "cancelled"
+    if rc in _SIGPIPE_RETURN_CODES:
+        return "cancelled"
     if rc in _CANCELLATION_RETURN_CODES:
         return "cancelled" if cancel_requested else "error"
     if cancel_requested and sys.platform == "win32":
@@ -476,19 +746,36 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     return "error"
 
 
-def drain_stderr_tail(stream, max_bytes: int = 8192) -> bytes:
-    """Drain a worker's stderr to EOF, retaining only the trailing bytes.
+def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
+    """Drain a worker's stderr to EOF, retaining the first and last bytes.
 
     Reading incrementally keeps the pipe from filling while bounding memory:
-    only the tail is surfaced in error reports, so the rest is discarded."""
+    short messages are preserved whole; long messages keep context from both
+    ends because worker stderr prefixes often identify the failing repo/phase."""
     if stream is None:
         return b""
+    edge_bytes = max(1, edge_bytes)
+    max_bytes = edge_bytes * 2
+    full = bytearray()
+    head = bytearray()
     tail = bytearray()
+    truncated = False
     for chunk in iter(lambda: stream.read(4096), b""):
+        if not truncated:
+            full.extend(chunk)
+            if len(full) <= max_bytes:
+                continue
+            truncated = True
+            head.extend(full[:edge_bytes])
+            tail.extend(full[-edge_bytes:])
+            full.clear()
+            continue
         tail.extend(chunk)
-        if len(tail) > max_bytes:
-            del tail[:-max_bytes]
-    return bytes(tail)
+        if len(tail) > edge_bytes:
+            del tail[:-edge_bytes]
+    if not truncated:
+        return bytes(full)
+    return bytes(head + b"\n...[stderr truncated]...\n" + tail)
 
 
 def finalize_worker_exit(
@@ -500,13 +787,74 @@ def finalize_worker_exit(
     label: str,
     log_prefix: str,
     logger,
+    repo_type: Optional[str] = None,
+    repo_id: Optional[str] = None,
 ) -> None:
     """Block until *proc* exits, then record the job's terminal state in
     *registry*. Drains stderr first so the pipe never fills, scrubs secrets
     from it, and classifies the exit code. A no-op when the process was
     already dropped (e.g. superseded by a newer job for the same key)."""
-    stderr_data = drain_stderr_tail(proc.stderr)
+    stop_watchdog = threading.Event()
+    watchdog_error: list[str] = []
+
+    def _watch_for_stall() -> None:
+        if not repo_type or not repo_id:
+            return
+        timeout = max(1.0, _DOWNLOAD_STALL_TIMEOUT_SECONDS)
+        poll = max(1.0, min(_DOWNLOAD_STALL_POLL_SECONDS, timeout))
+        grace = max(0.0, _DOWNLOAD_STALL_STARTUP_GRACE_SECONDS)
+        if grace > 0 and stop_watchdog.wait(grace):
+            return
+        if proc.poll() is not None or registry.cancel_requested(key):
+            return
+        last_marker = _repo_incomplete_blob_progress_marker(repo_type, repo_id)
+        last_progress_at = time.monotonic()
+        while not stop_watchdog.wait(poll):
+            if proc.poll() is not None or registry.cancel_requested(key):
+                return
+            current_marker = _repo_incomplete_blob_progress_marker(repo_type, repo_id)
+            now = time.monotonic()
+            if current_marker is None:
+                last_marker = None
+                last_progress_at = now
+                continue
+            if current_marker != last_marker:
+                last_marker = current_marker
+                last_progress_at = now
+                continue
+            stalled_for = now - last_progress_at
+            if stalled_for < timeout:
+                continue
+            message = (
+                f"{log_prefix} stalled for {int(stalled_for)}s with no cache "
+                f"progress. Check the network connection and restart the download."
+            )
+            watchdog_error.append(message)
+            logger.warning(f"{message}: {label}")
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                logger.warning(
+                    f"{log_prefix} watchdog failed to kill {label}: {exc}"
+                )
+            return
+
+    watchdog_thread: Optional[threading.Thread] = None
+    if repo_type and repo_id:
+        watchdog_thread = threading.Thread(
+            target = _watch_for_stall,
+            name = f"hf-download-stall-watch-{key}",
+            daemon = True,
+        )
+        watchdog_thread.start()
+
+    stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
+    stop_watchdog.set()
+    if watchdog_thread is not None:
+        watchdog_thread.join(timeout = 1)
     if not registry.drop_process(key, proc):
         return
     stderr_text = scrub_secrets(
@@ -521,12 +869,34 @@ def finalize_worker_exit(
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled by user: {label} (rc={rc})")
     else:
+        error_text = watchdog_error[-1] if watchdog_error else stderr_text
         registry.set_job(
-            key, "error", stderr_text[-500:] or f"worker exited with code {rc}",
+            key, "error", error_text or f"worker exited with code {rc}",
         )
         logger.error(
-            f"{log_prefix} failed for {label} (rc={rc}): {stderr_text[-500:]}",
+            f"{log_prefix} failed for {label} (rc={rc}): {error_text}",
         )
+
+
+def kill_and_reap_process(
+    proc: subprocess.Popen,
+    *,
+    label: str,
+    logger,
+    timeout: float = 10.0,
+) -> None:
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception as exc:
+        logger.warning(f"Cancel SIGKILL for {label} failed: {exc}")
+    try:
+        proc.wait(timeout = timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Cancelled worker for {label} did not exit after SIGKILL")
+    except Exception:
+        pass
 
 
 def purge_empty_marker_dir(repo_type: str, repo_id: str) -> bool:
@@ -565,14 +935,22 @@ def read_transport_marker(repo_type: str, repo_id: str) -> Optional[str]:
     return None
 
 
+def read_active_transport_marker(repo_type: str, repo_id: str) -> Optional[str]:
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+        value = _read_marker(entry)
+        if value is not None:
+            return value
+    return None
+
+
 def is_resumable_partial(repo_type: str, repo_id: str) -> bool:
     """True only when a partial exists AND was produced by a writer that
     supports byte-level resume — i.e. the HTTP transport. XET partials
     exist on disk but are not resumable; they will be discarded on the
     next download attempt."""
-    if not has_incomplete_blobs(repo_type, repo_id):
+    if not has_active_incomplete_blobs(repo_type, repo_id):
         return False
-    return read_transport_marker(repo_type, repo_id) == TRANSPORT_HTTP
+    return read_active_transport_marker(repo_type, repo_id) == TRANSPORT_HTTP
 
 
 def incomplete_blob_hashes(repo_type: str, repo_id: str) -> set[str]:
@@ -618,7 +996,8 @@ class DownloadRegistry:
         self._jobs: dict[str, DownloadState] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._repo_active: dict[str, dict[str, str]] = {}
-        self._pending_cancel: set[str] = set()
+        self._pending_cancel: dict[str, Optional[int]] = {}
+        self._generations: dict[str, int] = {}
         self._deleting: set[str] = set()
         self._lock = threading.Lock()
         self._max_terminal = max_terminal
@@ -627,7 +1006,7 @@ class DownloadRegistry:
         with self._lock:
             self._jobs[key] = DownloadState(state, error)
             if state in TERMINAL_STATES:
-                self._pending_cancel.discard(key)
+                self._pending_cancel.pop(key, None)
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
@@ -645,25 +1024,53 @@ class DownloadRegistry:
         with self._lock:
             return self._jobs.get(key, DownloadState("idle"))
 
+    def current_generation(self, key: str) -> int:
+        with self._lock:
+            return self._generations.get(key, 0)
+
+    def _generation_matches_locked(
+        self,
+        key: str,
+        generation: Optional[int],
+    ) -> bool:
+        return generation is None or self._generations.get(key, 0) == generation
+
     def register_process(self, key: str, proc: subprocess.Popen) -> bool:
         """Register *proc* for *key*. Returns ``False`` when a cancel was
         requested during the claim→register window (the caller must kill
         *proc* immediately); ``True`` otherwise."""
         with self._lock:
-            self._processes[key] = proc
-            if key in self._pending_cancel:
-                self._pending_cancel.discard(key)
+            has_pending_cancel = key in self._pending_cancel
+            pending_generation = self._pending_cancel.pop(key, None)
+            if has_pending_cancel and self._generation_matches_locked(
+                key,
+                pending_generation,
+            ):
+                self._jobs[key] = DownloadState("cancelled")
+                repo = _repo_of_key(key)
+                active = self._repo_active.get(repo)
+                if active is not None:
+                    active.pop(key, None)
+                    if not active:
+                        self._repo_active.pop(repo, None)
                 return False
+            self._processes[key] = proc
             return True
 
-    def mark_pending_cancel(self, key: str) -> bool:
+    def mark_pending_cancel(
+        self,
+        key: str,
+        generation: Optional[int] = None,
+    ) -> bool:
         """Record a cancel for an active job whose worker process hasn't
         registered yet. Returns ``True`` when the pending cancel was armed,
         so :func:`register_process` will kill the process on arrival."""
         with self._lock:
             if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
                 return False
-            self._pending_cancel.add(key)
+            if not self._generation_matches_locked(key, generation):
+                return False
+            self._pending_cancel[key] = generation
             self._jobs[key] = DownloadState("cancelling")
             return True
 
@@ -712,6 +1119,7 @@ class DownloadRegistry:
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES:
                 return False, current
+            self._generations[key] = self._generations.get(key, 0) + 1
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active)[key] = transport
             return True, "running"
@@ -763,12 +1171,19 @@ class DownloadRegistry:
         with self._lock:
             self._deleting.discard(repo_id)
 
-    def request_cancel(self, key: str, proc: subprocess.Popen) -> bool:
+    def request_cancel(
+        self,
+        key: str,
+        proc: subprocess.Popen,
+        generation: Optional[int] = None,
+    ) -> bool:
         """Authorize a SIGKILL for the registered *proc*. Idempotent across an
         active job's lifetime: a repeated cancel while already ``cancelling``
         still returns ``True`` so a kill that raced and lost can be re-sent."""
         with self._lock:
             if self._processes.get(key) is not proc:
+                return False
+            if not self._generation_matches_locked(key, generation):
                 return False
             if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
                 return False

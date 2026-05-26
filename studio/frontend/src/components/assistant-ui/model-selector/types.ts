@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import type { PerModelConfig } from "@/features/chat";
+import type { ModelInventoryFormat } from "@/features/inventory";
 
 export interface ModelOption {
   id: string;
@@ -18,6 +19,7 @@ export interface LoraModelOption extends ModelOption {
   source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
   runDisplayName?: string;
+  trainingMethod?: string;
 }
 
 export interface ExternalModelOption extends ModelOption {
@@ -30,8 +32,13 @@ export interface ExternalModelOption extends ModelOption {
 export interface ModelSelectorChangeMeta {
   source: "hub" | "lora" | "exported" | "local" | "external";
   isLora: boolean;
+  exportType?: "lora" | "merged" | "gguf";
   ggufVariant?: string;
+  modelFormat?: ModelInventoryFormat | null;
   isDownloaded?: boolean;
+  isPartial?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
   expectedBytes?: number;
   config?: PerModelConfig;
 }
@@ -47,4 +54,5 @@ export interface ModelPickTarget {
 export interface DeletedModelRef {
   id: string;
   ggufVariant?: string;
+  deletedRunIds?: string[];
 }

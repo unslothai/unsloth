@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
+let storageSyncStarted = false;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -17,10 +19,20 @@ function loadInitial(): string {
     if (direct !== null) return direct;
     const legacy = window.localStorage.getItem(LEGACY_TRAINING_KEY);
     if (legacy) {
-      const parsed = JSON.parse(legacy) as { state?: { hfToken?: unknown } };
+      const parsed = JSON.parse(legacy) as {
+        state?: Record<string, unknown>;
+        [key: string]: unknown;
+      };
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
         window.localStorage.setItem(HF_TOKEN_KEY, fromTraining);
+        if (parsed.state && "hfToken" in parsed.state) {
+          delete parsed.state.hfToken;
+          window.localStorage.setItem(
+            LEGACY_TRAINING_KEY,
+            JSON.stringify(parsed),
+          );
+        }
         return fromTraining;
       }
     }
@@ -40,7 +52,7 @@ function persist(value: string): void {
 }
 
 function normalize(raw: string): string {
-  return raw.trim().replace(/^["']+|["']+$/g, "");
+  return raw.replace(/^[\s"']+|[\s"']+$/g, "");
 }
 
 interface HfTokenStore {
@@ -49,20 +61,33 @@ interface HfTokenStore {
   clearToken: () => void;
 }
 
-export const useHfTokenStore = create<HfTokenStore>((set) => ({
-  token: loadInitial(),
-  setToken: (value) =>
-    set(() => {
-      const next = normalize(value);
-      persist(next);
+export const useHfTokenStore = create<HfTokenStore>((set) => {
+  const applyToken = (value: string, shouldPersist: boolean) => {
+    const next = normalize(value);
+    if (shouldPersist) persist(next);
+    let changed = false;
+    set((state) => {
+      if (state.token === next) return state;
+      changed = true;
       return { token: next };
-    }),
-  clearToken: () =>
-    set(() => {
-      persist("");
-      return { token: "" };
-    }),
-}));
+    });
+    if (changed) bumpInventoryVersion();
+  };
+
+  if (!storageSyncStarted && canUseStorage()) {
+    storageSyncStarted = true;
+    window.addEventListener("storage", (event) => {
+      if (event.key !== HF_TOKEN_KEY) return;
+      applyToken(event.newValue ?? "", false);
+    });
+  }
+
+  return {
+    token: loadInitial(),
+    setToken: (value) => applyToken(value, true),
+    clearToken: () => applyToken("", true),
+  };
+});
 
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;

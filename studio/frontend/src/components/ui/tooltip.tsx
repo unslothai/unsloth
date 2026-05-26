@@ -63,23 +63,28 @@ function Tooltip({
 
 function TooltipTrigger({
   onClick,
+  clickToOpen = false,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger> & {
+  clickToOpen?: boolean;
+}) {
   const toggle = useContext(TooltipToggleCtx);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
-      e.preventDefault();
-      toggle?.();
+      if (clickToOpen) {
+        e.preventDefault();
+        toggle?.();
+      }
       onClick?.(e);
     },
-    [toggle, onClick],
+    [clickToOpen, toggle, onClick],
   );
 
   return (
     <TooltipPrimitive.Trigger
       data-slot="tooltip-trigger"
-      onClick={handleClick}
+      onClick={clickToOpen || onClick ? handleClick : undefined}
       {...props}
     />
   );

@@ -6,19 +6,19 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getDatasetDownloadProgress } from "@/features/chat";
-import { deleteCachedDataset } from "@/features/training";
+import { useRepoDownload } from "@/features/download-jobs";
+import { deleteCachedDataset } from "@/features/inventory";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { TrainIcon } from "@/components/icons/train-icon";
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { useHfTokenStore } from "@/stores/hf-token-store";
-import { fetchDatasetSize } from "../lib/dataset-size";
 import { formatBytes } from "@/lib/format";
-import { useRepoDownload } from "../download-manager";
+import { useDatasetSize } from "../hooks/use-dataset-size";
+import { notifyInventoryEntryDeleted } from "../delete-notifications";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -32,6 +32,7 @@ export function DatasetDownloadSection({
   isDownloaded,
   isPartial = false,
   cachePath,
+  knownBytes,
   onTrain,
   onChange,
 }: {
@@ -39,16 +40,11 @@ export function DatasetDownloadSection({
   isDownloaded: boolean;
   isPartial?: boolean;
   cachePath?: string | null;
+  knownBytes?: number | null;
   onTrain?: () => void;
   onChange?: (hint?: InventoryHint) => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const sizeKey = `${repoId}::${hfToken ?? ""}`;
-  const [sizeState, setSizeState] = useState<{
-    key: string;
-    bytes: number | null;
-  }>(() => ({ key: sizeKey, bytes: null }));
-  const totalBytes = sizeState.key === sizeKey ? sizeState.bytes : null;
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -56,48 +52,31 @@ export function DatasetDownloadSection({
     kind: "dataset",
     repoId,
     autoAdopt: true,
-    onComplete: (_variant, bytes) =>
-      onChange?.({ kind: "dataset", repoId, bytes: bytes || undefined }),
-    onCancelled: () => onChange?.(),
   });
 
   const progress = job.progress;
   const cancelling = job.cancelling;
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const { signal } = controller;
-
-    void getDatasetDownloadProgress(repoId, signal, hfToken || undefined)
-      .then((res) => {
-        if (signal.aborted) return;
-        if (res.expected_bytes > 0) {
-          setSizeState({ key: sizeKey, bytes: res.expected_bytes });
-        }
-      })
-      .catch(() => {});
-
-    void fetchDatasetSize(repoId).then((info) => {
-      if (signal.aborted || !info) return;
-      const upstream = info.numBytesParquet ?? info.numBytesOriginal;
-      if (upstream && upstream > 0) {
-        setSizeState((prev) =>
-          prev.key === sizeKey && prev.bytes != null
-            ? prev
-            : { key: sizeKey, bytes: upstream },
-        );
-      }
-    });
-
-    return () => {
-      controller.abort();
-    };
-  }, [repoId, hfToken, sizeKey]);
+  const upstreamSize = useDatasetSize(repoId, {
+    enabled:
+      progress === null && !isDownloaded && !(knownBytes && knownBytes > 0),
+    token: hfToken || undefined,
+  });
+  const upstreamBytes =
+    upstreamSize?.numBytesParquet ?? upstreamSize?.numBytesOriginal ?? null;
+  const progressBytes =
+    progress && progress.expectedBytes > 0 ? progress.expectedBytes : null;
+  const totalBytes =
+    progressBytes && progressBytes > 0
+      ? progressBytes
+      : knownBytes && knownBytes > 0
+        ? knownBytes
+        : upstreamBytes;
 
   const handleConfirmDelete = useCallback(async () => {
     setDeleting(true);
     try {
       await deleteCachedDataset(repoId);
+      notifyInventoryEntryDeleted({ kind: "dataset", id: repoId });
       toast.success(`Deleted ${repoId}`);
       setDeleteOpen(false);
       onChange?.();

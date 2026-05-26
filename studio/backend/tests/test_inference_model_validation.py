@@ -3,6 +3,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -34,6 +35,43 @@ def test_nonblank_chat_template_override_is_preserved_verbatim():
     req = _base_load_request(chat_template_override = template)
 
     assert req.chat_template_override == template
+
+
+def test_transformers_load_settings_include_chat_template_override():
+    from core.inference.load_settings import build_transformers_load_settings
+
+    config = SimpleNamespace(
+        identifier = "unsloth/test",
+        path = "/cache/test",
+        base_model = None,
+        is_lora = False,
+        is_vision = False,
+        is_audio = False,
+        audio_type = None,
+    )
+
+    base = build_transformers_load_settings(
+        config = config,
+        max_seq_length = 0,
+        load_in_4bit = True,
+        trust_remote_code = False,
+        gpu_ids = [],
+        chat_template_override = None,
+    )
+    override = build_transformers_load_settings(
+        config = config,
+        max_seq_length = 0,
+        load_in_4bit = True,
+        trust_remote_code = False,
+        gpu_ids = [],
+        chat_template_override = "{{ messages }}",
+    )
+
+    assert base["max_seq_length"] == 2048
+    assert base["gpu_ids"] is None
+    assert base["chat_template_override"] is None
+    assert override["chat_template_override"] == "{{ messages }}"
+    assert base != override
 
 
 # ---------- ChatCompletionRequest tool_call_id walkback ----------

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
+ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
+ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 
 
 class CheckpointInfo(BaseModel):
@@ -76,6 +78,12 @@ class ModelDetails(BaseModel):
     is_gguf: bool = Field(
         False, description = "Whether model is a GGUF model (llama.cpp format)"
     )
+    model_format: Optional[ModelFormat] = Field(
+        None, description = "Authoritative model file format when known"
+    )
+    runtime: Optional[ModelRuntime] = Field(
+        None, description = "Expected runtime backend when known"
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(
         None, description = "Audio codec type: snac, csm, bicodec, dac"
@@ -120,6 +128,10 @@ class LoRAInfo(BaseModel):
         None,
         description = "User-set name of the training run that produced this adapter, if any.",
     )
+    training_method: Optional[str] = Field(
+        None,
+        description = "Training method hint such as 'lora', 'qlora', 'CPT', or 'Full Finetuning'.",
+    )
 
 
 class LoRAScanResponse(BaseModel):
@@ -150,6 +162,9 @@ class GgufVariantDetail(BaseModel):
     )
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    download_size_bytes: int = Field(
+        0, description = "Total bytes needed to download this variant"
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -173,19 +188,60 @@ class GgufVariantsResponse(BaseModel):
     )
 
 
+class LocalModelCapabilities(BaseModel):
+    can_train: bool = False
+    can_chat: bool = False
+    can_delete: bool = False
+    can_download: bool = False
+    requires_variant: bool = False
+    supports_lora: bool = False
+    supports_vision: bool = False
+
+
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     id: str = Field(..., description = "Identifier to use for loading/training")
+    inventory_id: Optional[str] = Field(
+        None, description = "Stable semantic inventory row identifier"
+    )
+    load_id: Optional[str] = Field(
+        None, description = "Identifier/path to pass to load or train APIs"
+    )
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
+    model_format: ModelFormat = Field("unknown", description = "Model file format")
+    runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
+    format_variant: Optional[str] = Field(
+        None, description = "Format variant label, for example a GGUF quant"
+    )
+    capabilities: LocalModelCapabilities = Field(
+        default_factory = LocalModelCapabilities,
+        description = "Declared capabilities for this inventory row",
+    )
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    base_model: Optional[str] = Field(
+        None,
+        description = "Base model from adapter_config.json when this is an adapter",
+    )
+    base_model_source: Optional[Literal["huggingface", "local", "unknown"]] = Field(
+        None,
+        description = "Whether the adapter base model is a HF repo id or local path",
+    )
+    adapter_type: Optional[str] = Field(
+        None,
+        description = "Adapter type from adapter_config.json, e.g. LORA",
+    )
+    training_method: Optional[str] = Field(
+        None,
+        description = "Training method hint from adapter_config.json",
     )
     updated_at: Optional[float] = Field(
         None,
@@ -211,6 +267,10 @@ class LocalModelListResponse(BaseModel):
         default_factory = list,
         description = "LM Studio model directories that were scanned",
     )
+    ollama_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Ollama model directories that were scanned",
+    )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
         description = "Discovered local/cached models",
@@ -221,7 +281,8 @@ class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
     path: str = Field(
-        ..., description = "Absolute or relative directory path to scan for models"
+        ...,
+        description = "Absolute or relative folder path, or a model weight file path",
     )
 
 

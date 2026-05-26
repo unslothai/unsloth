@@ -146,10 +146,15 @@ def lmstudio_model_dirs() -> list[Path]:
     seen: set[Path] = set()
 
     def _add(p: Path) -> None:
-        resolved = p.resolve()
-        if resolved not in seen and p.is_dir():
+        try:
+            expanded = p.expanduser()
+            resolved = expanded.resolve()
+            is_dir = expanded.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            return
+        if resolved not in seen and is_dir:
             seen.add(resolved)
-            dirs.append(p)
+            dirs.append(expanded)
 
     # 1. Check LM Studio settings.json for custom downloads folder
     settings_path = Path.home() / ".lmstudio" / "settings.json"
@@ -172,6 +177,33 @@ def lmstudio_model_dirs() -> list[Path]:
     return dirs
 
 
+def ollama_model_dirs() -> list[Path]:
+    """Return Ollama model directories that exist on disk."""
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        try:
+            expanded = p.expanduser()
+            resolved = expanded.resolve()
+            is_dir = expanded.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            return
+        key = str(resolved)
+        if key in seen or not is_dir:
+            return
+        seen.add(key)
+        dirs.append(expanded)
+
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        _add(Path(ollama_env))
+    _add(Path.home() / ".ollama" / "models")
+    _add(Path("/usr/share/ollama/.ollama/models"))
+    _add(Path("/var/lib/ollama/.ollama/models"))
+    return dirs
+
+
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 
@@ -187,12 +219,7 @@ def well_known_model_dirs() -> list[Path]:
 
     # Ollama -- both the user-level and common system-wide install paths
     # (https://github.com/ollama/ollama/issues/733).
-    ollama_env = os.environ.get("OLLAMA_MODELS")
-    if ollama_env:
-        candidates.append(Path(ollama_env).expanduser())
-    candidates.append(Path.home() / ".ollama" / "models")
-    candidates.append(Path("/usr/share/ollama/.ollama/models"))
-    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+    candidates.extend(ollama_model_dirs())
 
     # HF hub cache root (separate from the explicit HF cache chip)
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
@@ -207,11 +234,12 @@ def well_known_model_dirs() -> list[Path]:
     for p in candidates:
         try:
             resolved = str(p.resolve())
-        except OSError:
+            is_dir = Path(resolved).is_dir()
+        except (OSError, RuntimeError, ValueError):
             continue
         if resolved in seen:
             continue
-        if Path(resolved).is_dir():
+        if is_dir:
             seen.add(resolved)
             out.append(Path(resolved))
     return out

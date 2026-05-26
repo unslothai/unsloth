@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LruMap } from "@/lib/lru-map";
+import { fetchWithTimeout } from "@/lib/network";
+import { fingerprintToken } from "@/lib/token-fingerprint";
 
 export interface DatasetSizeInfo {
   numBytesOriginal: number | null;
@@ -35,7 +37,17 @@ type SizeCacheEntry<T> =
   | { kind: "miss-permanent" }
   | { kind: "miss-transient"; until: number };
 
-type LoadResult<T> = { value: T } | { miss: "permanent" | "transient" | "longlived" };
+type LoadResult<T> =
+  | { value: T }
+  | { miss: "permanent" | "transient" | "longlived" };
+
+type InflightSizeEntry<T> = {
+  promise: Promise<T | null>;
+  controller: AbortController;
+  consumers: number;
+  settled: boolean;
+  cancelledByConsumers: boolean;
+};
 
 function readSizeCache<T>(
   cache: LruMap<string, SizeCacheEntry<T>>,
@@ -53,19 +65,38 @@ function readSizeCache<T>(
 function fetchCachedSize<T>(
   cacheKey: string,
   cache: LruMap<string, SizeCacheEntry<T>>,
-  inflight: Map<string, Promise<T | null>>,
+  inflight: Map<string, InflightSizeEntry<T>>,
   load: (signal: AbortSignal) => Promise<LoadResult<T>>,
+  debugContext: { label: string; id: string },
+  signal?: AbortSignal,
 ): Promise<T | null> {
+  if (signal?.aborted) {
+    return Promise.resolve(null);
+  }
   const entry = readSizeCache(cache, cacheKey);
   if (entry) {
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
   const existing = inflight.get(cacheKey);
-  if (existing) return existing;
+  if (existing) return attachInflight(existing, signal);
 
-  const promise = (async (): Promise<T | null> => {
+  let timedOut = false;
+  const controller = new AbortController();
+  const inflightEntry: InflightSizeEntry<T> = {
+    promise: Promise.resolve(null),
+    controller,
+    consumers: 0,
+    settled: false,
+    cancelledByConsumers: false,
+  };
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, FETCH_TIMEOUT_MS);
+
+  inflightEntry.promise = (async (): Promise<T | null> => {
     try {
-      const result = await load(AbortSignal.timeout(FETCH_TIMEOUT_MS));
+      const result = await load(controller.signal);
       if ("value" in result) {
         cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
@@ -77,38 +108,127 @@ function fetchCachedSize<T>(
           result.miss === "longlived"
             ? LONGLIVED_MISS_TTL_MS
             : TRANSIENT_MISS_TTL_MS;
-        cache.set(cacheKey, { kind: "miss-transient", until: Date.now() + ttl });
+        cache.set(cacheKey, {
+          kind: "miss-transient",
+          until: Date.now() + ttl,
+        });
       }
       return null;
-    } catch {
-      cache.set(cacheKey, {
-        kind: "miss-transient",
-        until: Date.now() + TRANSIENT_MISS_TTL_MS,
-      });
+    } catch (err) {
+      if (
+        import.meta.env.DEV &&
+        (!inflightEntry.cancelledByConsumers || timedOut)
+      ) {
+        console.debug(`${debugContext.label} size lookup failed`, {
+          id: debugContext.id,
+          error: err,
+        });
+      }
+      if (!inflightEntry.cancelledByConsumers || timedOut) {
+        cache.set(cacheKey, {
+          kind: "miss-transient",
+          until: Date.now() + TRANSIENT_MISS_TTL_MS,
+        });
+      }
       return null;
     } finally {
+      clearTimeout(timeout);
+      inflightEntry.settled = true;
       inflight.delete(cacheKey);
     }
   })();
 
-  inflight.set(cacheKey, promise);
-  return promise;
+  inflight.set(cacheKey, inflightEntry);
+  return attachInflight(inflightEntry, signal);
+}
+
+function attachInflight<T>(
+  entry: InflightSizeEntry<T>,
+  signal?: AbortSignal,
+): Promise<T | null> {
+  entry.consumers += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    entry.consumers = Math.max(0, entry.consumers - 1);
+    if (entry.consumers === 0 && !entry.settled) {
+      entry.cancelledByConsumers = true;
+      entry.controller.abort();
+    }
+  };
+
+  if (!signal) {
+    return entry.promise.finally(release);
+  }
+
+  if (signal.aborted) {
+    release();
+    return Promise.resolve(null);
+  }
+
+  const activeSignal = signal;
+  return new Promise((resolve) => {
+    function cleanup() {
+      activeSignal.removeEventListener("abort", onAbort);
+    }
+    function onAbort() {
+      cleanup();
+      release();
+      resolve(null);
+    }
+    activeSignal.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(
+      (value) => {
+        cleanup();
+        release();
+        resolve(value);
+      },
+      () => {
+        cleanup();
+        release();
+        resolve(null);
+      },
+    );
+  });
 }
 
 const datasetCache = new LruMap<string, SizeCacheEntry<DatasetSizeInfo>>(128);
-const datasetInflight = new Map<string, Promise<DatasetSizeInfo | null>>();
+const datasetInflight = new Map<string, InflightSizeEntry<DatasetSizeInfo>>();
 
 export function fetchDatasetSize(
   repoId: string,
+  signal?: AbortSignal,
+): Promise<DatasetSizeInfo | null>;
+export function fetchDatasetSize(
+  repoId: string,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<DatasetSizeInfo | null>;
+export function fetchDatasetSize(
+  repoId: string,
+  tokenOrSignal?: string | AbortSignal,
+  signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
+  const resolvedToken =
+    typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
+  const resolvedSignal =
+    typeof tokenOrSignal === "string" ? signal : tokenOrSignal;
+  const cacheKey = `${repoId}::${fingerprintToken(resolvedToken)}`;
   return fetchCachedSize<DatasetSizeInfo>(
-    repoId,
+    cacheKey,
     datasetCache,
     datasetInflight,
     async (signal) => {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://datasets-server.huggingface.co/size?dataset=${encodeURIComponent(repoId)}`,
-        { signal },
+        {
+          signal,
+          headers: resolvedToken
+            ? { Authorization: `Bearer ${resolvedToken}` }
+            : undefined,
+        },
+        FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
         // datasets-server 404 often means "not processed yet", not "never".
@@ -128,6 +248,8 @@ export function fetchDatasetSize(
         },
       };
     },
+    { label: "Dataset", id: repoId },
+    resolvedSignal,
   );
 }
 
@@ -164,7 +286,10 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
-function isSnapshotIgnored(filename: string, skipConsolidated: boolean): boolean {
+function isSnapshotIgnored(
+  filename: string,
+  skipConsolidated: boolean,
+): boolean {
   const lower = filename.toLowerCase();
   return (
     lower.endsWith(".gguf") ||
@@ -178,41 +303,53 @@ function isSnapshotIgnored(filename: string, skipConsolidated: boolean): boolean
 }
 
 const modelCache = new LruMap<string, SizeCacheEntry<ModelSizeInfo>>(128);
-const modelInflight = new Map<string, Promise<ModelSizeInfo | null>>();
+const modelInflight = new Map<string, InflightSizeEntry<ModelSizeInfo>>();
 
 export function fetchModelSize(
   repoId: string,
   token?: string,
+  signal?: AbortSignal,
 ): Promise<ModelSizeInfo | null> {
-  const cacheKey = token ? `${repoId}::${token}` : repoId;
-  return fetchCachedSize<ModelSizeInfo>(cacheKey, modelCache, modelInflight, async (signal) => {
-    const path = repoId.split("/").map(encodeURIComponent).join("/");
-    const res = await fetch(
-      `https://huggingface.co/api/models/${path}?blobs=true`,
-      { signal, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
-    );
-    if (!res.ok) {
-      return { miss: res.status === 404 ? "permanent" : "transient" };
-    }
-    const data = (await res.json()) as ModelInfoApiResponse;
-    const siblings = data.siblings ?? [];
-    const skipConsolidated = shipsTransformersWeights(siblings);
-    let total = 0;
-    let weights = 0;
-    for (const s of siblings) {
-      if (typeof s.size !== "number") continue;
-      const filename = s.rfilename ?? "";
-      if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
-      total += s.size;
-      if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
-        weights += s.size;
+  const cacheKey = `${repoId}::${fingerprintToken(token)}`;
+  return fetchCachedSize<ModelSizeInfo>(
+    cacheKey,
+    modelCache,
+    modelInflight,
+    async (signal) => {
+      const path = repoId.split("/").map(encodeURIComponent).join("/");
+      const res = await fetchWithTimeout(
+        `https://huggingface.co/api/models/${path}?blobs=true`,
+        {
+          signal,
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        },
+        FETCH_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        return { miss: res.status === 404 ? "permanent" : "transient" };
       }
-    }
-    return {
-      value: {
-        totalBytes: total > 0 ? total : null,
-        weightsBytes: weights > 0 ? weights : null,
-      },
-    };
-  });
+      const data = (await res.json()) as ModelInfoApiResponse;
+      const siblings = data.siblings ?? [];
+      const skipConsolidated = shipsTransformersWeights(siblings);
+      let total = 0;
+      let weights = 0;
+      for (const s of siblings) {
+        if (typeof s.size !== "number") continue;
+        const filename = s.rfilename ?? "";
+        if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
+        total += s.size;
+        if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
+          weights += s.size;
+        }
+      }
+      return {
+        value: {
+          totalBytes: total > 0 ? total : null,
+          weightsBytes: weights > 0 ? weights : null,
+        },
+      };
+    },
+    { label: "Model", id: repoId },
+    signal,
+  );
 }

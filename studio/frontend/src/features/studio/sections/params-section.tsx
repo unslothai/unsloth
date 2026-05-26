@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import {
   Combobox,
   ComboboxContent,
@@ -13,6 +11,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -26,6 +25,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import {
   CONTEXT_LENGTHS,
   CPT_TARGET_MODULES,
@@ -33,11 +33,14 @@ import {
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
-import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
-import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
+import {
+  isRawTextDatasetFormat,
+  type TrainingConfigStore,
+  useMaxStepsEpochsToggle,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { cn } from "@/lib/utils";
-import { isAdapterMethod } from "@/types/training";
-import type { GradientCheckpointing } from "@/types/training";
+import { isAdapterMethod, type GradientCheckpointing } from "@/types/training";
 import {
   FlashIcon,
   InformationCircleIcon,
@@ -50,14 +53,23 @@ import {
   type CSSProperties,
   type ReactElement,
   type ReactNode,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 
-/** Label + optional tooltip — shared by Field and inline rows. Visual
- *  styling lives in the `.field-label` CSS class (index.css) so the
- *  same label rules drive both this component and the dataset-selectors. */
+const CONTEXT_LENGTH_ITEMS = CONTEXT_LENGTHS.map(String);
+
+const LORA_VARIANTS = [
+  { value: "lora", label: "Enable LoRA", desc: "Train with LoRA" },
+  { value: "rslora", label: "RS-LoRA", desc: "Stable Rank" },
+  { value: "loftq", label: "LoftQ", desc: "Memory Efficient" },
+] as const;
+
+type ParamMode = "simple" | "advanced";
+
 function FieldLabel({
   label,
   tooltip,
@@ -85,9 +97,6 @@ function FieldLabel({
   );
 }
 
-/** Vertical field wrapper: label on top, control underneath taking the full
- *  column width. Stops the old `justify-between` "label hugging the left,
- *  control hugging the right" layout that left a huge dead gap. */
 function Field({
   label,
   tooltip,
@@ -112,61 +121,6 @@ function Field({
   );
 }
 
-/** Slider field — same shape as the chat right-panel ParamSlider:
- *  label + editable value on top row, full-width slider below. Uses the
- *  shared `panel-slider` + `panel-number-input` utilities from index.css so
- *  the visual system matches the chat panel exactly. */
-function SliderField({
-  label,
-  tooltip,
-  value,
-  onChange,
-  min,
-  max,
-  step,
-  format,
-}: {
-  label: string;
-  tooltip?: ReactNode;
-  hint?: ReactNode;
-  value: number;
-  onChange: (v: number) => void;
-  min: number;
-  max: number;
-  step: number;
-  format?: (v: number) => string;
-}): ReactElement {
-  return (
-    <div className="slider-field flex min-w-0 flex-col gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <FieldLabel label={label} tooltip={tooltip} />
-        <input
-          type="number"
-          value={format ? format(value) : value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          min={min}
-          max={max}
-          step={step}
-          aria-label={label}
-          className="panel-number-input w-16"
-        />
-      </div>
-      <Slider
-        value={[value]}
-        onValueChange={([v]) => onChange(v)}
-        min={min}
-        max={max}
-        step={step}
-        className="panel-slider"
-      />
-    </div>
-  );
-}
-
-/** Responsive grid for short rows of controls. Drops to a single column on
- *  mobile; expands to `cols` (2 by default, optionally 3) on `sm+`. Items
- *  align to the top so mixed-height controls (sliders next to inputs) stay
- *  flush at the row's start rather than vertically centring. */
 function FieldGrid({
   children,
   cols = 2,
@@ -193,7 +147,6 @@ function Subsection({
   children,
 }: {
   title: string;
-  description?: string;
   icon?: IconSvgElement;
   accent?: string;
   children: ReactNode;
@@ -222,50 +175,919 @@ function Subsection({
   );
 }
 
-type ParamMode = "simple" | "advanced";
+function linkTooltip(text: string): ReactNode {
+  return (
+    <>
+      {text}{" "}
+      <a
+        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline"
+      >
+        Read more
+      </a>
+    </>
+  );
+}
+
+function SliderField({
+  label,
+  tooltip,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  format,
+  inputClassName = "w-16",
+  labelAction,
+}: {
+  label: string;
+  tooltip?: ReactNode;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  format?: (v: number) => string;
+  inputClassName?: string;
+  labelAction?: ReactNode;
+}): ReactElement {
+  const frameRef = useRef<number | null>(null);
+  const latestValueRef = useRef(value);
+  const [draftState, setDraftState] = useState({ source: value, value });
+  const draft = draftState.source === value ? draftState.value : value;
+
+  const setDraft = useCallback(
+    (next: number) => {
+      latestValueRef.current = next;
+      setDraftState({ source: value, value: next });
+    },
+    [value],
+  );
+
+  const cancelScheduledChange = useCallback(() => {
+    if (frameRef.current === null || typeof window === "undefined") return;
+    window.cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }, []);
+
+  const commitNow = useCallback(
+    (next: number) => {
+      cancelScheduledChange();
+      setDraft(next);
+      onChange(next);
+    },
+    [cancelScheduledChange, onChange, setDraft],
+  );
+
+  const scheduleChange = useCallback(
+    (next: number) => {
+      setDraft(next);
+      if (typeof window === "undefined") {
+        onChange(next);
+        return;
+      }
+      if (frameRef.current !== null) return;
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        onChange(latestValueRef.current);
+      });
+    },
+    [onChange, setDraft],
+  );
+
+  useEffect(
+    () => () => {
+      cancelScheduledChange();
+    },
+    [cancelScheduledChange],
+  );
+
+  return (
+    <div className="slider-field flex min-w-0 flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <FieldLabel label={label} tooltip={tooltip} />
+        <div className="flex items-center gap-1.5">
+          {labelAction}
+          <input
+            type="number"
+            value={format ? format(draft) : draft}
+            onChange={(event) => {
+              const raw = event.currentTarget.value;
+              if (raw === "") return;
+              const next = Number(raw);
+              if (!Number.isFinite(next)) return;
+              commitNow(Math.min(max, Math.max(min, next)));
+            }}
+            min={min}
+            max={max}
+            step={step}
+            aria-label={label}
+            className={cn("panel-number-input", inputClassName)}
+          />
+        </div>
+      </div>
+      <Slider
+        value={[draft]}
+        onValueChange={([next]) => {
+          if (typeof next === "number") scheduleChange(next);
+        }}
+        onValueCommit={([next]) => {
+          if (typeof next === "number") commitNow(next);
+        }}
+        min={min}
+        max={max}
+        step={step}
+        className="panel-slider"
+      />
+    </div>
+  );
+}
+
+function SliderParamField({
+  valueSelector,
+  setterSelector,
+  ...props
+}: Omit<Parameters<typeof SliderField>[0], "value" | "onChange"> & {
+  valueSelector: (state: TrainingConfigStore) => number;
+  setterSelector: (state: TrainingConfigStore) => (value: number) => void;
+}): ReactElement {
+  const value = useTrainingConfigStore(valueSelector);
+  const setter = useTrainingConfigStore(setterSelector);
+  return <SliderField {...props} value={value} onChange={setter} />;
+}
+
+function MaxStepsEpochsField(): ReactElement {
+  const {
+    maxSteps,
+    epochs,
+    saveSteps,
+    setMaxSteps,
+    setEpochs,
+    setSaveSteps,
+  } = useTrainingConfigStore(
+    useShallow((state) => ({
+      maxSteps: state.maxSteps,
+      epochs: state.epochs,
+      saveSteps: state.saveSteps,
+      setMaxSteps: state.setMaxSteps,
+      setEpochs: state.setEpochs,
+      setSaveSteps: state.setSaveSteps,
+    })),
+  );
+  const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
+    maxSteps,
+    epochs,
+    saveSteps,
+    setMaxSteps,
+    setEpochs,
+    setSaveSteps,
+  });
+  const max = useEpochs
+    ? Math.max(20, epochs, 1)
+    : Math.max(500, maxSteps, 30);
+  const value = useEpochs
+    ? Math.min(max, Math.max(1, epochs))
+    : Math.min(max, Math.max(1, maxSteps));
+  const setValue = useEpochs ? setEpochs : setMaxSteps;
+  const label = useEpochs ? "Epochs" : "Max Steps";
+
+  return (
+    <div
+      key={useEpochs ? "epochs" : "steps"}
+      className="animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
+    >
+      <SliderField
+        label={label}
+        tooltip={linkTooltip(
+          useEpochs
+            ? "Number of full passes over the dataset."
+            : "Override total optimizer steps.",
+        )}
+        value={value}
+        onChange={setValue}
+        min={1}
+        max={max}
+        step={1}
+        inputClassName="w-14"
+        labelAction={
+          <button
+            type="button"
+            onClick={toggleUseEpochs}
+            aria-label={`Switch to ${useEpochs ? "max steps" : "epochs"}`}
+            className="cursor-pointer text-[10px] uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
+          >
+            ⇄ {useEpochs ? "Steps" : "Epochs"}
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+function ContextLengthField(): ReactElement {
+  const contextLength = useTrainingConfigStore((state) => state.contextLength);
+  const setContextLength = useTrainingConfigStore(
+    (state) => state.setContextLength,
+  );
+  const ctxAnchorRef = useRef<HTMLDivElement>(null);
+  const [draftState, setDraftState] = useState({
+    source: contextLength,
+    value: String(contextLength),
+  });
+  const ctxInput =
+    draftState.source === contextLength
+      ? draftState.value
+      : String(contextLength);
+
+  const setCtxInput = useCallback(
+    (value: string) => {
+      setDraftState({ source: contextLength, value });
+    },
+    [contextLength],
+  );
+
+  const trySetContextLength = useCallback(
+    (input: string): number | null => {
+      const next = Number(input);
+      if (!Number.isInteger(next) || next <= 0) return null;
+      setContextLength(next);
+      setDraftState({ source: next, value: String(next) });
+      return next;
+    },
+    [setContextLength],
+  );
+
+  return (
+    <Field
+      label="Context Length"
+      tooltip={linkTooltip("Maximum number of tokens per training sample.")}
+    >
+      <div ref={ctxAnchorRef}>
+        <Combobox
+          items={CONTEXT_LENGTH_ITEMS}
+          filteredItems={CONTEXT_LENGTH_ITEMS}
+          filter={null}
+          value={String(contextLength)}
+          onValueChange={(value) => {
+            if (value) trySetContextLength(value);
+          }}
+          onInputValueChange={setCtxInput}
+          itemToStringValue={(id) => Number(id).toLocaleString()}
+          autoHighlight={false}
+        >
+          <ComboboxInput
+            placeholder={String(contextLength)}
+            className="field-trigger field-soft field-pill w-full tabular-nums"
+            onBlur={() => {
+              if (trySetContextLength(ctxInput) === null) {
+                setDraftState({
+                  source: contextLength,
+                  value: String(contextLength),
+                });
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              const next = trySetContextLength(ctxInput);
+              if (next === null) return;
+              if (!CONTEXT_LENGTH_ITEMS.includes(ctxInput.trim())) {
+                event.stopPropagation();
+                event.preventDefault();
+              }
+              setDraftState({ source: next, value: String(next) });
+            }}
+          />
+          <ComboboxContent anchor={ctxAnchorRef}>
+            <ComboboxEmpty>Enter a custom value</ComboboxEmpty>
+            <ComboboxList className="p-1">
+              {(id: string) => (
+                <ComboboxItem key={id} value={id} className="font-mono">
+                  {Number(id).toLocaleString()}
+                </ComboboxItem>
+              )}
+            </ComboboxList>
+          </ComboboxContent>
+        </Combobox>
+      </div>
+    </Field>
+  );
+}
+
+function LearningRateField(): ReactElement {
+  const learningRate = useTrainingConfigStore((state) => state.learningRate);
+  const setLearningRate = useTrainingConfigStore(
+    (state) => state.setLearningRate,
+  );
+
+  return (
+    <Field
+      label="Learning Rate"
+      tooltip={linkTooltip(
+        "Step size for weight updates. Lower values train slower but more stably.",
+      )}
+    >
+      <Input
+        type="number"
+        step="0.00001"
+        value={learningRate}
+        onChange={(event) => setLearningRate(Number(event.currentTarget.value))}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function CoreParams(): ReactElement {
+  return (
+    <FieldGrid cols={3}>
+      <MaxStepsEpochsField />
+      <ContextLengthField />
+      <LearningRateField />
+    </FieldGrid>
+  );
+}
+
+function EmbeddingLearningRateField(): ReactElement {
+  const { learningRate, embeddingLearningRate, setEmbeddingLearningRate } =
+    useTrainingConfigStore(
+      useShallow((state) => ({
+        learningRate: state.learningRate,
+        embeddingLearningRate: state.embeddingLearningRate,
+        setEmbeddingLearningRate: state.setEmbeddingLearningRate,
+      })),
+    );
+
+  return (
+    <Field
+      label="Embedding Learning Rate"
+      tooltip={
+        <>
+          Only used when CPT is training <code>embed_tokens</code>. Embeddings
+          are easier to destabilize than LoRA weights, so they usually need a
+          smaller LR. Leave blank to use <code>lr/10</code>; typical working
+          range is 2x-10x smaller than the main LR.
+        </>
+      }
+      hint="Leave blank to use lr/10 (recommended). Typical range is 2x-10x smaller than the main learning rate."
+    >
+      <Input
+        type="number"
+        step="0.00001"
+        min="0"
+        max="1"
+        placeholder={`auto (${(learningRate / 10).toExponential(1)})`}
+        value={embeddingLearningRate ?? ""}
+        onChange={(event) => {
+          const raw = event.currentTarget.value;
+          if (raw === "") {
+            setEmbeddingLearningRate(null);
+            return;
+          }
+          const next = Number(raw);
+          setEmbeddingLearningRate(Number.isFinite(next) ? next : null);
+        }}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function VisionFineTuneFields(): ReactElement {
+  const config = useTrainingConfigStore(
+    useShallow((state) => ({
+      finetuneVisionLayers: state.finetuneVisionLayers,
+      setFinetuneVisionLayers: state.setFinetuneVisionLayers,
+      finetuneLanguageLayers: state.finetuneLanguageLayers,
+      setFinetuneLanguageLayers: state.setFinetuneLanguageLayers,
+      finetuneAttentionModules: state.finetuneAttentionModules,
+      setFinetuneAttentionModules: state.setFinetuneAttentionModules,
+      finetuneMLPModules: state.finetuneMLPModules,
+      setFinetuneMLPModules: state.setFinetuneMLPModules,
+    })),
+  );
+  const options = [
+    [
+      "finetuneVisionLayers",
+      "Vision layers",
+      config.finetuneVisionLayers,
+      config.setFinetuneVisionLayers,
+    ],
+    [
+      "finetuneLanguageLayers",
+      "Language layers",
+      config.finetuneLanguageLayers,
+      config.setFinetuneLanguageLayers,
+    ],
+    [
+      "finetuneAttentionModules",
+      "Attention modules",
+      config.finetuneAttentionModules,
+      config.setFinetuneAttentionModules,
+    ],
+    [
+      "finetuneMLPModules",
+      "MLP modules",
+      config.finetuneMLPModules,
+      config.setFinetuneMLPModules,
+    ],
+  ] as const;
+
+  return (
+    <Field label="Fine-tune">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+        {options.map(([key, label, checked, setter]) => (
+          <div key={key} className="flex items-center gap-2">
+            <Checkbox
+              id={key}
+              checked={checked}
+              onCheckedChange={(value) => setter(!!value)}
+            />
+            <label
+              htmlFor={key}
+              className="cursor-pointer text-[12px] text-muted-foreground"
+            >
+              {label}
+            </label>
+          </div>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+function TargetModulesField({ isCpt }: { isCpt: boolean }): ReactElement {
+  const { targetModules, setTargetModules } = useTrainingConfigStore(
+    useShallow((state) => ({
+      targetModules: state.targetModules,
+      setTargetModules: state.setTargetModules,
+    })),
+  );
+  const modules = isCpt ? CPT_TARGET_MODULES : TARGET_MODULES;
+
+  return (
+    <Field label="Target Modules">
+      <div className="flex flex-wrap gap-1.5">
+        {modules.map((mod) => {
+          const active = targetModules.includes(mod);
+          return (
+            <button
+              key={mod}
+              type="button"
+              onClick={() => {
+                setTargetModules(
+                  active
+                    ? targetModules.filter((item) => item !== mod)
+                    : [...targetModules, mod],
+                );
+              }}
+              className={cn(
+                "cursor-pointer rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+                active
+                  ? "border-foreground/30 bg-foreground/[0.08] text-foreground"
+                  : "border-border text-muted-foreground hover:bg-foreground/[0.04]",
+              )}
+            >
+              {mod}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
+  );
+}
+
+function LoraVariantField(): ReactElement {
+  const loraVariant = useTrainingConfigStore((state) => state.loraVariant);
+  const setLoraVariant = useTrainingConfigStore(
+    (state) => state.setLoraVariant,
+  );
+
+  return (
+    <Field label="Variant">
+      <div className="grid grid-cols-3 gap-2">
+        {LORA_VARIANTS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => setLoraVariant(option.value)}
+            className={cn(
+              "corner-squircle cursor-pointer rounded-xl border px-3 py-2 text-left transition-colors",
+              loraVariant === option.value
+                ? "border-foreground/30 bg-foreground/[0.05] ring-1 ring-foreground/15"
+                : "border-border hover:border-foreground/20",
+            )}
+          >
+            <p className="text-[12px] font-medium tracking-nav">
+              {option.label}
+            </p>
+            <p className="text-[10.5px] text-muted-foreground">
+              {option.desc}
+            </p>
+          </button>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+function LoraSection({
+  isCpt,
+  showVisionLora,
+}: {
+  isCpt: boolean;
+  showVisionLora: boolean;
+}): ReactElement {
+  return (
+    <Subsection title="LoRA" icon={Layers01Icon} accent="#9b89d4">
+      <div className="flex flex-col gap-4">
+        <FieldGrid cols={3}>
+          <SliderParamField
+            label="Rank"
+            tooltip={linkTooltip(
+              "Dimension of the low-rank matrices. Higher = more capacity.",
+            )}
+            valueSelector={(state) => state.loraRank}
+            setterSelector={(state) => state.setLoraRank}
+            min={4}
+            max={128}
+            step={4}
+          />
+          <SliderParamField
+            label="Alpha"
+            tooltip={linkTooltip(
+              "Scaling factor for LoRA updates. Usually 2x rank.",
+            )}
+            valueSelector={(state) => state.loraAlpha}
+            setterSelector={(state) => state.setLoraAlpha}
+            min={4}
+            max={256}
+            step={4}
+          />
+          <SliderParamField
+            label="Dropout"
+            tooltip={linkTooltip(
+              "Dropout probability for LoRA layers to reduce overfitting.",
+            )}
+            valueSelector={(state) => state.loraDropout}
+            setterSelector={(state) => state.setLoraDropout}
+            min={0}
+            max={0.5}
+            step={0.01}
+            format={(value) => value.toFixed(2)}
+          />
+        </FieldGrid>
+
+        {showVisionLora ? (
+          <VisionFineTuneFields />
+        ) : (
+          <TargetModulesField isCpt={isCpt} />
+        )}
+
+        <LoraVariantField />
+      </div>
+    </Subsection>
+  );
+}
+
+function OptimizerField(): ReactElement {
+  const optimizerType = useTrainingConfigStore((state) => state.optimizerType);
+  const setOptimizerType = useTrainingConfigStore(
+    (state) => state.setOptimizerType,
+  );
+
+  return (
+    <Field
+      label="Optimizer"
+      tooltip={linkTooltip(
+        "Optimization algorithm. 8-bit variants reduce memory usage. Fused is recommended for vision models.",
+      )}
+    >
+      <Select value={optimizerType} onValueChange={setOptimizerType}>
+        <SelectTrigger className="field-trigger field-soft w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {OPTIMIZER_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function LrSchedulerField(): ReactElement {
+  const lrSchedulerType = useTrainingConfigStore(
+    (state) => state.lrSchedulerType,
+  );
+  const setLrSchedulerType = useTrainingConfigStore(
+    (state) => state.setLrSchedulerType,
+  );
+
+  return (
+    <Field
+      label="LR Scheduler"
+      tooltip={linkTooltip(
+        "How the learning rate changes over training. Linear decays steadily; cosine decays in a curve.",
+      )}
+    >
+      <Select value={lrSchedulerType} onValueChange={setLrSchedulerType}>
+        <SelectTrigger className="field-trigger field-soft w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {LR_SCHEDULER_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function GradientCheckpointingField({
+  platformDeviceType,
+}: {
+  platformDeviceType: string | null;
+}): ReactElement {
+  const gradientCheckpointing = useTrainingConfigStore(
+    (state) => state.gradientCheckpointing,
+  );
+  const setGradientCheckpointing = useTrainingConfigStore(
+    (state) => state.setGradientCheckpointing,
+  );
+
+  return (
+    <Field
+      label="Gradient Checkpointing"
+      tooltip={linkTooltip("Trade compute for memory by recomputing activations.")}
+    >
+      <Select
+        value={gradientCheckpointing}
+        onValueChange={(value) =>
+          setGradientCheckpointing(value as GradientCheckpointing)
+        }
+      >
+        <SelectTrigger className="field-trigger field-soft w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">None</SelectItem>
+          <SelectItem value="true">Standard</SelectItem>
+          {platformDeviceType === "mac" ? (
+            <SelectItem value="mlx">MLX</SelectItem>
+          ) : (
+            <SelectItem value="unsloth">Unsloth</SelectItem>
+          )}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function WeightDecayField(): ReactElement {
+  const weightDecay = useTrainingConfigStore((state) => state.weightDecay);
+  const setWeightDecay = useTrainingConfigStore((state) => state.setWeightDecay);
+
+  return (
+    <Field
+      label="Weight Decay"
+      tooltip={linkTooltip("L2 regularization to prevent overfitting.")}
+    >
+      <Input
+        type="number"
+        step="0.001"
+        value={weightDecay}
+        onChange={(event) => setWeightDecay(Number(event.currentTarget.value))}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function OptimizationFlags({
+  showPacking,
+  showTrainOnCompletions,
+}: {
+  showPacking: boolean;
+  showTrainOnCompletions: boolean;
+}): ReactElement | null {
+  const { packing, setPacking, trainOnCompletions, setTrainOnCompletions } =
+    useTrainingConfigStore(
+      useShallow((state) => ({
+        packing: state.packing,
+        setPacking: state.setPacking,
+        trainOnCompletions: state.trainOnCompletions,
+        setTrainOnCompletions: state.setTrainOnCompletions,
+      })),
+    );
+
+  if (!showPacking && !showTrainOnCompletions) return null;
+
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {showPacking && (
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="packing"
+            checked={packing}
+            onCheckedChange={(value) => setPacking(!!value)}
+          />
+          <label
+            htmlFor="packing"
+            className="cursor-pointer text-[12px] text-muted-foreground"
+          >
+            Enable packing
+          </label>
+        </div>
+      )}
+      {showTrainOnCompletions && (
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="trainOnCompletions"
+            checked={trainOnCompletions}
+            onCheckedChange={(value) => setTrainOnCompletions(!!value)}
+          />
+          <label
+            htmlFor="trainOnCompletions"
+            className="cursor-pointer text-[12px] text-muted-foreground"
+          >
+            Assistant completions only
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OptimizationSection({
+  platformDeviceType,
+  showVisionLora,
+  isEmbeddingModel,
+  isCpt,
+  isRawText,
+}: {
+  platformDeviceType: string | null;
+  showVisionLora: boolean;
+  isEmbeddingModel: boolean;
+  isCpt: boolean;
+  isRawText: boolean;
+}): ReactElement {
+  return (
+    <Subsection title="Optimization" icon={FlashIcon} accent="#d4a566">
+      <div className="flex flex-col gap-4">
+        <FieldGrid cols={3}>
+          <OptimizerField />
+          <LrSchedulerField />
+          <GradientCheckpointingField platformDeviceType={platformDeviceType} />
+        </FieldGrid>
+        <FieldGrid cols={3}>
+          <SliderParamField
+            label="Batch Size"
+            tooltip={linkTooltip("Samples processed per step. Higher uses more VRAM.")}
+            valueSelector={(state) => state.batchSize}
+            setterSelector={(state) => state.setBatchSize}
+            min={1}
+            max={32}
+            step={1}
+          />
+          <SliderParamField
+            label="Grad Accum"
+            tooltip={linkTooltip(
+              "Simulates larger batch sizes without extra VRAM.",
+            )}
+            valueSelector={(state) => state.gradientAccumulation}
+            setterSelector={(state) => state.setGradientAccumulation}
+            min={1}
+            max={64}
+            step={1}
+          />
+          <WeightDecayField />
+        </FieldGrid>
+        <OptimizationFlags
+          showPacking={!showVisionLora && !isEmbeddingModel}
+          showTrainOnCompletions={!isEmbeddingModel && !isCpt && !isRawText}
+        />
+      </div>
+    </Subsection>
+  );
+}
+
+function SaveStepsField(): ReactElement {
+  const saveSteps = useTrainingConfigStore((state) => state.saveSteps);
+  const setSaveSteps = useTrainingConfigStore((state) => state.setSaveSteps);
+
+  return (
+    <Field
+      label="Save Steps"
+      tooltip={linkTooltip("Save a checkpoint every N steps. 0 to disable.")}
+    >
+      <Input
+        type="number"
+        value={saveSteps}
+        onChange={(event) => setSaveSteps(Number(event.currentTarget.value))}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function EvalStepsField(): ReactElement {
+  const evalSteps = useTrainingConfigStore((state) => state.evalSteps);
+  const setEvalSteps = useTrainingConfigStore((state) => state.setEvalSteps);
+
+  return (
+    <Field
+      label="Eval Steps"
+      tooltip="Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps."
+    >
+      <Input
+        type="number"
+        step="0.01"
+        min="0.0"
+        max="1.0"
+        value={evalSteps}
+        onChange={(event) => setEvalSteps(Number(event.currentTarget.value))}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function SeedField(): ReactElement {
+  const randomSeed = useTrainingConfigStore((state) => state.randomSeed);
+  const setRandomSeed = useTrainingConfigStore((state) => state.setRandomSeed);
+
+  return (
+    <Field label="Seed" tooltip="Random seed for reproducibility.">
+      <Input
+        type="number"
+        value={randomSeed}
+        onChange={(event) => setRandomSeed(Number(event.currentTarget.value))}
+        className="field-trigger field-soft field-pill w-full tabular-nums"
+      />
+    </Field>
+  );
+}
+
+function ScheduleSection(): ReactElement {
+  return (
+    <Subsection title="Schedule & checkpoints" icon={Timer01Icon} accent="#82a8c5">
+      <div className="flex flex-col gap-4">
+        <SliderParamField
+          label="Warmup Steps"
+          tooltip={linkTooltip(
+            "Gradually increase LR at training start for stability.",
+          )}
+          valueSelector={(state) => state.warmupSteps}
+          setterSelector={(state) => state.setWarmupSteps}
+          min={0}
+          max={100}
+          step={1}
+        />
+        <FieldGrid cols={3}>
+          <SaveStepsField />
+          <EvalStepsField />
+          <SeedField />
+        </FieldGrid>
+      </div>
+    </Subsection>
+  );
+}
 
 export function ParamsSection({
   mode = "simple",
 }: {
   mode?: ParamMode;
 } = {}): ReactElement {
-  const store = useTrainingConfigStore();
-  const platformDeviceType = usePlatformStore((s) => s.deviceType);
-  const isLora = isAdapterMethod(store.trainingMethod);
-  const isCpt = store.trainingMethod === "cpt";
-  const isRawText = isRawTextDatasetFormat(store.datasetFormat);
-  const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  const platformDeviceType = usePlatformStore((state) => state.deviceType);
+  const {
+    trainingMethod,
+    datasetFormat,
+    isVisionModel,
+    isDatasetImage,
+    isEmbeddingModel,
+  } = useTrainingConfigStore(
+    useShallow((state) => ({
+      trainingMethod: state.trainingMethod,
+      datasetFormat: state.datasetFormat,
+      isVisionModel: state.isVisionModel,
+      isDatasetImage: state.isDatasetImage,
+      isEmbeddingModel: state.isEmbeddingModel,
+    })),
+  );
+  const isLora = isAdapterMethod(trainingMethod);
+  const isCpt = trainingMethod === "cpt";
+  const isRawText = isRawTextDatasetFormat(datasetFormat);
+  const showVisionLora = isVisionModel && isDatasetImage === true;
   const showAdvanced = mode === "advanced";
-  const [ctxInput, setCtxInput] = useState(String(store.contextLength));
-  const ctxAnchorRef = useRef<HTMLDivElement>(null);
-  const ctxItems = CONTEXT_LENGTHS.map(String);
-
-  // Keep input in sync when the store value changes externally
-  // (e.g. model defaults being applied after model selection).
-  useEffect(() => {
-    setCtxInput(String(store.contextLength));
-  }, [store.contextLength]);
-
-  const trySetContextLength = (input: string): number | null => {
-    const n = Number(input);
-    if (Number.isInteger(n) && n > 0) {
-      store.setContextLength(n);
-      return n;
-    }
-    return null;
-  };
-
-  const { useEpochs, toggleUseEpochs } = useMaxStepsEpochsToggle({
-    maxSteps: store.maxSteps,
-    epochs: store.epochs,
-    saveSteps: store.saveSteps,
-    setMaxSteps: store.setMaxSteps,
-    setEpochs: store.setEpochs,
-    setSaveSteps: store.setSaveSteps,
-  });
-
-  const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);
-  const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
     <div data-tour="studio-params" className="min-w-0">
@@ -276,711 +1098,23 @@ export function ParamsSection({
         accent="orange"
       >
         <div className="flex flex-col gap-9">
-          <FieldGrid cols={3}>
-            <div
-              key={useEpochs ? "epochs" : "steps"}
-              className="slider-field flex min-w-0 flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <FieldLabel
-                  label={useEpochs ? "Epochs" : "Max Steps"}
-                  tooltip={
-                    <>
-                      {useEpochs
-                        ? "Number of full passes over the dataset."
-                        : "Override total optimizer steps."}{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline"
-                      >
-                        Read more
-                      </a>
-                    </>
-                  }
-                />
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={toggleUseEpochs}
-                    aria-label={`Switch to ${useEpochs ? "max steps" : "epochs"}`}
-                    className="text-[10px] uppercase tracking-wide text-muted-foreground/70 hover:text-foreground cursor-pointer transition-colors"
-                  >
-                    ⇄ {useEpochs ? "Steps" : "Epochs"}
-                  </button>
-                  <input
-                    type="number"
-                    value={useEpochs ? store.epochs : store.maxSteps}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      if (raw === "") return;
-                      const value = Number(raw);
-                      if (!Number.isFinite(value) || value < 1) return;
-                      if (useEpochs) {
-                        store.setEpochs(value);
-                      } else {
-                        store.setMaxSteps(value);
-                      }
-                    }}
-                    min={1}
-                    max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-                    step={1}
-                    aria-label={useEpochs ? "Epochs" : "Max Steps"}
-                    className="panel-number-input w-14"
-                  />
-                </div>
-              </div>
-              <Slider
-                value={[
-                  useEpochs
-                    ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
-                    : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
-                ]}
-                onValueChange={([v]) =>
-                  useEpochs ? store.setEpochs(v) : store.setMaxSteps(v)
-                }
-                min={1}
-                max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-                step={1}
-                className="panel-slider"
-              />
-            </div>
-            <Field
-              label="Context Length"
-              tooltip={
-                <>
-                  Maximum number of tokens per training sample.{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    Read more
-                  </a>
-                </>
-              }
-            >
-              <div ref={ctxAnchorRef}>
-                <Combobox
-                  items={ctxItems}
-                  filteredItems={ctxItems}
-                  filter={null}
-                  value={String(store.contextLength)}
-                  onValueChange={(v) => {
-                    if (v && trySetContextLength(v)) {
-                      setCtxInput(v);
-                    }
-                  }}
-                  onInputValueChange={setCtxInput}
-                  itemToStringValue={(id) => Number(id).toLocaleString()}
-                  autoHighlight={false}
-                >
-                  <ComboboxInput
-                    placeholder={String(store.contextLength)}
-                    className="field-trigger field-soft field-pill w-full tabular-nums"
-                    onBlur={() => {
-                      trySetContextLength(ctxInput);
-                      setCtxInput(String(store.contextLength));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter") {
-                        return;
-                      }
-                      const n = trySetContextLength(ctxInput);
-                      if (n === null) {
-                        return;
-                      }
-                      if (!ctxItems.includes(ctxInput.trim())) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                      }
-                      setCtxInput(String(n));
-                    }}
-                  />
-                  <ComboboxContent anchor={ctxAnchorRef}>
-                    <ComboboxEmpty>Enter a custom value</ComboboxEmpty>
-                    <ComboboxList className="p-1">
-                      {(id: string) => (
-                        <ComboboxItem key={id} value={id} className="font-mono">
-                          {Number(id).toLocaleString()}
-                        </ComboboxItem>
-                      )}
-                    </ComboboxList>
-                  </ComboboxContent>
-                </Combobox>
-              </div>
-            </Field>
+          <CoreParams />
 
-            <Field
-              label="Learning Rate"
-              tooltip={
-                <>
-                  Step size for weight updates. Lower values train slower but more
-                  stably.{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    Read more
-                  </a>
-                </>
-              }
-            >
-              <Input
-                type="number"
-                step="0.00001"
-                value={store.learningRate}
-                onChange={(e) => store.setLearningRate(Number(e.target.value))}
-                className="field-trigger field-soft field-pill w-full tabular-nums"
-              />
-            </Field>
-          </FieldGrid>
-
-          {/* Embedding Learning Rate (CPT only) */}
-          {isCpt && (
-            <Field
-              label="Embedding Learning Rate"
-              tooltip={
-                <>
-                  Only used when CPT is training <code>embed_tokens</code>.
-                  Embeddings are easier to destabilize than LoRA weights, so
-                  they usually need a smaller LR. Leave blank to use
-                  <code>lr/10</code>; typical working range is 2x-10x smaller
-                  than the main LR.
-                </>
-              }
-              hint="Leave blank to use lr/10 (recommended). Typical range is 2x-10x smaller than the main learning rate."
-            >
-              <Input
-                type="number"
-                step="0.00001"
-                min="0"
-                max="1"
-                placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
-                value={store.embeddingLearningRate ?? ""}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === "") {
-                    store.setEmbeddingLearningRate(null);
-                    return;
-                  }
-                  const n = Number(raw);
-                  store.setEmbeddingLearningRate(Number.isFinite(n) ? n : null);
-                }}
-                className="field-trigger field-soft field-pill w-full tabular-nums"
-              />
-            </Field>
-          )}
+          {isCpt && <EmbeddingLearningRateField />}
 
           {showAdvanced && (
             <>
-          {isLora && (
-            <Subsection
-              title="LoRA"
-              description="Low-rank adapter shape"
-              icon={Layers01Icon}
-              accent="#9b89d4"
-            >
-              <div className="flex flex-col gap-4">
-                  <FieldGrid cols={3}>
-                    <SliderField
-                      label="Rank"
-                      tooltip={
-                        <>
-                          Dimension of the low-rank matrices. Higher = more
-                          capacity.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                      value={store.loraRank}
-                      onChange={store.setLoraRank}
-                      min={4}
-                      max={128}
-                      step={4}
-                    />
-                    <SliderField
-                      label="Alpha"
-                      tooltip={
-                        <>
-                          Scaling factor for LoRA updates. Usually 2x rank.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                      value={store.loraAlpha}
-                      onChange={store.setLoraAlpha}
-                      min={4}
-                      max={256}
-                      step={4}
-                    />
-                    <SliderField
-                      label="Dropout"
-                      tooltip={
-                        <>
-                          Dropout probability for LoRA layers to reduce overfitting.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                      value={store.loraDropout}
-                      onChange={store.setLoraDropout}
-                      min={0}
-                      max={0.5}
-                      step={0.01}
-                      format={(v) => v.toFixed(2)}
-                    />
-                  </FieldGrid>
-
-                  {showVisionLora && (
-                    <Field label="Fine-tune">
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        {(
-                          [
-                            [
-                              "finetuneVisionLayers",
-                              "Vision layers",
-                              store.finetuneVisionLayers,
-                              store.setFinetuneVisionLayers,
-                            ],
-                            [
-                              "finetuneLanguageLayers",
-                              "Language layers",
-                              store.finetuneLanguageLayers,
-                              store.setFinetuneLanguageLayers,
-                            ],
-                            [
-                              "finetuneAttentionModules",
-                              "Attention modules",
-                              store.finetuneAttentionModules,
-                              store.setFinetuneAttentionModules,
-                            ],
-                            [
-                              "finetuneMLPModules",
-                              "MLP modules",
-                              store.finetuneMLPModules,
-                              store.setFinetuneMLPModules,
-                            ],
-                          ] as const
-                        ).map(([key, label, value, setter]) => (
-                          <div key={key} className="flex items-center gap-2">
-                            <Checkbox
-                              id={key}
-                              checked={value as boolean}
-                              onCheckedChange={(v) =>
-                                (setter as (v: boolean) => void)(!!v)
-                              }
-                            />
-                            <label
-                              htmlFor={key}
-                              className="cursor-pointer text-[12px] text-muted-foreground"
-                            >
-                              {label}
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    </Field>
-                  )}
-
-                  {!showVisionLora && (
-                    <Field label="Target Modules">
-                      <div className="flex flex-wrap gap-1.5">
-                        {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((mod) => {
-                          const active = store.targetModules.includes(mod);
-                          return (
-                            <button
-                              key={mod}
-                              type="button"
-                              onClick={() => {
-                                store.setTargetModules(
-                                  active
-                                    ? store.targetModules.filter((m) => m !== mod)
-                                    : [...store.targetModules, mod],
-                                );
-                              }}
-                              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-mono transition-colors ${
-                                active
-                                  ? "border-foreground/30 bg-foreground/[0.08] text-foreground"
-                                  : "border-border text-muted-foreground hover:bg-foreground/[0.04]"
-                              }`}
-                            >
-                              {mod}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </Field>
-                  )}
-
-                  <Field label="Variant">
-                    <div className="grid grid-cols-3 gap-2">
-                      {(
-                        [
-                          {
-                            value: "lora",
-                            label: "Enable LoRA",
-                            desc: "Train with LoRA",
-                          },
-                          { value: "rslora", label: "RS-LoRA", desc: "Stable Rank" },
-                          {
-                            value: "loftq",
-                            label: "LoftQ",
-                            desc: "Memory Efficient",
-                          },
-                        ] as const
-                      ).map((opt) => (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() => store.setLoraVariant(opt.value)}
-                          className={`corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
-                            store.loraVariant === opt.value
-                              ? "border-foreground/30 bg-foreground/[0.05] ring-1 ring-foreground/15"
-                              : "border-border hover:border-foreground/20"
-                          }`}
-                        >
-                          <p className="text-[12px] font-medium tracking-nav">
-                            {opt.label}
-                          </p>
-                          <p className="text-[10.5px] text-muted-foreground">
-                            {opt.desc}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  </Field>
-              </div>
-            </Subsection>
-          )}
-
-          <Subsection
-            title="Optimization"
-            description="Optimizer + batching + memory"
-            icon={FlashIcon}
-            accent="#d4a566"
-          >
-            <div className="flex flex-col gap-4">
-                  <FieldGrid cols={3}>
-                    <Field
-                      label="Optimizer"
-                      tooltip={
-                        <>
-                          Optimization algorithm. 8-bit variants reduce memory
-                          usage. Fused is recommended for vision models.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                    >
-                      <Select
-                        value={store.optimizerType}
-                        onValueChange={(v) => store.setOptimizerType(v)}
-                      >
-                        <SelectTrigger className="field-trigger field-soft w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {OPTIMIZER_OPTIONS.map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field
-                      label="LR Scheduler"
-                      tooltip={
-                        <>
-                          How the learning rate changes over training. Linear
-                          decays steadily; cosine decays in a curve.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                    >
-                      <Select
-                        value={store.lrSchedulerType}
-                        onValueChange={(v) => store.setLrSchedulerType(v)}
-                      >
-                        <SelectTrigger className="field-trigger field-soft w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {LR_SCHEDULER_OPTIONS.map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field
-                      label="Gradient Checkpointing"
-                      tooltip={
-                        <>
-                          Trade compute for memory by recomputing activations.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                    >
-                      <Select
-                        value={store.gradientCheckpointing}
-                        onValueChange={(v) =>
-                          store.setGradientCheckpointing(v as GradientCheckpointing)
-                        }
-                      >
-                        <SelectTrigger className="field-trigger field-soft w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">None</SelectItem>
-                          <SelectItem value="true">Standard</SelectItem>
-                          {platformDeviceType === "mac" ? (
-                            <SelectItem value="mlx">MLX</SelectItem>
-                          ) : (
-                            <SelectItem value="unsloth">Unsloth</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </FieldGrid>
-                  <FieldGrid cols={3}>
-                    <SliderField
-                      label="Batch Size"
-                      tooltip={
-                        <>
-                          Samples processed per step. Higher uses more VRAM.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                      value={store.batchSize}
-                      onChange={store.setBatchSize}
-                      min={1}
-                      max={32}
-                      step={1}
-                    />
-                    <SliderField
-                      label="Grad Accum"
-                      tooltip={
-                        <>
-                          Simulates larger batch sizes without extra VRAM.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                      value={store.gradientAccumulation}
-                      onChange={store.setGradientAccumulation}
-                      min={1}
-                      max={64}
-                      step={1}
-                    />
-                    <Field
-                      label="Weight Decay"
-                      tooltip={
-                        <>
-                          L2 regularization to prevent overfitting.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                    >
-                      <Input
-                        type="number"
-                        step="0.001"
-                        value={store.weightDecay}
-                        onChange={(e) =>
-                          store.setWeightDecay(Number(e.target.value))
-                        }
-                        className="field-trigger field-soft field-pill w-full tabular-nums"
-                      />
-                    </Field>
-                  </FieldGrid>
-                  {((!showVisionLora && !store.isEmbeddingModel) ||
-                    (!store.isEmbeddingModel && !isCpt && !isRawText)) && (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {!showVisionLora && !store.isEmbeddingModel && (
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            id="packing"
-                            checked={store.packing}
-                            onCheckedChange={(v) => store.setPacking(!!v)}
-                          />
-                          <label
-                            htmlFor="packing"
-                            className="cursor-pointer text-[12px] text-muted-foreground"
-                          >
-                            Enable packing
-                          </label>
-                        </div>
-                      )}
-                      {!store.isEmbeddingModel && !isCpt && !isRawText && (
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            id="trainOnCompletions"
-                            checked={store.trainOnCompletions}
-                            onCheckedChange={(v) =>
-                              store.setTrainOnCompletions(!!v)
-                            }
-                          />
-                          <label
-                            htmlFor="trainOnCompletions"
-                            className="cursor-pointer text-[12px] text-muted-foreground"
-                          >
-                            Assistant completions only
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                  )}
-            </div>
-          </Subsection>
-
-          <Subsection
-            title="Schedule & checkpoints"
-            description="LR warmup, eval, checkpoint cadence"
-            icon={Timer01Icon}
-            accent="#82a8c5"
-          >
-            <div className="flex flex-col gap-4">
-                  <SliderField
-                    label="Warmup Steps"
-                    tooltip={
-                      <>
-                        Gradually increase LR at training start for stability.{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline"
-                        >
-                          Read more
-                        </a>
-                      </>
-                    }
-                    value={store.warmupSteps}
-                    onChange={store.setWarmupSteps}
-                    min={0}
-                    max={100}
-                    step={1}
-                  />
-                  <FieldGrid cols={3}>
-                    <Field
-                      label="Save Steps"
-                      tooltip={
-                        <>
-                          Save a checkpoint every N steps. 0 to disable.{" "}
-                          <a
-                            href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline"
-                          >
-                            Read more
-                          </a>
-                        </>
-                      }
-                    >
-                      <Input
-                        type="number"
-                        value={store.saveSteps}
-                        onChange={(e) =>
-                          store.setSaveSteps(Number(e.target.value))
-                        }
-                        className="field-trigger field-soft field-pill w-full tabular-nums"
-                      />
-                    </Field>
-                    <Field
-                      label="Eval Steps"
-                      tooltip="Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps."
-                    >
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0.0"
-                        max="1.0"
-                        value={store.evalSteps}
-                        onChange={(e) =>
-                          store.setEvalSteps(Number(e.target.value))
-                        }
-                        className="field-trigger field-soft field-pill w-full tabular-nums"
-                      />
-                    </Field>
-                    <Field label="Seed" tooltip="Random seed for reproducibility.">
-                      <Input
-                        type="number"
-                        value={store.randomSeed}
-                        onChange={(e) =>
-                          store.setRandomSeed(Number(e.target.value))
-                        }
-                        className="field-trigger field-soft field-pill w-full tabular-nums"
-                      />
-                    </Field>
-                  </FieldGrid>
-            </div>
-          </Subsection>
-
+              {isLora && (
+                <LoraSection isCpt={isCpt} showVisionLora={showVisionLora} />
+              )}
+              <OptimizationSection
+                platformDeviceType={platformDeviceType}
+                showVisionLora={showVisionLora}
+                isEmbeddingModel={isEmbeddingModel}
+                isCpt={isCpt}
+                isRawText={isRawText}
+              />
+              <ScheduleSection />
             </>
           )}
         </div>

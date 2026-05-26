@@ -4,6 +4,7 @@
 import { datasetShortName, modelShortName, ownerOf } from "@/lib/format";
 import {
   useTrainingConfigStore,
+  useTrainingResourceNotices,
   useTrainingReadiness,
 } from "@/features/training";
 import {
@@ -13,8 +14,15 @@ import {
 import { useGpuInfo } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 function formatLearningRate(lr: number): string {
   if (!Number.isFinite(lr) || lr === 0) return "0";
@@ -42,6 +50,44 @@ function MetaRow({
         )}
       >
         {value}
+      </span>
+    </div>
+  );
+}
+
+function ResourceNoticeRow({
+  label,
+  status,
+  description,
+}: {
+  label: string;
+  status: "download" | "partial";
+  description: string;
+}): ReactElement {
+  return (
+    <div className="flex items-center justify-between gap-3 text-[11.5px]">
+      <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground/80">
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={`${label} availability details`}
+              className="inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/50 leading-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+            >
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                className="size-3"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[260px] leading-relaxed">
+            {description}
+          </TooltipContent>
+        </Tooltip>
+        {label}
+      </span>
+      <span className="truncate text-right text-foreground/80">
+        {status === "partial" ? "Continues on start" : "Downloads on start"}
       </span>
     </div>
   );
@@ -86,6 +132,7 @@ export function RunPreviewCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = !!hfToken && hfToken.trim().length > 0;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
+  const resourceNotices = useTrainingResourceNotices();
 
   const modelOwner = selectedModel ? ownerOf(selectedModel) : null;
   const modelName = selectedModel ? modelShortName(selectedModel) : null;
@@ -147,7 +194,7 @@ export function RunPreviewCard({
             )}
             title={selectedModel ?? undefined}
           >
-            {modelName ?? "Select a model"}
+            {modelName ?? "Model pending"}
           </p>
         </div>
         <div className="flex flex-col gap-1">
@@ -167,7 +214,7 @@ export function RunPreviewCard({
                 : (dataset ?? undefined)
             }
           >
-            {datasetName ?? "No dataset"}
+            {datasetName ?? "Dataset pending"}
             {hasDataset && datasetSource !== "upload" && datasetSplit ? (
               <span className="text-muted-foreground/70"> · {datasetSplit}</span>
             ) : null}
@@ -228,6 +275,22 @@ export function RunPreviewCard({
           value={hasToken ? "Connected" : "Not set"}
         />
       </section>
+
+      {resourceNotices.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <p className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-muted-foreground/60">
+            Files
+          </p>
+          {resourceNotices.map((notice) => (
+            <ResourceNoticeRow
+              key={`${notice.kind}:${notice.status}:${notice.id}`}
+              label={notice.kind === "model" ? "Model" : "Dataset"}
+              status={notice.status}
+              description={notice.description}
+            />
+          ))}
+        </section>
+      )}
 
       <div className="-mx-6 h-px bg-foreground/[0.07] dark:bg-white/[0.06]" />
 

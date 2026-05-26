@@ -21,10 +21,12 @@ import {
 import {
   getDatasetDownloadProgress,
   getDownloadProgress,
+  type DownloadProgressOptions,
   type DownloadProgressResponse,
-} from "@/features/chat/api/chat-api";
+} from "@/features/download-jobs";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
 import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
+import { getHfToken } from "@/stores/hf-token-store";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -80,7 +82,10 @@ function coerceCachedStateReady(state: DownloadState): DownloadState {
   };
 }
 
-type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
+type Fetcher = (
+  repoId: string,
+  options: DownloadProgressOptions,
+) => Promise<DownloadProgressResponse>;
 
 /**
  * Polls a HF repo's download progress on a 1.5s tick. Used for both
@@ -116,11 +121,15 @@ function useHfDownloadProgress(
     let cancelled = false;
     let finished = false;
     let interval: ReturnType<typeof setInterval> | null = null;
+    const abort = new AbortController();
 
     const poll = async () => {
       if (cancelled || finished) return;
       try {
-        const prog = await fetcher(repoId);
+        const prog = await fetcher(repoId, {
+          hfToken: getHfToken() || null,
+          signal: abort.signal,
+        });
         if (cancelled) return;
         const downloaded = prog.downloaded_bytes ?? 0;
         const total = prog.expected_bytes ?? 0;
@@ -150,6 +159,7 @@ function useHfDownloadProgress(
 
     return () => {
       cancelled = true;
+      abort.abort();
       if (interval) clearInterval(interval);
     };
   }, [repoId, shouldPoll, fetcher]);

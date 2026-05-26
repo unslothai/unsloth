@@ -113,6 +113,10 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.inference import get_inference_backend
+    from core.inference.load_settings import (
+        build_transformers_load_settings,
+        load_settings_match,
+    )
     from core.inference.llama_cpp import (
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
@@ -127,7 +131,7 @@ try:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import _env_offline, load_model_defaults
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -154,7 +158,7 @@ except ImportError:
     )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
-    from utils.models.model_config import load_model_defaults
+    from utils.models.model_config import _env_offline, load_model_defaults
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -529,6 +533,14 @@ def _resolve_model_identifier_for_request(
     operation: str,
 ) -> tuple[str, str, bool]:
     if not request.native_path_lease:
+        from routes.models import is_ollama_manifest_ref, materialize_ollama_model_ref
+
+        if is_ollama_manifest_ref(request.model_path):
+            try:
+                info = materialize_ollama_model_ref(request.model_path)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            return info.id, info.display_name, False
         return request.model_path, request.model_path, False
     try:
         grant = verify_native_path_lease(
@@ -544,6 +556,77 @@ def _resolve_model_identifier_for_request(
         grant.display_label or Path(request.model_path).name or "Native model"
     )
     return str(grant.canonical_path), display_label, True
+
+
+def _runtime_model_identifier(
+    request: LoadRequest | ValidateModelRequest,
+    resolved_identifier: str,
+) -> str:
+    from routes.models import is_ollama_manifest_ref
+
+    if is_ollama_manifest_ref(request.model_path):
+        return request.model_path
+    return resolved_identifier
+
+
+def _request_local_files_only(request: LoadRequest | ValidateModelRequest) -> bool:
+    return bool(request.local_files_only or request.local_path or _env_offline())
+
+
+def _chat_template_from_info(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        template = value.get("template")
+        return template if isinstance(template, str) else None
+    return None
+
+
+def _default_chat_template_for_model(model_info: dict[str, Any]) -> Optional[str]:
+    return _chat_template_from_info(
+        model_info.get("default_chat_template_info")
+    ) or _chat_template_from_info(model_info.get("chat_template_info"))
+
+
+def _active_chat_template_for_model(model_info: dict[str, Any]) -> Optional[str]:
+    return _chat_template_from_info(model_info.get("chat_template_info"))
+
+
+def _unsloth_load_response(
+    *,
+    status: str,
+    backend,
+    config: ModelConfig,
+    model_log_label: str,
+    native_grant_backed: bool,
+) -> LoadResponse:
+    active_model_name = backend.active_model_name or config.identifier
+    model_info = backend.models.get(active_model_name, {})
+    active_template = _active_chat_template_for_model(model_info)
+    flags = _detect_safetensors_features(backend, active_template)
+    inference_config = load_inference_config(active_model_name)
+    return LoadResponse(
+        status = status,
+        model = model_log_label if native_grant_backed else active_model_name,
+        display_name = model_log_label
+        if native_grant_backed
+        else model_info.get("display_name") or config.display_name,
+        is_vision = model_info.get("is_vision", config.is_vision),
+        is_lora = model_info.get("is_lora", config.is_lora),
+        is_gguf = False,
+        is_audio = model_info.get("is_audio", config.is_audio),
+        audio_type = model_info.get("audio_type", config.audio_type),
+        has_audio_input = model_info.get("has_audio_input", config.has_audio_input),
+        inference = inference_config,
+        requires_trust_remote_code = bool(
+            inference_config.get("trust_remote_code", False)
+        ),
+        supports_reasoning = flags["supports_reasoning"],
+        reasoning_style = flags["reasoning_style"],
+        reasoning_always_on = flags["reasoning_always_on"],
+        supports_preserve_thinking = flags["supports_preserve_thinking"],
+        supports_tools = flags["supports_tools"],
+        chat_template = _default_chat_template_for_model(model_info),
+        chat_template_override = model_info.get("chat_template_override"),
+    )
 
 
 # GGUF inference backend (llama-server)
@@ -587,6 +670,11 @@ async def load_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
+        runtime_model_identifier = _runtime_model_identifier(
+            request,
+            model_identifier,
+        )
+        local_files_only = _request_local_files_only(request)
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
@@ -600,7 +688,8 @@ async def load_model(
                 and llama_backend.hf_variant
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == model_identifier.lower()
+                and llama_backend.model_identifier.lower()
+                == runtime_model_identifier.lower()
                 # Also require runtime settings to match so Apply changes
                 # aren't silently dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
@@ -623,6 +712,7 @@ async def load_model(
                     else llama_backend.model_identifier,
                     display_name = model_log_label
                     if native_grant_backed
+                    or runtime_model_identifier != model_identifier
                     else llama_backend.model_identifier,
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
@@ -643,55 +733,9 @@ async def load_model(
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
+                    chat_template_override = llama_backend.chat_template_override,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
-                )
-        else:
-            if (
-                backend.active_model_name
-                and backend.active_model_name.lower() == model_identifier.lower()
-            ):
-                logger.info(
-                    f"Model already loaded (Unsloth): {model_log_label}, skipping reload"
-                )
-                inference_config = load_inference_config(backend.active_model_name)
-                _model_info = backend.models.get(backend.active_model_name, {})
-                _chat_template = None
-                try:
-                    _tpl_info = _model_info.get("chat_template_info", {})
-                    _chat_template = _tpl_info.get("template")
-                except Exception as e:
-                    logger.warning(
-                        f"Could not retrieve chat template for {backend.active_model_name}: {e}"
-                    )
-                # Classify via the same path as GGUF.
-                _sf_flags = _detect_safetensors_features(backend, _chat_template)
-                _sf_supports_reasoning = _sf_flags["supports_reasoning"]
-                _sf_reasoning_style = _sf_flags["reasoning_style"]
-                return LoadResponse(
-                    status = "already_loaded",
-                    model = model_log_label
-                    if native_grant_backed
-                    else backend.active_model_name,
-                    display_name = model_log_label
-                    if native_grant_backed
-                    else backend.active_model_name,
-                    is_vision = _model_info.get("is_vision", False),
-                    is_lora = _model_info.get("is_lora", False),
-                    is_gguf = False,
-                    is_audio = _model_info.get("is_audio", False),
-                    audio_type = _model_info.get("audio_type"),
-                    has_audio_input = _model_info.get("has_audio_input", False),
-                    inference = inference_config,
-                    requires_trust_remote_code = bool(
-                        inference_config.get("trust_remote_code", False)
-                    ),
-                    supports_reasoning = _sf_supports_reasoning,
-                    reasoning_style = _sf_reasoning_style,
-                    reasoning_always_on = _sf_flags["reasoning_always_on"],
-                    supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
-                    supports_tools = _sf_flags["supports_tools"],
-                    chat_template = _chat_template,
                 )
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
@@ -702,6 +746,9 @@ async def load_model(
                 model_id = model_identifier,
                 hf_token = request.hf_token,
                 gguf_variant = request.gguf_variant,
+                local_files_only = local_files_only,
+                local_path = request.local_path,
+                model_format = request.model_format,
             )
 
         if not config:
@@ -750,7 +797,7 @@ async def load_model(
                 same_source = bool(
                     source
                     and source[0]
-                    and source[0].lower() == model_identifier.lower()
+                    and source[0].lower() == runtime_model_identifier.lower()
                     and (source[1] or "").lower() == (resolved_variant or "").lower()
                 )
                 if not same_source:
@@ -758,7 +805,7 @@ async def load_model(
                         "Not inheriting llama_extra_args: stored args came "
                         "from %s, loading %s",
                         source,
-                        (model_identifier, resolved_variant),
+                        (runtime_model_identifier, resolved_variant),
                     )
                     # Cross-model: clear explicitly so the backend
                     # doesn't inherit via "no opinion" semantics.
@@ -811,7 +858,7 @@ async def load_model(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
-                    model_identifier = config.identifier,
+                    model_identifier = runtime_model_identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
@@ -835,7 +882,7 @@ async def load_model(
                     # is keyed off the same string the inheritance
                     # check at the top of /load uses (#5401 followup).
                     hf_variant = config.gguf_variant,
-                    model_identifier = config.identifier,
+                    model_identifier = runtime_model_identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
@@ -853,7 +900,7 @@ async def load_model(
                 )
 
             logger.info(
-                f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
+                f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else runtime_model_identifier}"
             )
 
             # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
@@ -876,9 +923,12 @@ async def load_model(
 
             return LoadResponse(
                 status = "loaded",
-                model = model_log_label if native_grant_backed else config.identifier,
+                model = model_log_label
+                if native_grant_backed
+                else runtime_model_identifier,
                 display_name = model_log_label
                 if native_grant_backed
+                or runtime_model_identifier != model_identifier
                 else config.display_name,
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
@@ -900,6 +950,7 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
+                chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
             )
@@ -975,6 +1026,33 @@ async def load_model(
                 except Exception as e:
                     logger.warning(f"Could not read adapter_config.json: {e}")
 
+        requested_load_settings = build_transformers_load_settings(
+            config = config,
+            max_seq_length = request.max_seq_length,
+            load_in_4bit = load_in_4bit,
+            trust_remote_code = request.trust_remote_code,
+            gpu_ids = effective_gpu_ids,
+            chat_template_override = request.chat_template_override,
+        )
+        if (
+            backend.active_model_name
+            and backend.active_model_name.lower() == config.identifier.lower()
+            and load_settings_match(
+                backend.models.get(backend.active_model_name, {}).get("load_settings"),
+                requested_load_settings,
+            )
+        ):
+            logger.info(
+                f"Model already loaded (Unsloth): {model_log_label}, skipping reload"
+            )
+            return _unsloth_load_response(
+                status = "already_loaded",
+                backend = backend,
+                config = config,
+                model_log_label = model_log_label,
+                native_grant_backed = native_grant_backed,
+            )
+
         # Load the model in a thread so the event loop stays free
         # for download progress polling and other requests.
         success = await asyncio.to_thread(
@@ -985,6 +1063,7 @@ async def load_model(
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
             gpu_ids = effective_gpu_ids,
+            chat_template_override = request.chat_template_override,
         )
 
         if not success:
@@ -1011,43 +1090,12 @@ async def load_model(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
         )
 
-        # Load inference configuration parameters
-        inference_config = load_inference_config(config.identifier)
-
-        # Get chat template from tokenizer
-        _chat_template = None
-        try:
-            _model_info = backend.models.get(config.identifier, {})
-            _tpl_info = _model_info.get("chat_template_info", {})
-            _chat_template = _tpl_info.get("template")
-        except Exception:
-            pass
-
-        # Classify reasoning/tool flags via the GGUF sniffer.
-        _sf_flags = _detect_safetensors_features(backend, _chat_template)
-
-        return LoadResponse(
+        return _unsloth_load_response(
             status = "loaded",
-            model = model_log_label if native_grant_backed else config.identifier,
-            display_name = model_log_label
-            if native_grant_backed
-            else config.display_name,
-            is_vision = config.is_vision,
-            is_lora = config.is_lora,
-            is_gguf = False,
-            is_audio = config.is_audio,
-            audio_type = config.audio_type,
-            has_audio_input = config.has_audio_input,
-            inference = inference_config,
-            requires_trust_remote_code = bool(
-                inference_config.get("trust_remote_code", False)
-            ),
-            supports_reasoning = _sf_flags["supports_reasoning"],
-            reasoning_style = _sf_flags["reasoning_style"],
-            reasoning_always_on = _sf_flags["reasoning_always_on"],
-            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
-            supports_tools = _sf_flags["supports_tools"],
-            chat_template = _chat_template,
+            backend = backend,
+            config = config,
+            model_log_label = model_log_label,
+            native_grant_backed = native_grant_backed,
         )
 
     except HTTPException:
@@ -1109,11 +1157,20 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
+        runtime_model_identifier = _runtime_model_identifier(
+            request,
+            model_identifier,
         )
+        local_files_only = _request_local_files_only(request)
+        with _hf_offline_if_dns_dead():
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+                local_files_only = local_files_only,
+                local_path = request.local_path,
+                model_format = request.model_format,
+            )
 
         if not config:
             raise HTTPException(
@@ -1124,9 +1181,12 @@ async def validate_model(
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
-            identifier = model_log_label if native_grant_backed else config.identifier,
+            identifier = model_log_label
+            if native_grant_backed
+            else runtime_model_identifier,
             display_name = model_log_label
             if native_grant_backed
+            or runtime_model_identifier != model_identifier
             else getattr(config, "display_name", config.identifier),
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
@@ -1411,15 +1471,11 @@ async def get_status(
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
-        chat_template_info = model_info.get("chat_template_info", {})
-        chat_template = (
-            chat_template_info.get("template")
-            if isinstance(chat_template_info, dict)
-            else None
-        )
+        active_chat_template = _active_chat_template_for_model(model_info)
+        default_chat_template = _default_chat_template_for_model(model_info)
 
         # Non-GGUF: classify from the loaded template.
-        _sf_flags = _detect_safetensors_features(backend, chat_template)
+        _sf_flags = _detect_safetensors_features(backend, active_chat_template)
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -1444,7 +1500,8 @@ async def get_status(
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
-            chat_template = chat_template,
+            chat_template = default_chat_template,
+            chat_template_override = model_info.get("chat_template_override"),
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
             llama_cpp_installed_tag = _installed_tag,

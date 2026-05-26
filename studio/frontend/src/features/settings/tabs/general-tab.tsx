@@ -15,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { TransportToggle } from "@/features/models/components/transport-toggle";
+import { TransportToggle } from "@/features/models";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useHfTokenStore } from "@/stores/hf-token-store";
 import { useNavigate, useRouterState } from "@tanstack/react-router";

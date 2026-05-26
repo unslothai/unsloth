@@ -7,6 +7,7 @@ import {
   safeNotificationLabel,
   sanitizeNotificationBody,
 } from "@/lib/native-notifications";
+import { notifyInventoryChanged } from "@/stores/inventory-events";
 import { useEffect } from "react";
 import {
   getTrainingMetrics,
@@ -94,6 +95,16 @@ function maybeNotifyTrainingTerminalTransition(
   }
 }
 
+function maybeBumpTrainingInventory(
+  before: TrainingRuntimeStore,
+  after: TrainingRuntimeStore,
+): void {
+  if (!after.jobId || !after.outputDir) return;
+  if (after.phase !== "completed" && after.phase !== "stopped") return;
+  if (before.jobId === after.jobId && before.phase === after.phase) return;
+  notifyInventoryChanged();
+}
+
 export function useTrainingRuntimeLifecycle(): void {
   useEffect(() => {
     let disposed = false;
@@ -150,6 +161,7 @@ export function useTrainingRuntimeLifecycle(): void {
         runtimeStore.getState().applyStatus(status);
 
         const nextState = runtimeStore.getState();
+        maybeBumpTrainingInventory(previousState, nextState);
         if (!options?.suppressNativeNotifications) {
           maybeNotifyTrainingTerminalTransition(previousState, nextState);
         }

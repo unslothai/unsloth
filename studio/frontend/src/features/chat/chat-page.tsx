@@ -1,35 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
-  type ModelSelectorChangeMeta,
   ModelSelector,
+  type ModelSelectorChangeMeta,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
+import { useSidebar } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
 import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
 import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
 import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
 import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
-import { isTauri } from "@/lib/api-base";
-import { cn } from "@/lib/utils";
+import { isGgufLike } from "@/lib/model-identifiers";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { useSidebar } from "@/components/ui/sidebar";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { isTauri } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { useInventoryVersion } from "@/stores/inventory-events";
 import {
   ColumnDeleteIcon,
   LayoutAlignRightIcon,
   LayoutTwoColumnIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type ReactElement,
   memo,
@@ -39,11 +45,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "@/lib/toast";
-import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
-import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
@@ -52,6 +55,20 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import {
+  clearTrainingCompareHandoff,
+  getTrainingCompareHandoff,
+} from "./lib/training-compare-handoff";
+import {
+  ggufVariantsMatch,
+  modelIdsMatch,
+} from "./model-config/model-identity";
+import { resolveInitialConfig } from "./model-config/per-model-config";
+import {
+  loadedRuntimeConfigMatches,
+} from "./model-runtime/per-model-load-config";
+import { applyPerModelConfigToRuntime } from "./model-runtime/apply-per-model-config";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -59,11 +76,6 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
-import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-import {
-  clearTrainingCompareHandoff,
-  getTrainingCompareHandoff,
-} from "./lib/training-compare-handoff";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
@@ -170,36 +182,52 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  modelFormat?: ModelSelectorChangeMeta["modelFormat"];
+  isDownloaded?: boolean;
+  isPartial?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+  expectedBytes?: number;
   config?: NonNullable<ModelSelectorChangeMeta["config"]>;
+  source?: ModelSelectorChangeMeta["source"];
 };
+
+function hasActiveChatStream(): boolean {
+  return Object.values(useChatRuntimeStore.getState().runningByThreadId).some(
+    Boolean,
+  );
+}
 
 function modelMatchesDeleted(
   model: { id: string; ggufVariant?: string | null },
   deletedModel?: DeletedModelRef,
 ): boolean {
-  if (!deletedModel || model.id !== deletedModel.id) return false;
+  if (!deletedModel || !modelIdsMatch(model.id, deletedModel.id)) return false;
   return (
     deletedModel.ggufVariant == null ||
-    (model.ggufVariant ?? null) === deletedModel.ggufVariant
+    ggufVariantsMatch(model.ggufVariant, deletedModel.ggufVariant)
   );
 }
 
 /**
- * Detect if this is a LoRA base-vs-fine-tuned compare.
- * Returns true when the loaded checkpoint is a LoRA — in that case
- * we use the fast simultaneous base/lora adapter-toggle path.
+ * Detect if this is a LoRA base-vs-fine-tuned compare. The decision is
+ * snapshot at mount: deleting the loaded LoRA from another tab must not
+ * flip the layout and unmount the in-progress compare pane.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
+function useInitialIsLoraCompare(): boolean {
+  const [initial] = useState(() => {
+    const s = useChatRuntimeStore.getState();
     const cp = s.params.checkpoint;
     const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
     return selected?.exportType === "lora";
   });
+  return initial;
 }
 
 const CompareContent = memo(function CompareContent({
   pairId,
   models,
+  localModels,
   loraModels,
   onFoldersChange,
   onModelsChange,
@@ -207,12 +235,13 @@ const CompareContent = memo(function CompareContent({
 }: {
   pairId: string;
   models: ModelOption[];
+  localModels: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const isLoraCompare = useInitialIsLoraCompare();
 
   return isLoraCompare ? (
     <LoraCompareContent pairId={pairId} />
@@ -220,6 +249,7 @@ const CompareContent = memo(function CompareContent({
     <GeneralCompareContent
       pairId={pairId}
       models={models}
+      localModels={localModels}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
@@ -388,6 +418,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
  */
 function GeneralCompareHeader({
   models,
+  localModels,
   loraModels,
   value,
   onValueChange,
@@ -397,6 +428,7 @@ function GeneralCompareHeader({
   side,
 }: {
   models: ModelOption[];
+  localModels: ModelOption[];
   loraModels: LoraModelOption[];
   value: string;
   onValueChange: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -414,6 +446,7 @@ function GeneralCompareHeader({
     >
       <ModelSelector
         models={models}
+        localModels={localModels}
         loraModels={loraModels}
         value={value}
         onValueChange={onValueChange}
@@ -431,6 +464,7 @@ function GeneralCompareHeader({
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
   models,
+  localModels,
   loraModels,
   onFoldersChange,
   onModelsChange,
@@ -438,6 +472,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 }: {
   pairId: string;
   models: ModelOption[];
+  localModels: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -449,10 +484,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const [model1, setModel1] = useState<CompareModelSelection>({
-    id: globalCheckpoint || "",
-    isLora: false,
-    ggufVariant: globalGgufVariant ?? undefined,
+  const [model1, setModel1] = useState<CompareModelSelection>(() => {
+    if (!globalCheckpoint) return { id: "", isLora: false };
+    return {
+      id: globalCheckpoint,
+      isLora: false,
+      ggufVariant: globalGgufVariant ?? undefined,
+      config: resolveInitialConfig(globalCheckpoint, globalGgufVariant).config,
+    };
   });
   const [model2, setModel2] = useState<CompareModelSelection>({
     id: "",
@@ -517,6 +556,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             <GeneralCompareHeader
               side="left"
               models={models}
+              localModels={localModels}
               loraModels={loraModels}
               value={model1.id}
               onValueChange={(id, meta) => {
@@ -524,7 +564,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  modelFormat: meta.modelFormat,
+                  isDownloaded: meta.isDownloaded,
+                  isPartial: meta.isPartial,
+                  preferLocalCache: meta.preferLocalCache,
+                  localPath: meta.localPath ?? null,
+                  expectedBytes: meta.expectedBytes,
                   config: meta.config,
+                  source: meta.source,
                 });
               }}
               onFoldersChange={onFoldersChange}
@@ -543,6 +590,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             <GeneralCompareHeader
               side="right"
               models={models}
+              localModels={localModels}
               loraModels={loraModels}
               value={model2.id}
               onValueChange={(id, meta) => {
@@ -550,7 +598,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  modelFormat: meta.modelFormat,
+                  isDownloaded: meta.isDownloaded,
+                  isPartial: meta.isPartial,
+                  preferLocalCache: meta.preferLocalCache,
+                  localPath: meta.localPath ?? null,
+                  expectedBytes: meta.expectedBytes,
                   config: meta.config,
+                  source: meta.source,
                 });
               }}
               onFoldersChange={onFoldersChange}
@@ -575,7 +630,10 @@ export function ChatPage(): ReactElement {
     (s) => s.connectionsEnabled,
   );
   const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
-  const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
+  const externalProvidersForChat = useMemo(
+    () => (connectionsEnabled ? externalProviders : []),
+    [connectionsEnabled, externalProviders],
+  );
 
   useEffect(() => {
     const threadId = search.thread;
@@ -609,7 +667,9 @@ export function ChatPage(): ReactElement {
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
-  const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatSearch | null>(
+    null,
+  );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -624,6 +684,8 @@ export function ChatPage(): ReactElement {
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
+  const rawInventoryVersion = useInventoryVersion();
+  const inventoryVersion = useDebouncedValue(rawInventoryVersion, 500);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
@@ -639,8 +701,7 @@ export function ChatPage(): ReactElement {
   } = useChatModelRuntime();
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
-    const turnedOff =
-      prevConnectionsEnabledRef.current && !connectionsEnabled;
+    const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
       clearCheckpoint();
       if (turnedOff) {
@@ -650,22 +711,19 @@ export function ChatPage(): ReactElement {
       }
     }
     prevConnectionsEnabledRef.current = connectionsEnabled;
-  }, [
-    clearCheckpoint,
-    connectionsEnabled,
-    inferenceParams.checkpoint,
-  ]);
+  }, [clearCheckpoint, connectionsEnabled, inferenceParams.checkpoint]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
   );
   const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
-  const selectModelRef = useRef(selectModel);
+  const seenInventoryVersionRef = useRef(inventoryVersion);
+  const handoffStartedRef = useRef(false);
 
   useEffect(() => {
     refreshRef.current = refresh;
-    selectModelRef.current = selectModel;
-  }, [refresh, selectModel]);
+  }, [refresh]);
+
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
@@ -673,17 +731,19 @@ export function ChatPage(): ReactElement {
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
   const activeExternalProvider = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
     return (
-      externalProvidersForChat.find(
-        (p) => p.id === selection.providerId,
-      ) ?? null
+      externalProvidersForChat.find((p) => p.id === selection.providerId) ??
+      null
     );
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
-  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
+  const activeExternalProviderType =
+    activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
@@ -785,7 +845,9 @@ export function ChatPage(): ReactElement {
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
-    const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled = loadOptionalBool(
+      CHAT_CODE_TOOLS_ENABLED_KEY,
+    );
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
         ? false
@@ -855,6 +917,8 @@ export function ChatPage(): ReactElement {
         id: label,
         nativePathToken: intent.path.token,
         isDownloaded: true,
+        modelFormat: "gguf",
+        source: "local",
         loadingDescription,
         forceReload: true,
         throwOnError: true,
@@ -902,19 +966,36 @@ export function ChatPage(): ReactElement {
   });
 
   const handleCheckpointChange = useCallback(
-    (
-      value: string,
-      meta?: ModelSelectorChangeMeta,
-    ) => {
+    (value: string, meta?: ModelSelectorChangeMeta) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       const sameModel =
-        value === currentCheckpoint &&
-        (meta?.ggufVariant ?? null) === (currentVariant ?? null);
+        modelIdsMatch(value, currentCheckpoint) &&
+        ggufVariantsMatch(meta?.ggufVariant, currentVariant);
       if (!value) return;
-      const forceReload = sameModel && meta?.config != null;
-      if (sameModel && !forceReload) return;
+      const forceReload =
+        sameModel &&
+        meta?.config != null &&
+        !loadedRuntimeConfigMatches({
+          state: store,
+          modelId: value,
+          ggufVariant: meta.ggufVariant ?? null,
+          config: meta.config,
+      });
+      if (sameModel && !forceReload) {
+        if (meta?.config) {
+          if (hasActiveChatStream()) {
+            toast.warning("Stop the active response first", {
+              description:
+                "Model settings are disabled while a reply is streaming.",
+            });
+            return;
+          }
+          applyPerModelConfigToRuntime(meta.config);
+        }
+        return;
+      }
       if (meta?.source === "external" || isExternalModelId(value)) {
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
@@ -926,8 +1007,7 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           {
-            isReasoningProvider:
-              selectedProvider?.isReasoningModel === true,
+            isReasoningProvider: selectedProvider?.isReasoningModel === true,
           },
         );
         const preferredEffort = store.reasoningEffort;
@@ -973,11 +1053,12 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
-        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
-          selectedProvider?.providerType,
-          selectedExternal?.modelId,
-          selectedProvider?.baseUrl,
-        );
+        const supportsBuiltinCodeExecution =
+          providerSupportsBuiltinCodeExecution(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+            selectedProvider?.baseUrl,
+          );
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
@@ -1004,6 +1085,7 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          activeModelLoadSource: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -1068,8 +1150,13 @@ export function ChatPage(): ReactElement {
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
+          modelFormat: meta?.modelFormat,
           isDownloaded: meta?.isDownloaded,
+          isPartial: meta?.isPartial,
+          preferLocalCache: meta?.preferLocalCache,
           expectedBytes: meta?.expectedBytes,
+          localPath: meta?.localPath ?? null,
+          source: meta?.source,
           forceReload,
           config: meta?.config,
         });
@@ -1117,15 +1204,15 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
-    viewBeforeCompareRef.current = { ...search };
+    setViewBeforeCompare({ ...search });
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
   }, [navigate, search]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
-    viewBeforeCompareRef.current = null;
+    const saved = viewBeforeCompare;
+    setViewBeforeCompare(null);
     if (!saved) {
       useChatRuntimeStore.getState().setActiveThreadId(null);
       useChatRuntimeStore.getState().setContextUsage(null);
@@ -1148,9 +1235,9 @@ export function ChatPage(): ReactElement {
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
-        });
+      });
     }
-  }, [navigate]);
+  }, [navigate, viewBeforeCompare]);
 
   const toggleCompare = useCallback(() => {
     if (view.mode === "compare") {
@@ -1218,7 +1305,7 @@ export function ChatPage(): ReactElement {
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
 
-  const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
+  const [localModels, setLocalModels] = useState<ModelOption[]>([]);
 
   const refreshLocalModels = useCallback(() => {
     void listLocalModels()
@@ -1228,28 +1315,51 @@ export function ChatPage(): ReactElement {
             .filter(
               (m) =>
                 m.source === "lmstudio" ||
+                m.source === "ollama" ||
                 m.source === "models_dir" ||
                 m.source === "custom",
             )
-            .map((m) => ({
-              id: m.id,
-              name:
-                m.source === "lmstudio" && m.model_id
-                  ? m.model_id
-                  : m.display_name,
-              baseModel:
-                m.source === "lmstudio"
-                  ? "External"
-                  : m.source === "custom"
-                    ? "Custom Folders"
-                    : "Local models",
-              updatedAt: m.updated_at ?? undefined,
-              source: "local" as const,
-            })),
+            .map((m) => {
+              const isOllama =
+                m.source === "ollama" ||
+                m.id.toLowerCase().startsWith("ollama-manifest:") ||
+                (m.model_id?.toLowerCase().startsWith("ollama/") ?? false);
+              const hasBackendFormat = m.model_format != null;
+              const isGguf = hasBackendFormat
+                ? m.model_format === "gguf"
+                : isOllama ||
+                  isGgufLike(m.path) ||
+                  isGgufLike(m.id) ||
+                  isGgufLike(m.display_name);
+              return {
+                id: m.load_id ?? m.id,
+                name: isOllama
+                  ? m.display_name
+                  : m.model_id?.trim() || m.display_name,
+                description:
+                  m.source === "lmstudio"
+                    ? "LM Studio"
+                    : isOllama
+                      ? "Ollama"
+                      : m.source === "hf_cache"
+                        ? "HF Cache"
+                        : m.source === "custom"
+                          ? "Custom folder"
+                          : "Local models",
+                isGguf,
+              };
+            }),
         );
       })
       .catch(() => {});
-  }, [navigate]);
+  }, []);
+
+  useEffect(() => {
+    if (seenInventoryVersionRef.current === inventoryVersion) return;
+    seenInventoryVersionRef.current = inventoryVersion;
+    void refreshRef.current();
+    refreshLocalModels();
+  }, [inventoryVersion, refreshLocalModels]);
 
   const refreshModelLists = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -1271,7 +1381,7 @@ export function ChatPage(): ReactElement {
   );
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
-    const fromLoras = lorasFromStore.map((lora) => ({
+    return lorasFromStore.map((lora) => ({
       id: lora.id,
       name: lora.name,
       baseModel: lora.baseModel,
@@ -1279,9 +1389,9 @@ export function ChatPage(): ReactElement {
       source: lora.source,
       exportType: lora.exportType,
       runDisplayName: lora.runDisplayName,
+      trainingMethod: lora.trainingMethod,
     }));
-    return [...fromLoras, ...localModels];
-  }, [lorasFromStore, localModels]);
+  }, [lorasFromStore]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
@@ -1290,8 +1400,10 @@ export function ChatPage(): ReactElement {
   }, [refresh, refreshLocalModels]);
 
   useEffect(() => {
+    if (handoffStartedRef.current) return;
     const handoff = getTrainingCompareHandoff();
     if (!handoff) return;
+    handoffStartedRef.current = true;
     console.info("[chat-handoff] received", handoff);
     function clearHandoff(): void {
       clearTrainingCompareHandoff();
@@ -1301,7 +1413,7 @@ export function ChatPage(): ReactElement {
     void (async () => {
       try {
         console.info("[chat-handoff] refreshing models+loras");
-        await refreshRef.current();
+        await refresh();
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
@@ -1311,7 +1423,7 @@ export function ChatPage(): ReactElement {
             id: targetLora.id,
             baseModel: targetLora.baseModel,
           });
-          await selectModelRef.current({ id: targetLora.id, isLora: true });
+          await selectModel({ id: targetLora.id, isLora: true });
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
@@ -1328,7 +1440,7 @@ export function ChatPage(): ReactElement {
           console.info("[chat-handoff] no lora match, loading base", {
             id: handoff.baseModel,
           });
-          await selectModelRef.current({
+          await selectModel({
             id: handoff.baseModel,
             isLora: false,
           });
@@ -1351,7 +1463,7 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [navigate, refresh, selectModel]);
 
   const tourSteps = useMemo(
     () =>
@@ -1409,6 +1521,7 @@ export function ChatPage(): ReactElement {
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
+                localModels={localModels}
                 loraModels={loraModels}
                 externalModels={externalModels}
                 value={inferenceParams.checkpoint}
@@ -1478,7 +1591,7 @@ export function ChatPage(): ReactElement {
               />
             ) : null}
             <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
+              <TooltipPrimitive.Trigger asChild={true}>
                 <button
                   type="button"
                   onClick={toggleCompare}
@@ -1512,7 +1625,7 @@ export function ChatPage(): ReactElement {
             </Tooltip>
             {!settingsOpen && (
               <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
+                <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
@@ -1550,6 +1663,7 @@ export function ChatPage(): ReactElement {
             key={view.pairId}
             pairId={view.pairId}
             models={models}
+            localModels={localModels}
             loraModels={loraModels}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}

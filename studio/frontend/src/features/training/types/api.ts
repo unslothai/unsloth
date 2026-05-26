@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/inventory";
+
 export interface TrainingStartRequest {
   model_name: string;
   training_type: string;
@@ -9,7 +11,12 @@ export interface TrainingStartRequest {
   max_seq_length: number;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  model_known_cached?: boolean;
+  model_local_path?: string | null;
+  model_format?: ModelInventoryFormat | null;
   hf_dataset: string | null;
+  dataset_known_cached?: boolean;
+  dataset_local_path?: string | null;
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;

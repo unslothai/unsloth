@@ -7,10 +7,12 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev-studio.mjs",
+    "dev:vite": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test:scripts": "node --test scripts/*.test.ts",
     "typecheck": "tsc -b --pretty false",
     "biome:check": "biome check .",
     "biome:fix": "biome check . --write"

@@ -29,8 +29,9 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = trained Studio outputs, including LoRA adapters and full finetunes.
+          This selects what’s loaded for inference. On Device = base models on
+          this machine. Train = trained Studio outputs, including LoRA adapters
+          and full finetunes.
         </>
       ),
     },
@@ -40,9 +41,9 @@ export function buildChatTourSteps({
       title: "Two tabs",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: local Studio outputs you’ve
-          trained or exported. If results look off, compare base vs fine-tuned
-          outputs to see what changed.
+          On Device: pick a base model already cached locally. Train: local
+          Studio outputs you’ve trained or exported. If results look off,
+          compare base vs trained outputs to see what changed.
         </>
       ),
       onEnter: openModelSelector,

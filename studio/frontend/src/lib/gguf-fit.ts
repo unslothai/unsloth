@@ -10,7 +10,7 @@
  * the chat picker can never disagree about the same file.
  */
 
-export type GgufFitClass = "fits" | "marginal" | "partial" | "oom";
+export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";
 
 export interface GgufFitInput {
   gpuGb?: number;
@@ -26,7 +26,7 @@ const CONTEXT_OVERHEAD_GB = 1.0;
 /** Conservative share of system RAM usable for CPU offload. */
 const RAM_OFFLOAD_USABLE_RATIO = 0.5;
 
-export function requiredGgufVramGb(
+export function requiredGgufMemoryGb(
   sizeBytes: number,
   contextOverheadGb = CONTEXT_OVERHEAD_GB,
 ): number {
@@ -38,8 +38,11 @@ export function classifyGgufFit(
   sizeBytes: number,
   { gpuGb, systemRamGb }: GgufFitInput,
 ): GgufFitClass {
-  if (!gpuGb || gpuGb <= 0) return "fits";
-  const required = requiredGgufVramGb(sizeBytes);
+  const required = requiredGgufMemoryGb(sizeBytes);
+  if (!gpuGb || gpuGb <= 0) {
+    const ramBudget = (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
+    return required <= ramBudget ? "ram" : "oom";
+  }
   const budget = gpuGb * VRAM_HEADROOM_RATIO;
   if (required <= budget) return "fits";
   if (required <= gpuGb) return "marginal";
@@ -51,7 +54,7 @@ export function classifyGgufFit(
 export type GgufFitTier = "fits" | "tight" | "oom";
 
 /**
- * Collapse the four-tier classification to the three states the chat picker
+ * Collapse the fit classification to the three states the chat picker
  * renders: anything that runs only by leaning on the last GB of VRAM or on CPU
  * offload reads as "tight".
  */

@@ -424,8 +424,13 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const currentCheckpoint = params.checkpoint;
+  const currentCheckpointLower = currentCheckpoint.toLowerCase();
+  const isGguf =
+    activeGgufVariant != null ||
+    currentCheckpointLower.endsWith(".gguf") ||
+    currentCheckpointLower.startsWith("ollama-manifest:");
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,

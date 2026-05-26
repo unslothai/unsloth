@@ -18,6 +18,8 @@ class CheckFormatRequest(BaseModel):
     hf_token: Optional[str] = None
     subset: Optional[str] = None
     train_split: Optional[str] = "train"
+    prefer_local_cache: bool = False
+    local_path: Optional[str] = None
 
     @model_validator(mode = "before")
     @classmethod
@@ -90,6 +92,7 @@ class LocalDatasetItem(BaseModel):
     id: str
     label: str
     path: str
+    source: Optional[str] = None
     rows: Optional[int] = None
     updated_at: Optional[float] = None
     metadata: Optional[Metadata] = None

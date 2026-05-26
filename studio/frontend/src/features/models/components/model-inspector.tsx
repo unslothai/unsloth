@@ -6,7 +6,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
+import {
+  type UnslothSupport,
+  classifyUnslothSupport,
+  useOnlineStatus,
+} from "@/hooks";
+import { formatBytes, formatRelativeShort } from "@/lib/format";
 import { cn, formatCompact } from "@/lib/utils";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import {
   Calendar03Icon,
   Copy01Icon,
@@ -25,28 +33,22 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
-import { DatasetDownloadSection } from "./dataset-download-section";
-import { LocalDatasetCard } from "./local-dataset-card";
-import { LocalOnDeviceCard } from "./local-on-device-card";
-import { ModelReadme } from "./model-readme";
-import { OwnerAvatar } from "./owner-avatar";
-import { CapabilityPill } from "./shared";
-import { DownloadSection, type InventoryHint } from "./download-section";
-import {
-  type DatasetSizeInfo,
-  fetchDatasetSize,
-} from "../lib/dataset-size";
-import { formatBytes, formatRelativeShort } from "@/lib/format";
+import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   formatLocalUpdated,
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
 import type { SelectedModelView } from "../types";
-import { type UnslothSupport, classifyUnslothSupport } from "@/hooks";
-import { usePlatformStore } from "@/config/env";
+import { DatasetDownloadSection } from "./dataset-download-section";
+import { DownloadSection, type InventoryHint } from "./download-section";
+import { LocalDatasetCard } from "./local-dataset-card";
+import { LocalOnDeviceCard } from "./local-on-device-card";
+import { ModelReadme } from "./model-readme";
+import { OwnerAvatar } from "./owner-avatar";
+import { CapabilityPill } from "./shared";
 
 function ViewRepositoryButton({
   repoId,
@@ -55,26 +57,38 @@ function ViewRepositoryButton({
   repoId: string;
   isDataset: boolean;
 }) {
+  const online = useOnlineStatus();
   const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
+  const baseClass =
+    "inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors";
+  const icon = (
+    <HugeiconsIcon icon={Share05Icon} strokeWidth={1.75} className="size-4" />
+  );
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="View repository"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <HugeiconsIcon
-            icon={Share05Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </a>
+      <TooltipTrigger asChild={true}>
+        {online ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View repository"
+            className={cn(baseClass, "hover:bg-muted hover:text-foreground")}
+          >
+            {icon}
+          </a>
+        ) : (
+          <span
+            aria-label="View repository unavailable offline"
+            aria-disabled="true"
+            className={cn(baseClass, "cursor-not-allowed opacity-45")}
+          >
+            {icon}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        Open on Hugging Face
+        {online ? "Open on Hugging Face" : "Unavailable offline"}
       </TooltipContent>
     </Tooltip>
   );
@@ -91,7 +105,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
 
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
+      <TooltipTrigger asChild={true}>
         <button
           type="button"
           aria-label="Copy repository ID"
@@ -123,7 +137,7 @@ function StatRow({
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
+      <TooltipTrigger asChild={true}>
         <span className="tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground/80">
           <HugeiconsIcon
             icon={icon}
@@ -139,8 +153,14 @@ function StatRow({
 }
 
 function StatGrid({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
+}
+
+function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">{children}</div>
+    <div className="shrink-0 pl-6 pr-10 pt-3 sm:pr-14 lg:pr-[4.5rem] xl:pr-[5.5rem]">
+      {children}
+    </div>
   );
 }
 
@@ -189,33 +209,33 @@ function ModelStatusChips({
   const showVram = !isDataset && vramInfo && !isGguf;
   if (!showUnsupported && !showVram) return null;
 
-  const vramTone = !vramInfo
-    ? "success"
-    : vramInfo.status === "exceeds"
+  const vramTone = vramInfo
+    ? vramInfo.status === "exceeds"
       ? "danger"
       : vramInfo.status === "tight"
         ? "warning"
-        : "success";
-  const vramLabel = !vramInfo
-    ? ""
-    : vramInfo.status === "exceeds"
+        : "success"
+    : "success";
+  const vramLabel = vramInfo
+    ? vramInfo.status === "exceeds"
       ? `Over VRAM budget · ~${vramInfo.est} GB`
       : vramInfo.status === "tight"
         ? `Tight fit · ~${vramInfo.est} GB`
-        : `Likely fits · ~${vramInfo.est} GB`;
-  const vramDetail = !vramInfo
-    ? ""
-    : vramInfo.status === "exceeds"
+        : `Likely fits · ~${vramInfo.est} GB`
+    : "";
+  const vramDetail = vramInfo
+    ? vramInfo.status === "exceeds"
       ? "A 4-bit load is likely to exceed the current GPU budget. Higher-precision loads need even more."
       : vramInfo.status === "tight"
         ? "A 4-bit load should fit, with limited headroom for context and activations."
-        : "A 4-bit load should fit comfortably on the current GPU.";
+        : "A 4-bit load should fit comfortably on the current GPU."
+    : "";
 
   return (
     <div className="mt-3 flex flex-wrap items-center gap-1.5">
       {showUnsupported && (
         <Tooltip>
-          <TooltipTrigger asChild>
+          <TooltipTrigger asChild={true}>
             <span tabIndex={0} className="inline-flex outline-none">
               <StatusChip tone="danger" label="May not be supported" />
             </span>
@@ -240,7 +260,7 @@ function ModelStatusChips({
       )}
       {showVram && vramInfo && (
         <Tooltip>
-          <TooltipTrigger asChild>
+          <TooltipTrigger asChild={true}>
             <span tabIndex={0} className="inline-flex outline-none">
               <StatusChip tone={vramTone} label={vramLabel} />
             </span>
@@ -261,27 +281,7 @@ function ModelStatusChips({
   );
 }
 
-export const ModelInspector = memo(function ModelInspector({
-  model,
-  isActive,
-  activeGgufVariant,
-  isLoadingThisModel,
-  loadingPhase,
-  minMemory,
-  vramInfo,
-  gpuGb,
-  systemRamGb,
-  onLoad,
-  onLoadLocal,
-  onUseInChat,
-  onTrain,
-  onInventoryChange,
-  isDataset = false,
-  metadataUnavailable = false,
-}: {
-  model: SelectedModelView | null;
-  isDataset?: boolean;
-  metadataUnavailable?: boolean;
+export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
@@ -293,44 +293,108 @@ export const ModelInspector = memo(function ModelInspector({
   } | null;
   gpuGb?: number;
   systemRamGb?: number;
+};
+
+export type ModelInspectorActions = {
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onLoadLocal: () => void;
+  onLoadLocal: (opts?: {
+    ggufVariant?: string;
+    expectedBytes?: number;
+  }) => void;
   onUseInChat: () => void;
   onTrain?: () => void;
   onInventoryChange?: (hint?: InventoryHint) => void;
+};
+
+export const ModelInspector = memo(function ModelInspector({
+  model,
+  runtime,
+  actions,
+  isDataset = false,
+  metadataUnavailable = false,
+  selectionHiddenByFilters = false,
+}: {
+  model: SelectedModelView | null;
+  isDataset?: boolean;
+  metadataUnavailable?: boolean;
+  selectionHiddenByFilters?: boolean;
+  runtime: ModelInspectorRuntime;
+  actions: ModelInspectorActions;
 }) {
+  const {
+    isActive,
+    activeGgufVariant,
+    isLoadingThisModel,
+    loadingPhase,
+    minMemory,
+    vramInfo,
+    gpuGb,
+    systemRamGb,
+  } = runtime;
+  const { onLoad, onLoadLocal, onUseInChat, onTrain, onInventoryChange } =
+    actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const datasetRepoId =
-    isDataset && model?.hubRepoId ? model.hubRepoId : null;
-  const datasetSizeKey = datasetRepoId ?? "";
-  const [datasetSizeState, setDatasetSizeState] = useState<{
-    key: string;
-    value: DatasetSizeInfo | null;
-  }>(() => ({ key: datasetSizeKey, value: null }));
-  const datasetSize =
-    datasetSizeState.key === datasetSizeKey ? datasetSizeState.value : null;
-  useEffect(() => {
-    if (!datasetRepoId) return;
-    let cancelled = false;
-    void fetchDatasetSize(datasetRepoId).then((res) => {
-      if (cancelled) return;
-      setDatasetSizeState({ key: datasetSizeKey, value: res });
+  const hfToken = useHfTokenStore((s) => s.token);
+  const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
+  const datasetSize = useDatasetSize(datasetRepoId, {
+    token: hfToken || undefined,
+  });
+  const readmeRepoId =
+    model?.hubRepoId ?? (isDataset ? null : model?.baseModelHubId);
+  const readmeSubject = isDataset
+    ? "dataset"
+    : model?.hubRepoId
+      ? "model"
+      : "baseModel";
+  const supportModelId =
+    model?.hubRepoId ??
+    model?.baseModelHubId ??
+    (model?.baseModelSource === "huggingface" ? model.baseModel : null);
+  const supportPipelineTag = model?.pipelineTag;
+  const supportTagsKey = model?.tags?.join("\0") ?? "";
+  const supportLibraryName = model?.libraryName;
+  const supportQuantMethod = model?.quantMethod;
+  const unslothSupport = useMemo<UnslothSupport>(() => {
+    return classifyUnslothSupport({
+      modelId: supportModelId,
+      pipelineTag: supportPipelineTag,
+      tags: supportTagsKey ? supportTagsKey.split("\0") : undefined,
+      libraryName: supportLibraryName,
+      deviceType,
+      quantMethod: supportQuantMethod,
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [datasetRepoId, datasetSizeKey]);
+  }, [
+    deviceType,
+    supportLibraryName,
+    supportModelId,
+    supportPipelineTag,
+    supportQuantMethod,
+    supportTagsKey,
+  ]);
 
   const descScrollRef = useRef<HTMLDivElement | null>(null);
-  const [descScrolled, setDescScrolled] = useState(false);
+  const descScrollKey = `${model?.id ?? ""}\0${readmeRepoId ?? ""}`;
+  const [descScrollState, setDescScrollState] = useState({
+    key: descScrollKey,
+    scrolled: false,
+  });
+  const descScrolled =
+    descScrollState.key === descScrollKey && descScrollState.scrolled;
   useEffect(() => {
     const el = descScrollRef.current;
     if (!el) return;
-    const onScroll = () => setDescScrolled(el.scrollTop > 0);
-    onScroll();
+    el.scrollTop = 0;
+    const onScroll = () => {
+      const scrolled = el.scrollTop > 0;
+      setDescScrollState((current) =>
+        current.key === descScrollKey && current.scrolled === scrolled
+          ? current
+          : { key: descScrollKey, scrolled },
+      );
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [model?.id]);
+  }, [descScrollKey]);
 
   if (!model) {
     return (
@@ -340,11 +404,12 @@ export const ModelInspector = memo(function ModelInspector({
         </div>
         <div className="space-y-1">
           <p className="text-[15px] font-semibold tracking-tight text-foreground">
-            Select a model
+            Select a {isDataset ? "dataset" : "model"}
           </p>
           <p className="max-w-sm text-[12.5px] leading-5 text-muted-foreground">
-            Choose an item from the catalog to inspect its runtime fit, download
-            state, and model card.
+            {isDataset
+              ? "Choose a dataset from the catalog to inspect its download state and details."
+              : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
           </p>
         </div>
       </div>
@@ -360,18 +425,15 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const unslothSupport = classifyUnslothSupport({
-    modelId: model.hubRepoId ?? model.id,
-    pipelineTag: model.pipelineTag,
-    tags: model.tags,
-    libraryName: model.libraryName,
-    deviceType,
-    quantMethod: model.quantMethod,
-  });
-
-  // Mirror the training picker's filter so a model the Hub flags as
-  // unsupported cannot be sent to Studio with a config that later fails.
   const trainingSupported = unslothSupport.status !== "unsupported";
+  const canRunModel =
+    !isDataset && (model.runtimeCapabilities?.canChat ?? true);
+  const canTrainModel =
+    !isDataset &&
+    (model.runtimeCapabilities?.canTrain ?? false) &&
+    model.modelFormat !== "gguf" &&
+    model.modelFormat !== "adapter" &&
+    trainingSupported;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -433,43 +495,56 @@ export const ModelInspector = memo(function ModelInspector({
             <CapabilityPill key={capability.key} capability={capability} />
           ))}
         </div>
-
       </div>
 
       {isDataset && model.hubRepoId && !model.isLocal && (
-        <div className="shrink-0 px-6 pt-3">
+        <InspectorDownloadSlot>
           <DatasetDownloadSection
             repoId={model.hubRepoId}
             isDownloaded={model.isDownloaded}
             isPartial={model.isPartial ?? false}
             cachePath={model.path}
+            knownBytes={model.cachedBytes}
             onTrain={onTrain}
             onChange={onInventoryChange}
           />
-        </div>
+        </InspectorDownloadSlot>
       )}
       {isDataset && model.isLocal && model.path && (
-        <div className="shrink-0 px-6 pt-3">
+        <InspectorDownloadSlot>
           <LocalDatasetCard
             sourceLabel={model.sourceLabel}
             source={model.localSource ?? "custom"}
             path={model.path}
             onTrain={onTrain}
           />
-        </div>
+        </InspectorDownloadSlot>
       )}
       {!isDataset && (
-        <div className="shrink-0 px-6 pt-3">
+        <InspectorDownloadSlot>
           {model.isLocal ? (
             <LocalOnDeviceCard
+              modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
               source={model.localSource ?? "custom"}
               path={model.path ?? model.displayId}
               isGguf={model.isGguf}
+              requiresVariant={model.requiresVariant}
+              modelFormat={model.modelFormat}
+              baseModel={model.baseModel}
+              baseModelSource={model.baseModelSource}
+              baseModelHubId={model.baseModelHubId}
+              baseModelSummary={model.baseModelSummary}
+              adapterType={model.adapterType}
+              trainingMethod={model.trainingMethod}
+              canRun={canRunModel}
               isActive={isActive}
+              activeGgufVariant={activeGgufVariant}
               isLoading={isLoadingThisModel}
               loadingPhase={loadingPhase}
+              gpuGb={gpuGb}
+              systemRamGb={systemRamGb}
               unsupportedReason={
                 unslothSupport.status === "unsupported"
                   ? (unslothSupport.reason ?? "Unsupported format")
@@ -477,7 +552,9 @@ export const ModelInspector = memo(function ModelInspector({
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
-              onTrain={!model.isGguf && trainingSupported ? onTrain : undefined}
+              onTrain={
+                model.isDownloaded && canTrainModel ? onTrain : undefined
+              }
               onChange={onInventoryChange}
             />
           ) : (
@@ -486,22 +563,32 @@ export const ModelInspector = memo(function ModelInspector({
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
+              modelFormat={model.modelFormat}
+              canRun={canRunModel}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
               cachePath={model.path}
+              knownBytes={model.cachedBytes}
               onLoad={onLoad}
               onUseInChat={onUseInChat}
-              onTrain={trainingSupported ? onTrain : undefined}
+              onTrain={
+                model.isDownloaded && canTrainModel ? onTrain : undefined
+              }
               onChange={onInventoryChange}
             />
           )}
-        </div>
+        </InspectorDownloadSlot>
       )}
 
       <div className="shrink-0 px-6 pb-5 pt-5">
+        {selectionHiddenByFilters && (
+          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-muted-foreground">
+            Current selection is hidden by the active filters or search.
+          </p>
+        )}
         {metadataUnavailable && (
           <p className="mb-3 text-[11.5px] leading-snug text-muted-foreground">
             Couldn't load full details from Hugging Face. Some fields may be
@@ -509,11 +596,7 @@ export const ModelInspector = memo(function ModelInspector({
           </p>
         )}
         <StatGrid>
-          <StatRow
-            label="Updated"
-            value={updatedLabel}
-            icon={Calendar03Icon}
-          />
+          <StatRow label="Updated" value={updatedLabel} icon={Calendar03Icon} />
           <StatRow
             label="Downloads"
             value={
@@ -531,11 +614,7 @@ export const ModelInspector = memo(function ModelInspector({
             icon={FavouriteIcon}
           />
           {!isDataset && (
-            <StatRow
-              label="Parameters"
-              value={paramsLabel}
-              icon={CpuIcon}
-            />
+            <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
           )}
           {!isDataset && (
             <StatRow
@@ -558,13 +637,15 @@ export const ModelInspector = memo(function ModelInspector({
               icon={PackageIcon}
             />
           )}
-          {isDataset && datasetSize?.numSplits != null && datasetSize.numSplits > 0 && (
-            <StatRow
-              label="Splits"
-              value={String(datasetSize.numSplits)}
-              icon={LayersLogoIcon}
-            />
-          )}
+          {isDataset &&
+            datasetSize?.numSplits != null &&
+            datasetSize.numSplits > 0 && (
+              <StatRow
+                label="Splits"
+                value={String(datasetSize.numSplits)}
+                icon={LayersLogoIcon}
+              />
+            )}
           {isDataset && languages.length > 0 && (
             <StatRow
               label="Languages"
@@ -576,11 +657,7 @@ export const ModelInspector = memo(function ModelInspector({
               icon={Globe02Icon}
             />
           )}
-          <StatRow
-            label="License"
-            value={licenseLabel}
-            icon={LicenseIcon}
-          />
+          <StatRow label="License" value={licenseLabel} icon={LicenseIcon} />
         </StatGrid>
         <ModelStatusChips
           isDataset={isDataset}
@@ -600,12 +677,14 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div
         ref={descScrollRef}
+        data-hub-scroll="true"
         className="min-h-0 flex-1 space-y-4 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
-        {model.hubRepoId && (
+        {readmeRepoId && (
           <ModelReadme
-            repoId={model.hubRepoId}
+            repoId={readmeRepoId}
             kind={isDataset ? "dataset" : "model"}
+            subject={readmeSubject}
           />
         )}
       </div>

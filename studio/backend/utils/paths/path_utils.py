@@ -159,12 +159,14 @@ def is_local_path(path: str) -> bool:
 
 def get_cache_path(model_name: str) -> Optional[Path]:
     """Get HuggingFace cache path for a model if it exists."""
-    cache_dir = _hf_hub_cache_dir()
     resolved_name = resolve_cached_repo_id_case(model_name)
     model_cache_name = resolved_name.replace("/", "--")
-    model_cache_path = cache_dir / f"models--{model_cache_name}"
 
-    return model_cache_path if model_cache_path.exists() else None
+    for cache_dir in _hf_hub_cache_dirs():
+        model_cache_path = cache_dir / f"models--{model_cache_name}"
+        if model_cache_path.exists():
+            return model_cache_path
+    return None
 
 
 def is_model_cached(model_name: str) -> bool:
@@ -195,6 +197,32 @@ def _hf_hub_cache_dir() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _hf_hub_cache_dirs() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key in seen or not resolved.is_dir():
+            return
+        seen.add(key)
+        roots.append(resolved)
+
+    _add(_hf_hub_cache_dir())
+    try:
+        from .storage_roots import hf_default_cache_dir, legacy_hf_cache_dir
+
+        _add(legacy_hf_cache_dir())
+        _add(hf_default_cache_dir())
+    except Exception as exc:
+        logger.debug("Could not enumerate secondary HF cache roots: %s", exc)
+    return roots
+
+
 def resolve_cached_repo_id_case(
     model_name: str,
     use_memo: bool = True,
@@ -215,8 +243,8 @@ def resolve_cached_repo_id_case(
         _bump_stat("fallbacks")
         return model_name
 
-    cache_dir = _hf_hub_cache_dir()
-    if not cache_dir.exists():
+    cache_dirs = _hf_hub_cache_dirs()
+    if not cache_dirs:
         _bump_stat("fallbacks")
         return model_name
 
@@ -226,20 +254,23 @@ def resolve_cached_repo_id_case(
 
     # Always check the exact-case path first so a newly-appeared exact match
     # wins over any previously memoized variant.
-    exact_path = cache_dir / expected_dir
-    if exact_path.is_dir():
-        if use_memo:
-            _memo_set(memo_key, model_name)
-        _bump_stat("exact_hits")
-        return model_name
+    for cache_dir in cache_dirs:
+        exact_path = cache_dir / expected_dir
+        if exact_path.is_dir():
+            if use_memo:
+                _memo_set(memo_key, model_name)
+            _bump_stat("exact_hits")
+            return model_name
 
     # Validate memoized entries still exist on disk before returning them.
     # This prevents stale results when cache dirs are deleted/recreated.
     if use_memo:
         cached = _memo_get(memo_key)
         if cached is not None:
-            cached_path = cache_dir / f"{prefix}{cached.replace('/', '--')}"
-            if cached_path.is_dir():
+            if any(
+                (cache_dir / f"{prefix}{cached.replace('/', '--')}").is_dir()
+                for cache_dir in cache_dirs
+            ):
                 _bump_stat("memo_hits")
                 return cached
             # Stale entry -- drop it and re-scan below.
@@ -247,18 +278,19 @@ def resolve_cached_repo_id_case(
 
     expected_lower = expected_dir.lower()
     try:
-        candidates: list[str] = []
-        for entry in cache_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            if entry.name.lower() != expected_lower:
-                continue
-            if not entry.name.startswith(prefix):
-                continue
-            repo_part = entry.name[len(prefix) :]
-            if not repo_part:
-                continue
-            candidates.append(repo_part.replace("--", "/"))
+        candidates: set[str] = set()
+        for cache_dir in cache_dirs:
+            for entry in cache_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                if entry.name.lower() != expected_lower:
+                    continue
+                if not entry.name.startswith(prefix):
+                    continue
+                repo_part = entry.name[len(prefix) :]
+                if not repo_part:
+                    continue
+                candidates.add(repo_part.replace("--", "/"))
 
         if candidates:
             # Deterministic tie-break if multiple case variants coexist.

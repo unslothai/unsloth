@@ -8,6 +8,13 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+const restrictFeatureImports = (patterns) => [
+  "error",
+  {
+    patterns: patterns.map(({ group, message }) => ({ group, message })),
+  },
+];
+
 export default defineConfig([
   globalIgnores(["dist", "**/._*"]),
   {
@@ -28,24 +35,42 @@ export default defineConfig([
         "warn",
         { allowConstantExport: true },
       ],
-      // Import restrictions for architecture enforcement
-      "no-restricted-imports": [
-        "error",
+    },
+  },
+  {
+    files: ["src/features/chat/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": restrictFeatureImports([
         {
-          patterns: [
-            // Prevent cross-feature imports
-            {
-              group: ["@/features/*/*"],
-              message: "Import from feature index only: @/features/[name]",
-            },
-            // Prevent app layer from importing features internals
-            {
-              group: ["../features/*/**"],
-              message: "Use absolute imports: @/features/[name]",
-            },
-          ],
+          group: ["@/features/models", "@/features/models/**"],
+          message:
+            "Chat must use shared lib/inventory/download modules instead of depending on Hub.",
         },
-      ],
+      ]),
+    },
+  },
+  {
+    files: ["src/features/training/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": restrictFeatureImports([
+        {
+          group: ["@/features/models", "@/features/models/**"],
+          message:
+            "Training must use shared lib/inventory/download modules instead of depending on Hub.",
+        },
+      ]),
+    },
+  },
+  {
+    files: ["src/features/models/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": restrictFeatureImports([
+        {
+          group: ["@/features/chat/**", "@/features/training/**"],
+          message:
+            "Hub may use public feature indexes only; shared primitives belong in lib/inventory/download modules.",
+        },
+      ]),
     },
   },
 ]);

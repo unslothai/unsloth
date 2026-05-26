@@ -449,3 +449,19 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
     assert flags["supports_preserve_thinking"] is True
+
+
+def test_route_template_helpers_keep_default_and_active_override_separate():
+    from routes.inference import (
+        _active_chat_template_for_model,
+        _default_chat_template_for_model,
+    )
+
+    model_info = {
+        "default_chat_template_info": {"template": "default-template"},
+        "chat_template_info": {"template": "override-template"},
+        "chat_template_override": "override-template",
+    }
+
+    assert _default_chat_template_for_model(model_info) == "default-template"
+    assert _active_chat_template_for_model(model_info) == "override-template"

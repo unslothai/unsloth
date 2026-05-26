@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/inventory";
 import type {
   DatasetFormat,
   DatasetSource,
@@ -71,11 +72,17 @@ export interface TrainingConfigState {
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
+  modelDefaultsAppliedKey: string | null;
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   datasetCheckFailed: boolean;
+  datasetMetadataStale: boolean;
+  modelKnownCached: boolean;
+  modelLocalPath: string | null;
+  modelFormat: ModelInventoryFormat | null;
   datasetKnownCached: boolean;
+  datasetLocalPath: string | null;
   trustRemoteCode: boolean;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
@@ -83,6 +90,12 @@ export interface TrainingConfigState {
   finetuneMLPModules: boolean;
   targetModules: string[];
   maxPositionEmbeddings: number | null;
+  trainOnCompletionsManuallySet: boolean;
+  learningRateManuallySet: boolean;
+  trainingMethodManuallySet: boolean;
+  yamlLearningRate: number | undefined;
+  datasetFormatBeforeCpt: DatasetFormat | null;
+  datasetFormatAutoForcedByCpt: boolean;
 }
 
 export interface TrainingConfigActions {
@@ -90,15 +103,31 @@ export interface TrainingConfigActions {
   nextStep: () => void;
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
-  setSelectedModel: (model: string | null) => void;
-  selectTrainingModel: (model: string, type: ModelType) => void;
+  setSelectedModel: (
+    model: string | null,
+    options?: {
+      knownCached?: boolean;
+      localPath?: string | null;
+      modelFormat?: ModelInventoryFormat | null;
+    },
+  ) => void;
+  selectTrainingModel: (
+    model: string,
+    type: ModelType,
+    options?: {
+      knownCached?: boolean;
+      localPath?: string | null;
+      modelFormat?: ModelInventoryFormat | null;
+      preserveTrainingDraft?: boolean;
+    },
+  ) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
   setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (
     dataset: string | null,
-    opts?: { knownCached?: boolean },
+    options?: { knownCached?: boolean; localPath?: string | null },
   ) => void;
   selectLocalDataset: (file: string | null) => void;
   setDatasetFormat: (format: DatasetFormat) => void;
@@ -149,6 +178,21 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  clearSelectedDatasetCacheReference: (
+    dataset: string,
+    localPath?: string | null,
+  ) => void;
+  clearSelectedModelCacheReference: (
+    model: string,
+    localPath?: string | null,
+  ) => void;
+  setSelectedModelCacheReference: (
+    model: string,
+    options: {
+      localPath?: string | null;
+      modelFormat?: ModelInventoryFormat | null;
+    },
+  ) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

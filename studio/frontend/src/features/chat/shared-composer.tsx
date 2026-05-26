@@ -12,11 +12,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import type { ModelInventoryFormat } from "@/features/inventory";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { modelShortName } from "@/lib/format";
-import { isMultimodalResponse } from "./types/api";
+import {
+  ggufVariantsMatch,
+  modelIdsMatch,
+} from "./model-config/model-identity";
 import type { PerModelConfig } from "./model-config/per-model-config";
+import { hydrateRuntimeFromLoadResponse } from "./model-runtime/load-hydration";
+import { loadedRuntimeConfigMatches } from "./model-runtime/per-model-load-config";
+import {
+  shouldLoadFromLocalFilesOnly,
+  type LocalModelLoadSource,
+} from "./model-runtime/local-files-only";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
@@ -61,7 +71,7 @@ export interface CompareHandle {
   cancel: () => void;
   isRunning: () => boolean;
   /** Returns a promise that resolves when the current or next run finishes. */
-  waitForRunEnd: () => Promise<void>;
+  waitForRunEnd: (signal?: AbortSignal) => Promise<void>;
 }
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
@@ -69,6 +79,36 @@ const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
+}
+
+function createAbortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: string } | null)?.name === "AbortError";
+}
+
+function hasRunningThreads(
+  state = useChatRuntimeStore.getState(),
+): boolean {
+  return Object.keys(state.runningByThreadId).length > 0;
+}
+
+async function startRunAndWait(
+  handle: CompareHandle,
+  controller: AbortController,
+): Promise<void> {
+  if (controller.signal.aborted) throw createAbortError();
+  const done = handle.waitForRunEnd(controller.signal);
+  try {
+    handle.startRun();
+  } catch (err) {
+    controller.abort();
+    await done.catch(() => undefined);
+    throw err;
+  }
+  await done;
 }
 
 // Mirrors the threshold in thread.tsx — see the comment there. Chrome on
@@ -203,6 +243,7 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const abortWaiters = new Set<() => void>();
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -216,20 +257,54 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
-      waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
-          let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
-              resolve();
+      waitForRunEnd: (signal) =>
+        new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(createAbortError());
+            return;
+          }
+
+          let wasRunning = hasRunningThreads();
+          let settled = false;
+          let unsub: (() => void) | null = null;
+
+          function cleanup() {
+            unsub?.();
+            unsub = null;
+            signal?.removeEventListener("abort", rejectAbort);
+            abortWaiters.delete(rejectAbort);
+          }
+
+          function settle(finish: () => void) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            finish();
+          }
+
+          function rejectAbort() {
+            settle(() => reject(createAbortError()));
+          }
+
+          function check(state = useChatRuntimeStore.getState()) {
+            const anyRunning = hasRunningThreads(state);
+            if (anyRunning) {
+              wasRunning = true;
+              return;
             }
-          });
+            if (wasRunning) {
+              settle(() => resolve());
+            }
+          }
+
+          abortWaiters.add(rejectAbort);
+          signal?.addEventListener("abort", rejectAbort, { once: true });
+          unsub = useChatRuntimeStore.subscribe((state) => check(state));
+          check();
         }),
     };
     return () => {
+      for (const abort of Array.from(abortWaiters)) abort();
       delete currentHandles[name];
     };
   }, [handlesRef, name, aui]);
@@ -272,7 +347,14 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  modelFormat?: ModelInventoryFormat | null;
+  isDownloaded?: boolean;
+  isPartial?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+  expectedBytes?: number;
   config?: PerModelConfig;
+  source?: LocalModelLoadSource;
 };
 
 export function SharedComposer({
@@ -285,7 +367,6 @@ export function SharedComposer({
   model2?: CompareModelSelection;
 }): ReactElement {
   const [text, setText] = useState("");
-  const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
@@ -296,7 +377,12 @@ export function SharedComposer({
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const compareAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
+  const running = useChatRuntimeStore((s) =>
+    Object.keys(s.runningByThreadId).length > 0,
+  );
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
@@ -431,13 +517,13 @@ export function SharedComposer({
   );
 
   useEffect(() => {
-    const id = setInterval(() => {
-      const handles = handlesRef.current;
-      const any = Object.values(handles).some((h) => h.isRunning());
-      setRunning(any);
-    }, 200);
-    return () => clearInterval(id);
-  }, [handlesRef]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      compareAbortRef.current?.abort();
+      compareAbortRef.current = null;
+    };
+  }, []);
 
   // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
   useEffect(() => {
@@ -589,6 +675,7 @@ export function SharedComposer({
         cacheTypeKv: string | null;
         speculativeType: string | null;
         specDraftNMax: number | null;
+        customContextLength: number | null;
       } {
         const config = sel.config;
         const trustRemoteCode = config?.trustRemoteCode ?? false;
@@ -597,9 +684,12 @@ export function SharedComposer({
           trimmedTemplate && trimmedTemplate.length > 0
             ? (config?.chatTemplateOverride ?? null)
             : null;
+        const lowerSelectionId = sel.id.toLowerCase();
         const isGgufLoad =
+          sel.modelFormat === "gguf" ||
           (sel.ggufVariant ?? null) !== null ||
-          sel.id.toLowerCase().endsWith(".gguf");
+          lowerSelectionId.endsWith(".gguf") ||
+          lowerSelectionId.startsWith("ollama-manifest:");
         const customContextLength = config?.customContextLength ?? null;
         const maxSeqLength =
           isGgufLoad && customContextLength != null
@@ -614,16 +704,56 @@ export function SharedComposer({
           cacheTypeKv: config?.kvCacheDtype ?? null,
           speculativeType: config?.speculativeType ?? null,
           specDraftNMax: config?.specDraftNMax ?? null,
+          customContextLength,
         };
+      }
+
+      function runtimeMatchesSelectionLoad(sel: CompareModelSelection): boolean {
+        return loadedRuntimeConfigMatches({
+          state: useChatRuntimeStore.getState(),
+          modelId: sel.id,
+          ggufVariant: sel.ggufVariant ?? null,
+          config: sel.config,
+        });
+      }
+
+      function applySelectionLoadToRuntime(
+        load: ReturnType<typeof resolveSelectionLoad>,
+      ): void {
+        const current = useChatRuntimeStore.getState();
+        useChatRuntimeStore.setState({
+          kvCacheDtype: load.cacheTypeKv,
+          speculativeType: load.speculativeType,
+          specDraftNMax: load.specDraftNMax,
+          customContextLength: load.customContextLength,
+          chatTemplateOverride: load.chatTemplateOverride,
+        });
+        current.setParams({
+          ...current.params,
+          trustRemoteCode: load.trustRemoteCode,
+        });
       }
 
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
-          currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+          modelIdsMatch(currentStore.params.checkpoint, sel.id) &&
+          ggufVariantsMatch(currentStore.activeGgufVariant, sel.ggufVariant);
         const load = resolveSelectionLoad(sel);
-        if (!isAlreadyActive) {
+        const shouldLoad = !isAlreadyActive || !runtimeMatchesSelectionLoad(sel);
+        const localFilesOnly = shouldLoadFromLocalFilesOnly({
+          modelId: sel.id,
+          isCachedLora:
+            sel.isLora && (sel.source !== "hub" || Boolean(sel.localPath)),
+          selection: sel,
+        });
+        const localPath = localFilesOnly ? (sel.localPath ?? null) : null;
+        if (!shouldLoad) {
+          applySelectionLoadToRuntime(load);
+          return "already loaded";
+        }
+        const stateBeforeLoad = useChatRuntimeStore.getState();
+        if (shouldLoad) {
           const validation = await validateModel({
             model_path: sel.id,
             hf_token: getHfToken() || null,
@@ -631,8 +761,14 @@ export function SharedComposer({
             load_in_4bit: true,
             is_lora: sel.isLora,
             gguf_variant: sel.ggufVariant ?? null,
+            model_format: sel.modelFormat ?? null,
+            local_files_only: localFilesOnly,
+            local_path: localPath,
             trust_remote_code: load.trustRemoteCode,
             chat_template_override: load.chatTemplateOverride,
+            cache_type_kv: load.cacheTypeKv,
+            speculative_type: load.speculativeType,
+            spec_draft_n_max: load.specDraftNMax,
           });
           if (validation.requires_trust_remote_code && !load.trustRemoteCode) {
             throw new Error(
@@ -647,32 +783,31 @@ export function SharedComposer({
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
+          model_format: sel.modelFormat ?? null,
+          local_files_only: localFilesOnly,
+          local_path: localPath,
           trust_remote_code: load.trustRemoteCode,
           chat_template_override: load.chatTemplateOverride,
           cache_type_kv: load.cacheTypeKv,
           speculative_type: load.speculativeType,
           spec_draft_n_max: load.specDraftNMax,
         });
-        const store = useChatRuntimeStore.getState();
-        store.setCheckpoint(
-          resp.model,
-          resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
-        );
-        store.setModelRequiresTrustRemoteCode(
-          resp.requires_trust_remote_code ?? false,
-        );
-        useChatRuntimeStore.setState({
-          supportsReasoning: resp.supports_reasoning ?? false,
-          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
-          supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
-          supportsTools: resp.supports_tools ?? false,
-          loadedIsMultimodal: isMultimodalResponse(resp),
+        hydrateRuntimeFromLoadResponse({
+          response: resp,
+          modelId: sel.id,
+          ggufVariant: sel.ggufVariant ?? null,
+          requestedConfig: {
+            chatTemplateOverride: load.chatTemplateOverride,
+            customContextLength: load.customContextLength,
+          },
+          stateBeforeLoad,
+          reloadingSameModel: isAlreadyActive,
         });
         // Sync the models[] entry with the load response so the
         // attach/send gates read fresh capabilities. /api/models/list
         // can lag behind a model's actual state (e.g., a GGUF whose
         // mmproj was downloaded after the catalog snapshot).
+        const store = useChatRuntimeStore.getState();
         const currentModels = useChatRuntimeStore.getState().models;
         const idx = currentModels.findIndex((m) => m.id === sel.id);
         const synced = {
@@ -710,6 +845,9 @@ export function SharedComposer({
       const name1 = model1?.id ? modelShortName(model1.id) : "";
       const name2 = model2?.id ? modelShortName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
+      const compareController = new AbortController();
+      compareAbortRef.current?.abort();
+      compareAbortRef.current = compareController;
 
       setComparing(true);
       try {
@@ -718,34 +856,39 @@ export function SharedComposer({
           toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
           const status1 = await ensureModelLoaded(model1);
           toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
-          const done = handle1.waitForRunEnd();
-          handle1.startRun();
-          await done;
+          await startRunAndWait(handle1, compareController);
         }
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
-          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
-            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          const needsLoad =
+            !modelIdsMatch(model2.id, model1?.id) ||
+            !ggufVariantsMatch(model2.ggufVariant, model1?.ggufVariant);
           if (needsLoad) {
             toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
           }
           const status2 = await ensureModelLoaded(model2);
           toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
-          const done = handle2.waitForRunEnd();
-          handle2.startRun();
-          await done;
+          await startRunAndWait(handle2, compareController);
         }
 
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+        if (isAbortError(err)) {
+          toast.dismiss(toastId);
+        } else {
+          toast.error("Compare failed", {
+            id: toastId,
+            description: err instanceof Error ? err.message : "Unknown error",
+            duration: 4000,
+          });
+        }
       } finally {
-        setComparing(false);
+        if (compareAbortRef.current === compareController) {
+          compareAbortRef.current = null;
+        }
+        compareController.abort();
+        if (mountedRef.current) setComparing(false);
       }
     } else {
       // Original behavior: fire all handles simultaneously
@@ -756,6 +899,7 @@ export function SharedComposer({
   }
 
   function stop() {
+    compareAbortRef.current?.abort();
     if (isDictating) stopDictation();
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();

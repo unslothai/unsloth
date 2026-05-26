@@ -3,6 +3,8 @@
 
 import { useEffect, useState } from "react";
 import { LruMap } from "@/lib/lru-map";
+import { fetchWithTimeout } from "@/lib/network";
+import { useOnlineStatus } from "@/hooks";
 
 type AvatarCacheEntry =
   | { kind: "url"; url: string; expiresAt: number }
@@ -97,10 +99,13 @@ async function fetchAvatarUrl(
   let sawTransient = false;
   for (const url of candidates) {
     try {
-      const res = await fetch(url, {
-        credentials: "omit",
-        signal: AbortSignal.timeout(AVATAR_FETCH_TIMEOUT_MS),
-      });
+      const res = await fetchWithTimeout(
+        url,
+        {
+          credentials: "omit",
+        },
+        AVATAR_FETCH_TIMEOUT_MS,
+      );
       if (res.ok) {
         const data = (await res.json()) as { avatarUrl?: string };
         if (data.avatarUrl) {
@@ -159,13 +164,14 @@ export function invalidateOwnerAvatar(owner?: string): void {
 
 export function useHfOwnerAvatar(owner: string | null | undefined): string | null {
   const key = owner?.trim() ?? "";
+  const online = useOnlineStatus();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
     return { key, url: readCachedUrl(key) };
   });
   const url = state.key === key ? state.url : readCachedUrl(key);
 
   useEffect(() => {
-    if (!key) return;
+    if (!key || !online) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -213,7 +219,7 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
       cancelled = true;
       if (retryTimer != null) clearTimeout(retryTimer);
     };
-  }, [key]);
+  }, [key, online]);
 
   return url;
 }

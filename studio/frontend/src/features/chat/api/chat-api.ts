@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, hfTokenHeader } from "@/features/auth";
+import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   AudioGenerationResponse,
-  GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
   ListModelsResponse,
@@ -21,9 +20,15 @@ function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
     const detail = (body as { detail?: unknown }).detail;
     const formatted = formatFastApiDetail(detail);
+    if (status === 405) {
+      return `${formatted || "Method Not Allowed"} - the Studio backend did not accept this API method. Restart Studio so the frontend and backend are on the same build.`;
+    }
     if (formatted) return formatted;
     const message = (body as { message?: unknown }).message;
     if (typeof message === "string" && message) return message;
+  }
+  if (status === 405) {
+    return "Method Not Allowed - the Studio backend did not accept this API method. Restart Studio so the frontend and backend are on the same build.";
   }
   return `Request failed (${status})`;
 }
@@ -80,6 +85,9 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      model_format: payload.model_format ?? null,
+      local_files_only: payload.local_files_only ?? false,
+      local_path: payload.local_path ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
@@ -94,215 +102,49 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
-export interface CachedGgufRepo {
-  repo_id: string;
-  size_bytes: number;
-  cache_path?: string;
-  partial?: boolean;
-  pipeline_tag?: string | null;
-  tags?: string[];
-  library_name?: string | null;
-}
+export {
+  cancelDatasetDownload,
+  cancelModelDownload,
+  getActiveModelDownloads,
+  getDatasetDownloadProgress,
+  getDatasetDownloadStatus,
+  getDatasetTransportStatus,
+  getDownloadProgress,
+  getGgufDownloadProgress,
+  getModelDownloadStatus,
+  getModelTransportStatus,
+  startDatasetDownload,
+  startModelDownload,
+  type ActiveModelDownload,
+  type DownloadJobState,
+  type DownloadJobStatus,
+  type DownloadProgressResponse,
+  type DownloadStartResult,
+  type DownloadStartState,
+  type TransportMarker,
+  type TransportStatus,
+} from "@/features/download-jobs";
 
-export type DownloadJobState =
-  | "idle"
-  | "running"
-  | "complete"
-  | "error"
-  | "cancelled"
-  | "cancelling";
-
-export interface DownloadJobStatus {
-  state: DownloadJobState;
-  error?: string | null;
-}
-
-// The start endpoints answer 202 even when the registry refuses the claim,
-// reporting the blocking job's state ("running"/"cancelling") or, for a repo
-// pending removal, "deleting" (never a per-job status). ``accepted`` is true
-// only when a worker for this key is freshly spawned or already pollable.
-export type DownloadStartState = DownloadJobState | "deleting";
-
-export interface DownloadStartResult {
-  state: DownloadStartState;
-  accepted: boolean;
-}
-
-export async function startModelDownload(payload: {
-  repo_id: string;
-  gguf_variant?: string | null;
-  hf_token?: string | null;
-  use_xet?: boolean;
-}): Promise<DownloadStartResult & { job_key: string }> {
-  const { hf_token, ...body } = payload;
-  const response = await authFetch("/api/models/download", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...hfTokenHeader(hf_token) },
-    body: JSON.stringify(body),
-  });
-  return parseJsonOrThrow(response);
-}
-
-export async function cancelModelDownload(payload: {
-  repo_id: string;
-  gguf_variant?: string | null;
-}): Promise<{ job_key: string; state: DownloadJobState }> {
-  const response = await authFetch("/api/models/download/cancel", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonOrThrow(response);
-}
-
-export async function getModelDownloadStatus(
-  repoId: string,
-  ggufVariant?: string | null,
-  signal?: AbortSignal,
-): Promise<DownloadJobStatus> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (ggufVariant) params.set("gguf_variant", ggufVariant);
-  const response = await authFetch(`/api/models/download-status?${params}`, {
-    signal,
-  });
-  return parseJsonOrThrow<DownloadJobStatus>(response);
-}
-
-export interface ActiveModelDownload {
-  variant: string | null;
-  state: DownloadJobState;
-}
-
-export async function getActiveModelDownloads(
-  repoId: string,
-  signal?: AbortSignal,
-): Promise<ActiveModelDownload[]> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/active-downloads?${params}`, {
-    signal,
-  });
-  const data = await parseJsonOrThrow<{ downloads: ActiveModelDownload[] }>(
-    response,
-  );
-  return data.downloads;
-}
-
-export async function startDatasetDownload(payload: {
-  repo_id: string;
-  hf_token?: string | null;
-  use_xet?: boolean;
-}): Promise<DownloadStartResult & { repo_id: string }> {
-  const { hf_token, ...body } = payload;
-  const response = await authFetch("/api/datasets/download", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...hfTokenHeader(hf_token) },
-    body: JSON.stringify(body),
-  });
-  return parseJsonOrThrow(response);
-}
-
-export async function cancelDatasetDownload(payload: {
-  repo_id: string;
-}): Promise<{ repo_id: string; state: DownloadJobState }> {
-  const response = await authFetch("/api/datasets/download/cancel", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJsonOrThrow(response);
-}
-
-export async function getDatasetDownloadStatus(
-  repoId: string,
-  signal?: AbortSignal,
-): Promise<DownloadJobStatus> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-status?${params}`, {
-    signal,
-  });
-  return parseJsonOrThrow<DownloadJobStatus>(response);
-}
-
-export type TransportMarker = "http" | "xet" | null;
-
-export interface TransportStatus {
-  has_partial: boolean;
-  last_transport: TransportMarker;
-  resumable: boolean;
-}
-
-export async function getModelTransportStatus(
-  repoId: string,
-): Promise<TransportStatus> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/transport-status?${params}`);
-  return parseJsonOrThrow<TransportStatus>(response);
-}
-
-export async function getDatasetTransportStatus(
-  repoId: string,
-): Promise<TransportStatus> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/transport-status?${params}`);
-  return parseJsonOrThrow<TransportStatus>(response);
-}
-
-export async function getGgufDownloadProgress(
-  repoId: string,
-  variant: string,
-  expectedBytes: number,
-  hfToken?: string | null,
-  signal?: AbortSignal,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
-  const params = new URLSearchParams({
-    repo_id: repoId,
-    variant,
-    expected_bytes: String(expectedBytes),
-  });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`, {
-    headers: hfTokenHeader(hfToken),
-    signal,
-  });
-  return parseJsonOrThrow(response);
-}
-
-export interface DownloadProgressResponse {
-  downloaded_bytes: number;
-  expected_bytes: number;
-  progress: number;
-  /**
-   * Resolved on-disk path of the snapshot dir (or cache repo root if no
-   * snapshot exists yet). Null when nothing has been written to the
-   * cache for this repo.
-   */
-  cache_path: string | null;
-}
-
-export async function getDownloadProgress(
-  repoId: string,
-  signal?: AbortSignal,
-  hfToken?: string | null,
-): Promise<DownloadProgressResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`, {
-    headers: hfTokenHeader(hfToken),
-    signal,
-  });
-  return parseJsonOrThrow(response);
-}
-
-export async function getDatasetDownloadProgress(
-  repoId: string,
-  signal?: AbortSignal,
-  hfToken?: string | null,
-): Promise<DownloadProgressResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`, {
-    headers: hfTokenHeader(hfToken),
-    signal,
-  });
-  return parseJsonOrThrow(response);
-}
+export {
+  addScanFolder,
+  browseFolders,
+  deleteCachedModel,
+  invalidateGgufVariantsCache,
+  listCachedGguf,
+  listCachedModels,
+  listGgufVariants,
+  listLocalModels,
+  listScanFolders,
+  removeScanFolder,
+  type BrowseFoldersResponse,
+  type CachedGgufRepo,
+  type CachedModelRepo,
+  type GgufVariantDetail,
+  type GgufVariantsResponse,
+  type LocalModelInfo,
+  type LocalModelListResponse,
+  type ScanFolderInfo,
+} from "@/features/inventory";
 
 export type ModelLoadPhase = "mmap" | "ready" | null;
 
@@ -329,82 +171,10 @@ export async function getLoadProgress(): Promise<LoadProgressResponse> {
   return parseJsonOrThrow(response);
 }
 
-export interface LocalModelInfo {
-  id: string;
-  display_name: string;
-  path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
-  model_id?: string | null;
-  updated_at?: number | null;
-  partial?: boolean;
-}
-
-interface LocalModelListResponse {
-  models_dir: string;
-  hf_cache_dir?: string | null;
-  lmstudio_dirs: string[];
-  models: LocalModelInfo[];
-}
-
-export async function listLocalModels(): Promise<LocalModelListResponse> {
-  const response = await authFetch("/api/models/local");
-  return parseJsonOrThrow<LocalModelListResponse>(response);
-}
-
-export async function listCachedGguf(
-  hfToken?: string | null,
-  signal?: AbortSignal,
-): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf", {
-    headers: hfTokenHeader(hfToken),
-    signal,
-  });
-  const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
-  return data.cached;
-}
-
-export interface CachedModelRepo {
-  repo_id: string;
-  size_bytes: number;
-  cache_path?: string;
-  partial?: boolean;
-  pipeline_tag?: string | null;
-  tags?: string[];
-  library_name?: string | null;
-  quant_method?: string | null;
-}
-
-export async function listCachedModels(
-  hfToken?: string | null,
-  signal?: AbortSignal,
-): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models", {
-    headers: hfTokenHeader(hfToken),
-    signal,
-  });
-  const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
-  return data.cached;
-}
-
-export async function deleteCachedModel(
-  repoId: string,
-  variant?: string,
-  hfToken?: string | null,
-): Promise<void> {
-  const payload: Record<string, string> = { repo_id: repoId };
-  if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/delete-cached", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json", ...hfTokenHeader(hfToken) },
-    body: JSON.stringify(payload),
-  });
-  await parseJsonOrThrow<unknown>(response);
-}
-
 export interface DeleteFineTunedModelResult {
   status: string;
   path: string;
-  deleted_run_ids: string[];
+  deleted_run_ids?: string[];
 }
 
 export async function deleteFineTunedModel(args: {
@@ -428,119 +198,10 @@ export async function deleteFineTunedModel(args: {
   return parseJsonOrThrow<DeleteFineTunedModelResult>(response);
 }
 
-export interface ScanFolderInfo {
-  id: number;
-  path: string;
-  created_at: string;
-}
-
-export async function listScanFolders(): Promise<ScanFolderInfo[]> {
-  const response = await authFetch("/api/models/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
-}
-
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
-  const response = await authFetch("/api/models/scan-folders", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-  return parseJsonOrThrow<ScanFolderInfo>(response);
-}
-
-export async function removeScanFolder(id: number): Promise<void> {
-  const response = await authFetch(`/api/models/scan-folders/${id}`, {
-    method: "DELETE",
-  });
-  await parseJsonOrThrow<unknown>(response);
-}
-
-export interface BrowseEntry {
-  name: string;
-  has_models: boolean;
-  hidden: boolean;
-}
-
-export interface BrowseFoldersResponse {
-  current: string;
-  parent: string | null;
-  entries: BrowseEntry[];
-  suggestions: string[];
-  truncated?: boolean;
-  model_files_here?: number;
-}
-
 export async function listRecommendedFolders(): Promise<string[]> {
   const response = await authFetch("/api/models/recommended-folders");
   const data = await parseJsonOrThrow<{ folders: string[] }>(response);
   return data.folders;
-}
-
-export async function browseFolders(
-  path?: string,
-  showHidden = false,
-  signal?: AbortSignal,
-): Promise<BrowseFoldersResponse> {
-  const params = new URLSearchParams();
-  if (path !== undefined && path !== null) params.set("path", path);
-  if (showHidden) params.set("show_hidden", "true");
-  const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so that a
-  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
-  // hidden-toggle clicks) actually cancels the in-flight HTTP request
-  // server-side, instead of merely dropping the response client-side
-  // while the backend keeps walking large directory trees.
-  const response = await authFetch(
-    `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
-    signal ? { signal } : undefined,
-  );
-  return parseJsonOrThrow<BrowseFoldersResponse>(response);
-}
-
-const GGUF_VARIANTS_TTL_MS = 30 * 1000;
-// The backend enumerates variants against the HF API, so a stalled upstream
-// connection would otherwise leave the expander spinning indefinitely. Bound
-// the shared request; on timeout it rejects, the cache entry is dropped, and
-// the caller surfaces an error.
-const GGUF_VARIANTS_TIMEOUT_MS = 30_000;
-interface GgufVariantsCacheEntry {
-  ts: number;
-  promise: Promise<GgufVariantsResponse>;
-}
-const ggufVariantsCache = new Map<string, GgufVariantsCacheEntry>();
-
-export async function listGgufVariants(
-  repoId: string,
-  hfToken?: string,
-): Promise<GgufVariantsResponse> {
-  const key = `${repoId}::${hfToken ?? ""}`;
-  const now = Date.now();
-  const hit = ggufVariantsCache.get(key);
-  if (hit && now - hit.ts < GGUF_VARIANTS_TTL_MS) {
-    return hit.promise;
-  }
-  const params = new URLSearchParams({ repo_id: repoId });
-  const promise = (async () => {
-    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-      headers: hfTokenHeader(hfToken),
-      signal: AbortSignal.timeout(GGUF_VARIANTS_TIMEOUT_MS),
-    });
-    return parseJsonOrThrow<GgufVariantsResponse>(response);
-  })();
-  ggufVariantsCache.set(key, { ts: now, promise });
-  promise.catch(() => ggufVariantsCache.delete(key));
-  return promise;
-}
-
-export function invalidateGgufVariantsCache(repoId?: string): void {
-  if (!repoId) {
-    ggufVariantsCache.clear();
-    return;
-  }
-  for (const key of ggufVariantsCache.keys()) {
-    if (key.startsWith(`${repoId}::`)) ggufVariantsCache.delete(key);
-  }
 }
 
 function parseSseEvent(rawEvent: string): string[] {
