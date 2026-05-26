@@ -45,8 +45,8 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "connections", label: "Connections", icon: CloudIcon, badge: "New" },
   { id: "api-keys", label: "API", icon: Globe02Icon, badge: "New" },
+  { id: "connections", label: "Connections", icon: CloudIcon, badge: "New" },
   { id: "about", label: "Help", icon: HelpCircleIcon },
 ];
 
