@@ -265,10 +265,14 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     url = action.get("url") if isinstance(action.get("url"), str) else ""
     pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
     out: dict[str, Any] = {}
-    if query: out["query"] = query
-    if url: out["url"] = url
-    if pattern: out["pattern"] = pattern
-    if atype: out["action_type"] = atype
+    if query:
+        out["query"] = query
+    if url:
+        out["url"] = url
+    if pattern:
+        out["pattern"] = pattern
+    if atype:
+        out["action_type"] = atype
     return out
 
 
@@ -3902,7 +3906,11 @@ class ExternalProviderClient:
                                     # Backfill query from any prior event for this id.
                                     if not args.get("query"):
                                         prior = web_search_calls.get(item_id) or {}
-                                        prior_q = prior.get("query") if isinstance(prior, dict) else ""
+                                        prior_q = (
+                                            prior.get("query")
+                                            if isinstance(prior, dict)
+                                            else ""
+                                        )
                                         if isinstance(prior_q, str) and prior_q:
                                             args["query"] = prior_q
                                     web_search_calls[item_id] = dict(args)
