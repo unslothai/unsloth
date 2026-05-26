@@ -4418,6 +4418,11 @@ def _build_usage_chunk(
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
+        # Forward 5m/1h cache-write breakdown so cost calc applies the
+        # 2x 1h premium instead of defaulting to 5m on chat-style.
+        cc_breakdown = last_usage.get("cache_creation")
+        if isinstance(cc_breakdown, dict) and cc_breakdown:
+            usage_block["cache_creation"] = cc_breakdown
         # Propagate fast-mode `usage.speed` so the cost ledger can apply
         # the 6x multiplier without re-derivation (Anthropic falls back
         # to "standard" when fast-mode is unsupported or rate-limited).
