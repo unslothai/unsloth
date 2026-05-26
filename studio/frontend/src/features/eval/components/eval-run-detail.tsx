@@ -202,12 +202,12 @@ export function EvalRunDetail({ runId }: { runId: string }) {
       {/* Results table */}
       <Card>
         <CardContent className="p-0">
-          <Table>
+          <Table className="w-full table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-16">Idx</TableHead>
+                <TableHead className="w-12">Idx</TableHead>
                 <TableHead
-                  className="w-28 cursor-pointer select-none"
+                  className="w-24 cursor-pointer select-none"
                   onClick={() => setSort(nextSortMode(sort))}
                 >
                   Score
@@ -244,14 +244,20 @@ export function EvalRunDetail({ runId }: { runId: string }) {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="max-w-[200px]">
-                        {truncate(row.input_text)}
+                      <TableCell>
+                        <div className="truncate">
+                          {truncate(row.input_text)}
+                        </div>
                       </TableCell>
-                      <TableCell className="max-w-[200px]">
-                        {truncate(row.prediction_text)}
+                      <TableCell>
+                        <div className="truncate">
+                          {truncate(row.prediction_text)}
+                        </div>
                       </TableCell>
-                      <TableCell className="max-w-[200px]">
-                        {truncate(row.reference_text)}
+                      <TableCell>
+                        <div className="truncate">
+                          {truncate(row.reference_text)}
+                        </div>
                       </TableCell>
                     </TableRow>
                     {isExpanded ? (
