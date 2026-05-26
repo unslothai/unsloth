@@ -21,7 +21,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_CAPTION_MODEL_NAME = "Qwen/Qwen3-VL-2B-Instruct"
+# Pre-quantized Unsloth bnb-4bit repo (see unsloth/models/mapper.py).
+# Using this name directly skips the FLOAT_TO_INT_MAPPER redirect so the
+# initial download fetches the 4-bit weights (~1.5 GB) instead of bf16
+# (~5 GB followed by on-the-fly quantization).
+_CAPTION_MODEL_NAME = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit"
 _PROMPT = (
     "Describe this figure in <=60 words. Focus on factual content "
     "(axes, labels, captions, visible text, main objects). "
