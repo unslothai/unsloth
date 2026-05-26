@@ -746,9 +746,14 @@ if (-not $HasNvidiaSmi) {
                     # Collect ALL gfx tokens in output order so that on mixed-arch systems
                     # we can honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES and pick the
                     # arch for the *runtime-visible* GPU rather than always the first one.
+                    # Do NOT deduplicate: a dual same-arch system (e.g. two gfx1151 APUs)
+                    # must produce a 2-element array so HIP_VISIBLE_DEVICES=1 selects the
+                    # second GPU rather than triggering a false out-of-range warning.
+                    # Note: this mapping assumes amd-smi lists GPUs in the same order as
+                    # HIP enumerates them (both follow PCI bus order in practice); it may
+                    # give the wrong arch when GPU indices are non-contiguous (very rare).
                     $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
-                        ForEach-Object { $_.Groups[1].Value.ToLower() } |
-                        Select-Object -Unique)
+                        ForEach-Object { $_.Groups[1].Value.ToLower() })
                     if ($allGfxArches.Count -gt 0) {
                         # Resolve which GPU index is runtime-visible.  When a single
                         # integer index is set, use it; fall back to index 0 otherwise
@@ -2039,8 +2044,25 @@ if ($HasROCm -and $CuTag -eq "cpu") {
         "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
         "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
     }
+    # Companion ranges for torchvision/torchaudio -- must stay in sync with the
+    # torch ceiling so pip can always find a consistent trio on AMD's per-arch
+    # index.  AMD publishes each package independently and may add a newer
+    # torchvision (e.g. 0.27 for torch 2.12) before removing 0.26, which would
+    # cause pip to resolve an ABI-incompatible set if these are left bare.
+    # Matches _ROCM_TORCH_PKG_SPECS["rocm7.2"] in install_python_stack.py.
+    # Bump all three ceilings together when torch 2.12.x is validated.
+    $torchvisionFloorMap = @{
+        "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+    }
+    $torchaudioFloorMap = @{
+        "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
+    }
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-    $ROCmTorchSpec = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { "torch" }
+    $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
+    $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
+    $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
     if ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
@@ -2061,14 +2083,14 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
-        substep "  enforcing $ROCmTorchSpec (known _grouped_mm bug in older wheels)" "Cyan"
+        substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
     if ($script:UnslothVerbose) {
-        Fast-Install $ROCmTorchSpec torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl
+        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $ROCmTorchSpec torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
