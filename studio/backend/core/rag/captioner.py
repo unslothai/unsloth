@@ -1,146 +1,109 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Figure captioning via a small generative VLM (PaddleOCR-VL, 4-bit).
+"""Figure captioning via the user's currently-loaded chat VLM.
 
-Defensive by design: any load or per-image failure returns an empty
-string so the ingestion pipeline can fall back to its prior page-text
-caption behaviour rather than crashing.
+No separate vision model is loaded. If the chat model is vision-capable
+(detected at ingestion-enqueue time and passed in as ``vlm_url`` /
+``vlm_model``), we call its OpenAI-compatible ``/v1/chat/completions``
+with the figure as a base64 ``image_url``. If no vision-capable chat
+model is loaded, captioning is skipped entirely — the ingestion falls
+back to the parser's page-text ``nearest_caption``.
 
-Lifecycle: lives inside the ingestion subprocess (`_subprocess_worker`
-in `ingestion.py`). The model loads on first `caption_images` call and
-is released when the subprocess exits — no impact on the parent chat
-model.
+Defensive: any per-image request failure returns an empty string so
+ingestion stays resilient.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
-import threading
-from typing import Any
+from io import BytesIO
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Pre-quantized Unsloth bnb-4bit repo (see unsloth/models/mapper.py).
-# Using this name directly skips the FLOAT_TO_INT_MAPPER redirect so the
-# initial download fetches the 4-bit weights (~1.5 GB) instead of bf16
-# (~5 GB followed by on-the-fly quantization).
-_CAPTION_MODEL_NAME = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit"
 _PROMPT = (
     "Describe this figure in <=60 words. Focus on factual content "
     "(axes, labels, captions, visible text, main objects). "
     "Do not speculate beyond what is visible."
 )
 _MAX_NEW_TOKENS = 120
-
-_lock = threading.Lock()
-_model: Any | None = None
-_processor: Any | None = None
-_load_failed: bool = False
-
-
-def _load() -> tuple[Any, Any] | None:
-    """Lazy-load PaddleOCR-VL. Returns (model, processor) or None on failure.
-
-    Sentinel-cached: once a load failure occurs in this subprocess we
-    don't keep retrying for every batch of images.
-    """
-    global _model, _processor, _load_failed
-    if _load_failed:
-        return None
-    with _lock:
-        if _model is not None and _processor is not None:
-            return _model, _processor
-        try:
-            from unsloth import FastVisionModel
-
-            logger.info(
-                "Loading RAG captioner: %s (4-bit via Unsloth)",
-                _CAPTION_MODEL_NAME,
-            )
-            # FastVisionModel handles 4-bit quantization, dtype selection,
-            # and inference-mode wiring. Returns (model, processor) — for
-            # vision models the "tokenizer" slot carries the processor.
-            model, processor = FastVisionModel.from_pretrained(
-                model_name = _CAPTION_MODEL_NAME,
-                load_in_4bit = True,
-                trust_remote_code = True,
-            )
-            FastVisionModel.for_inference(model)
-            _model = model
-            _processor = processor
-            return _model, _processor
-        except Exception as exc:
-            logger.warning(
-                "RAG captioner %s failed to load (%s). Falling back to "
-                "page-text captions for this ingestion.",
-                _CAPTION_MODEL_NAME,
-                exc,
-            )
-            _load_failed = True
-            return None
+# Downscale large images so the base64 payload stays manageable; the chat
+# model's prefill cost scales with image-tile count, not pixel count, but
+# very large inputs still bloat the JSON body. 1600 px on the long side
+# matches PR #5351's chat-composer extractor.
+_MAX_IMAGE_SIZE = 1600
+_REQUEST_TIMEOUT_SECONDS = 120.0
 
 
-def caption_images(image_bytes_list: list[bytes]) -> list[str]:
-    """Generate one short caption per image. Same-length output.
+def _image_to_data_url(blob: bytes) -> str:
+    from PIL import Image
 
-    Returns ``""`` for any image whose captioning failed (or all images
-    if the model couldn't load). Never raises — ingestion must stay
-    resilient to VLM unavailability.
+    img = Image.open(BytesIO(blob)).convert("RGB")
+    if max(img.size) > _MAX_IMAGE_SIZE:
+        img.thumbnail((_MAX_IMAGE_SIZE, _MAX_IMAGE_SIZE))
+    buf = BytesIO()
+    img.save(buf, format = "JPEG", quality = 88)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def caption_images(
+    image_bytes_list: list[bytes],
+    *,
+    vlm_url: Optional[str] = None,
+    vlm_model: Optional[str] = None,
+) -> list[str]:
+    """Caption each image via the loaded chat VLM.
+
+    ``vlm_url`` / ``vlm_model`` come from the parent's chat-backend probe.
+    When either is missing (no model loaded, or loaded model is text-only),
+    returns an empty string per image so the caller falls back to its
+    parser-provided caption. Never raises.
     """
     if not image_bytes_list:
         return []
-    loaded = _load()
-    if loaded is None:
+    if not vlm_url or not vlm_model:
         return ["" for _ in image_bytes_list]
 
-    model, processor = loaded
-    from io import BytesIO
+    import httpx
 
-    import torch
-    from PIL import Image
-
+    endpoint = f"{vlm_url.rstrip('/')}/v1/chat/completions"
     out: list[str] = []
-    for blob in image_bytes_list:
-        try:
-            image = Image.open(BytesIO(blob)).convert("RGB")
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": _PROMPT},
+    with httpx.Client(timeout = _REQUEST_TIMEOUT_SECONDS) as client:
+        for blob in image_bytes_list:
+            try:
+                data_url = _image_to_data_url(blob)
+                payload = {
+                    "model": vlm_model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": _PROMPT},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_url},
+                                },
+                            ],
+                        }
                     ],
+                    "max_tokens": _MAX_NEW_TOKENS,
+                    "temperature": 0.0,
                 }
-            ]
-            # Qwen3-VL's processor pipes image + text through the chat
-            # template in one call when tokenize=True / return_dict=True.
-            inputs = processor.apply_chat_template(
-                messages,
-                tokenize = True,
-                add_generation_prompt = True,
-                return_dict = True,
-                return_tensors = "pt",
-            )
-            inputs = {
-                k: (v.to(model.device) if hasattr(v, "to") else v)
-                for k, v in inputs.items()
-            }
-            input_ids_len = int(inputs["input_ids"].shape[1])
-            with torch.no_grad():
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens = _MAX_NEW_TOKENS,
-                    do_sample = False,
+                response = client.post(endpoint, json = payload)
+                response.raise_for_status()
+                data = response.json()
+                content = (
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 )
-            # Decode only the newly-generated tokens, not the prompt echo.
-            new_tokens = output_ids[:, input_ids_len:]
-            caption = processor.batch_decode(
-                new_tokens,
-                skip_special_tokens = True,
-            )[0]
-            out.append(caption.strip())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("caption_images: skipping one image: %s", exc)
-            out.append("")
+                out.append(content.strip() if isinstance(content, str) else "")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "caption_images: per-image request to %s failed: %s",
+                    endpoint,
+                    exc,
+                )
+                out.append("")
     return out

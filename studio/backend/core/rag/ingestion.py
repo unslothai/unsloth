@@ -60,6 +60,8 @@ def _subprocess_worker(
     chunking_strategy: str = "standard",
     mode: str = "text",
     document_id: str = "",
+    vlm_url: str | None = None,
+    vlm_model: str | None = None,
 ) -> None:
     try:
         from core.rag.chunking import chunk_pages
@@ -117,6 +119,8 @@ def _subprocess_worker(
                 model_name = model_name,
                 out_queue = out_queue,
                 first_index = text_count,
+                vlm_url = vlm_url,
+                vlm_model = vlm_model,
             )
         out_queue.put({"type": "complete", "num_chunks": text_count + image_count})
     except Exception as exc:  # noqa: BLE001
@@ -190,6 +194,8 @@ def _stream_image_chunks(
     model_name: str,
     out_queue,
     first_index: int,
+    vlm_url: str | None = None,
+    vlm_model: str | None = None,
 ) -> int:
     """Persist images, emit image+caption chunks; pairs share pair_group."""
     from core.rag.captioner import caption_images
@@ -223,10 +229,15 @@ def _stream_image_chunks(
     if not paths:
         return 0
 
-    # VLM-generated captions; falls back to the parser's nearest_caption
-    # (page-text blob) when the VLM is unavailable or fails for an image.
+    # VLM-generated captions via the loaded chat VLM (when one is loaded
+    # and vision-capable). Falls back to the parser's nearest_caption
+    # (page-text blob) when no VLM is available or a request fails.
     out_queue.put({"type": "progress", "stage": "caption_images", "progress": 0.87})
-    vlm_captions = caption_images(bytes_for_encoding)
+    vlm_captions = caption_images(
+        bytes_for_encoding,
+        vlm_url = vlm_url,
+        vlm_model = vlm_model,
+    )
     captions: list[str] = [
         (
             vlm_captions[i].strip()
@@ -638,6 +649,34 @@ def _pump(
         state.push_event({"type": "error", "error": final_error})
 
 
+def _probe_loaded_vlm() -> tuple[str | None, str | None]:
+    """Best-effort: return (base_url, model_name) when a vision-capable
+    chat model is currently loaded via llama-server; (None, None) otherwise.
+
+    Used to caption figures with the user's chat VLM instead of loading
+    a dedicated captioning model — no extra VRAM, no extra download.
+    Only the llama-server backend is supported today; transformers /
+    unsloth in-process VLMs would need a different bridge.
+    """
+    try:
+        from core.inference.llama_cpp import get_llama_cpp_backend
+    except Exception:
+        return None, None
+    try:
+        backend = get_llama_cpp_backend()
+    except Exception:
+        return None, None
+    if not getattr(backend, "is_loaded", False):
+        return None, None
+    if not getattr(backend, "is_vision", False):
+        return None, None
+    base_url = getattr(backend, "base_url", None)
+    model_id = getattr(backend, "model_identifier", None)
+    if not base_url or not model_id:
+        return None, None
+    return base_url, model_id
+
+
 def enqueue_ingestion(
     document_id: str,
     stored_path: Path,
@@ -657,6 +696,22 @@ def enqueue_ingestion(
         or resolve_embedder(mode, chunking_strategy)
         or RAG_EMBEDDING_MODEL
     )
+    # Probe before forking the subprocess so the loaded-model info is
+    # captured in the parent's process state, then passed to the child.
+    vlm_url, vlm_model = (None, None)
+    if mode == "multimodal":
+        vlm_url, vlm_model = _probe_loaded_vlm()
+        if vlm_url:
+            logger.info(
+                "RAG ingest: will caption figures via loaded chat VLM %s at %s",
+                vlm_model,
+                vlm_url,
+            )
+        else:
+            logger.info(
+                "RAG ingest: no vision-capable chat model loaded; "
+                "skipping figure captioning (fallback to page-text)."
+            )
     job_id = str(uuid4())
     with get_connection() as conn:
         conn.execute(
@@ -686,6 +741,8 @@ def enqueue_ingestion(
             chunking_strategy,
             mode,
             document_id,
+            vlm_url,
+            vlm_model,
         ),
         daemon = True,
     )
