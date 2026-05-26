@@ -106,15 +106,6 @@ ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
 
-# Anthropic fast_mode (Opus 4.6/4.7 only) bills BOTH input AND output
-# at 6x standard rates per
-# https://platform.claude.com/docs/en/build-with-claude/fast-mode
-# (Opus 4.7 standard: $5/$25 per MTok; fast: $30/$150 per MTok).
-# Cache multipliers stack on top of the fast premium. Exposed via
-# pricing_snapshot so the frontend cost panel can apply it when
-# inferenceParams.fastMode was set on the request (see #5715).
-ANTHROPIC_FAST_MODE_MULT = 6.0
-
 # OpenAI: cache reads are 0.1x base input, cache writes are not billed
 # separately (the first prefix-write request just pays normal input).
 OPENAI_CACHE_READ_MULT = 0.1
@@ -174,8 +165,6 @@ def calculate_cost(
     provider: str,
     model: str,
     usage: dict[str, Any],
-    *,
-    fast_mode: bool = False,
 ) -> dict[str, float]:
     """Return a per-turn USD cost breakdown.
 
@@ -314,21 +303,6 @@ def calculate_cost(
         base = prices["input_per_mtok"]
         out_per = prices["output_per_mtok"]
 
-    # Anthropic fast_mode bills BOTH input AND output at 6x; the
-    # premium stacks on top of the cache multipliers (Anthropic docs:
-    # "Prompt caching multipliers apply on top of fast mode pricing").
-    # Restricted to claude-opus-4-6 / 4-7 -- silently no-op on every
-    # other model so a stray ``fast_mode=True`` on a Sonnet can't
-    # over-charge the user.
-    if (
-        fast_mode
-        and provider == "anthropic"
-        and (model.startswith("claude-opus-4-6") or model.startswith("claude-opus-4-7"))
-    ):
-        base = base * ANTHROPIC_FAST_MODE_MULT
-        out_per = out_per * ANTHROPIC_FAST_MODE_MULT
-        out["model_priced"] = f"{out['model_priced'] or model} (fast)"
-
     out["input_usd"] = (input_tokens / 1_000_000.0) * base
     out["output_usd"] = (output_tokens / 1_000_000.0) * out_per
 
@@ -412,7 +386,6 @@ def pricing_snapshot() -> dict[str, Any]:
             "cache_5m_write_mult": ANTHROPIC_CACHE_5M_WRITE_MULT,
             "cache_1h_write_mult": ANTHROPIC_CACHE_1H_WRITE_MULT,
             "cache_read_mult": ANTHROPIC_CACHE_READ_MULT,
-            "fast_mode_mult": ANTHROPIC_FAST_MODE_MULT,
             "web_search_usd_per_1k": ANTHROPIC_WEB_SEARCH_USD_PER_1K,
             "code_execution_usd_per_hour": ANTHROPIC_CODE_EXEC_USD_PER_HOUR,
         },
