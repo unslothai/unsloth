@@ -248,7 +248,7 @@ interface BackendInferenceDefaults {
 export interface BackendInferenceEnvelope {
   is_gguf?: boolean;
   context_length?: number | null;
-  inference?: BackendInferenceDefaults;
+  inference?: BackendInferenceDefaults | null;
 }
 
 export function mergeBackendRecommendedInference({
