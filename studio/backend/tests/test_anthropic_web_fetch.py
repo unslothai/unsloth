@@ -365,7 +365,9 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
 
 
 def _finish_reasons(lines: list[str]) -> list:
-    """Return the finish_reason fields from every chat.completion.chunk."""
+    """Return non-null finish_reason fields from each chat.completion.chunk.
+    Mid-stream content deltas carry ``finish_reason: None`` and are skipped
+    (the refusal path emits a notice delta before the content_filter chunk)."""
     out: list = []
     for line in lines:
         if not line.startswith("data:"):
@@ -380,8 +382,9 @@ def _finish_reasons(lines: list[str]) -> list:
         if parsed.get("object") != "chat.completion.chunk":
             continue
         for choice in parsed.get("choices") or []:
-            if "finish_reason" in choice:
-                out.append(choice["finish_reason"])
+            reason = choice.get("finish_reason")
+            if reason is not None:
+                out.append(reason)
     return out
 
 
