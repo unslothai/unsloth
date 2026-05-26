@@ -160,6 +160,7 @@ export async function deleteChatItem(
 
   const artifactStore = useChatArtifactsStore.getState();
   for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
+  artifactStore.clearOrphanedArtifacts();
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);

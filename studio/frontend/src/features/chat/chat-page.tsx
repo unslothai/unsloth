@@ -1270,8 +1270,11 @@ export function ChatPage(): ReactElement {
     ],
   );
   const handleEject = useCallback(() => {
-    resetArtifacts();
-    void ejectModel();
+    void (async () => {
+      if (await ejectModel()) {
+        resetArtifacts();
+      }
+    })();
   }, [ejectModel, resetArtifacts]);
 
   const openModelSelector = useCallback(() => {

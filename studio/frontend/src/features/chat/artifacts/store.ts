@@ -29,6 +29,7 @@ type ChatArtifactsState = {
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
+  clearOrphanedArtifacts: () => void;
   resetArtifacts: () => void;
 };
 
@@ -39,6 +40,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   openArtifact: (artifact, options) =>
     set((state) => ({
       artifactsById: {
+        ...state.artifactsById,
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
@@ -47,17 +49,37 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
-        ? { artifactsById: { [artifact.id]: artifact } }
+        ? {
+            artifactsById: {
+              ...state.artifactsById,
+              [artifact.id]: artifact,
+            },
+          }
         : state,
     ),
   closeArtifactSurface: () =>
-    set({ artifactsById: {}, selectedArtifactId: null, surface: "panel" }),
+    set({ selectedArtifactId: null, surface: "panel" }),
   clearArtifactsForThread: (threadId) =>
     set((state) => {
       if (!threadId) return state;
       const artifactsById = Object.fromEntries(
         Object.entries(state.artifactsById).filter(
           ([, artifact]) => artifact.threadId !== threadId,
+        ),
+      );
+      const selected = state.selectedArtifactId
+        ? artifactsById[state.selectedArtifactId]
+        : null;
+      return {
+        artifactsById,
+        selectedArtifactId: selected ? selected.id : null,
+      };
+    }),
+  clearOrphanedArtifacts: () =>
+    set((state) => {
+      const artifactsById = Object.fromEntries(
+        Object.entries(state.artifactsById).filter(
+          ([, artifact]) => artifact.threadId != null,
         ),
       );
       const selected = state.selectedArtifactId

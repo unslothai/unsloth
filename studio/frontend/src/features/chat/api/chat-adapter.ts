@@ -1301,6 +1301,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         !isExternalRequest &&
           supportsTools &&
           artifactsEnabled &&
+          (toolsEnabled || codeToolsEnabled) &&
           !hasOutboundImage,
       );
       const artifactInstruction = artifactsEnabled
