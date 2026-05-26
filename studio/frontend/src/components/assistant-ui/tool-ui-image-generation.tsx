@@ -63,6 +63,8 @@ type GeneratedImagePart = {
   filename?: string;
 };
 
+const CAPTION_COLLAPSED_LINES = 4;
+
 const extensionForMime = (mime: string): string => {
   switch (mime.toLowerCase()) {
     case "image/jpeg":
@@ -197,11 +199,11 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     if (!captionElement || !captionPrompt) {
       return;
     }
-    const rootFontSize = Number.parseFloat(
-      window.getComputedStyle(document.documentElement).fontSize,
-    );
+    const computedStyle = window.getComputedStyle(captionElement);
+    const lineHeight = Number.parseFloat(computedStyle.lineHeight);
     const collapsedHeight =
-      (Number.isFinite(rootFontSize) ? rootFontSize : 16) * 4.75;
+      (Number.isFinite(lineHeight) ? lineHeight : 20) *
+      CAPTION_COLLAPSED_LINES;
     const hasOverflow = captionElement.scrollHeight > collapsedHeight + 1;
     setPromptOverflow((current) =>
       current?.prompt === captionPrompt && current.canExpand === hasOverflow
@@ -333,12 +335,12 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             </div>
             {captionPrompt ? (
-              <figcaption className="max-w-[480px] text-xs leading-snug text-muted-foreground">
+              <figcaption className="max-w-[480px] text-xs leading-5 text-muted-foreground">
                 <div
                   ref={captionRef}
                   className={cn(
                     "whitespace-pre-wrap break-words",
-                    shouldClampPrompt && "max-h-[4.75rem] overflow-hidden",
+                    shouldClampPrompt && "max-h-20 overflow-hidden",
                   )}
                 >
                   {captionPrompt}
@@ -346,7 +348,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 {promptCanExpand ? (
                   <button
                     type="button"
-                    className="mt-1.5 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    className="mt-2 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                     onClick={() =>
                       setExpandedCaptionPrompt((value) =>
                         value === captionPrompt ? null : captionPrompt,
