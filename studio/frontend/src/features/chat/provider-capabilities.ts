@@ -395,26 +395,87 @@ const ALL_SUPPORTED: ProviderCapabilities = {
   parallelToolCalls: true,
 };
 
+// Reasoning-class OpenAI models served via /v1/responses fix temperature
+// at 1, ignore top_p, and 400 on presence/frequency_penalty / seed. Non
+// reasoning models (gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo) keep the
+// full sampling surface even when routed through /v1/responses. See
+// https://platform.openai.com/docs/guides/reasoning and the GPT-5 release
+// notes; backend dispatch is external_provider._stream_openai_responses.
+// The Responses API itself drops `stop`, so we leave that off for all
+// OpenAI models regardless of family.
+const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
+  temperature: false,
+  topP: false,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
+  presencePenalty: false,
+  frequencyPenalty: false,
+  seed: false,
+  stop: false,
+  serviceTier: true,
+  parallelToolCalls: true,
+};
+const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
+  temperature: true,
+  topP: true,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
+  presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  // Responses API does not surface `stop` even for non-reasoning models;
+  // tracked in OpenAI's Responses-vs-ChatCompletions migration notes.
+  stop: false,
+  serviceTier: true,
+  parallelToolCalls: true,
+};
+
+// Prefix list for OpenAI reasoning-class model ids. Kept in sync with
+// OPENAI_REASONING_MODELS below (used for reasoning_effort capability).
+// Longest prefixes first so "gpt-5.5-pro" wins over "gpt-5.5".
+const OPENAI_REASONING_MODEL_PREFIXES = [
+  "gpt-5.5-pro",
+  "gpt-5.5",
+  "gpt-5.4-pro",
+  "gpt-5.4",
+  "gpt-5.3-chat-latest",
+  "gpt-5.3-codex",
+  "gpt-5.3",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "o1",
+  "o3",
+  "o4",
+] as const;
+
+function isOpenAIReasoningModelId(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return OPENAI_REASONING_MODEL_PREFIXES.some((p) => normalized.startsWith(p));
+}
+
+// Mirror of backend _ANTHROPIC_4_7_SAMPLING_REMOVED in
+// studio/backend/core/inference/external_provider.py:110. Claude 4.7
+// (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k entirely;
+// surfacing the sliders would let the user move a control that the
+// backend silently strips. The trailing -4-7[-.]/EOL anchor keeps future
+// families (claude-opus-5 etc.) unaffected.
+const ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX = /^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)/i;
+
+function isClaude47SamplingRemoved(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX.test(normalized);
+}
+
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
-  // OpenAI's flagship models (gpt-5.x / o3 / gpt-4.5) are reasoning-class
-  // models served via /v1/responses, which rejects temperature, top_p, and
-  // presence/frequency penalty. See backend
-  // external_provider._stream_openai_responses for the proxy.
-  // service_tier and parallel_tool_calls are accepted on /v1/responses;
-  // seed / stop / frequency_penalty are 400'd alongside temperature/top_p.
-  openai: {
-    temperature: false,
-    topP: false,
-    topK: false,
-    minP: false,
-    repetitionPenalty: false,
-    presencePenalty: false,
-    frequencyPenalty: false,
-    seed: false,
-    stop: false,
-    serviceTier: true,
-    parallelToolCalls: true,
-  },
+  // Default OpenAI bucket is reasoning-class (current registry only ships
+  // gpt-5.x / o3 ids), but per-model resolution in getProviderCapabilities
+  // upgrades non-reasoning ids (gpt-4o etc.) to OPENAI_CHAT_CAPABILITIES.
+  openai: OPENAI_REASONING_CAPABILITIES,
   // Anthropic's Messages API accepts top_k on 3.x and 4.5/4.6, but Claude
   // 4.7 (Opus/Sonnet/Haiku) deprecated it and returns 400 if it is set.
   // We surface top_k in the panel for all Anthropic providers and let the
@@ -496,15 +557,32 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
 /**
- * Resolve the capability set for an external provider. Returns `null` for
- * a local model (i.e. when `providerType` is null/undefined), which callers
- * should treat as "every knob applies".
+ * Resolve the capability set for an external provider, optionally
+ * specialised by model id. Returns `null` for a local model (i.e. when
+ * `providerType` is null/undefined), which callers should treat as
+ * "every knob applies".
+ *
+ * Per-model specialisations:
+ *   - openai + non-reasoning model (gpt-4o, gpt-4-turbo, gpt-4,
+ *     gpt-3.5-turbo): full sampling surface (OPENAI_CHAT_CAPABILITIES).
+ *   - openai + reasoning model (gpt-5.x, o1, o3, o4): restrictive
+ *     (OPENAI_REASONING_CAPABILITIES).
+ *   - anthropic + claude-*-4-7: temperature/top_p/top_k stripped to
+ *     match the backend 400-avoidance regex.
  */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
+  modelId?: string | null | undefined,
 ): ProviderCapabilities | null {
   if (!providerType) return null;
-  return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
+  const base = PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
+  if (providerType === "openai" && modelId && !isOpenAIReasoningModelId(modelId)) {
+    return OPENAI_CHAT_CAPABILITIES;
+  }
+  if (providerType === "anthropic" && isClaude47SamplingRemoved(modelId)) {
+    return { ...base, temperature: false, topP: false, topK: false };
+  }
+  return base;
 }
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;

@@ -1190,6 +1190,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
+          externalSelection?.modelId,
         );
         const externalReasoningCaps: ReturnType<
           typeof getExternalReasoningCapabilities
