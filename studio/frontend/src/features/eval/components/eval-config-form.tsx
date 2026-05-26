@@ -169,6 +169,8 @@ export function EvalConfigForm({
       </SectionCard>
 
       <div className="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6">
+        {/* Left column: Dataset + Metric */}
+        <div className="flex min-w-0 flex-col gap-4 md:gap-6">
         {/* Dataset */}
         <SectionCard
           icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
@@ -215,6 +217,10 @@ export function EvalConfigForm({
           </div>
         </SectionCard>
 
+        </div>
+
+        {/* Right column: Prompt + Generation */}
+        <div className="flex min-w-0 flex-col gap-4 md:gap-6">
         {/* Prompt */}
         <SectionCard
           icon={<HugeiconsIcon icon={PencilEdit02Icon} className="size-5" />}
@@ -309,6 +315,7 @@ export function EvalConfigForm({
             </div>
           </div>
         </SectionCard>
+        </div>
       </div>
 
       {/* Footer */}
