@@ -88,6 +88,7 @@ import {
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
 } from "./provider-capabilities";
+import { useAui } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
 import type { RagMode, RagSource } from "./api/chat-settings-api";
@@ -485,24 +486,49 @@ export function ChatSettingsPanel({
   const effectiveThreadMode: KBMode =
     threadSettings?.mode ?? ragDefaults?.mode ?? "text";
 
+  const aui = useAui();
+  // Brand-new chat has no backend thread yet — initialize the local
+  // assistant-ui thread to mint a remoteId so per-thread RAG settings
+  // can be saved before the user sends a message or attaches a file.
+  const ensureThreadId = async (): Promise<string | null> => {
+    const stored = useChatRuntimeStore.getState().activeThreadId;
+    if (stored) return stored;
+    try {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) return null;
+      const localId = runtime.threads.getState().mainThreadId;
+      if (!localId) return null;
+      const { remoteId } = await runtime.threads
+        .getItemById(localId)
+        .initialize();
+      useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+      return remoteId;
+    } catch {
+      return null;
+    }
+  };
+
   const applyThreadSettingChange = (
     patch: { chunking_strategy?: RagChunkingStrategy; mode?: KBMode },
   ) => {
-    if (!activeThreadId) return;
-    if (threadDocs.length === 0) {
-      void updateThreadSettings(activeThreadId, patch);
-      return;
-    }
-    const ok = window.confirm(
-      `Re-index ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} ` +
-        `with the new settings? Existing chunks will be deleted and rebuilt.`,
-    );
-    if (ok) {
-      void reingestThread(activeThreadId, patch);
-    } else {
-      // User declined: refresh so the select snaps back.
-      void loadThreadSettings(activeThreadId);
-    }
+    void (async () => {
+      const threadId = await ensureThreadId();
+      if (!threadId) return;
+      if (threadDocs.length === 0) {
+        void updateThreadSettings(threadId, patch);
+        return;
+      }
+      const ok = window.confirm(
+        `Re-index ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} ` +
+          `with the new settings? Existing chunks will be deleted and rebuilt.`,
+      );
+      if (ok) {
+        void reingestThread(threadId, patch);
+      } else {
+        // User declined: refresh so the select snaps back.
+        void loadThreadSettings(threadId);
+      }
+    })();
   };
   const [kbCreateOpen, setKbCreateOpen] = useState(false);
   const ragEnabled = ragSource.kind !== "off";
@@ -1387,7 +1413,7 @@ export function ChatSettingsPanel({
               onOpenChange={setKbCreateOpen}
               onCreated={(kb) => setRagSource({ kind: "kb", kbId: kb.id })}
             />
-            {ragSource.kind === "thread" && activeThreadId ? (
+            {ragSource.kind === "thread" ? (
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
@@ -1484,6 +1510,7 @@ export function ChatSettingsPanel({
                         variant="ghost"
                         size="sm"
                         onClick={() => {
+                          if (!activeThreadId) return;
                           if (
                             window.confirm(
                               `Re-index all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"}? Existing chunks will be deleted and rebuilt; search will be unavailable until ingestion finishes.`,
@@ -1500,6 +1527,7 @@ export function ChatSettingsPanel({
                         size="sm"
                         className="text-destructive hover:text-destructive hover:bg-destructive/10"
                         onClick={() => {
+                          if (!activeThreadId) return;
                           if (
                             window.confirm(
                               `Delete all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} from this thread? This cannot be undone.`,
