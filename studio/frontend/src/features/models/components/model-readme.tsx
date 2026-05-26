@@ -8,6 +8,9 @@ import { isBrowserOffline } from "@/lib/network";
 import { fingerprintToken } from "@/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "@/stores/hf-token-store";
+import { code as streamdownCode } from "@streamdown/code";
+import { math as streamdownMath } from "@streamdown/math";
+import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
 import {
   createContext,
   startTransition,
@@ -342,14 +345,9 @@ async function loadPlugins(needs: {
   math: boolean;
   mermaid: boolean;
 }): Promise<ReadmePlugins> {
-  const [codeModule, mathModule, mermaidModule] = await Promise.all([
-    import("@streamdown/code"),
-    needs.math ? import("@streamdown/math") : Promise.resolve(null),
-    needs.mermaid ? import("@streamdown/mermaid") : Promise.resolve(null),
-  ]);
-  const plugins: ReadmePlugins = { code: codeModule.code };
-  if (mathModule) plugins.math = mathModule.math;
-  if (mermaidModule) plugins.mermaid = mermaidModule.mermaid;
+  const plugins: ReadmePlugins = { code: streamdownCode };
+  if (needs.math) plugins.math = streamdownMath;
+  if (needs.mermaid) plugins.mermaid = streamdownMermaid;
   return plugins;
 }
 
