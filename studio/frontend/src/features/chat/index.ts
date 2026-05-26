@@ -52,6 +52,7 @@ export {
 } from "./model-config/recent-models";
 export { isCustomProviderType } from "./external-providers";
 export { ChatPage } from "./chat-page";
+export { getInferenceStatus, loadModel } from "./api/chat-api";
 export {
   ChatSettingsPanel,
   defaultInferenceParams,
@@ -62,6 +63,8 @@ export { useChatSearchStore } from "./stores/chat-search-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
+export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { downloadChatExport } from "./utils/export-chat-history";
 export {
   browseFolders,
   cancelDatasetDownload,

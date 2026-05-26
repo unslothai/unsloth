@@ -153,6 +153,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   active_model: string | null;
+  model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
   gguf_variant?: string | null;
@@ -168,7 +169,7 @@ export interface InferenceStatusResponse {
     min_p?: number;
     presence_penalty?: number;
     trust_remote_code?: boolean;
-  };
+  } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?: "enable_thinking" | "reasoning_effort";
@@ -202,12 +203,31 @@ export interface AudioGenerationResponse {
   }>;
 }
 
-export type OpenAIMessageContent =
-  | string
-  | Array<
-      | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string } }
-    >;
+export type OpenAIReasoningSummaryPart = {
+  type: "summary_text";
+  text: string;
+};
+
+export type OpenAIReasoningContentPart = {
+  type: "reasoning";
+  id: string;
+  summary: OpenAIReasoningSummaryPart[];
+  status?: "in_progress" | "completed" | "incomplete";
+};
+
+export type OpenAIImageGenerationCallContentPart = {
+  type: "image_generation_call";
+  id: string;
+  response_id?: string;
+};
+
+export type OpenAIMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | OpenAIReasoningContentPart
+  | OpenAIImageGenerationCallContentPart;
+
+export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";
@@ -272,6 +292,12 @@ export interface OpenAIChatCompletionsRequest {
    * the Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
+  /**
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
+   * silently on every other model + provider. See
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   */
+  fast_mode?: boolean | null;
 }
 
 export interface OpenAIChatDelta {

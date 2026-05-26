@@ -49,6 +49,8 @@ import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+from typing import Optional
+from urllib.parse import urlparse
 
 
 _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -114,6 +116,7 @@ from datetime import datetime
 # Import routers
 from routes import (
     auth_router,
+    chat_history_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -411,6 +414,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/data-recipe",
     "/api/datasets",
     "/api/models",
+    "/api/chat",
     "/api/train",
     "/api/export",
 )
@@ -553,6 +557,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
+app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are intentionally NOT
 # exposed on the /v1 OpenAI-compat prefix below.
@@ -773,10 +778,8 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending.
-
-    Returns ``(html_bytes, script_nonce_or_None)``. Callers must forward
-    the nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so the inline script is
-    not blocked by CSP.
+    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the
+    nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
     """
     import json as _json
     import secrets as _secrets
@@ -801,6 +804,86 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
+    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
+    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
+    case-insensitive (RFC 3986), so bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable
+    input so callers fall to the safer cross-origin default.
+    """
+    scheme = (scheme or "").strip().lower()
+    if not scheme or not netloc:
+        return None
+    # Strip userinfo (RFC 3986); Origin never carries credentials.
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
+    # ``partition(":")`` mis-parses these and breaks ``unsloth studio -H ::1``.
+    if netloc.startswith("["):
+        close = netloc.find("]")
+        if close == -1:
+            return None
+        host = netloc[1:close]
+        rest = netloc[close + 1 :]
+        if rest.startswith(":"):
+            port_str = rest[1:]
+        elif rest == "":
+            port_str = ""
+        else:
+            return None
+    else:
+        host, _, port_str = netloc.partition(":")
+    host = host.strip().lower()
+    if not host:
+        return None
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+    else:
+        port = _DEFAULT_PORTS.get(scheme, 0)
+    return (scheme, host, port)
+
+
+def _is_same_origin_request(request: Request) -> bool:
+    """True when Origin is missing or matches request's scheme://host:port.
+    Top-level same-document GETs omit Origin, so missing counts as same-origin.
+    Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
+    :func:`_canonical_origin` so default-port stripping and scheme/host case
+    do not misclassify same-origin requests as cross-origin.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        # Missing header: top-level same-document GETs omit Origin.
+        return True
+    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
+    if not origin:
+        return False
+    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
+    if origin == "null":
+        return False
+    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets; swallow
+    # so a garbage Origin doesn't 500 the SPA handler.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
+    if origin_canon is None:
+        return False
+    try:
+        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    except ValueError:
+        return False
+    if self_canon is None:
+        return False
+    return origin_canon == self_canon
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -811,11 +894,18 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
-    def _build_index_response() -> Response:
+    def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        content, nonce = _inject_bootstrap(content, app)
-        headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
+        if _is_same_origin_request(request):
+            content, nonce = _inject_bootstrap(content, app)
+        else:
+            nonce = None
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Vary": "Origin",
+        }
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
@@ -825,11 +915,11 @@ def setup_frontend(app: FastAPI, build_path: Path):
         )
 
     @app.get("/")
-    async def serve_root():
-        return _build_index_response()
+    async def serve_root(request: Request):
+        return _build_index_response(request)
 
     @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
+    async def serve_frontend(request: Request, full_path: str):
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
@@ -843,6 +933,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
             return FileResponse(file_path)
 
         # Serve index.html as bytes — avoids Content-Length mismatch
-        return _build_index_response()
+        return _build_index_response(request)
 
     return True

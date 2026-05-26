@@ -494,6 +494,7 @@
 	.tracking-nav {
 		letter-spacing: 0.015em;
 	}
+
 	.dark .tracking-nav {
 		letter-spacing: 0.03em;
 	}
@@ -519,6 +520,7 @@
 	.sidebar-nav-btn {
 		color: var(--nav-fg);
 	}
+
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
@@ -529,6 +531,7 @@
 		background-color: var(--nav-surface-hover) !important;
 		color: #232528 !important;
 	}
+
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
@@ -542,9 +545,11 @@
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
+
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
 	}
+
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-[10px] text-sidebar-foreground/55;
 	}
@@ -556,10 +561,12 @@
 	.aui-branch-chevron-btn {
 		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
 	}
+
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply bg-nav-surface-hover text-nav-fg;
 	}
+
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		color: #fff;
@@ -580,6 +587,7 @@
 		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
+
 	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
 		border: 0 !important;
 		box-shadow: none;
@@ -593,6 +601,7 @@
 		@apply rounded-[20px] border-0 transition-colors;
 		background-color: var(--panel-input-surface);
 	}
+
 	.panel-text-surface:hover {
 		background-color: var(--panel-input-surface-hover);
 	}
@@ -611,9 +620,11 @@
 		height: 0.25rem !important;
 		background-color: rgb(0 0 0 / 0.025) !important;
 	}
+
 	.dark .panel-slider [data-slot="slider-track"] {
 		background-color: rgb(255 255 255 / 0.025) !important;
 	}
+
 	/* Sliders in the right-side parameters panel.
 	 *
 	 * Color: every interactive surface (active fill, thumb body, thumb
@@ -646,6 +657,7 @@
 	.panel-slider .bg-primary {
 		background-color: var(--panel-slider-fg) !important;
 	}
+
 	.panel-slider [data-slot="slider-thumb"] {
 		width: 0.875rem !important;
 		height: 0.875rem !important;
@@ -655,18 +667,18 @@
 		box-shadow: none !important;
 		transition: box-shadow 140ms ease-out !important;
 	}
+
 	.panel-slider [data-slot="slider-thumb"]:hover,
 	.panel-slider [data-slot="slider-thumb"]:focus-visible,
 	.panel-slider:active [data-slot="slider-thumb"] {
-		box-shadow: 0 0 0 10px
-			color-mix(in srgb, var(--panel-slider-fg) 18%, transparent) !important;
+		box-shadow: 0 0 0 10px color-mix(in srgb, var(--panel-slider-fg) 18%, transparent) !important;
 	}
+
 	/* Active press: slightly larger / more opaque ring than passive
 	   hover, so the haptic reads stronger when the user is actively
 	   manipulating the value. */
 	.panel-slider:active [data-slot="slider-thumb"] {
-		box-shadow: 0 0 0 12px
-			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
+		box-shadow: 0 0 0 12px color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -680,6 +692,7 @@
 	.panel-number-input {
 		@apply h-7 rounded-md border-0 bg-transparent px-1.5 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
 	}
+
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
 	}
@@ -693,9 +706,11 @@
 	.panel-switch[data-state="checked"] {
 		background-color: var(--primary) !important;
 	}
+
 	.panel-switch [data-slot="switch-thumb"] {
 		background-color: var(--panel-slider-fg) !important;
 	}
+
 	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
 		background-color: #ffffff !important;
 	}
@@ -721,6 +736,7 @@
 	.tooltip-rich {
 		@apply rounded-[16px] border-transparent bg-black px-4 py-3 font-heading tracking-wide text-white shadow-[0_8px_28px_-6px_rgba(0,0,0,0.32)];
 	}
+
 	/* Row-label color override — the popups reuse the existing prose
 	   `text-muted-foreground` class. Fixed light gray on the black
 	   surface keeps the label clearly legible while staying distinct
@@ -728,6 +744,7 @@
 	.tooltip-rich .text-muted-foreground {
 		color: #b1b1b1 !important;
 	}
+
 	.tooltip-rich .border-border\/40 {
 		border-color: rgb(255 255 255 / 0.12) !important;
 	}
@@ -736,6 +753,7 @@
 	.tag-meta {
 		@apply min-h-[26px] rounded-[11px] bg-muted/70 ring-1 ring-inset ring-border;
 	}
+
 	.dark .tag-soft,
 	.dark .tag-meta {
 		@apply bg-white/[0.05] ring-white/[0.06];
@@ -747,6 +765,7 @@
 		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
 		box-shadow: none;
 	}
+
 	.dark .download-card {
 		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
@@ -774,11 +793,13 @@
 			background-color 160ms ease,
 			border-color 160ms ease;
 	}
+
 	.field-soft:hover,
 	.field-soft[data-state="open"] {
 		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
+
 	.field-soft:focus,
 	.field-soft:focus-visible,
 	.field-soft:focus-within {
@@ -787,15 +808,18 @@
 		box-shadow: none !important;
 		outline: none;
 	}
+
 	.dark .field-soft {
 		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	.dark .field-soft:hover,
 	.dark .field-soft[data-state="open"] {
 		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
+
 	.dark .field-soft:focus,
 	.dark .field-soft:focus-visible,
 	.dark .field-soft:focus-within {
@@ -813,6 +837,7 @@
 	html:not(.dark) .hub-page > div > section .border-t.border-border {
 		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	html:not(.dark) .hub-page .hub-side-surface {
 		background-color: var(--background);
 	}
@@ -827,6 +852,7 @@
 			background-color 160ms ease,
 			border-color 160ms ease;
 	}
+
 	html:not(.dark) .hub-page .tag-soft:hover,
 	html:not(.dark) .hub-page .tag-meta:hover {
 		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
@@ -840,11 +866,13 @@
 	html.dark .hub-page > div > section [class*="bg-background"] {
 		background-color: var(--popover);
 	}
+
 	html.dark .hub-page > div > section .border-b,
 	html.dark .hub-page > div > section .border-r,
 	html.dark .hub-page > div > section .border-t.border-border {
 		border-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 	}
+
 	html.dark .hub-page .hub-side-surface {
 		background-color: transparent;
 	}
@@ -858,14 +886,17 @@
 			background-color 160ms ease,
 			border-color 160ms ease;
 	}
+
 	html.dark .hub-page .tag-soft {
 		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
 		color: var(--muted-foreground);
 	}
+
 	html.dark .hub-page .tag-meta {
 		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
 		color: var(--muted-foreground);
 	}
+
 	html.dark .hub-page .tag-soft:hover,
 	html.dark .hub-page .tag-meta:hover {
 		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
@@ -879,16 +910,19 @@
 		user-select: none;
 		-webkit-user-select: none;
 	}
+
 	.menu-instant [data-slot="select-item"]:focus,
 	.menu-instant [data-slot="select-item"][data-highlighted] {
 		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 		color: var(--foreground);
 	}
+
 	html.dark .menu-instant [data-slot="select-item"]:focus,
 	html.dark .menu-instant [data-slot="select-item"][data-highlighted] {
 		background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
 		color: var(--foreground);
 	}
+
 	html.dark .menu-instant {
 		background-color: #2e2f31 !important;
 	}
@@ -909,6 +943,7 @@
 		backdrop-filter: none !important;
 		-webkit-backdrop-filter: none !important;
 	}
+
 	.menu-instant *,
 	.menu-trigger,
 	.menu-trigger * {
@@ -922,12 +957,14 @@
 		border: 0;
 		box-shadow: none;
 	}
+
 	html.dark .hub-page .tab-toggle,
 	html.dark .tab-toggle {
 		background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
+
 	html:not(.dark) .hub-page .tab-toggle-pill,
 	html:not(.dark) .tab-toggle-pill {
 		background-color: var(--background);
@@ -936,6 +973,7 @@
 			0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent),
 			0 4px 10px -3px color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	html.dark .hub-page .tab-toggle-pill,
 	html.dark .tab-toggle-pill {
 		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
@@ -951,12 +989,15 @@
 		box-shadow: none;
 		transition: background-color 160ms ease;
 	}
+
 	html:not(.dark) .hub-page .catalog-row:hover {
 		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
+
 	html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
 		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	/* Currently-loaded checkpoint: a brand-green left stripe plus a faint
 	   green wash, orthogonal to the neutral selected tint so a row that is
 	   both loaded and selected still reads as loaded. */
@@ -971,12 +1012,15 @@
 		box-shadow: none;
 		transition: background-color 160ms ease;
 	}
+
 	html.dark .hub-page .catalog-row:hover {
 		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
+
 	html.dark .hub-page .catalog-row[data-selected="true"] {
 		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 	}
+
 	html.dark .hub-page .catalog-row[data-active="true"] {
 		background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
 		box-shadow: inset 2px 0 0 0 var(--primary);
@@ -991,20 +1035,25 @@
 		background-color: transparent;
 		transition: background-color 160ms ease;
 	}
+
 	html:not(.dark) .picker-row:hover {
 		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
+
 	html:not(.dark) .picker-row[data-selected="true"],
 	html:not(.dark) .picker-row[aria-expanded="true"] {
 		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	html.dark .picker-row {
 		background-color: transparent;
 		transition: background-color 160ms ease;
 	}
+
 	html.dark .picker-row:hover {
 		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
 	}
+
 	html.dark .picker-row[data-selected="true"],
 	html.dark .picker-row[aria-expanded="true"] {
 		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
@@ -1017,12 +1066,15 @@
 	html:not(.dark) .picker-scope * {
 		scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 	}
+
 	html.dark .picker-scope * {
 		scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
 	}
+
 	html:not(.dark) .picker-scope *::-webkit-scrollbar-thumb {
 		background: oklch(0.5 0 0 / 0.22);
 	}
+
 	html.dark .picker-scope *::-webkit-scrollbar-thumb {
 		background: oklch(0.55 0 0 / 0.16);
 	}
@@ -1037,6 +1089,7 @@
 	.hub-avatar-tile {
 		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
+
 	.dark .hub-avatar-tile {
 		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 8%, transparent);
 	}
@@ -1059,17 +1112,21 @@
 			opacity: 0;
 			transform: translate3d(-120%, 0, 0);
 		}
+
 		16% {
 			opacity: 0.92;
 		}
+
 		78% {
 			opacity: 0.92;
 		}
+
 		100% {
 			opacity: 0;
 			transform: translate3d(520%, 0, 0);
 		}
 	}
+
 	.hub-loading-bar {
 		pointer-events: none;
 		position: relative;
@@ -1077,6 +1134,7 @@
 		width: 100%;
 		height: 3px;
 	}
+
 	.hub-loading-bar::after {
 		content: "";
 		display: none;
@@ -1084,26 +1142,24 @@
 		inset-block: 0;
 		left: 0;
 		width: 36%;
-		background: linear-gradient(
-			90deg,
-			transparent,
-			color-mix(in srgb, var(--foreground) 20%, transparent),
-			color-mix(in srgb, var(--foreground) 58%, transparent),
-			color-mix(in srgb, var(--foreground) 20%, transparent),
-			transparent
-		);
+		background: linear-gradient(90deg,
+				transparent,
+				color-mix(in srgb, var(--foreground) 20%, transparent),
+				color-mix(in srgb, var(--foreground) 58%, transparent),
+				color-mix(in srgb, var(--foreground) 20%, transparent),
+				transparent);
 		will-change: opacity, transform;
 	}
+
 	html.dark .hub-loading-bar::after {
-		background: linear-gradient(
-			90deg,
-			transparent,
-			color-mix(in srgb, var(--foreground) 22%, transparent),
-			color-mix(in srgb, var(--foreground) 60%, transparent),
-			color-mix(in srgb, var(--foreground) 22%, transparent),
-			transparent
-		);
+		background: linear-gradient(90deg,
+				transparent,
+				color-mix(in srgb, var(--foreground) 22%, transparent),
+				color-mix(in srgb, var(--foreground) 60%, transparent),
+				color-mix(in srgb, var(--foreground) 22%, transparent),
+				transparent);
 	}
+
 	.hub-loading-bar[data-active="true"]::after {
 		display: block;
 		animation: hub-loading-sweep 2.6s cubic-bezier(0.22, 0.72, 0.18, 1) infinite;
@@ -1116,23 +1172,28 @@
 		content-visibility: auto;
 		contain-intrinsic-size: auto 640px;
 	}
+
 	.hub-readme-prose > * {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 140px;
 	}
+
 	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.5rem;
 	}
+
 	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
 		display: none;
 	}
+
 	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a {
 		display: inline-flex;
 		align-items: center;
 	}
+
 	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img {
 		margin-block: 0;
 	}
@@ -1163,15 +1224,19 @@
 		color: var(--foreground);
 		transition: color 150ms, background-color 150ms;
 	}
+
 	.hub-action-btn:hover:not(:disabled) {
 		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
+
 	.dark .hub-action-btn:hover:not(:disabled) {
 		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 	}
+
 	.hub-action-btn:disabled {
 		cursor: not-allowed;
 	}
+
 	/* Every glyph inside a hub action button — explicit icon, spinner, or
 	   embedded SVG — locks to 16px so swapping icons or replacing the
 	   spinner can't drift the layout. */
@@ -1209,16 +1274,20 @@
 			inset 0 1px 0 color-mix(in srgb, var(--primary-foreground) 18%, transparent),
 			0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
 	}
+
 	.run-action-btn:hover:not(:disabled) {
 		background-color: color-mix(in srgb, var(--status-success) 88%, black);
 	}
+
 	.run-action-btn:active:not(:disabled) {
 		transform: scale(0.98);
 	}
+
 	.run-action-btn:disabled {
 		cursor: not-allowed;
 		opacity: 0.5;
 	}
+
 	.run-action-btn svg {
 		width: 0.9rem;
 		height: 0.9rem;
@@ -1237,17 +1306,21 @@
 		align-items: center;
 		justify-content: center;
 	}
+
 	.hub-cta-indicator-spinner,
 	.hub-cta-indicator-cancel {
 		transition: opacity 150ms;
 	}
+
 	.hub-cta-indicator-cancel {
 		position: absolute;
 		opacity: 0;
 	}
+
 	.hub-action-btn:hover .hub-cta-indicator-spinner {
 		opacity: 0;
 	}
+
 	.hub-action-btn:hover .hub-cta-indicator-cancel {
 		opacity: 1;
 	}
@@ -1273,16 +1346,20 @@
 		cursor: pointer;
 		transition: opacity 150ms, color 150ms;
 	}
+
 	.group\/dl:hover .hub-row-action,
 	.hub-row-action:focus-visible {
 		opacity: 1;
 	}
+
 	.hub-row-action:hover {
 		color: rgb(225 29 72);
 	}
+
 	.dark .hub-row-action:hover {
 		color: rgb(251 113 133);
 	}
+
 	.hub-row-action svg {
 		width: 1rem;
 		height: 1rem;
@@ -1300,24 +1377,30 @@
 		letter-spacing: 0.015em;
 		color: var(--nav-fg);
 	}
+
 	.dark .app-user-menu [data-slot="dropdown-menu-item"] {
 		letter-spacing: 0.03em;
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"] svg {
 		width: 19px !important;
 		height: 19px !important;
 		flex-shrink: 0;
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus {
 		background-color: var(--nav-surface-hover);
 		color: #232528;
 	}
+
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus {
 		color: #fff;
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus * {
 		color: #232528 !important;
 	}
+
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus * {
 		color: #fff !important;
 	}
@@ -1325,16 +1408,20 @@
 	.menu-flat-destructive {
 		--destructive: #dc4848;
 	}
+
 	.dark .menu-flat-destructive {
 		--destructive: #ed7878;
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
 	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
 		color: var(--destructive);
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
 		background-color: color-mix(in oklab, var(--destructive) 10%, transparent);
 	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus * {
 		color: var(--destructive) !important;
 	}
@@ -1364,16 +1451,19 @@
 		border-radius: 20px;
 		box-shadow: 0 0 60px 8px #f5f5f4;
 	}
+
 	@media (min-width: 640px) {
 		.elevated-card {
 			border-radius: 28px;
 		}
 	}
+
 	@media (min-width: 1024px) {
 		.elevated-card {
 			border-radius: 32px;
 		}
 	}
+
 	.dark .elevated-card {
 		border-color: transparent;
 		box-shadow: none;
@@ -1391,6 +1481,7 @@
 			0 0 56px #ebeae6,
 			0 0 96px #efeeea;
 	}
+
 	.dark .page-title-halo {
 		text-shadow: none;
 	}
@@ -1402,11 +1493,9 @@
 	   string concatenation (`${color}1f`) and centralises the recipe
 	   so re-tuning the tint is a one-file edit. */
 	.train-section-chip {
-		background-color: color-mix(
-			in srgb,
-			var(--chip-color, transparent) 12%,
-			transparent
-		);
+		background-color: color-mix(in srgb,
+				var(--chip-color, transparent) 12%,
+				transparent);
 		color: var(--chip-color, currentColor);
 	}
 
@@ -1457,6 +1546,7 @@
 		padding-bottom: 0.25rem;
 		line-height: 1.25rem;
 	}
+
 	.hub-page .field-trigger.field-filter:hover {
 		color: var(--foreground);
 	}
@@ -1480,6 +1570,7 @@
 	.slider-field:has(.panel-slider:active) .panel-number-input {
 		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 	}
+
 	.dark .slider-field:has(.panel-slider:hover) .panel-number-input,
 	.dark .slider-field:has(.panel-slider:focus-within) .panel-number-input,
 	.dark .slider-field:has(.panel-slider:active) .panel-number-input {
@@ -1497,6 +1588,7 @@
 		-webkit-appearance: none;
 		margin: 0;
 	}
+
 	input[type="number"] {
 		-moz-appearance: textfield;
 		appearance: textfield;
@@ -1512,13 +1604,14 @@
 		@apply bg-popover text-popover-foreground;
 		box-shadow:
 			inset 0 0 0 1px var(--menu-soft-edge),
-			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
-				var(--menu-soft-spread) var(--menu-soft-shadow);
+			0 var(--menu-soft-offset-y) var(--menu-soft-blur) var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
+
 	.menu-soft-surface-up {
 		--menu-soft-offset-y: -6px;
 		--menu-soft-spread: -8px;
 	}
+
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: color-mix(in srgb, var(--foreground) 7%, transparent);
@@ -1544,6 +1637,7 @@
 	.composer-pill-btn {
 		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
+
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
@@ -1734,6 +1828,7 @@
 		content-visibility: visible !important;
 		contain-intrinsic-size: none !important;
 	}
+
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
 	}
@@ -1836,12 +1931,15 @@
 html:not(.dark) .hub-page [data-hub-scroll="true"] {
 	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 }
+
 html.dark .hub-page [data-hub-scroll="true"] {
 	scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
 }
+
 html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.22);
 }
+
 html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 	background: oklch(0.55 0 0 / 0.16);
 }
@@ -1935,13 +2033,63 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 	color: var(--popover-foreground) !important;
 	border-color: var(--border) !important;
 }
+
 [data-sonner-toast][data-styled="true"] [data-close-button] svg {
 	stroke-width: 2.25;
 }
+
 [data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
 	background: var(--muted) !important;
 	color: var(--popover-foreground) !important;
 	border-color: var(--border) !important;
+}
+
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
 }
 
 /*
@@ -1953,13 +2101,14 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
  * end state. Hover colour changes become instant rather than fading, which is
  * the documented WCAG outcome (motion is "minimised, not removed").
  *
- * .animate-spin is the exception: loading spinners are essential progress
+ * .animate-spin and generated image loading dots are the exceptions: loading
  * indicators across Studio (tool execution loaders, sonner toasts, Tauri
- * startup / update screens, the <Spinner /> primitive). Freezing them
- * removes the only visual signal that work is in flight, so they keep
- * animating but at a slower, less aggressive 1.5s cadence.
+ * startup / update screens, the <Spinner /> primitive, and image generation
+ * cards). Freezing them removes the only visual signal that work is in flight,
+ * so they keep animating.
  */
 @media (prefers-reduced-motion: reduce) {
+
 	*,
 	*::before,
 	*::after {
@@ -1976,6 +2125,11 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 
 	.hub-loading-bar[data-active="true"]::after {
 		animation-duration: 3s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.generated-image-loading-dot {
+		animation-duration: 1850ms !important;
 		animation-iteration-count: infinite !important;
 	}
 }

@@ -9,6 +9,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/studio",
+  staticData: { title: "Train" },
   beforeLoad: () => requireAuth(),
   component: StudioPage,
 });

@@ -14,8 +14,8 @@
     "preview": "vite preview",
     "test:scripts": "node --test scripts/*.test.ts",
     "typecheck": "tsc -b --pretty false",
-    "biome:check": "biome check .",
-    "biome:fix": "biome check . --write"
+    "biome:check": "biome check",
+    "biome:fix": "biome check --write"
   },
   "dependencies": {
     "@assistant-ui/core": "0.1.17",

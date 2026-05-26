@@ -12,10 +12,20 @@ import {
   Outlet,
   createRootRoute,
   redirect,
+  useMatches,
   useRouterState,
 } from "@tanstack/react-router";
-import { Suspense, useEffect, type ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Suspense, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
+
+// Type `staticData.title` on every route so the matched-title selector
+// below stays type-safe without an inline cast.
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    title?: string;
+  }
+}
 
 // Fallback while a lazy route bundle (Train/Recipes/Export) loads.
 // /chat is synchronous and never hits this.
@@ -54,6 +64,9 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
+// Fallback when no matched route declares a `staticData.title`.
+const DEFAULT_DOCUMENT_TITLE = "Unsloth Studio";
+
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
@@ -61,6 +74,30 @@ function RootLayout() {
   const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
+
+  // Walk matches deepest-first; each route declares its own title.
+  const matchedTitle = useMatches({
+    select: (matches) => {
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const title = matches[i].staticData.title;
+        if (title) return title;
+      }
+      return null;
+    },
+  });
+
+  // `/settings` redirects in `beforeLoad`, so its route never stays
+  // matched; surface the modal's title via the store instead.
+  const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
+  const documentTitle = settingsDialogOpen ? "Settings" : matchedTitle;
+
+  // useLayoutEffect updates the tab title before paint, avoiding a
+  // one-frame flash of the previous route's title on navigation.
+  useLayoutEffect(() => {
+    document.title = documentTitle
+      ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
+      : DEFAULT_DOCUMENT_TITLE;
+  }, [documentTitle]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
