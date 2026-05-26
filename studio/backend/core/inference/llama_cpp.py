@@ -2964,24 +2964,22 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
-                _fully_gpu_offloaded = False
+                fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Model fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
-                    _fully_gpu_offloaded = True
+                    fully_gpu_offloaded = True
 
                 # -1 = llama.cpp auto-detect (physical cores). Windows +
                 # full offload caps at 2 to stop OpenMP spin-wait burning
                 # CPU during GPU decode. #5692.
-                import sys as _sys
-
-                if _sys.platform == "win32" and _fully_gpu_offloaded:
-                    _t = 2
+                if sys.platform == "win32" and fully_gpu_offloaded:
+                    threads_arg = 2
                 else:
-                    _t = n_threads if n_threads is not None else -1
-                cmd.extend(["--threads", str(_t)])
+                    threads_arg = n_threads if n_threads is not None else -1
+                cmd.extend(["--threads", str(threads_arg)])
 
                 # Always enable Jinja chat template rendering for proper template support
                 cmd.extend(["--jinja"])
@@ -3117,7 +3115,7 @@ class LlamaCppBackend:
 
                 # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
                 # overhead). CPU/partial offload keeps prompt caching. #5692.
-                if _sys.platform == "win32" and _fully_gpu_offloaded:
+                if sys.platform == "win32" and fully_gpu_offloaded:
                     cmd.extend(
                         [
                             "--cache-ram",
@@ -3149,9 +3147,6 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Set library paths so llama-server can find its shared libs and CUDA DLLs
-                import os
-                import sys
-
                 env = child_env_without_native_path_secret()
                 binary_dir = str(Path(binary).parent)
 
@@ -3168,7 +3163,7 @@ class LlamaCppBackend:
                     # Windows + full offload: PASSIVE OMP + 2 threads stop
                     # spin-wait burning CPU. CPU/partial offload keeps
                     # default OMP parallelism. #5692.
-                    if _fully_gpu_offloaded:
+                    if fully_gpu_offloaded:
                         env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
                         env.setdefault("OMP_NUM_THREADS", "2")
                 else:
