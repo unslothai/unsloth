@@ -2379,10 +2379,11 @@ async def openai_chat_completions(
             from core.inference.tools import ALL_TOOLS
 
             if payload.enabled_tools is not None:
+                # Preserve client-supplied order so prioritised tools
+                # (e.g. search_knowledge_base when RAG is on) appear first.
+                _by_name = {t["function"]["name"]: t for t in ALL_TOOLS}
                 tools_to_use = [
-                    t
-                    for t in ALL_TOOLS
-                    if t["function"]["name"] in payload.enabled_tools
+                    _by_name[name] for name in payload.enabled_tools if name in _by_name
                 ]
             else:
                 tools_to_use = ALL_TOOLS
@@ -2877,8 +2878,9 @@ async def openai_chat_completions(
         from core.inference.tools import ALL_TOOLS
 
         if payload.enabled_tools is not None:
+            _by_name = {t["function"]["name"]: t for t in ALL_TOOLS}
             _sf_tools_to_use = [
-                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
+                _by_name[name] for name in payload.enabled_tools if name in _by_name
             ]
         else:
             _sf_tools_to_use = ALL_TOOLS

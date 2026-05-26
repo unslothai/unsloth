@@ -21,9 +21,11 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     "function": {
         "name": "search_knowledge_base",
         "description": (
-            "Search the user's attached documents. Call this when the user "
-            "references content from their docs, asks fact-heavy questions, "
-            "or needs grounded citations. Returns chunks wrapped in "
+            "ALWAYS CALL THIS TOOL FIRST before answering any user question. "
+            "It searches the user's attached documents and returns the chunks "
+            "you must ground your reply in. Do not answer from your own "
+            "knowledge until you have called this tool with a focused query "
+            "derived from the user's latest message. Returns chunks wrapped in "
             '<chunk id="N" source="..." page="..." score="...">...</chunk> '
             "tags; cite them in your reply as [1], [2], etc."
         ),

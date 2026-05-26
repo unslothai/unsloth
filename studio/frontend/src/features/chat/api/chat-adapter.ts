@@ -983,23 +983,41 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           Boolean(message),
         );
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
-        outboundMessages.unshift({
-          role: "system",
-          content: safeSystemPrompt.trim(),
-        });
-      }
+      // Temporary debug toggle: when false, the pre-fetch path is skipped
+      // entirely so retrieval only happens via the LLM-invoked
+      // search_knowledge_base tool. Flip back to true to restore the
+      // always-on grounding for external providers / non-tool models.
+      const RAG_PREFETCH_ENABLED = false;
 
-      // Pre-fetch RAG context for the last user turn; failures don't block chat.
-      // Runs for all providers; local tool-capable models also get the tool below
-      // for a narrower follow-up query if needed.
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
       const ragToolPathTaken =
         ragToolEnabled && supportsTools && !isExternalRequest;
-      if (ragToolEnabled && ragSource.kind !== "off") {
+
+      const safeSystemPrompt =
+        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+      const systemPromptParts: string[] = [];
+      if (safeSystemPrompt.trim()) {
+        systemPromptParts.push(safeSystemPrompt.trim());
+      }
+      if (ragToolPathTaken && ragSource.kind !== "off") {
+        systemPromptParts.push(
+          "RAG retrieval is enabled for this conversation. You MUST call " +
+            "the `search_knowledge_base` tool before answering ANY user " +
+            "question — even short ones, follow-ups, clarifications, or " +
+            "questions you think you already know the answer to. Issue the " +
+            "tool call first, then ground your reply in the returned " +
+            "<chunk> blocks and cite them as [1], [2], etc.",
+        );
+      }
+      if (systemPromptParts.length > 0) {
+        outboundMessages.unshift({
+          role: "system",
+          content: systemPromptParts.join("\n\n"),
+        });
+      }
+
+      if (RAG_PREFETCH_ENABLED && ragToolEnabled && ragSource.kind !== "off") {
         const lastUser = [...outboundMessages]
           .reverse()
           .find((m) => m.role === "user");
@@ -1633,9 +1651,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // RAG goes first so the model sees it before any other
+                    // tool when scanning the spec list.
+                    ...(ragToolPathTaken ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
-                    ...(ragToolPathTaken ? ["search_knowledge_base"] : []),
                   ],
                   // Per-request scope for the LLM-invoked tool; tool path only.
                   ...(ragToolPathTaken
