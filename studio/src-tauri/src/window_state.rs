@@ -35,23 +35,32 @@ fn logical_size(window: &tauri::Window) -> Option<(f64, f64)> {
 }
 
 pub fn track_resize(window: &tauri::Window) {
+    if window.is_minimized().unwrap_or(false) {
+        // A minimized window reports 0x0 / tiny bounds on some platforms; keep
+        // the last known size instead of clobbering it.
+        return;
+    }
     let Some(cache) = window.try_state::<WindowStateCache>() else {
         return;
     };
-    let maximized = window.is_maximized().unwrap_or(false);
     let mut guard = cache.0.lock().unwrap();
-    let (width, height) = if maximized {
+    if window.is_maximized().unwrap_or(false) {
+        // Keep the existing normal size; only record that we're maximized.
         guard
-            .map(|state| (state.width, state.height))
-            .unwrap_or((MIN_WIDTH, MIN_HEIGHT))
-    } else {
-        logical_size(window).unwrap_or((MIN_WIDTH, MIN_HEIGHT))
-    };
-    *guard = Some(WindowState {
-        width,
-        height,
-        maximized,
-    });
+            .get_or_insert(WindowState {
+                width: MIN_WIDTH,
+                height: MIN_HEIGHT,
+                maximized: false,
+            })
+            .maximized = true;
+    } else if let Some((width, height)) = logical_size(window) {
+        *guard = Some(WindowState {
+            width,
+            height,
+            maximized: false,
+        });
+    }
+    // If the size can't be read, leave the cached value untouched.
 }
 
 pub fn save(app: &tauri::AppHandle) {

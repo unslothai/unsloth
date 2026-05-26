@@ -76,7 +76,12 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   // Set the floor before applying a remembered size so a stale/undersized one is clamped up.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
   if (!isCurrent()) return;
-  await win.setSize(new LogicalSize(saved?.width ?? finalW, saved?.height ?? finalH));
+  await win.setSize(
+    new LogicalSize(
+      Math.max(MIN_WINDOW_WIDTH, saved?.width ?? finalW),
+      Math.max(MIN_WINDOW_HEIGHT, saved?.height ?? finalH),
+    ),
+  );
   if (!isCurrent()) return;
   // Position isn't persisted, so keep the window centered unless it was maximized.
   if (saved?.maximized) {
