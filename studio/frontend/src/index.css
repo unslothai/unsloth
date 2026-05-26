@@ -1205,6 +1205,53 @@
 	border-color: var(--border) !important;
 }
 
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
+}
+
 /*
  * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
  * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
