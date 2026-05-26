@@ -673,7 +673,7 @@ with sync_playwright() as p:
         try:
             # 1500ms is well below the 2500ms watchdog: only the onKeyDown
             # else-if path can clear composingRef this quickly.
-            expect(send_btn_mac_kd).not_to_be_disabled(timeout=1_500)
+            expect(send_btn_mac_kd).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
                 "English keydown (onKeyDown else-if branch fired, not watchdog)"
@@ -722,7 +722,7 @@ with sync_playwright() as p:
         try:
             # 1500ms is well below the 2500ms watchdog: only onBlur can clear
             # composingRef this quickly when no keydown is fired.
-            expect(send_btn_mac_blur).not_to_be_disabled(timeout=1_500)
+            expect(send_btn_mac_blur).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
                 "textarea blur (onBlur handler fired, not watchdog)"
