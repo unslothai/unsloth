@@ -749,12 +749,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // external-provider render gate would otherwise show old counters
       // until the next completion overwrites them.
       const checkpointChanged = state.params.checkpoint !== modelId;
-      // Clamp maxTokens to the new model's cap when switching INTO an
-      // external model. Otherwise a value carried over from a prior
-      // local-model session (e.g. Gemma's 262144 context) would render
-      // in the slider above the external cap, even though the wire-side
-      // clamp would still bring it down at send time. Keeps the
-      // displayed value honest.
+      // Clamp maxTokens to the new model's cap on switch into an
+      // external model so a value carried over from a prior local
+      // session does not render above the slider's max.
       let nextMaxTokens = state.params.maxTokens;
       if (checkpointChanged && isExternalModelId(modelId)) {
         const parsed = parseExternalModelId(modelId);

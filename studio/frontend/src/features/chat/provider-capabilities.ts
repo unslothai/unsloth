@@ -71,35 +71,18 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Conservative cross-provider output cap, used as a final clamp and as the
- * fallback for providers/models we don't have a documented limit for.
- * Prefer `getExternalMaxOutputTokens(providerType, modelId)` for the real
- * per-model cap (gpt-5.5 / claude-opus-4-7 both ship 128k max output, much
- * higher than this conservative floor).
+ * Fallback cap for unknown providers / models. Prefer
+ * `getExternalMaxOutputTokens(providerType, modelId)` for the real cap.
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
- * Per-model max-output cap, sourced from each provider's docs. Used by the
- * settings-slider max and by chat-adapter's send-time clamp so the slider
- * never reports a value above what the provider will accept.
- *
- * Patterns are ordered most-specific-first so `gpt-5.5-pro` doesn't match
- * the `gpt-5.5` row, etc. Look-up runs longest-prefix-first via
- * `_pickByPrefix` below.
- *
- * Sources:
- * - OpenAI: https://developers.openai.com/api/docs/models/gpt-5.5
- *   (gpt-5.5: 128k max output; gpt-5.4: 64k; gpt-5.3: 16k)
- * - Anthropic: https://platform.claude.com/docs/en/about-claude/models/
- *   (Opus 4.7: 128k max output; 4.6 / 4.5 family: 64k)
- * - Google Gemini 3.x: 65536 max output tokens
- *   (https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)
- * - DeepSeek V4 (deepseek-chat / deepseek-reasoner aliases): 384000 max
- *   output tokens (https://api-docs.deepseek.com/quick_start/pricing)
- *
- * The local-model path is not subject to this; local backends honour
- * whatever the loaded context allows.
+ * Per-model max-output caps from each provider's docs:
+ *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
+ *   Anthropic: platform.claude.com/docs/en/about-claude/models
+ *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+ *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
+ * Local-model path is unaffected.
  */
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
@@ -133,20 +116,14 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
-  // DeepSeek (V4 family; deepseek-chat / deepseek-reasoner alias the
-  // non-thinking and thinking modes of deepseek-v4-flash respectively).
+  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
 /**
- * Return the documented max-output-tokens cap for a given external
- * provider + model. Falls back to `EXTERNAL_MAX_OUTPUT_TOKENS` (32k) for
- * provider/model combinations we don't have a published number for, so
- * unknown ids never regress to a higher-than-supported value.
- *
- * OpenRouter normalises to `provider/model`; strip the `provider/`
- * prefix before matching so `openai/gpt-5.5` resolves the same as
- * `gpt-5.5`.
+ * Documented per-model output cap; unknown ids fall back to
+ * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). OpenRouter ids are
+ * `provider/model`; the prefix is stripped before matching.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
@@ -175,8 +152,7 @@ export function getExternalMaxOutputTokens(
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  // OpenRouter ids are `provider/model`. Map the prefix back to one of
-  // our internal providerType keys so the per-model cap table applies.
+  // Map OpenRouter `provider/model` prefix to our internal providerType.
   if (normalizedId.startsWith("openai/")) return "openai";
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";

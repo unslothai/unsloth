@@ -3,20 +3,9 @@
 
 """Regression tests for OpenAI Responses tool-result rendering.
 
-Two bug classes covered:
-
-1. web_search: every call's tool_end carried `result: ""`, leaving every
-   card except the last one empty in the chat thread. Now each call seeds
-   its own `Searching: <query>` text so the cards always render content;
-   the last call is still overwritten at response.completed with the
-   aggregated citation list (consumed by the source-pill extractor).
-
-2. shell_call (code_execution): when OpenAI bundles the output on the
-   shell_call item's `response.output_item.done` event instead of as a
-   separate `shell_call_output`, the previous handler never emitted
-   tool_end and the card stayed in "running" with no output. The fallback
-   now emits tool_end from the bundled output. A final flush at
-   response.completed catches shell_call ids that received neither.
+Covers two bug classes: empty web_search cards (per-card result seeded
+with "Searching: <query>") and orphan shell_call cards (bundled-output
+fallback + final flush at response.completed / response.incomplete).
 """
 
 import asyncio
@@ -110,8 +99,7 @@ def _drive_stream(sse_events, enabled_tools, monkeypatch):
 
 
 def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
-    """Three search calls, no citations. Each card must render with its
-    own `Searching: <query>` text; none should be empty."""
+    """Each card carries its own `Searching: <query>` text; no empties."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -149,9 +137,8 @@ def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
 
 
 def test_web_search_last_call_overwritten_with_citations(monkeypatch):
-    """Pin the existing behaviour: the last call still gets the
-    aggregated citation list (the source-pill extractor depends on this).
-    Earlier calls keep their per-call `Searching:` text."""
+    """Last call still gets the aggregated citation list; earlier calls
+    keep their per-call `Searching:` text."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -194,9 +181,7 @@ def test_web_search_last_call_overwritten_with_citations(monkeypatch):
 
 
 def test_web_search_empty_query_falls_back_to_empty_result(monkeypatch):
-    """Defensive: if the action carries no query, do not write a junk
-    `Searching:` placeholder; leave the result empty so the existing
-    last-call overwrite path is unchanged."""
+    """No query -> empty result (no `Searching:` placeholder)."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -219,10 +204,7 @@ def test_web_search_empty_query_falls_back_to_empty_result(monkeypatch):
 
 
 def test_shell_call_emits_tool_end_when_output_bundled_on_done(monkeypatch):
-    """Some Responses streams ship the output array embedded on the
-    shell_call item's done event instead of as a separate
-    shell_call_output. The fallback must emit tool_end from that bundled
-    output so the card never stays in "running"."""
+    """Output bundled on the shell_call done event emits tool_end."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -253,9 +235,7 @@ def test_shell_call_emits_tool_end_when_output_bundled_on_done(monkeypatch):
 
 
 def test_shell_call_bundled_then_separate_output_does_not_double_emit(monkeypatch):
-    """If the bundled output ALREADY emitted tool_end and a separate
-    shell_call_output event arrives afterwards (some streams do both),
-    the second one is skipped so the card is not re-completed."""
+    """Separate shell_call_output after bundled-output is a no-op."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -299,9 +279,7 @@ def test_shell_call_bundled_then_separate_output_does_not_double_emit(monkeypatc
 
 
 def test_shell_call_final_flush_on_completed_when_no_output_event(monkeypatch):
-    """shell_call gets tool_start but no shell_call_output arrives and
-    the done event has no bundled output either. The final flush at
-    response.completed must emit tool_end so the card finalises."""
+    """Orphan shell_call finalises via the response.completed flush."""
     sse_events = [
         {
             "type": "response.output_item.added",
@@ -329,9 +307,7 @@ def test_shell_call_final_flush_on_completed_when_no_output_event(monkeypatch):
 
 
 def test_shell_call_flushed_on_response_incomplete_truncation(monkeypatch):
-    """Truncated streams (max_tokens hit) end with response.incomplete
-    instead of response.completed. The orphan-shell_call flush must fire
-    here too, otherwise the card spins indefinitely in the UI."""
+    """Truncated streams (response.incomplete) also flush orphan calls."""
     sse_events = [
         {
             "type": "response.output_item.added",
@@ -364,9 +340,7 @@ def test_shell_call_flushed_on_response_incomplete_truncation(monkeypatch):
 
 
 def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
-    """If a shell_call already finalised via bundled output on its done
-    event, the response.incomplete flush must skip it rather than emit
-    a second tool_end and re-complete the card."""
+    """response.incomplete is idempotent against already-finalised calls."""
     sse_events = [
         {
             "type": "response.output_item.done",
