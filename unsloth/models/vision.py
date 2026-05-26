@@ -1371,6 +1371,20 @@ class FastBaseModel:
                 tuple,
                 str,
             )
+            if type(target_modules) in (list, tuple) and (
+                not finetune_vision_layers
+                or not finetune_language_layers
+                or not finetune_attention_modules
+                or not finetune_mlp_modules
+            ):
+                target_modules = get_peft_regex(
+                    model,
+                    finetune_vision_layers = finetune_vision_layers,
+                    finetune_language_layers = finetune_language_layers,
+                    finetune_attention_modules = finetune_attention_modules,
+                    finetune_mlp_modules = finetune_mlp_modules,
+                    target_modules = list(target_modules),
+                )
 
         if hasattr(model, "vllm_engine"):
             if (
