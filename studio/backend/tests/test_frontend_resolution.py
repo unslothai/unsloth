@@ -148,6 +148,37 @@ def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypat
     assert chosen.resolve() == sp_dist.resolve()
 
 
+def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypatch):
+    """A finder file whose MAPPING value is a set / list / non-dict literal
+    (theoretically possible if the regex matched a brace-delimited literal
+    that ast.literal_eval can parse) must not AttributeError. The resolver
+    should skip that finder and keep probing."""
+    studio_home = tmp_path / "studio_home"
+    sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
+    sp.mkdir(parents = True)
+    # Bad finder: set literal, not a dict. ast.literal_eval parses it as set;
+    # any .get() call on it would raise AttributeError.
+    (sp / "__editable___bad_0_0_0_finder.py").write_text(
+        "MAPPING: dict[str, str] = {'studio', 'unsloth', 'unsloth_cli'}\n",
+        encoding = "utf-8",
+    )
+    # Good finder that should still be discovered after the bad one is skipped.
+    repo_root = tmp_path / "clone"
+    repo_dist = repo_root / "studio" / "frontend" / "dist"
+    repo_dist.mkdir(parents = True)
+    (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    (sp / "__editable___good_0_0_0_finder.py").write_text(
+        f"MAPPING: dict[str, str] = {{'studio': {str(repo_root / 'studio')!r}}}\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    helpers = _load_helpers_only()
+    chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
+    assert chosen is not None
+    assert chosen.resolve() == repo_dist.resolve()
+
+
 def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
     """A future setuptools / black reformat that wraps the MAPPING dict
     across multiple lines must still parse and resolve. Locks in the

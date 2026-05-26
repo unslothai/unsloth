@@ -559,6 +559,10 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     mapping = ast.literal_eval(m.group(1))
                 except (SyntaxError, ValueError):
                     continue
+                # Defensive: literal_eval can return a set / list / None if the
+                # matched literal is not a dict (regex captures `{...}`).
+                if not isinstance(mapping, dict):
+                    continue
                 studio_pkg = mapping.get("studio")
                 if studio_pkg:
                     out.append(Path(studio_pkg) / "frontend" / "dist")
