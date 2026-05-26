@@ -146,6 +146,12 @@ function pickBestLoraForBase(
   return partial ?? sorted[0] ?? null;
 }
 
+function isAssistantLocalThreadId(
+  threadId: string | null | undefined,
+): boolean {
+  return Boolean(threadId?.startsWith("__LOCALID_"));
+}
+
 function messageHasImage(message: MessageRecord): boolean {
   const contentParts = Array.isArray(message.content) ? message.content : [];
   if (contentParts.some((part) => part.type === "image")) {
@@ -179,12 +185,14 @@ const SingleContent = memo(function SingleContent({
   onCloseArtifact: () => void;
 }): ReactElement {
   const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const showArtifactPanel = Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(newThreadNonce)),
+        : Boolean(newThreadNonce) ||
+          Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
 
   const threadPane = (
@@ -711,6 +719,9 @@ export function ChatPage(): ReactElement {
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
+    ? null
+    : activeThreadId;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -943,14 +954,14 @@ export function ChatPage(): ReactElement {
     if (search.thread) {
       return { mode: "single", threadId: search.thread };
     }
-    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
-      return { mode: "single", threadId: activeThreadId };
+    if (persistedActiveThreadId) {
+      return { mode: "single", threadId: persistedActiveThreadId };
     }
     if (search.new) {
       return { mode: "single", newThreadNonce: search.new };
     }
     return { mode: "single" };
-  }, [search.thread, search.compare, search.new, activeThreadId]);
+  }, [search.thread, search.compare, search.new, persistedActiveThreadId]);
 
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
@@ -973,7 +984,11 @@ export function ChatPage(): ReactElement {
     // view intentionally excludes __LOCALID_ threads (they fall through to
     // { mode: "single" } with no threadId/nonce).  Don't close an artifact
     // whose thread is the currently active local thread.
-    if (selectedArtifact.threadId && selectedArtifact.threadId === activeThreadId) return;
+    if (
+      selectedArtifact.threadId &&
+      selectedArtifact.threadId === activeThreadId
+    )
+      return;
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
@@ -1649,8 +1664,8 @@ export function ChatPage(): ReactElement {
 
         {view.mode === "single" ? (
           <SingleContent
-            key={view.threadId ?? activeThreadId ?? "single"}
-            threadId={view.threadId ?? activeThreadId ?? undefined}
+            key={view.threadId ?? view.newThreadNonce ?? "single"}
+            threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             artifact={selectedArtifact}
             artifactSurface={artifactSurface}
