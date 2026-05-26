@@ -536,11 +536,9 @@ if [ "$_COLAB_NO_VENV" = true ]; then
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
-    # Only check when NOT called from install.sh (which just installed the package).
-    # Check BOTH unsloth and unsloth-zoo -- a stale zoo while unsloth itself is at
-    # latest is the most common bug-trigger after the macOS arm64 resolver
-    # backtrack (PR #5767), and the old single-package check would print
-    # "up to date" and skip the update entirely.
+    # Check unsloth + unsloth-zoo. A stale zoo with unsloth at latest is the
+    # common macOS arm64 backtrack symptom; single-package check would say
+    # "up to date" and skip the update.
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
@@ -550,10 +548,8 @@ print(version(sys.argv[1]))
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
-    # Only probe public unsloth-zoo when the package being managed IS unsloth.
-    # Custom side packages (e.g. STUDIO_PACKAGE_NAME=roland-sloth) ship their
-    # own zoo fork via dependency metadata and may not install public
-    # unsloth-zoo at all; checking it would force a no-op update.
+    # Only probe public unsloth-zoo when managing unsloth itself. Custom
+    # STUDIO_PACKAGE_NAME builds may pin their own zoo fork.
     _CHECK_ZOO=false
     [ "$_PKG_NAME" = "unsloth" ] && _CHECK_ZOO=true
 

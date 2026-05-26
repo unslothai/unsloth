@@ -7,11 +7,8 @@ packaging
 matplotlib
 pandas
 nest_asyncio
-# macOS arm64 carve-out: the latest unsloth-zoo's mlx-vlm chain requires
-# newer transformers + huggingface-hub + datasets; the legacy single-env
-# pins below would otherwise force the resolver to backtrack transformers
-# to a version incompatible with mlx-vlm. mlx-vlm only publishes wheels
-# for darwin arm64 so no other platform is affected.
+# macOS arm64: gated off -- mlx-vlm chain needs newer datasets/hub. Other
+# platforms still get the pins below.
 datasets==4.3.0 ; sys_platform != "darwin" or platform_machine != "arm64"
 pyjwt
 easydict

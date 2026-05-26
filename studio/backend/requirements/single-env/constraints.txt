@@ -1,16 +1,9 @@
 # Single-env pins for unsloth + studio + data-designer
 # Keep compatible with unsloth transformers bounds.
 #
-# macOS arm64 carve-out: every `==` pin below is gated on
-# `sys_platform != "darwin" or platform_machine != "arm64"` because the
-# latest unsloth-zoo's mlx-vlm chain requires newer transformers (>=5.1.0,
-# >=5.5.0 for mlx-vlm 0.5.0), which in turn pulls newer huggingface-hub,
-# datasets, etc. Keeping these old pins active would force the resolver
-# to backtrack to a 2025-era unsloth on macOS arm64 even when the base
-# step's --no-constraints fallback has already selected a working stack.
-# mlx-vlm only publishes wheels for darwin arm64, so no other platform is
-# affected by the carve-out. Range pins (e.g. mcp>=1.24,<2) stay active
-# everywhere since they do not conflict with the mlx-vlm chain.
+# macOS arm64 carve-out: == pins are marker-gated off because unsloth-zoo's
+# mlx-vlm chain (darwin arm64 only) needs transformers>=5.5.0. Range pins
+# stay active everywhere -- they don't conflict.
 transformers==4.57.6 ; sys_platform != "darwin" or platform_machine != "arm64"
 trl==0.23.1 ; sys_platform != "darwin" or platform_machine != "arm64"
 huggingface-hub==0.36.2 ; sys_platform != "darwin" or platform_machine != "arm64"
