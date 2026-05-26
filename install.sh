@@ -1290,6 +1290,17 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: tell uv to override mlx-vlm / mlx-lm's aggressive transformers
+# pin so it does not conflict with constraints.txt's transformers==4.57.6.
+# Per-model 5.x routing happens at runtime via the side-car venvs in
+# studio/backend/utils/transformers_version.py.
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
+    if [ -f "$_OVERRIDES_FILE" ]; then
+        export UV_OVERRIDE="$_OVERRIDES_FILE"
+    fi
+fi
+
 _TAURI_INITIAL_GPU_BRANCH="unknown"
 if [ "$SKIP_TORCH" = true ]; then
     _TAURI_INITIAL_GPU_BRANCH="no_torch"
@@ -1858,18 +1869,6 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     substep "upgrading unsloth in migrated environment..."
-    # Apple Silicon: MLX stack --no-deps + relax transformers pin (see fresh below).
-    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-        substep "installing MLX stack (mlx + mlx-lm + mlx-vlm, --no-deps)..."
-        run_install_cmd "install MLX stack" uv pip install --python "$_VENV_PY" \
-            --no-deps --upgrade mlx mlx-metal mlx-lm mlx-vlm
-        _SITE=$("$_VENV_PY" -I -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-        for _dist in "$_SITE"/mlx_vlm-*.dist-info "$_SITE"/mlx_lm-*.dist-info; do
-            [ -f "$_dist/METADATA" ] || continue
-            sed -i.bak -E 's/^Requires-Dist:[[:space:]]*transformers[[:space:]]*[><=!].*$/Requires-Dist: transformers>=4.51.3/' "$_dist/METADATA"
-            rm -f "$_dist/METADATA.bak"
-        done
-    fi
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
         # PyPI metadata still declares torch as a hard dep), then install
@@ -2049,21 +2048,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
                 ;;
         esac
-    fi
-    # Apple Silicon: install MLX stack --no-deps + relax mlx-vlm/mlx-lm
-    # transformers pin so the resolver sees them as compatible with the main
-    # venv's transformers==4.57.6. Per-model 5.x routing happens at runtime via
-    # the .venv_t5_530 / .venv_t5_550 side-cars.
-    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-        substep "installing MLX stack (mlx + mlx-lm + mlx-vlm, --no-deps)..."
-        run_install_cmd "install MLX stack" uv pip install --python "$_VENV_PY" \
-            --no-deps --upgrade mlx mlx-metal mlx-lm mlx-vlm
-        _SITE=$("$_VENV_PY" -I -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-        for _dist in "$_SITE"/mlx_vlm-*.dist-info "$_SITE"/mlx_lm-*.dist-info; do
-            [ -f "$_dist/METADATA" ] || continue
-            sed -i.bak -E 's/^Requires-Dist:[[:space:]]*transformers[[:space:]]*[><=!].*$/Requires-Dist: transformers>=4.51.3/' "$_dist/METADATA"
-            rm -f "$_dist/METADATA.bak"
-        done
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     tauri_log "STEP" "Installing Unsloth"

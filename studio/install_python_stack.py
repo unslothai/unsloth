@@ -425,39 +425,6 @@ def _infer_no_torch() -> bool:
 NO_TORCH = _infer_no_torch()
 
 
-def _relax_mlx_metadata() -> None:
-    """Relax mlx-vlm / mlx-lm METADATA's transformers pin to match actual runtime.
-
-    Their published pins (mlx-vlm: transformers>=5.5.0, mlx-lm: >=5.0.0) are
-    overly strict for Studio's use: their top-level imports use AutoProcessor /
-    AutoTokenizer / ProcessorMixin, which are stable across transformers 4.51+.
-    Per-model 5.x routing is handled at runtime by .venv_t5_530/.venv_t5_550
-    side-cars (see utils/transformers_version.py).
-
-    Without this, the main venv's transformers==4.57.6 pin in constraints.txt
-    conflicts with the installed mlx-vlm's metadata on every subsequent resolve,
-    forcing uv to backtrack unsloth (the user-reported downgrade bug).
-    """
-    import re
-    import sysconfig
-
-    site = Path(sysconfig.get_paths()["purelib"])
-    pattern = re.compile(r"^Requires-Dist:\s*transformers\b[^\n]*", re.M)
-    replacement = "Requires-Dist: transformers>=4.51.3"
-    for pkg in ("mlx_vlm", "mlx_lm"):
-        for dist_info in site.glob(f"{pkg}-*.dist-info"):
-            metadata = dist_info / "METADATA"
-            if not metadata.is_file():
-                continue
-            try:
-                content = metadata.read_text(encoding = "utf-8", errors = "replace")
-                new_content, n = pattern.subn(replacement, content, count = 1)
-                if n and new_content != content:
-                    metadata.write_text(new_content, encoding = "utf-8")
-            except OSError:
-                pass
-
-
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
@@ -482,6 +449,13 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 )
+
+# Apple Silicon: tell uv to override mlx-vlm/mlx-lm's aggressive transformers
+# pin so it does not conflict with constraints.txt's transformers==4.57.6.
+# Per-model 5.x routing happens at runtime via the side-car venvs.
+_MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
+    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the default console encoding can be a legacy code page
@@ -995,23 +969,20 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
-    # macOS arm64: install MLX stack --no-deps + relax its transformers pin so
-    # the resolver does not see the conflict with main venv's transformers==4.57.6.
-    # Per-model transformers routing happens at runtime via the side-car venvs.
+    # macOS arm64: install MLX stack at latest. UV_OVERRIDE (set at module load)
+    # relaxes mlx-vlm/mlx-lm's transformers pin so it does not conflict with
+    # the main venv's transformers==4.57.6 pin.
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
             "--no-cache-dir",
-            "--no-deps",
             "--upgrade",
             "mlx",
             "mlx-metal",
             "mlx-lm",
             "mlx-vlm",
-            constrain = False,
         )
-        _relax_mlx_metadata()
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
