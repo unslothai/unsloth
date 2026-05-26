@@ -231,13 +231,17 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
         aria-label="Generated image preview"
       >
         <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3">
-          <div className="relative flex min-h-0 flex-1 items-center justify-center">
-            <img
-              src={overlay.image}
-              alt={overlay.title}
-              className="max-h-full max-w-full rounded-2xl object-contain"
-            />
-            <div className="absolute right-2 top-2 z-10 flex shrink-0 items-center gap-2 rounded-full bg-background/80 p-1.5 ring-1 ring-border/30 backdrop-blur-sm">
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <div className="relative inline-block">
+              <img
+                src={overlay.image}
+                alt={overlay.title}
+                // Keep aspect ratio + downscale only: explicit caps so a
+                // huge viewport doesn't scale a generated image past its
+                // intrinsic resolution and turn soft.
+                className="block h-auto max-h-[min(70vh,620px)] w-auto max-w-[520px] rounded-2xl object-contain"
+              />
+              <div className="absolute right-2 top-2 z-10 flex shrink-0 items-center gap-2 rounded-full bg-background/80 p-1.5 ring-1 ring-border/30 backdrop-blur-sm">
               <Button
                 type="button"
                 variant="ghost"
@@ -263,6 +267,7 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
               >
                 <XIcon className="size-5" strokeWidth={2} />
               </Button>
+            </div>
             </div>
           </div>
           <div
