@@ -1626,6 +1626,29 @@ shell.Run cmd, 0, False
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
+    # Warn if another 'unsloth' wins on PATH (different venv, system pip).
+    # Mirrors install.sh; absolute path is still the most reliable launch.
+    try {
+        $_pathCmd = Get-Command unsloth -ErrorAction SilentlyContinue
+        if ($_pathCmd) {
+            $_pathExe = $_pathCmd.Source
+            $_installedReal = (Resolve-Path -LiteralPath $UnslothExe -ErrorAction SilentlyContinue).Path
+            $_pathReal      = (Resolve-Path -LiteralPath $_pathExe   -ErrorAction SilentlyContinue).Path
+            if ($_installedReal -and $_pathReal -and ($_installedReal -ne $_pathReal)) {
+                Write-Host ""
+                step "warning" "another 'unsloth' wins on PATH:" "Yellow"
+                substep $_pathExe
+                substep "this installer's binary is at:"
+                substep $UnslothExe
+                substep "to use this install, call the absolute path above,"
+                substep "or put its dir earlier on PATH."
+                Write-Host ""
+            }
+        }
+    } catch {
+        # Diagnostic only; never block install on a probe failure.
+    }
+
     # In interactive terminals, ask the user before starting Studio.
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
