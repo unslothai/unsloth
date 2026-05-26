@@ -21,10 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listLocalModels, type LocalModelInfo } from "@/features/training/api/models-api";
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import { listMetrics, type EvalStartRequest, type MetricInfo } from "../api/eval-api";
 import { MetricConfigFields } from "./metric-config-fields";
+import { EvalModelFields } from "./eval-model-fields";
 
 export function EvalConfigForm({
   disabled,
@@ -34,7 +34,6 @@ export function EvalConfigForm({
   onStart: (payload: EvalStartRequest) => void;
 }) {
   const [modelIdentifier, setModelIdentifier] = useState("");
-  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
   const [hfToken, setHfToken] = useState("");
   const [datasetIsLocal, setDatasetIsLocal] = useState(false);
   const [datasetName, setDatasetName] = useState("");
@@ -58,7 +57,7 @@ export function EvalConfigForm({
   const [formError, setFormError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
 
-  // On mount: load metrics and local models
+  // On mount: load metrics
   useEffect(() => {
     listMetrics()
       .then((loaded) => {
@@ -71,12 +70,6 @@ export function EvalConfigForm({
       })
       .catch((err) => {
         setMetricsError(err instanceof Error ? err.message : "Failed to load metrics.");
-      });
-
-    listLocalModels()
-      .then(setLocalModels)
-      .catch(() => {
-        // ignore
       });
   }, []);
 
@@ -189,50 +182,13 @@ export function EvalConfigForm({
         <CardHeader>
           <CardTitle>Model</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {localModels.length > 0 && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="ecf-model-select">Local checkpoint</Label>
-              <Select
-                value={modelIdentifier}
-                onValueChange={setModelIdentifier}
-              >
-                <SelectTrigger id="ecf-model-select" className="w-full">
-                  <SelectValue placeholder="Select a local model…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {localModels.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.display_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="ecf-model-id">Model identifier</Label>
-            <Input
-              id="ecf-model-id"
-              value={modelIdentifier}
-              onChange={(e) => setModelIdentifier(e.target.value)}
-              placeholder="Trained checkpoint, Hugging Face repo, or local path."
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="ecf-hf-token">HuggingFace token</Label>
-            <Input
-              id="ecf-hf-token"
-              type="password"
-              value={hfToken}
-              onChange={(e) => setHfToken(e.target.value)}
-              placeholder="HuggingFace token (optional)"
-            />
-            <p className="text-xs text-muted-foreground">
-              Used to detect columns / preview a gated dataset below. Not sent
-              with the eval run.
-            </p>
-          </div>
+        <CardContent>
+          <EvalModelFields
+            modelIdentifier={modelIdentifier}
+            onModelChange={setModelIdentifier}
+            hfToken={hfToken}
+            onHfTokenChange={setHfToken}
+          />
         </CardContent>
       </Card>
 
