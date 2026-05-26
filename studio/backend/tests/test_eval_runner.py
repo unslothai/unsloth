@@ -45,6 +45,29 @@ def test_template_renders_input():
     assert seen["content"] == "Hello world!"
 
 
+def test_template_with_literal_braces_does_not_crash():
+    # A template (and data) full of literal braces — e.g. an HTML->JSON task —
+    # must not break: only {input} is substituted; other braces stay literal.
+    seen = {}
+    def generate(messages, system_prompt, **gen):
+        seen["content"] = messages[-1]["content"]
+        return "x"
+    summary = run_eval(
+        examples=[('<div data-x="1">{html}</div>', "x")],
+        generate=generate, scorer=make_scorer("exact_match", {}),
+        system_prompt="",
+        template='Extract JSON from {input}. Output like {"html": "..."}',
+        gen_params={},
+        should_cancel=lambda: False, on_result=lambda *a: None,
+    )
+    assert summary.status == "completed"
+    assert summary.num_scored == 1
+    assert (
+        seen["content"]
+        == 'Extract JSON from <div data-x="1">{html}</div>. Output like {"html": "..."}'
+    )
+
+
 def test_cancellation_stops_early():
     calls = {"n": 0}
     def generate(messages, system_prompt, **gen):

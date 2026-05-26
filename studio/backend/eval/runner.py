@@ -41,9 +41,16 @@ def run_eval(
         if should_cancel():
             status = "cancelled"
             break
-        content = template.format(input=input_text) if template else input_text
-        messages = [{"role": "user", "content": content}]
         try:
+            # Substitute only the {input} placeholder. Use str.replace (not
+            # str.format) so literal braces in the template or data — e.g. JSON
+            # examples or {html} — don't blow up with KeyError/ValueError.
+            content = (
+                template.replace("{input}", str(input_text))
+                if template
+                else str(input_text)
+            )
+            messages = [{"role": "user", "content": content}]
             prediction = generate(messages, system_prompt, **gen_params)
             result = scorer(prediction, reference)
         except Exception as exc:  # generation/scoring failure -> errored example
