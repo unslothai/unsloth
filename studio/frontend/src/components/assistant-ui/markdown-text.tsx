@@ -411,11 +411,56 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
+// Coalesce markdown re-parses to one per animation frame while streaming: the
+// runtime notifies on every token (hundreds/sec) and the monitor can't paint
+// that fast. When not streaming we return live text rather than the throttled
+// state, so the final text never lags and a reused instance (parts are keyed by
+// index) shows a completed message's text immediately instead of a stale frame.
+function useRafCoalescedText(text: string, isStreaming: boolean): string {
+  const [displayed, setDisplayed] = useState(text);
+  const pendingRef = useRef(text);
+  const rafRef = useRef<number | null>(null);
+  pendingRef.current = text;
+
+  useEffect(() => {
+    if (!isStreaming) {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      setDisplayed(text);
+      return;
+    }
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setDisplayed(pendingRef.current);
+      });
+    }
+  }, [text, isStreaming]);
+
+  // Cancel only on unmount. Folding this into the scheduling effect would
+  // cancel the in-flight frame on every token and defeat the throttle.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
+
+  return isStreaming ? displayed : text;
+}
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  const processedText = useMemo(() => preprocessLaTeX(text), [text]);
+  const displayText = useRafCoalescedText(text, status.type === "running");
+  const processedText = useMemo(
+    () => preprocessLaTeX(displayText),
+    [displayText],
+  );
 
-  const audioMatch = text.match(AUDIO_PLAYER_RE);
+  const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
     return <AudioPlayer src={audioMatch[1]} />;
   }
