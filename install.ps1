@@ -1453,9 +1453,15 @@ shell.Run cmd, 0, False
         # torch._C._grouped_mm on torch <2.11.0 (rocm7.12 and rocm7.1 respectively).
         # TheRock issues #5284 and #3284. Force torch>=2.11.0 so pip never resolves
         # to the broken 2.10.0 wheels even though they exist on the AMD index.
+        # The <2.12.0 ceiling matches the Linux install_python_stack.py constraint
+        # for the same arches: AMD actively publishes new versions on their index,
+        # so without a ceiling a future 2.12.0+rocmX.Y wheel would be pulled in
+        # automatically before it has been validated on these architectures.
+        # Bump the ceiling here (and in install_python_stack.py) when 2.12.x is
+        # confirmed working on gfx120X / Strix.
         $torchFloorMap = @{
-            "gfx1201" = "torch>=2.11.0"; "gfx1200" = "torch>=2.11.0"
-            "gfx1151" = "torch>=2.11.0"; "gfx1150" = "torch>=2.11.0"
+            "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+            "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {

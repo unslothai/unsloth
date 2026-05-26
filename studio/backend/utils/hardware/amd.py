@@ -58,7 +58,7 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             )
             _amd_smi_disabled = True
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0:
         logger.warning("amd-smi returned code %d", result.returncode)
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
@@ -66,6 +66,12 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
                 "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
             )
             _amd_smi_disabled = True
+        return None
+    if not result.stdout.strip():
+        # amd-smi exited successfully but produced no output (e.g. no GPUs
+        # visible on this query, or a version that emits nothing for --json).
+        # This is not a tool failure, so don't count against the circuit breaker.
+        logger.debug("amd-smi exited 0 but returned no output")
         return None
     _amd_smi_consecutive_failures = 0  # reset on success
     try:

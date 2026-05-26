@@ -95,22 +95,25 @@ if sys.platform == "win32":
             import importlib.util as _ilu
 
             _bnb_spec = _ilu.find_spec("bitsandbytes")
-            if _bnb_spec and _bnb_spec.origin:
-                _pkg_dir = os.path.dirname(_bnb_spec.origin)
-                _dlls = _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll"))
+            # Use submodule_search_locations (same as install_python_stack.py and
+            # worker.py) rather than spec.origin so that editable installs of
+            # bitsandbytes, where __init__.py may live outside the package root,
+            # are handled consistently across all three probe sites.
+            if _bnb_spec and _bnb_spec.submodule_search_locations:
                 import re as _re_bnb
 
-                def _bnb_ver_key(p: str) -> int:
-                    _km = _re_bnb.search(r"rocm(\d+)", os.path.basename(p))
-                    return int(_km.group(1)) if _km else -1
-
-                for _dll in sorted(_dlls, key = _bnb_ver_key, reverse = True):
-                    _m = _re_bnb.search(
-                        r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
-                    )
-                    if _m:
-                        _bnb_rocm_ver = _m.group(1)
-                        break
+                _all_vers_main: list[str] = []
+                for _pkg_dir in _bnb_spec.submodule_search_locations:
+                    for _dll in _glob.glob(
+                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                    ):
+                        _km = _re_bnb.search(
+                            r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
+                        )
+                        if _km:
+                            _all_vers_main.append(_km.group(1))
+                if _all_vers_main:
+                    _bnb_rocm_ver = max(_all_vers_main, key=lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
