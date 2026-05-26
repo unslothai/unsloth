@@ -1104,6 +1104,8 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        # Build env so the binary can find its shared libs (LD_LIBRARY_PATH / PATH).
+        probe_env = LlamaCppBackend._llama_server_env_for_binary(bin_path)
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1111,8 +1113,10 @@ class LlamaCppBackend:
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            if result.stderr: logger.warning(result.stderr)
             # Split into per-flag blocks: each --flag line plus its
             # indented continuation lines, so the "argument has been
             # removed" description sits with its flag.
@@ -1512,6 +1516,74 @@ class LlamaCppBackend:
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
         return path_dirs
+
+    @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build an env dict with LD_LIBRARY_PATH / PATH so a llama-server
+        binary can find its shared libraries and CUDA runtime DLLs.
+
+        This mirrors the library-resolution logic in ``start_llama_server``
+        but is factored out so ``probe_server_capabilities`` (which runs
+        ``--help``) does not fail with "cannot open shared object file".
+        """
+        import platform as _platform
+        import glob as _glob
+
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+        else:
+            # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+            # and CUDA runtime libs (libcudart, libcublas, etc.)
+            _arch = _platform.machine()
+
+            lib_dirs = [binary_dir]
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix, "lib", "python*", "site-packages",
+                    "nvidia", "cu*", "lib",
+                ),
+                os.path.join(
+                    sys.prefix, "lib", "python*", "site-packages",
+                    "nvidia", "cudnn", "lib",
+                ),
+                os.path.join(
+                    sys.prefix, "lib", "python*", "site-packages",
+                    "nvidia", "nvjitlink", "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = (
+                f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            )
+
+        return env
+
 
     @staticmethod
     def _select_gpus(
@@ -3133,83 +3205,8 @@ class LlamaCppBackend:
                 import os
                 import sys
 
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
-
-                if sys.platform == "win32":
-                    # See _build_windows_path_dirs for ordering. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-                else:
-                    # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
-                    # and CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = [binary_dir]
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs (e.g. torch's
-                    # bundled cuda-bindings).  The prebuilt llama.cpp binary
-                    # links against libcudart.so.13 / libcublas.so.13 which
-                    # live here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 on a system where default /usr/local/cuda
-                        # points to CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = (
-                        f"{new_ld}:{existing_ld}" if existing_ld else new_ld
-                    )
+                # Build env with LD_LIBRARY_PATH / PATH for shared lib resolution.
+                env = LlamaCppBackend._llama_server_env_for_binary(binary)
 
                 # Pin to selected GPU(s). On ROCm, llama-server (and any torch
                 # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
