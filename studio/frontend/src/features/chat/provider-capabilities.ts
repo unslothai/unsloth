@@ -123,16 +123,38 @@ export function providerSupportsBuiltinWebSearch(
 
 /**
  * Whether the external provider exposes a server-side web_fetch tool
- * that retrieves a single URL (text or PDF) and emits a document block.
- * Only Anthropic ships one today (`web_fetch_20250910`); the chat
- * composer pairs it with the Search pill because the typical workflow
- * is "search returns URLs, fetch reads them" and the UI doesn't (yet)
- * expose web_fetch as an independent toggle.
+ * (single URL, text or PDF) emitting a document block. Anthropic-only
+ * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
+ * composer's standalone Fetch pill, independent of Search.
  */
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,
 ): boolean {
   return providerType === "anthropic";
+}
+
+/**
+ * Whether the active provider + model supports Anthropic fast-mode
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
+ * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * Backend silently drops on unsupported models as a second defence.
+ */
+const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+] as const;
+
+export function providerSupportsFastMode(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerType !== "anthropic") return false;
+  if (!modelId) return false;
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
+  // / "claude-opus-4-7b" do not match.
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
+    (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
+  );
 }
 
 /**
@@ -185,15 +207,21 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /**
  * Strict check that a provider configuration points at OpenAI's
- * managed cloud (api.openai.com), as opposed to a custom OpenAI-compat
- * backend (ollama / llama.cpp / vLLM / generic "custom" preset). The
- * shell tool ONLY exists on OpenAI cloud; sending it to anything else
- * 400s the request. Mirror of the backend's
- * `is_openai_cloud = "api.openai.com" in self.base_url` guard.
+ * managed cloud (api.openai.com) or Azure OpenAI Foundry
+ * (*.openai.azure.com), as opposed to a custom OpenAI-compat backend
+ * (ollama / llama.cpp / vLLM / generic "custom" preset). The shell and
+ * image-generation tools only exist on cloud backends; sending them to
+ * anything else 400s the request. Mirror of the backend's
+ * `_is_openai_family_cloud` host check.
  */
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
-  return baseUrl.trim().toLowerCase().includes("api.openai.com");
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
 }
 
 export function providerSupportsBuiltinCodeExecution(
