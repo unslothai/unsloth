@@ -243,6 +243,52 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     return text[:last_open], text[last_open:]
 
 
+def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalise web_search_call.action across variants. gpt-5.x agentic
+    search emits action.type in {search, open_page, find_in_page}; older
+    variants may put query at item.query or use action.queries[0].
+    Returns only non-empty keys among query/url/pattern/action_type.
+    """
+    if not isinstance(item, dict):
+        return {}
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    atype = action.get("type") if isinstance(action.get("type"), str) else ""
+    query = action.get("query") if isinstance(action.get("query"), str) else ""
+    if not query:
+        # Fallbacks: action.queries[0], item.query, item.queries[0].
+        for src in (action.get("queries"), item.get("queries")):
+            if isinstance(src, list) and src and isinstance(src[0], str) and src[0]:
+                query = src[0]
+                break
+        if not query and isinstance(item.get("query"), str):
+            query = item["query"]
+    url = action.get("url") if isinstance(action.get("url"), str) else ""
+    pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
+    out: dict[str, Any] = {}
+    if query: out["query"] = query
+    if url: out["url"] = url
+    if pattern: out["pattern"] = pattern
+    if atype: out["action_type"] = atype
+    return out
+
+
+def _web_search_card_text(args: dict[str, Any]) -> str:
+    """Single-line summary for the per-card tool_end result."""
+    if not args:
+        return ""
+    q, u, p = args.get("query") or "", args.get("url") or "", args.get("pattern") or ""
+    atype = args.get("action_type") or ""
+    if atype == "open_page" and u:
+        return f"Read: {u}"
+    if atype == "find_in_page" and u:
+        return f"Find {p!r} in {u}" if p else f"Find in {u}"
+    if q:
+        return f"Searching: {q}"
+    if u:
+        return f"Read: {u}"
+    return ""
+
+
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
@@ -3844,45 +3890,35 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # done is the canonical place to read the
-                                    # query, so emit both tool_start and tool_end
-                                    # here. Frontend then renders a card per call
-                                    # with the proper "Searching: <query>" label.
-                                    # Citations are aggregated separately and the
-                                    # *last* call's result is overwritten at
-                                    # response.completed with the citation list
-                                    # (so the source-pill extraction at message
-                                    # tail surfaces them once).
+                                    # Dispatch on action.type so open_page /
+                                    # find_in_page render url+pattern instead
+                                    # of an empty query card. Last call's
+                                    # result is overwritten with citations at
+                                    # response.completed.
                                     item_id = item.get("id", "") or (
                                         f"ws_{len(web_search_calls)}"
                                     )
-                                    action = item.get("action")
-                                    query = (
-                                        action.get("query", "")
-                                        if isinstance(action, dict)
-                                        else ""
-                                    )
-                                    web_search_calls[item_id] = {"query": query}
+                                    args = _extract_web_search_action(item)
+                                    # Backfill query from any prior event for this id.
+                                    if not args.get("query"):
+                                        prior = web_search_calls.get(item_id) or {}
+                                        prior_q = prior.get("query") if isinstance(prior, dict) else ""
+                                        if isinstance(prior_q, str) and prior_q:
+                                            args["query"] = prior_q
+                                    web_search_calls[item_id] = dict(args)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": (
-                                                {"query": query} if query else {}
-                                            ),
+                                            "arguments": args,
                                         }
-                                    )
-                                    # Per-card text; last call gets overwritten
-                                    # with citations at response.completed.
-                                    per_call_result = (
-                                        f"Searching: {query}" if query else ""
                                     )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            "result": per_call_result,
+                                            "result": _web_search_card_text(args),
                                         }
                                     )
                                 elif item.get("type") == "shell_call":

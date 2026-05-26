@@ -411,9 +411,22 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
+// Defensive scrub: strip any OpenAI cite markers that escape the
+// backend rewriter (e.g. SSE dropped before end-of-stream flush).
+const OPENAI_CITE_MARKER_RE = /cite[^]*/g;
+const OPENAI_PUA_ORPHAN_RE = /[]/g;
+function scrubOpenAICitationMarkers(text: string): string {
+  if (!text) return text;
+  if (!text.includes("") && !text.includes("")) return text;
+  return text.replace(OPENAI_CITE_MARKER_RE, "").replace(OPENAI_PUA_ORPHAN_RE, "");
+}
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  const processedText = useMemo(() => preprocessLaTeX(text), [text]);
+  const processedText = useMemo(
+    () => preprocessLaTeX(scrubOpenAICitationMarkers(text)),
+    [text],
+  );
 
   const audioMatch = text.match(AUDIO_PLAYER_RE);
   if (audioMatch) {

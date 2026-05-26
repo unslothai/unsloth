@@ -232,12 +232,12 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
       >
         <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
           <div className="absolute inset-x-3 top-3 z-10 flex justify-end">
-            <div className="flex shrink-0 items-center gap-1 rounded-full bg-background/70 p-1 ring-1 ring-border/20 backdrop-blur-sm">
+            <div className="flex shrink-0 items-center gap-2 rounded-full bg-background/80 p-1.5 ring-1 ring-border/30 backdrop-blur-sm">
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
-                className="size-7 rounded-full"
+                size="icon"
+                className="size-10 rounded-full bg-primary/10 text-primary ring-1 ring-primary/30 hover:bg-primary/20 hover:text-primary"
                 onClick={() =>
                   downloadImagePart({
                     image: overlay.image,
@@ -246,17 +246,17 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
                 }
                 aria-label="Download generated image"
               >
-                <DownloadIcon className="size-3.5" />
+                <DownloadIcon className="size-5" strokeWidth={2} />
               </Button>
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
-                className="size-7 rounded-full"
+                size="icon"
+                className="size-10 rounded-full bg-primary/10 text-primary ring-1 ring-primary/30 hover:bg-primary/20 hover:text-primary"
                 onClick={closeOverlay}
                 aria-label="Close generated image preview"
               >
-                <XIcon className="size-3.5" />
+                <XIcon className="size-5" strokeWidth={2} />
               </Button>
             </div>
           </div>

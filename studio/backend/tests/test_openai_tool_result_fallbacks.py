@@ -200,6 +200,80 @@ def test_web_search_empty_query_falls_back_to_empty_result(monkeypatch):
     assert ends[0]["result"] == ""
 
 
+def test_web_search_open_page_action_renders_url(monkeypatch):
+    """gpt-5.x agentic search emits `open_page` with a url (no query)."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_open",
+                "action": {
+                    "type": "open_page",
+                    "url": "https://en.wikipedia.org/wiki/Tiger",
+                },
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    events = _tool_events(lines)
+    starts = [e for e in events if e["type"] == "tool_start"]
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert starts[0]["arguments"]["url"] == "https://en.wikipedia.org/wiki/Tiger"
+    assert starts[0]["arguments"]["action_type"] == "open_page"
+    assert "Read: https://en.wikipedia.org/wiki/Tiger" in ends[0]["result"]
+
+
+def test_web_search_find_in_page_action_renders_url_and_pattern(monkeypatch):
+    """`find_in_page` actions surface both url and pattern to the card."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_find",
+                "action": {
+                    "type": "find_in_page",
+                    "url": "https://en.wikipedia.org/wiki/Tiger",
+                    "pattern": "population",
+                },
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    events = _tool_events(lines)
+    starts = [e for e in events if e["type"] == "tool_start"]
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert starts[0]["arguments"]["url"] == "https://en.wikipedia.org/wiki/Tiger"
+    assert starts[0]["arguments"]["pattern"] == "population"
+    assert starts[0]["arguments"]["action_type"] == "find_in_page"
+    assert "population" in ends[0]["result"]
+    assert "en.wikipedia.org" in ends[0]["result"]
+
+
+def test_web_search_action_queries_plural_falls_back(monkeypatch):
+    """`action.queries[0]` is used when `action.query` is absent (older shape)."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_plural",
+                "action": {"queries": ["renewable energy 2026"]},
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    events = _tool_events(lines)
+    starts = [e for e in events if e["type"] == "tool_start"]
+    ends = [e for e in events if e["type"] == "tool_end"]
+    assert starts[0]["arguments"]["query"] == "renewable energy 2026"
+    assert ends[0]["result"] == "Searching: renewable energy 2026"
+
+
 # ── shell_call output fallbacks ────────────────────────────────────────
 
 
