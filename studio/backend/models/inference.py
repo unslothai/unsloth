@@ -299,7 +299,11 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description = "Currently active model identifier"
+        None, description = "Currently active model display identifier"
+    )
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Loadable identifier for the active model.",
     )
     is_vision: bool = Field(
         False, description = "Whether the active model is a vision model"
