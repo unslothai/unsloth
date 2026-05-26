@@ -1002,12 +1002,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
       if (ragToolPathTaken && ragSource.kind !== "off") {
         systemPromptParts.push(
-          "RAG retrieval is enabled for this conversation. You MUST call " +
-            "the `search_knowledge_base` tool before answering ANY user " +
-            "question — even short ones, follow-ups, clarifications, or " +
-            "questions you think you already know the answer to. Issue the " +
-            "tool call first, then ground your reply in the returned " +
-            "<chunk> blocks and cite them as [1], [2], etc.",
+          "RAG retrieval is enabled for this conversation. Before answering " +
+            "ANY user question (including follow-ups, clarifications, or " +
+            "questions you think you already know), you MUST:\n" +
+            "1. Decompose the user's question into UP TO 3 focused search " +
+            "queries that cover different facets of what was asked. Prefer " +
+            "fewer queries when the question is narrow — one query is fine " +
+            "for a simple lookup. Do NOT exceed 3.\n" +
+            "2. Call `search_knowledge_base` once per query (so at most 3 " +
+            "tool calls). Phrase each query as a focused question, not a " +
+            "keyword bag.\n" +
+            "3. After the tool calls return, ground your reply in the " +
+            "returned <chunk> blocks and cite them as [1], [2], etc. Do not " +
+            "make additional tool calls beyond the planned 3.",
         );
       }
       if (systemPromptParts.length > 0) {
