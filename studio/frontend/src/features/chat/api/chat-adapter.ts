@@ -761,10 +761,11 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
     if (isAnthropicRefusalMessage(message)) {
       // Prune refused assistant turn from outbound history; the
       // rendered transcript still shows the user-visible notice.
-      return null;
+      return [];
     }
   }
 
+  const imageParts = collectImageParts(message);
   const toolCalls =
     message.role === "assistant" ? collectAssistantToolCalls(message) : [];
   const toolResults =
@@ -1503,7 +1504,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             break;
           }
         }
-        outboundMessages.splice(insertAt, 0, referenceMessage);
+        // OpenAIChatMessage is a structural superset of SerializedMessage
+        // for the role/content axis the outbound pipeline consumes; cast
+        // through unknown since referenceMessage carries no tool_calls
+        // (the image_edit reference is a plain assistant turn).
+        outboundMessages.splice(
+          insertAt,
+          0,
+          referenceMessage as unknown as SerializedMessage,
+        );
       }
 
       const safeSystemPrompt =
