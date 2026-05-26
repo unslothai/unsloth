@@ -717,10 +717,8 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending.
-
-    Returns ``(html_bytes, script_nonce_or_None)``. Callers must forward
-    the nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so the inline script is
-    not blocked by CSP.
+    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the
+    nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
     """
     import json as _json
     import secrets as _secrets
@@ -750,31 +748,19 @@ _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
     """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
-
-    Browsers strip the default port from the Origin header (RFC 6454 §6.1)
-    but Starlette's ``request.url.netloc`` keeps whatever the Host header
-    carried, which may or may not include the default port. We also need
-    to lowercase scheme + host, since both are case-insensitive per
-    RFC 3986. A bare-string compare misses these:
-
-    * Origin ``https://example.com``     vs netloc ``example.com:443`` (default port dropped)
-    * Origin ``http://Example.com``      vs netloc ``example.com``     (host case)
-    * Origin ``HTTP://example.com``      vs netloc ``example.com``     (scheme case)
-
-    Returns ``None`` when the input is unparseable so callers can treat
-    the comparison as cross-origin (safer default).
+    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
+    case-insensitive (RFC 3986), so bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable
+    input so callers fall to the safer cross-origin default.
     """
     scheme = (scheme or "").strip().lower()
     if not scheme or not netloc:
         return None
-    # netloc may carry userinfo (user:pass@host:port) per RFC 3986;
-    # strip it since Origin never contains credentials.
+    # Strip userinfo (RFC 3986); Origin never carries credentials.
     if "@" in netloc:
         netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts ride in brackets (RFC 3986 §3.2.2): ``[::1]:8902``.
-    # A bare ``partition(":")`` mis-parses these (host=``[``, port=
-    # ``:1]:8902``) which collapses every IPv6 same-origin request to
-    # cross-origin and silently breaks ``unsloth studio -H ::1``.
+    # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
+    # ``partition(":")`` mis-parses these and breaks ``unsloth studio -H ::1``.
     if netloc.startswith("["):
         close = netloc.find("]")
         if close == -1:
@@ -804,33 +790,23 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
 
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
-
-    Top-level same-document GETs omit Origin on most engines, so a missing
-    header counts as same-origin. Callers must also emit ``Vary: Origin``.
-
-    The comparison canonicalises both sides via :func:`_canonical_origin`
-    so a browser's default-port-stripping (``https://example.com`` vs
-    Starlette's ``example.com:443`` netloc) and case differences on
-    scheme/host do not cause same-origin requests to be misclassified
-    cross-origin (bootstrap pw stripped from the SPA shell, the user
-    can't auto-fill the change-password form).
+    Top-level same-document GETs omit Origin, so missing counts as same-origin.
+    Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
+    :func:`_canonical_origin` so default-port stripping and scheme/host case
+    do not misclassify same-origin requests as cross-origin.
     """
     origin = request.headers.get("origin")
     if origin is None:
         # Missing header: top-level same-document GETs omit Origin.
         return True
-    # An empty string is not a valid serialised origin (RFC 6454 §6.1
-    # requires scheme + host); treat as cross-origin.
+    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
     if not origin:
         return False
-    # Origin is ``scheme://host[:port]`` per RFC 6454 §6.1. Reject the
-    # special token "null" (sandboxed iframes, file:// pages) and any
-    # value that doesn't parse as a URL.
+    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
     if origin == "null":
         return False
-    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets and
-    # a few NFKC edge cases (Py 3.8+). A garbage Origin must not crash
-    # the SPA handler into a 500, so swallow and fall to cross-origin.
+    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets; swallow
+    # so a garbage Origin doesn't 500 the SPA handler.
     try:
         parsed = urlparse(origin)
     except ValueError:
@@ -860,8 +836,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Bootstrap pw only ships to same-origin callers; Vary: Origin
-        # keeps caches from mixing the two response shapes.
+        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
         if _is_same_origin_request(request):
             content, nonce = _inject_bootstrap(content, app)
         else:

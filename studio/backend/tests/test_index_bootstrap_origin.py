@@ -2,10 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Regression coverage for the bootstrap-pw cross-origin leak (PR 5739).
-
 ``_is_same_origin_request`` gates ``_inject_bootstrap`` so the seeded
-admin password only ships to same-origin callers. See the ``CORS: GET /``
-audit in tests/studio/studio_api_smoke.py.
+admin password only ships to same-origin callers.
 """
 
 import os
@@ -64,10 +62,8 @@ def test_is_same_origin_request_port_mismatch_is_cross_origin():
 
 
 def test_is_same_origin_request_https_default_port_stripped_on_origin():
-    """RFC 6454 strips default ports on Origin; Starlette's netloc may
-    still carry ``:443``. Bare string-equality misreads this as cross-
-    origin and refuses to inject the bootstrap on legitimate browser
-    navigation. Canonicalise both sides before comparing.
+    """RFC 6454 strips default ports on Origin; Starlette's netloc may still
+    carry ``:443``. Canonicalise both sides so this stays same-origin.
     """
     from main import _is_same_origin_request
 
@@ -85,9 +81,7 @@ def test_is_same_origin_request_http_default_port_stripped_on_origin():
 
 
 def test_is_same_origin_request_default_port_present_on_origin():
-    """Mirror of the above: Origin carries the default port but the
-    listener's netloc doesn't. Same-origin.
-    """
+    """Mirror case: Origin carries the default port, netloc doesn't. Same-origin."""
     from main import _is_same_origin_request
 
     req = _build_request(
@@ -113,9 +107,7 @@ def test_is_same_origin_request_scheme_case_insensitive():
 
 
 def test_is_same_origin_request_null_origin_is_cross_origin():
-    """Sandboxed iframes / file:// pages send ``Origin: null``; treat
-    as cross-origin so the bootstrap is never injected for them.
-    """
+    """Sandboxed iframes / file:// pages send ``Origin: null``; cross-origin."""
     from main import _is_same_origin_request
 
     req = _build_request("example.com", origin = "null")
@@ -123,9 +115,8 @@ def test_is_same_origin_request_null_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_unparseable_origin_is_cross_origin():
-    """Garbage values that don't carry a host are treated as cross-
-    origin (safer than throwing) so a malformed header can't leak the
-    bootstrap.
+    """Garbage values without a host fall to cross-origin; a malformed header
+    must not leak the bootstrap.
     """
     from main import _is_same_origin_request
 
@@ -134,8 +125,8 @@ def test_is_same_origin_request_unparseable_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_userinfo_in_netloc_ignored():
-    """``user:pass@host:port`` netlocs (rare but valid per RFC 3986)
-    must compare equal to the credentials-less Origin.
+    """``user:pass@host:port`` netlocs (RFC 3986) must compare equal to the
+    credentials-less Origin.
     """
     from main import _is_same_origin_request
 

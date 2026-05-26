@@ -2,12 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Extra edge-case coverage for the bootstrap-pw cross-origin gate.
-
-Companion to ``test_index_bootstrap_origin.py``. Pinned down by the audit
-on PR 5739: IPv6 netlocs, ``data:`` opaque origins, comma-joined multi
-``Origin`` headers, whitespace around the header value, and the
-``localhost`` vs ``127.0.0.1`` distinction (which the web platform
-treats as distinct origins).
+Companion to ``test_index_bootstrap_origin.py``: IPv6 netlocs, opaque
+origins (``data:``, ``blob:``), comma-joined multi-Origin headers, and
+the ``localhost`` vs ``127.0.0.1`` distinct-origin rule.
 """
 
 from unittest.mock import MagicMock
@@ -25,11 +22,9 @@ def _build_request(host: str, origin, scheme: str = "http") -> MagicMock:
 
 
 def test_is_same_origin_request_ipv6_loopback_same_origin():
-    """Studio supports ``-H ::1`` binds; Starlette's ``request.url.netloc``
-    for an IPv6 server is ``[::1]:8902`` and browsers send
-    ``Origin: http://[::1]:8902``. Bare ``partition(":")`` mis-parses the
-    bracketed form (host=``[``, port-str=``:1]:8902``) and refuses to
-    inject the bootstrap on a legitimate same-origin nav.
+    """Studio supports ``-H ::1`` binds; netloc is ``[::1]:8902``. Bare
+    ``partition(":")`` mis-parses the bracketed form and would refuse the
+    bootstrap on legitimate same-origin nav.
     """
     from main import _is_same_origin_request
 
@@ -93,8 +88,8 @@ def test_is_same_origin_request_ipv6_userinfo_stripped():
 
 
 def test_is_same_origin_request_data_url_origin_is_cross_origin():
-    """``data:`` URLs are opaque origins per HTML living standard.
-    They carry no host and must never be treated as same-origin.
+    """``data:`` URLs are opaque origins (HTML living standard); no host,
+    never same-origin.
     """
     from main import _is_same_origin_request
 
@@ -105,8 +100,8 @@ def test_is_same_origin_request_data_url_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_blob_url_origin_is_cross_origin():
-    """``blob:`` URLs carry the inner origin in the path, but only as
-    a non-canonical form. The canonical comparison rejects them.
+    """``blob:`` URLs carry the inner origin only in non-canonical form; the
+    canonical comparison rejects them.
     """
     from main import _is_same_origin_request
 
@@ -115,9 +110,8 @@ def test_is_same_origin_request_blob_url_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_file_url_origin_is_cross_origin():
-    """``file://`` pages typically send ``Origin: null`` but a few
-    historical engines sent ``Origin: file://``. Either way, not
-    same-origin against an http listener.
+    """``file://`` pages usually send ``Origin: null``; historical engines
+    sent ``Origin: file://``. Neither is same-origin vs an http listener.
     """
     from main import _is_same_origin_request
 
@@ -129,10 +123,8 @@ def test_is_same_origin_request_file_url_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_comma_joined_origins_cross_origin():
-    """HTTP allows repeated headers; Starlette concatenates with
-    ``, ``. The canonical parser can't split this safely, so it
-    must fall to cross-origin (refusing to inject) rather than
-    pick the first token.
+    """Starlette concatenates repeated headers with ``, ``; the canonical
+    parser can't safely split this, so it falls to cross-origin.
     """
     from main import _is_same_origin_request
 
@@ -147,9 +139,8 @@ def test_is_same_origin_request_comma_joined_origins_cross_origin():
 
 
 def test_is_same_origin_request_localhost_vs_127_is_cross_origin():
-    """The browser treats ``localhost`` and ``127.0.0.1`` as distinct
-    origins even though they resolve to the same socket. The
-    canonical comparison must mirror that (no DNS-style collapsing).
+    """Browsers treat ``localhost`` and ``127.0.0.1`` as distinct origins;
+    the canonical comparison must not DNS-collapse them.
     """
     from main import _is_same_origin_request
 
@@ -168,11 +159,9 @@ def test_is_same_origin_request_127_vs_localhost_is_cross_origin():
 
 
 def test_is_same_origin_request_malformed_ipv6_bracket_is_cross_origin():
-    """``urlparse`` raises ``ValueError('Invalid IPv6 URL')`` on
-    unclosed brackets and similar bracketed-host garbage (CVE-2024-11168
-    hardening). A malicious caller sending ``Origin: http://[malformed``
-    must not crash ``_build_index_response`` into HTTP 500; the gate
-    swallows the parse error and falls to cross-origin.
+    """``urlparse`` raises ``ValueError('Invalid IPv6 URL')`` on unclosed
+    brackets (CVE-2024-11168 hardening). The gate must swallow and fall to
+    cross-origin rather than 500 the SPA handler.
     """
     from main import _is_same_origin_request
 
@@ -198,9 +187,8 @@ def test_is_same_origin_request_bracket_with_trailing_garbage_is_cross_origin():
 
 
 def test_is_same_origin_request_empty_origin_header_is_cross_origin():
-    """An explicit empty ``Origin:`` value is not a valid serialised
-    origin (no scheme + host) and must not be conflated with a missing
-    header. Treat as cross-origin so the bootstrap is withheld.
+    """Explicit empty ``Origin:`` is not a valid serialised origin and must
+    not be conflated with a missing header; cross-origin, bootstrap withheld.
     """
     from main import _is_same_origin_request
 
