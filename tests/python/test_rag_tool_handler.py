@@ -102,18 +102,33 @@ def test_empty_results_message_is_user_facing():
     assert "No matching chunks" in result
 
 
-def test_format_hits_produces_numbered_citations():
+def test_format_hits_produces_fenced_chunks():
     from core.rag.tool import _format_hits_for_llm
 
     hits = [
-        {"filename": "alpha.pdf", "page_number": 3, "text": "first body"},
-        {"filename": "beta.md", "page_number": None, "text": "second body"},
+        {
+            "filename": "alpha.pdf",
+            "page_number": 3,
+            "text": "first body",
+            "score": 0.78,
+            "chunk_index": 12,
+            "token_count": 42,
+        },
+        {
+            "filename": "beta.md",
+            "page_number": None,
+            "text": "second body",
+            "score": 0.61,
+        },
     ]
     result = _format_hits_for_llm(hits)
-    assert "[1] alpha.pdf (page 3): first body" in result
-    assert "[2] beta.md: second body" in result
-    # Each hit on its own paragraph so the LLM can cite cleanly.
-    assert "\n\n" in result
+    assert '<chunk id="1" source="alpha.pdf" page="3" score="0.780"' in result
+    assert 'chunk_index="12"' in result
+    assert 'tokens="42"' in result
+    assert "first body\n</chunk>" in result
+    assert '<chunk id="2" source="beta.md" score="0.610">' in result
+    # Blocks separated by a blank line so the model can scan the list.
+    assert "</chunk>\n\n<chunk" in result
 
 
 def test_format_hits_handles_unknown_source():
@@ -121,7 +136,16 @@ def test_format_hits_handles_unknown_source():
 
     hits = [{"filename": None, "page_number": None, "text": "orphan"}]
     result = _format_hits_for_llm(hits)
-    assert "[1] unknown source: orphan" in result
+    assert '<chunk id="1" source="unknown">' in result
+    assert "\norphan\n</chunk>" in result
+
+
+def test_format_hits_escapes_xml_in_source():
+    from core.rag.tool import _format_hits_for_llm
+
+    hits = [{"filename": 'weird"name<.pdf', "text": "body"}]
+    result = _format_hits_for_llm(hits)
+    assert 'source="weird&quot;name&lt;.pdf"' in result
 
 
 def test_tool_spec_shape_is_openai_compatible():

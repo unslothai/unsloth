@@ -21,11 +21,11 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     "function": {
         "name": "search_knowledge_base",
         "description": (
-            "Search the user's attached documents for information relevant to "
-            "the user's question. Call this when the user references content "
-            "from their docs, asks fact-heavy questions, or needs grounded "
-            "citations. Returns numbered chunks with source filenames; cite "
-            "them in your reply as [1], [2], etc."
+            "Search the user's attached documents. Call this when the user "
+            "references content from their docs, asks fact-heavy questions, "
+            "or needs grounded citations. Returns chunks wrapped in "
+            '<chunk id="N" source="..." page="..." score="...">...</chunk> '
+            "tags; cite them in your reply as [1], [2], etc."
         ),
         "parameters": {
             "type": "object",
@@ -53,22 +53,51 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
 }
 
 
-def _format_hits_for_llm(hits: list[Any]) -> str:
-    """Render hits as numbered Markdown citations; empty results return a message, not ''."""
+def _xml_attr(value: Any) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _format_hits_for_llm(hits: list[dict]) -> str:
+    """Render hits as fenced <chunk> blocks with metadata."""
     if not hits:
         return (
             "No matching chunks were found in the attached documents. "
             "Either nothing in this scope is relevant, or no documents "
             "have been ingested yet."
         )
-    lines: list[str] = []
+    blocks: list[str] = []
     for index, hit in enumerate(hits, start = 1):
-        name = hit.get("filename") or "unknown source"
+        attrs = [
+            f'id="{index}"',
+            f'source="{_xml_attr(hit.get("filename") or "unknown")}"',
+        ]
         page = hit.get("page_number")
-        suffix = f" (page {page})" if page is not None else ""
+        if page is not None:
+            attrs.append(f'page="{page}"')
+        score = hit.get("score")
+        if score is not None:
+            attrs.append(f'score="{float(score):.3f}"')
+        dense = hit.get("dense_score")
+        if dense is not None and dense != score:
+            attrs.append(f'dense_score="{float(dense):.3f}"')
+        chunk_index = hit.get("chunk_index")
+        if chunk_index is not None:
+            attrs.append(f'chunk_index="{chunk_index}"')
+        tokens = hit.get("token_count")
+        if tokens:
+            attrs.append(f'tokens="{tokens}"')
+        kind = hit.get("kind")
+        if kind and kind != "text":
+            attrs.append(f'kind="{_xml_attr(kind)}"')
         text = (hit.get("text") or "").strip()
-        lines.append(f"[{index}] {name}{suffix}: {text}")
-    return "\n\n".join(lines)
+        blocks.append(f"<chunk {' '.join(attrs)}>\n{text}\n</chunk>")
+    return "\n\n".join(blocks)
 
 
 def search_knowledge_base(
@@ -166,7 +195,7 @@ def search_knowledge_base(
             rows = conn.execute(
                 f"""
                 SELECT c.id AS chunk_id, c.text, c.page_number,
-                       c.kind, d.filename
+                       c.token_count, c.kind, d.filename
                 FROM rag_chunks c
                 JOIN rag_documents d ON d.id = c.document_id
                 WHERE c.id IN ({placeholders})
@@ -198,9 +227,19 @@ def search_knowledge_base(
         hits = hits[:k]
 
     # Skip image-kind hits; the paired caption surfaces separately.
-    formatted = [
-        lookup[hit.chunk_id]
-        for hit in hits
-        if hit.chunk_id in lookup and lookup[hit.chunk_id].get("kind") != "image"
-    ]
+    # Merge Hit-side metadata (score, dense_score, chunk_index) into the
+    # sqlite-side row so the formatter sees one flat dict per chunk.
+    formatted: list[dict] = []
+    for hit in hits:
+        row = lookup.get(hit.chunk_id)
+        if row is None or row.get("kind") == "image":
+            continue
+        formatted.append(
+            {
+                **row,
+                "score": hit.score,
+                "dense_score": hit.dense_score,
+                "chunk_index": hit.chunk_index,
+            }
+        )
     return _format_hits_for_llm(formatted)
