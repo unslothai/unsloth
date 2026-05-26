@@ -3873,14 +3873,20 @@ class ExternalProviderClient:
                                             ),
                                         }
                                     )
+                                    # Seed result with the call's own query so
+                                    # each card shows "Searching: <query>"
+                                    # instead of an empty panel. The last call
+                                    # is still overwritten at response.completed
+                                    # with the aggregated citation list (used
+                                    # by the source-pill extractor).
+                                    per_call_result = (
+                                        f"Searching: {query}" if query else ""
+                                    )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            # Empty result — the last call gets
-                                            # overwritten with citations at
-                                            # response.completed.
-                                            "result": "",
+                                            "result": per_call_result,
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
@@ -3908,7 +3914,11 @@ class ExternalProviderClient:
                                     )
                                     shell_calls.setdefault(
                                         item_id,
-                                        {"commands": [], "output": None},
+                                        {
+                                            "commands": [],
+                                            "output": None,
+                                            "tool_end_emitted": False,
+                                        },
                                     )
                                     shell_calls[item_id]["commands"] = (
                                         list(commands)
@@ -3926,6 +3936,27 @@ class ExternalProviderClient:
                                             },
                                         }
                                     )
+                                    # Fallback: some Responses streams ship the
+                                    # output bundled on the shell_call item's
+                                    # done event instead of as a separate
+                                    # shell_call_output. If so, emit tool_end
+                                    # now so the card never stays in "running".
+                                    embedded_output = item.get("output")
+                                    if (
+                                        isinstance(embedded_output, list)
+                                        and embedded_output
+                                    ):
+                                        shell_calls[item_id]["output"] = embedded_output
+                                        shell_calls[item_id]["tool_end_emitted"] = True
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_end",
+                                                "tool_call_id": item_id,
+                                                "result": _format_shell_output(
+                                                    embedded_output
+                                                ),
+                                            }
+                                        )
                                 elif item.get("type") == "shell_call_output":
                                     # `call_id` links back to the shell_call's
                                     # `id`, which is what we used as the
@@ -3936,8 +3967,16 @@ class ExternalProviderClient:
                                         item.get("call_id") or item.get("id") or ""
                                     )
                                     output = item.get("output") or []
+                                    # Skip if the fallback above already emitted
+                                    # tool_end for this call from the bundled
+                                    # output, so the card is not re-completed.
+                                    if shell_calls.get(call_id, {}).get(
+                                        "tool_end_emitted"
+                                    ):
+                                        continue
                                     if call_id in shell_calls:
                                         shell_calls[call_id]["output"] = output
+                                        shell_calls[call_id]["tool_end_emitted"] = True
                                     result_text = _format_shell_output(output)
                                     yield _emit_tool_event(
                                         {
@@ -4099,9 +4138,10 @@ class ExternalProviderClient:
                                 # parseSourcesFromResult flatMaps every
                                 # web_search tool-call result, so a single
                                 # non-empty result is enough to surface the
-                                # whole source-pill set at the message tail —
-                                # no need to fan out across every card (which
-                                # would just duplicate the same pills).
+                                # whole source-pill set at the message tail.
+                                # Earlier per-call results carry their own
+                                # "Searching: <query>" text so the cards are
+                                # never empty.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks: list[str] = []
@@ -4119,6 +4159,25 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Final flush: any shell_call that never got
+                                # an output event needs a tool_end so the card
+                                # transitions out of "running". Emit with the
+                                # accumulated output (may be empty) so the
+                                # frontend renders "(no output)" rather than
+                                # spinning indefinitely.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
