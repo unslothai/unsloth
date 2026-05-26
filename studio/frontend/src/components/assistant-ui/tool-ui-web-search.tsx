@@ -154,14 +154,15 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </Source>
             ))}
           </div>
-        ) : result ? (
-          <div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {typeof result === "string"
-                ? result
-                : JSON.stringify(result, null, 2)}
-            </pre>
-          </div>
+        ) : url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="break-all text-xs text-primary underline-offset-4 hover:underline"
+          >
+            {url}
+          </a>
         ) : null}
       </ToolFallbackContent>
     </ToolFallbackRoot>

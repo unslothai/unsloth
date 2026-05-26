@@ -276,6 +276,41 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _format_web_search_per_call_sources(
+    results: Any, sources: Any
+) -> str:
+    """Format per-call sources as the Title/URL/Snippet block the
+    frontend's parseSearchResults expects. Prefers `results` (snippet
+    bearing, reasoning models) then `action.sources` (urls only).
+    Returns "" when neither is populated.
+    """
+    blocks: list[str] = []
+    if isinstance(results, list):
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            url = r.get("url") if isinstance(r.get("url"), str) else ""
+            if not url:
+                continue
+            title = r.get("title") if isinstance(r.get("title"), str) else url
+            snippet = r.get("snippet") or r.get("text") or ""
+            entry = f"Title: {title}\nURL: {url}"
+            if isinstance(snippet, str) and snippet:
+                entry += f"\nSnippet: {snippet}"
+            blocks.append(entry)
+    if not blocks and isinstance(sources, list):
+        for s in sources:
+            url = ""
+            if isinstance(s, str):
+                url = s
+            elif isinstance(s, dict):
+                url = s.get("url") if isinstance(s.get("url"), str) else ""
+            if not url:
+                continue
+            blocks.append(f"Title: {url}\nURL: {url}")
+    return "\n---\n".join(blocks)
+
+
 def _web_search_card_text(args: dict[str, Any]) -> str:
     """Single-line summary for the per-card tool_end result."""
     if not args:
@@ -2235,7 +2270,7 @@ class ExternalProviderClient:
                             parts.append(f"--- stderr ---\n{stderr}")
                         if isinstance(return_code, int) and return_code != 0:
                             parts.append(f"return_code: {return_code}")
-                        return "\n".join(parts) if parts else "(no output)"
+                        return "\n".join(parts) if parts else ""
                     if inner_type == "text_editor_code_execution_result":
                         # view: file content; create: is_file_update flag;
                         # str_replace: diff `lines` list. The matching
@@ -3283,6 +3318,14 @@ class ExternalProviderClient:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
+            # Opt into the per-call source list (action.sources) and the
+            # per-call snippet list (results, reasoning models only) so
+            # each web_search card can surface what was actually consulted.
+            if "web_search" in enabled_tools:
+                body["include"] = [
+                    "web_search_call.action.sources",
+                    "web_search_call.results",
+                ]
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
@@ -3317,6 +3360,13 @@ class ExternalProviderClient:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
+                if "web_search" in enabled_tools:
+                    attempt_body["include"] = [
+                        "web_search_call.action.sources",
+                        "web_search_call.results",
+                    ]
+                else:
+                    attempt_body.pop("include", None)
             return attempt_body
 
         def _is_openai_container_expired_error(error_text: str) -> bool:
@@ -3518,43 +3568,47 @@ class ExternalProviderClient:
                         return f"data: {_json.dumps(chunk)}"
 
                     def _format_shell_output(output: Any) -> str:
-                        """Render an OpenAI `shell_call_output.output` list
-                        as the preformatted text payload the frontend's
-                        CodeExecutionToolUI displays inside a <pre>. Each
-                        entry has stdout/stderr/outcome — concatenate them
-                        with a separator block per entry and append
-                        `return_code` / `(timeout)` annotations only when
-                        they convey information beyond "succeeded".
+                        """Render OpenAI `shell_call_output.output` for the
+                        CodeExecutionToolUI <pre>. Each entry has
+                        stdout/stderr/outcome (canonical) or `text`/`content`
+                        (older shapes). When the entry contains no
+                        recognised text fields at all, dump the raw JSON so
+                        the user can see what OpenAI actually returned.
                         """
                         if not isinstance(output, list):
                             return ""
                         parts: list[str] = []
                         for entry in output:
                             if not isinstance(entry, dict):
+                                if isinstance(entry, str) and entry:
+                                    parts.append(entry)
                                 continue
-                            stdout = entry.get("stdout") or ""
+                            stdout = entry.get("stdout") or entry.get("text") or entry.get("content") or ""
                             stderr = entry.get("stderr") or ""
                             outcome = entry.get("outcome") or {}
                             chunk_parts: list[str] = []
-                            if stdout:
+                            if isinstance(stdout, str) and stdout:
                                 chunk_parts.append(stdout)
-                            if stderr:
+                            if isinstance(stderr, str) and stderr:
                                 chunk_parts.append(f"--- stderr ---\n{stderr}")
                             if isinstance(outcome, dict):
                                 outcome_type = outcome.get("type")
                                 if outcome_type == "exit":
                                     exit_code = outcome.get("exit_code")
-                                    if isinstance(exit_code, int) and exit_code != 0:
-                                        chunk_parts.append(f"return_code: {exit_code}")
+                                    if isinstance(exit_code, int):
+                                        chunk_parts.append(f"exit_code: {exit_code}")
                                 elif outcome_type == "timeout":
                                     chunk_parts.append("(timeout)")
+                            if not chunk_parts:
+                                # Unknown shape: surface the raw dict so the
+                                # user can see what OpenAI actually returned.
+                                try:
+                                    chunk_parts.append(_json.dumps(entry, indent=2))
+                                except (TypeError, ValueError):
+                                    pass
                             if chunk_parts:
                                 parts.append("\n".join(chunk_parts))
-                        return (
-                            "\n--- next command ---\n".join(parts)
-                            if parts
-                            else "(no output)"
-                        )
+                        return "\n--- next command ---\n".join(parts)
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
@@ -3922,11 +3976,22 @@ class ExternalProviderClient:
                                             "arguments": args,
                                         }
                                     )
+                                    # Per-call sources: prefer the snippet-bearing
+                                    # `results` list (reasoning models only), then
+                                    # fall back to `action.sources` URLs. Formatted
+                                    # as the Title/URL/Snippet block the frontend
+                                    # parser already understands.
+                                    action_obj = (
+                                        item.get("action") if isinstance(item.get("action"), dict) else {}
+                                    ) or {}
+                                    per_call_sources = _format_web_search_per_call_sources(
+                                        item.get("results"), action_obj.get("sources")
+                                    )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            "result": _web_search_card_text(args),
+                                            "result": per_call_sources or _web_search_card_text(args),
                                         }
                                     )
                                 elif item.get("type") == "shell_call":

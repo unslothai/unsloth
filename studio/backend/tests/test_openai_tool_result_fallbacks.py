@@ -274,6 +274,61 @@ def test_web_search_action_queries_plural_falls_back(monkeypatch):
     assert ends[0]["result"] == "Searching: renewable energy 2026"
 
 
+def test_web_search_per_call_results_formatted_as_source_blocks(monkeypatch):
+    """`results` array (reasoning models) is formatted into Title/URL/Snippet blocks."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_r",
+                "action": {"type": "search", "query": "tiger ranking"},
+                "results": [
+                    {"url": "https://a.example/1", "title": "Tigers", "snippet": "Big cats"},
+                    {"url": "https://b.example/2", "title": "Lion stats"},
+                ],
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    events = _tool_events(lines)
+    ends = [e for e in events if e["type"] == "tool_end"]
+    body = ends[0]["result"]
+    assert "Title: Tigers" in body
+    assert "URL: https://a.example/1" in body
+    assert "Snippet: Big cats" in body
+    assert "Title: Lion stats" in body
+
+
+def test_web_search_action_sources_url_only_falls_back(monkeypatch):
+    """`action.sources` URLs are surfaced when `results` is absent."""
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_s",
+                "action": {
+                    "type": "search",
+                    "query": "X",
+                    "sources": [
+                        {"type": "url", "url": "https://x.example/1"},
+                        "https://x.example/2",
+                    ],
+                },
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    events = _tool_events(lines)
+    ends = [e for e in events if e["type"] == "tool_end"]
+    body = ends[0]["result"]
+    assert "https://x.example/1" in body
+    assert "https://x.example/2" in body
+
+
 # ── shell_call output fallbacks ────────────────────────────────────────
 
 
