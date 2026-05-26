@@ -372,11 +372,21 @@ def _install_package_wheel_first(
                 f"{snippet}",
             )
         else:
-            logger.error(
-                "Failed to install %s from PyPI:\n%s",
-                display_name,
-                result.stdout,
-            )
+            if sys.platform == "win32":
+                # No prebuilt wheel and no source build toolchain on Windows --
+                # this is expected for packages like causal-conv1d.  Log at
+                # info so users aren't alarmed by what looks like an error.
+                logger.info(
+                    "%s is not available on Windows (no prebuilt wheel); skipping",
+                    display_name,
+                )
+                logger.debug("Install output:\n%s", result.stdout)
+            else:
+                logger.error(
+                    "Failed to install %s from PyPI:\n%s",
+                    display_name,
+                    result.stdout,
+                )
         return False
 
     if is_hip:
@@ -388,6 +398,9 @@ def _install_package_wheel_first(
 
 def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
     if not _model_wants_causal_conv1d(model_name):
+        return
+    if sys.platform == "win32":
+        logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
         return
 
     _install_package_wheel_first(
@@ -455,6 +468,11 @@ def _flash_linear_attention_current(already_importable: bool | None = None) -> b
 def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     """Install pinned FLA + fla-core with --no-deps. Returns True iff importable post-call."""
     if os.getenv(_FLA_SKIP_ENV) == "1":
+        return False
+    if sys.platform == "win32":
+        logger.info(
+            "Skipping flash-linear-attention install: no prebuilt wheel for Windows"
+        )
         return False
     if sys.version_info < _FLA_MIN_PYTHON:
         logger.info(
@@ -535,10 +553,17 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         return False
 
     if result.returncode != 0:
-        logger.warning(
-            "flash-linear-attention install failed (continuing on torch fallback):\n%s",
-            result.stdout,
-        )
+        if sys.platform == "win32":
+            logger.info(
+                "flash-linear-attention not available on Windows (no prebuilt wheel); "
+                "continuing on torch fallback"
+            )
+            logger.debug("Install output:\n%s", result.stdout)
+        else:
+            logger.warning(
+                "flash-linear-attention install failed (continuing on torch fallback):\n%s",
+                result.stdout,
+            )
         _send_status(
             event_queue,
             "flash-linear-attention install failed; continuing without it",
@@ -979,6 +1004,9 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         _ensure_tilelang_backend_unconditional(eq)
 
     def _causal_conv1d_install(eq: Any) -> bool:
+        if sys.platform == "win32":
+            logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
+            return False
         ok = _install_package_wheel_first(
             event_queue = eq,
             import_name = "causal_conv1d",

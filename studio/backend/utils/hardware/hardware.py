@@ -1202,7 +1202,10 @@ def estimate_required_model_memory_gb(
                 _determine_attention_impl_for_gpu_estimate(config)
             )
         except Exception as e:
-            logger.warning(
+            # Log at debug: on Windows ROCm the torch.distributed stub does
+            # not implement Store, so this fires on every estimate call.
+            # It is expected and non-actionable -- eager is the safe fallback.
+            logger.debug(
                 "Could not resolve attention implementation for '%s': %s",
                 estimate_model,
                 e,

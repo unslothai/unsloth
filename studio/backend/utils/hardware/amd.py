@@ -50,11 +50,17 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("amd-smi query failed: %s", e)
+        if isinstance(e, FileNotFoundError):
+            # amd-smi ships with Adrenalin, not the HIP SDK -- absence is
+            # expected on HIP SDK-only Windows setups.  Log at debug only.
+            logger.debug("amd-smi not found (not in PATH): %s", e)
+        else:
+            logger.warning("amd-smi query failed: %s", e)
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
-            logger.warning(
-                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            logger.info(
+                "amd-smi not available (not installed; expected on HIP SDK-only systems); "
+                "GPU VRAM polling disabled"
             )
             _amd_smi_disabled = True
         return None
@@ -62,8 +68,9 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         logger.warning("amd-smi returned code %d", result.returncode)
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
-            logger.warning(
-                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            logger.info(
+                "amd-smi not available (not installed; expected on HIP SDK-only systems); "
+                "GPU VRAM polling disabled"
             )
             _amd_smi_disabled = True
         return None
