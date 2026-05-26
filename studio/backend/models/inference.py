@@ -159,9 +159,9 @@ class GenerateRequest(BaseModel):
 
     messages: List[dict] = Field(..., description = "Chat messages in OpenAI format")
     system_prompt: str = Field("", description = "System prompt")
-    temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
+    temperature: float = Field(1.0, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
-    top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
+    top_k: int = Field(64, ge = -1, le = 100, description = "Top-k sampling")
     max_new_tokens: int = Field(
         2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
     )
@@ -590,7 +590,7 @@ class ChatCompletionRequest(BaseModel):
             "spec (`false`); opt into streaming by sending `stream: true`."
         ),
     )
-    temperature: float = Field(0.6, ge = 0.0, le = 2.0)
+    temperature: float = Field(1.0, ge = 0.0, le = 2.0)
     top_p: float = Field(0.95, ge = 0.0, le = 1.0)
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
@@ -617,9 +617,9 @@ class ChatCompletionRequest(BaseModel):
     )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
-    top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
+    top_k: int = Field(64, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
     min_p: float = Field(
-        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
+        0.0, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"

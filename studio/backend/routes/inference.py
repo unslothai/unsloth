@@ -4426,10 +4426,10 @@ async def anthropic_messages(
         openai_messages, llama_backend.is_vision
     )
 
-    temperature = payload.temperature if payload.temperature is not None else 0.6
+    temperature = payload.temperature if payload.temperature is not None else 1.0
     top_p = payload.top_p if payload.top_p is not None else 0.95
-    top_k = payload.top_k if payload.top_k is not None else 20
-    min_p = payload.min_p if payload.min_p is not None else 0.01
+    top_k = payload.top_k if payload.top_k is not None else 64
+    min_p = payload.min_p if payload.min_p is not None else 0.0
     repetition_penalty = (
         payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
     )
