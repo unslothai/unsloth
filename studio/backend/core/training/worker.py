@@ -2316,7 +2316,12 @@ def run_training_process(
                 # Try multiple attribute name forms: different ROCm wheel builds
                 # (HIP SDK vs AMD SDK / Radeon wheels) may use different spellings.
                 _gcn_arch = ""
-                for _arch_attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                for _arch_attr in (
+                    "gcnArchName",
+                    "gcn_arch_name",
+                    "arch_name",
+                    "gfx_arch_name",
+                ):
                     _v = (getattr(_props, _arch_attr, "") or "").split(":")[0].strip()
                     if _v:
                         _gcn_arch = _v
