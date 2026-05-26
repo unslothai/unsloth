@@ -85,8 +85,10 @@ import {
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
@@ -552,6 +554,12 @@ export function ChatSettingsPanel({
       activeExternalProvider.baseUrl,
     ) &&
     activeExternalProvider.providerType === "openai";
+  const showFastModeControl =
+    activeExternalProvider != null &&
+    providerSupportsFastMode(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+    );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const openAiApiKeyForSection = activeExternalProvider
     ? getExternalProviderApiKey(activeExternalProvider.id) || null
@@ -1152,6 +1160,28 @@ export function ChatSettingsPanel({
                 </Select>
               </div>
             ) : null}
+            {showFastModeControl ? (
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Fast mode
+                  </span>
+                  <InfoHint>
+                    Beta. Up to 2.5x higher output tokens per second on
+                    Claude Opus 4.6 and 4.7 at 6x standard Opus pricing.
+                    Switching between fast and standard invalidates the
+                    prompt cache and is incompatible with the Priority
+                    service tier.
+                  </InfoHint>
+                </div>
+                <Switch
+                  className="panel-switch shrink-0"
+                  checked={Boolean(params.fastMode)}
+                  onCheckedChange={set("fastMode")}
+                  aria-label="Fast mode"
+                />
+              </div>
+            ) : null}
           </CollapsibleSection>
         ) : null}
 
@@ -1280,7 +1310,10 @@ export function ChatSettingsPanel({
               }
               max={
                 isExternalModel
-                  ? EXTERNAL_MAX_OUTPUT_TOKENS
+                  ? getExternalMaxOutputTokens(
+                      externalProviderType,
+                      externalSelection?.modelId,
+                    )
                   : isGguf && ggufContextLength
                     ? ggufContextLength
                     : 32768
