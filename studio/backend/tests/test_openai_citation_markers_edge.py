@@ -3,28 +3,9 @@
 
 """Edge-case tests for the OpenAI Responses citation marker rewriter.
 
-These cover:
-
-  * Multi-source markers (one ``cite`` element referencing several
-    ``source_id`` aliases at once -- per the OpenAI doc, the wire shape
-    is ``\\ue200cite\\ue202id1\\ue202id2\\ue201``).
-  * Source id + locator markers (``\\ue200cite\\ue202sid\\ue202L8-L13
-    \\ue201`` -- the locator is dropped, the link still resolves).
-  * Marker SPLIT across two streaming ``response.output_text.delta``
-    events. OpenAI's stream chunks text on byte-buffer boundaries
-    that have no awareness of the marker grammar, so a marker can be
-    cut anywhere. The rewriter must buffer the unterminated tail and
-    prepend it onto the next delta so the user never sees
-    ``\\ue200citetu`` followed by ``rn0view0\\ue201`` (i.e. a garbled
-    glyph then a stray "rn0view0" word).
-  * Unterminated marker at the end of a stream (truncation): the
-    held-over tail is stripped of private-use bytes on flush so no
-    glyph leaks.
-  * Multiple unrelated markers within a single delta still resolve.
-  * Annotation-before-marker ordering (the annotation arrives on the
-    same delta as the marker -- the rewriter must see it in the
-    lookup table).
-  * Idempotency: running the rewriter twice produces the same output.
+Covers multi-source markers, source+locator, marker SPLIT across SSE deltas,
+unterminated tails at end-of-stream, multiple markers per delta, late
+annotation ordering, and idempotency.
 
 Reference: https://developers.openai.com/api/docs/guides/citation-formatting
 """
@@ -32,9 +13,8 @@ Reference: https://developers.openai.com/api/docs/guides/citation-formatting
 import importlib
 
 
-# Import the module-level helpers under test. The streaming integration
-# is exercised by ``_simulate_delta_stream`` further down which mirrors
-# the head/buffer/flush dance from ``_stream_openai_responses``.
+# Streaming integration is exercised by ``_simulate_delta_stream`` further
+# down, mirroring the head/buffer/flush dance from ``_stream_openai_responses``.
 _module = importlib.import_module("core.inference.external_provider")
 _replace_openai_citation_markers = _module._replace_openai_citation_markers
 _split_pending_citation_tail = _module._split_pending_citation_tail
@@ -47,9 +27,7 @@ CITE_DELIM = ""
 
 def _marker(*source_ids: str, locator: str | None = None) -> str:
     """Build a ``\\ue200cite\\ue202<sid>[\\ue202<sid>...][\\ue202<loc>]\\ue201``
-    marker. ``source_ids`` may contain one entry (single-source) or
-    several (multi-source). ``locator`` adds a trailing locator token
-    after all source ids."""
+    marker. Accepts one or many ``source_ids`` plus an optional ``locator``."""
     payload = f"{CITE_START}cite{CITE_DELIM}" + CITE_DELIM.join(source_ids)
     if locator:
         payload = f"{payload}{CITE_DELIM}{locator}"
@@ -60,9 +38,8 @@ def _no_private_use(text: str) -> bool:
     return all(c not in text for c in (CITE_START, CITE_STOP, CITE_DELIM))
 
 
-# A tiny harness that mirrors the head / pending-tail / flush dance
-# that lives in `_stream_openai_responses`. Used by the streaming
-# tests below so we don't have to spin up an httpx mock per case.
+# Harness mirroring the head/pending-tail/flush dance in
+# `_stream_openai_responses`, so streaming tests skip the httpx mock.
 def _simulate_delta_stream(
     deltas: list[str],
     citations: list[dict],
@@ -79,9 +56,8 @@ def _simulate_delta_stream(
             if head:
                 emitted.append(head)
     if flush and pending:
-        # Mirror the FIXED `_flush_pending_marker_tail`: drop the tail
-        # outright if no closing stop byte ever arrived (otherwise the
-        # literal ``cite`` + source id residue leaks as plain text).
+        # Mirror `_flush_pending_marker_tail`: drop the tail entirely if no
+        # closing stop byte arrived; the literal ``cite<sid>`` would leak otherwise.
         if CITE_STOP not in pending:
             rendered = ""
         else:
@@ -102,9 +78,8 @@ def _simulate_delta_stream(
 
 
 def test_multi_source_marker_all_resolve():
-    """\\ue200cite\\ue202id1\\ue202id2\\ue202id3\\ue201 expands to three
-    bracket links when every source id is known. The previous regex
-    captured only the first source id and silently dropped id2/id3."""
+    """\\ue200cite\\ue202id1\\ue202id2\\ue202id3\\ue201 expands to three links
+    when every id is known. Earlier regex captured only id1 and dropped id2/id3."""
     text = f"All three: {_marker('id1', 'id2', 'id3')}"
     citations = [
         {"source_id": "id1", "url": "https://example.com/1"},
@@ -119,8 +94,7 @@ def test_multi_source_marker_all_resolve():
 
 
 def test_multi_source_marker_partial_resolution():
-    """Some ids known, some not. Known ids render; unknown ids drop
-    silently. No garbled glyph leaks."""
+    """Known ids render, unknown ids drop silently, no glyph leaks."""
     text = f"Mixed: {_marker('known', 'unknown', 'also_known')}"
     citations = [
         {"source_id": "known", "url": "https://k.example"},
@@ -162,12 +136,9 @@ def test_marker_with_range_locator():
 
 
 def test_marker_split_in_source_id():
-    """Delta-1 ends mid-source-id (``\\ue200cite\\ue202tu``); delta-2
-    starts with the rest (``rn0view0\\ue201``). WITHOUT the buffer,
-    the rewriter sees each delta in isolation, leaks
-    ``\\ue200cite\\ue202tu`` to the user, then leaks ``rn0view0`` and
-    the stray ``\\ue201``. WITH the buffer the two halves are
-    stitched back together and resolve to one link."""
+    """Delta-1 ends mid-source-id (``\\ue200cite\\ue202tu``), delta-2 starts
+    with the rest (``rn0view0\\ue201``). The buffer stitches the halves
+    back together so they resolve to one link instead of leaking."""
     full = f"See {_marker('turn0view0')} now."
     # Cut right after the second delim + "tu" inside the source id.
     cut = full.index("tu", full.index(CITE_START)) + len("tu")
@@ -182,9 +153,8 @@ def test_marker_split_in_source_id():
 
 
 def test_marker_split_at_start_byte():
-    """The split is exactly at the opening ``\\ue200`` byte -- the
-    next delta starts a fresh marker. The buffer must hold the lone
-    open byte until the rest arrives."""
+    """Split exactly after the opening ``\\ue200`` byte; the buffer must
+    hold the lone open byte until the rest arrives."""
     full = f"Text {_marker('sid')} done"
     cut = full.index(CITE_START) + 1  # right AFTER the open byte
     d1, d2 = full[:cut], full[cut:]
@@ -195,9 +165,7 @@ def test_marker_split_at_start_byte():
 
 
 def test_marker_split_across_three_deltas():
-    """Worst-case split: the marker is chopped into three pieces and
-    arrives over three separate deltas with arbitrary text in
-    between."""
+    """Worst case: marker chopped into three pieces across three deltas."""
     full = f"A {_marker('threesplit')} B"
     # cut at two points inside the marker
     open_pos = full.index(CITE_START)
@@ -212,8 +180,7 @@ def test_marker_split_across_three_deltas():
 
 
 def test_marker_split_with_trailing_text_after_close():
-    """The second delta closes the marker AND carries more prose
-    after the close byte. Both pieces must emit cleanly."""
+    """Delta-2 closes the marker AND carries trailing prose; both emit cleanly."""
     full = f"X {_marker('sid')} after"
     cut = full.index("cite") + len("ci")
     d1, d2 = full[:cut], full[cut:]
@@ -224,8 +191,7 @@ def test_marker_split_with_trailing_text_after_close():
 
 
 def test_split_marker_unknown_source_is_dropped_cleanly():
-    """Split marker for an unknown source -- the whole marker drops
-    silently on flush, no garbled glyph leaks."""
+    """Split marker for an unknown source drops silently on flush."""
     full = f"Pre {_marker('never_seen')} post"
     cut = full.index(CITE_START) + 3
     d1, d2 = full[:cut], full[cut:]
@@ -240,25 +206,21 @@ def test_split_marker_unknown_source_is_dropped_cleanly():
 
 
 def test_unterminated_marker_at_stream_end_dropped_on_flush():
-    """Stream ends mid-marker (e.g. response.incomplete). The pending
-    tail is flushed: private-use bytes are stripped so no garbled
-    glyph or `E202` text leaks."""
+    """Stream ends mid-marker (e.g. response.incomplete); the tail is
+    flushed with private-use bytes stripped, no `E202` text leaks."""
     deltas = ["Some text ", f"{CITE_START}citetu", "rn0view0"]  # no STOP ever
     out = _simulate_delta_stream(deltas, [], flush = True)
     assert _no_private_use(out)
     assert "E200" not in out and "E202" not in out
-    # Surrounding prose stays. We don't make hard claims on the exact
-    # remainder of the unterminated marker -- only that no glyph leaks.
+    # Surrounding prose stays; we don't assert exact marker remainder.
     assert "Some text " in out
 
 
 def test_flush_resolves_marker_when_late_annotation_arrives():
-    """The marker arrives in a delta, but the matching annotation
-    only arrives later (e.g. on response.output_text.annotation.added
-    after the final delta). Today, the rewriter looks at
-    ``all_url_citations`` LIVE at flush time, so a late annotation
-    still resolves a buffered marker -- the SAME annotation_first
-    re-order applies on flush."""
+    """Marker in a delta, matching annotation arrives later (on
+    response.output_text.annotation.added after the final delta). The
+    rewriter reads ``all_url_citations`` LIVE at flush, so the buffered
+    marker still resolves."""
     deltas = ["Look ", f"{CITE_START}cite{CITE_DELIM}late_sid"]
     pending = ""
     citations: list[dict] = []
@@ -307,8 +269,7 @@ def test_three_markers_in_one_delta_resolve_independently():
 
 
 def test_rewriter_idempotent_on_already_rewritten_text():
-    """Running the rewriter twice doesn't double-link or corrupt the
-    markdown brackets it just emitted."""
+    """Running the rewriter twice does not double-link or corrupt brackets."""
     text = f"alpha {_marker('a')} omega"
     citations = [{"source_id": "a", "url": "https://example.com/a"}]
     once = _replace_openai_citation_markers(text, citations)
@@ -330,9 +291,8 @@ def test_rewriter_idempotent_on_marker_free_text():
 
 
 def test_only_marker_no_surrounding_text():
-    """A delta that is JUST a marker (no surrounding prose) must
-    still render correctly. Without the empty-string short-circuit
-    in _split_pending_citation_tail this used to leak."""
+    """A delta that is JUST a marker (no prose) still renders correctly;
+    used to leak without the empty-string short-circuit in the split helper."""
     text = _marker("solo")
     citations = [{"source_id": "solo", "url": "https://solo.example"}]
     out = _replace_openai_citation_markers(text, citations)
@@ -340,8 +300,7 @@ def test_only_marker_no_surrounding_text():
 
 
 def test_back_to_back_markers_with_no_separator():
-    """Two markers butted up against each other resolve to two
-    bracket links concatenated, no joining whitespace."""
+    """Adjacent markers resolve to concatenated links, no joining whitespace."""
     text = f"{_marker('x')}{_marker('y')}"
     citations = [
         {"source_id": "x", "url": "https://x.example"},
@@ -352,9 +311,8 @@ def test_back_to_back_markers_with_no_separator():
 
 
 def test_split_helper_buffers_only_after_last_open_byte():
-    """If a delta contains a complete marker followed by an
-    unterminated marker, the head must include the complete marker
-    and the buffer must hold only the trailing partial."""
+    """A complete marker followed by an unterminated one: head includes
+    the complete marker, buffer holds only the trailing partial."""
     complete = _marker("done")
     partial = f"{CITE_START}cite{CITE_DELIM}half"  # no STOP
     text = f"pre {complete} mid {partial}"
@@ -379,32 +337,27 @@ def test_split_helper_no_open_byte():
 
 
 def test_split_helper_complete_marker_only():
-    """A delta that ends with a complete (closed) marker should NOT
-    leave anything in the buffer."""
+    """A delta ending with a closed marker leaves the buffer empty."""
     text = f"alpha {_marker('a')}"
     head, tail = _split_pending_citation_tail(text)
     assert head == text and tail == ""
 
 
 # ---------------------------------------------------------------------------
-# 8. Sources-panel behaviour: marker drop must not affect citation
-# aggregation. We re-derive the citation index list from the same
-# url_citations list the rewriter consumes.
+# 8. Sources-panel: marker drop must not affect citation aggregation.
+# Indices come from the url_citations list, not the marker stream.
 # ---------------------------------------------------------------------------
 
 
 def test_unknown_marker_does_not_perturb_citation_indexing():
-    """An unknown source_id marker is dropped, but the OTHER citations
-    in the list keep their original 1-based numbering."""
+    """Unknown source_id markers drop without consuming an index slot."""
     text = f"A {_marker('unknown')} B {_marker('real_a')} C {_marker('real_b')}"
     citations = [
         {"source_id": "real_a", "url": "https://example.com/a"},
         {"source_id": "real_b", "url": "https://example.com/b"},
     ]
     out = _replace_openai_citation_markers(text, citations)
-    # real_a is index 1 (NOT 0 -- the unknown marker doesn't take a
-    # slot, because indices come from the citation list, not the
-    # marker stream).
+    # real_a is index 1; unknown does not take a slot.
     assert "[[1]](https://example.com/a)" in out
     assert "[[2]](https://example.com/b)" in out
     assert _no_private_use(out)
@@ -413,51 +366,38 @@ def test_unknown_marker_does_not_perturb_citation_indexing():
 # ---------------------------------------------------------------------------
 # Regression: unterminated marker tail must NOT leak the residual
 # ``cite``-prefixed source id as plain text. PR #5713 audit P1.
-# Symptom before the fix: a stream ending mid-marker had its codepoints
-# stripped, but the literal "cite" + source id ("citeturn0view0") was
-# emitted to the user as garbage trailing text.
 # ---------------------------------------------------------------------------
 
 
 def test_unterminated_marker_does_not_leak_cite_residue():
-    """Stream ends mid-marker: the entire tail must be dropped, NOT
-    have its codepoints stripped while leaving 'cite<sid>' behind."""
-    # Build a delta that includes user-visible prose followed by an
-    # opener and only HALF a source id -- no closing byte ever
-    # arrives.
+    """Stream ends mid-marker: drop the whole tail rather than strip
+    codepoints and leave ``cite<sid>`` behind."""
     half = f"Hi there {CITE_START}cite{CITE_DELIM}turn0view0"
     out = _simulate_delta_stream([half], [], flush = True)
-    # Prose before the marker stays.
+    # Prose before the marker stays; no private-use bytes or cite residue.
     assert "Hi there" in out
-    # No private-use bytes leak.
     assert _no_private_use(out)
-    # Crucially: the literal "cite" + source id does NOT leak.
     assert "citeturn0view0" not in out
-    # ``cite`` standalone (without the marker codepoints) is also
-    # meaningless here -- shouldn't appear.
     assert "cite" not in out.split("Hi there", 1)[1]
 
 
 def test_unterminated_marker_only_no_prefix_drops_entirely():
-    """A delta that is purely an unterminated marker (no surrounding
-    prose) flushes to the empty string."""
+    """A delta that is purely an unterminated marker flushes to ""."""
     half = f"{CITE_START}cite{CITE_DELIM}turn0view0"
     out = _simulate_delta_stream([half], [], flush = True)
     assert out == ""
 
 
 def test_unterminated_marker_with_prefix_emits_only_prefix():
-    """A delta with prose then an unterminated marker emits the prose
-    and drops the marker remnant."""
+    """Prose then unterminated marker: prose emits, marker remnant drops."""
     half = f"prefix prose {CITE_START}cite{CITE_DELIM}abc"
     out = _simulate_delta_stream([half], [], flush = True)
     assert out == "prefix prose "
 
 
 def test_closing_byte_arrives_after_pending_buffered_split():
-    """The marker's closing byte arrives in a later delta after the
-    opener and source id were buffered. The link should resolve and
-    no residue leaks."""
+    """Closing byte arrives in a later delta after opener + source id were
+    buffered; link resolves with no residue."""
     cuts = [
         f"a {CITE_START}cite{CITE_DELIM}",
         f"sid{CITE_STOP} b",

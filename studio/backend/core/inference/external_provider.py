@@ -68,21 +68,12 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
-# OpenAI's Responses stream emits inline citation markers shaped like
-# `citeSOURCE_ID` (private-use codepoints, see
+# OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
+# using private-use codepoints (see
 # https://developers.openai.com/api/docs/guides/citation-formatting).
-# Multi-source markers reuse the same delimiter: `citeid1id2`.
-# An optional `<locator>` suffix (e.g. `L8-L13` or a page number)
-# may follow the source id list. Most fonts render the codepoints
-# as garbled "E202" glyphs or empty boxes, and markdown layers
-# tend to strip them, leaving run-on text like
-# "citeturn1view0turn1view1...". We rewrite each marker into a
-# markdown link `[[N]](URL)` per resolvable source id, or drop the
-# marker silently when none of its ids are known. Group 1 captures
-# everything between the cite-open and stop bytes; we then split
-# on the delimiter and try every token against the annotation
-# table. Tokens that don't resolve (locators, unknown ids) are
-# dropped silently so no garbled glyph ever reaches the renderer.
+# Group 1 holds the delim-separated tokens; each resolvable token expands
+# to `[[N]](URL)`, unresolved tokens (locators, unknown ids) drop silently
+# so no garbled glyph reaches the renderer.
 _OPENAI_CITE_OPEN = "cite"
 _OPENAI_CITE_STOP = ""
 _OPENAI_CITE_DELIM = ""
@@ -96,9 +87,8 @@ def _build_citation_lookup(
 ) -> dict[str, tuple[int, str]]:
     """Map every known ``source_id`` alias to ``(citation_index, url)``.
 
-    Accepts both the singular ``source_id`` and plural ``source_ids``
-    citation shapes. First-seen wins on alias collision so an earlier
-    citation keeps its number.
+    Accepts singular ``source_id`` and plural ``source_ids``. First-seen
+    wins on alias collision so an earlier citation keeps its number.
     """
     by_source: dict[str, tuple[int, str]] = {}
     for idx, cit in enumerate(url_citations, start = 1):
@@ -121,30 +111,19 @@ def _replace_openai_citation_markers(
     text: str,
     url_citations: list[dict[str, Any]],
 ) -> str:
-    """Rewrite `\\ue200cite\\ue202SOURCE_ID[\\ue202LOCATOR]\\ue201` markers.
-
-    For each marker, look up the source_id against the running
-    ``url_citations`` list and replace with `[[N]](URL)` where N is
-    the 1-based index of that citation. Multi-source markers expand
-    into one `[[N]](URL)` per resolvable id. Unknown source_ids and
-    locator suffixes are dropped silently so garbled glyphs never
-    reach the renderer. Idempotent on text that contains no private-
-    use codepoints.
+    """Rewrite `\\ue200cite\\ue202SOURCE_ID[\\ue202LOCATOR]\\ue201` markers into
+    `[[N]](URL)` per resolvable id. Multi-source markers expand to one link
+    per id; unresolved tokens drop silently. Idempotent on text without
+    private-use codepoints.
     """
     if not text or _OPENAI_CITE_STOP not in text:
         return text
     by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
-        # The capture group contains either a single source id, a
-        # delim-separated list of source ids (multi-source markers),
-        # or a source id followed by a locator. We try every
-        # delim-split token against the lookup; unresolved tokens
-        # are dropped silently. That handles multi-source (every
-        # token resolves, every token expands) AND source+locator
-        # (only the first token resolves, the locator is dropped).
-        # When no tokens resolve, the whole marker is stripped so
-        # the user-facing text stays clean.
+        # Try every delim-split token; unresolved tokens drop silently.
+        # Handles multi-source (all resolve) and source+locator (only the
+        # id resolves, locator drops). Empty result strips the marker.
         rendered: list[str] = []
         for tok in match.group(1).split(_OPENAI_CITE_DELIM):
             if not tok:
@@ -163,21 +142,13 @@ def _rewrite_citation_markers_partial(
     text: str,
     url_citations: list[dict[str, Any]],
 ) -> tuple[str, bool]:
-    """Variant of ``_replace_openai_citation_markers`` that also
-    reports whether any marker in ``text`` referenced a source_id
-    that has not yet been recorded in ``url_citations``.
+    """Like ``_replace_openai_citation_markers`` but also reports whether
+    any marker referenced a source_id not yet in ``url_citations``.
 
-    OpenAI's ``response.output_text.annotation.added`` event for a
-    ``url_citation`` typically arrives AFTER the delta carrying
-    the inline marker that references it. The stateless rewriter
-    has no way to distinguish a pending annotation from a
-    genuinely bogus source_id, so it silently drops the marker --
-    losing the inline link even though the URL eventually shows
-    up in the sources panel. Callers that own a per-stream buffer
-    can use this helper to defer emission of a segment with an
-    unresolved token until a later event records the annotation.
-    Markers whose tokens did not all resolve are left verbatim so
-    a follow-up pass on the same segment still parses cleanly.
+    The ``annotation.added`` event for a url_citation typically arrives
+    AFTER the delta carrying the marker referencing it. Callers buffer the
+    segment until a later event records the annotation; unresolved markers
+    are left verbatim so a follow-up pass still parses cleanly.
     """
     if not text or _OPENAI_CITE_STOP not in text:
         return text, False
@@ -196,11 +167,9 @@ def _rewrite_citation_markers_partial(
                 continue
             idx, url = hit
             rendered.append(f"[[{idx}]]({url})")
-        # If even one token in a multi-source marker is unresolved,
-        # leave the whole marker verbatim so the caller buffers the
-        # segment and re-runs once the late annotation lands. Emitting
-        # just the resolved tokens would discard the unresolved ids
-        # for good when the caller no longer retains the source text.
+        # Leave the whole marker verbatim if any token is unresolved so the
+        # caller can re-run once the late annotation lands; partial emission
+        # would lose the unresolved ids once the source text is dropped.
         if any_unresolved:
             has_unresolved = True
             return match.group(0)
@@ -212,28 +181,19 @@ def _rewrite_citation_markers_partial(
 def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     """Split ``text`` into ``(head, pending_tail)`` for streamed deltas.
 
-    OpenAI's Responses stream chunks text on byte-buffer boundaries
-    that have no awareness of the inline citation marker grammar,
-    so a marker can straddle two ``response.output_text.delta``
-    events (e.g. delta-1 ends with ``\\ue200citetu`` and delta-2
-    starts with ``rn0view0\\ue201``). Processing each delta in
-    isolation would leak the half-marker to the user. We hold the
-    unterminated tail and prepend it onto the next delta so the
-    rewriter sees a complete marker.
-
-    ``pending_tail`` is the longest suffix that begins with
-    ``\\ue200`` and contains NO stop byte ``\\ue201``. ``head`` is
-    the part that's safe to emit immediately. When ``text`` ends
-    with a fully closed marker (or no marker at all) the tail is
-    empty.
+    A citation marker can straddle two SSE deltas (e.g. delta-1 ends with
+    ``\\ue200citetu`` and delta-2 starts with ``rn0view0\\ue201``); the
+    unterminated tail is buffered and prepended onto the next delta so the
+    rewriter sees a complete marker. ``pending_tail`` is the longest suffix
+    starting with ``\\ue200`` and lacking ``\\ue201``; ``head`` is safe to
+    emit. Empty tail when ``text`` has no open marker or a fully closed one.
     """
     if not text:
         return text, ""
     last_open = text.rfind("")
     if last_open == -1:
         return text, ""
-    # If a stop byte appears after the last open byte, the marker
-    # closed inside this delta and nothing needs to be buffered.
+    # Stop byte after the last open byte means the marker closed in this delta.
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
@@ -3113,31 +3073,20 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
-                    # Buffer for an unterminated citation marker that
-                    # straddles two ``response.output_text.delta``
-                    # events. See ``_split_pending_citation_tail`` for
-                    # why this is necessary. Always concatenated onto
-                    # the front of the next delta so the rewriter sees
-                    # a complete ``cite...`` marker
-                    # rather than half of one.
+                    # Buffer for a citation marker straddling two delta events;
+                    # prepended onto the next delta. See _split_pending_citation_tail.
                     pending_marker_tail: str = ""
-                    # Segments whose markers reference a source_id
-                    # we have not seen yet. Held in arrival order
-                    # so output stays in stream order: subsequent
-                    # clean text never leapfrogs an earlier deferred
-                    # segment. Flushed on annotation events and on
-                    # response.completed / incomplete / [DONE] (with
-                    # leftover markers stripped at end-of-stream so
-                    # no private-use codepoint leaks).
+                    # Segments deferred while their markers reference unseen
+                    # source_ids; held in arrival order so output never
+                    # leapfrogs an earlier deferred segment. Flushed on
+                    # annotation events and force-flushed at end-of-stream
+                    # with leftover private-use codepoints stripped.
                     pending_citation_segments: list[str] = []
 
                     def _drain_pending_segments(force: bool) -> str:
-                        """Re-attempt resolution on each buffered
-                        segment in order. Stops at the first segment
-                        that still has an unresolved token unless
-                        ``force`` is true (end-of-stream), in which
-                        case lingering markers are stripped so no
-                        garbled glyph reaches the renderer."""
+                        """Re-attempt resolution on buffered segments in order.
+                        Stops at the first still-unresolved segment unless
+                        ``force`` (end-of-stream), where lingering markers are stripped."""
                         out: list[str] = []
                         while pending_citation_segments:
                             seg = pending_citation_segments[0]
@@ -3159,49 +3108,28 @@ class ExternalProviderClient:
                         return "".join(out)
 
                     def _flush_pending_marker_tail(tail: str) -> str:
-                        """Render any leftover citation tail for emission.
+                        """Render any leftover citation tail at end-of-stream.
 
-                        ``pending_marker_tail`` starts at an unclosed
-                        opener by construction -- the split helper only
-                        buffers the suffix that lacks a closing stop
-                        byte. If the closing byte still has not arrived
-                        by end-of-stream the tail is meaningless
-                        without the annotation it would have referenced,
-                        so drop it. The user-visible prose before the
-                        opener was already emitted as ``head`` on the
-                        originating delta; only the marker fragment is
-                        held back. On the off chance the close arrives
-                        concatenated onto the tail (the stream finishes
-                        with a complete marker still in the buffer),
-                        run the rewriter against it one more time, then
-                        strip any leftover private-use bytes plus the
-                        literal ``cite``-prefixed source id so the
-                        renderer never sees raw markup. The sources
-                        panel is unaffected -- url_citations are
-                        aggregated separately and applied to the last
-                        web_search call's tool_end.
+                        Unterminated tails drop (no annotation to bind to). If the
+                        close byte arrived concatenated, rewrite then scrub any
+                        residual private-use bytes and any orphan ``cite<sid>``
+                        literal so the renderer never sees raw markup. url_citations
+                        are aggregated separately and applied to web_search tool_end.
                         """
                         if not tail:
                             return ""
                         if _OPENAI_CITE_STOP not in tail:
-                            # Truly unterminated: drop it. The
-                            # codepoints AND the residual "cite" +
-                            # source id would otherwise leak as plain
-                            # text once we stripped the private-use
-                            # bytes.
+                            # Unterminated: drop the whole tail, otherwise the
+                            # residual ``cite<sid>`` would leak as plain text.
                             return ""
                         rendered = _replace_openai_citation_markers(
                             tail, all_url_citations
                         )
-                        # Belt-and-braces: scrub any residual
-                        # private-use bytes the rewriter chose not to
-                        # touch (e.g. a leading partial opener).
+                        # Scrub residual private-use bytes (e.g. a partial opener).
                         for ch in ("", "", ""):
                             rendered = rendered.replace(ch, "")
-                        # Drop any orphan ``cite<sid>`` literal at the
-                        # head of the buffer -- without its closing
-                        # byte and matching url_citation it is
-                        # meaningless to the user.
+                        # Drop any orphan ``cite<sid>`` literal -- meaningless
+                        # without its closing byte and matching url_citation.
                         rendered = re.sub(r"^cite\S*", "", rendered)
                         return rendered
 
@@ -3355,11 +3283,8 @@ class ExternalProviderClient:
                             if not data_str:
                                 continue
                             if data_str == "[DONE]":
-                                # Flush any held-over partial citation
-                                # marker that never got its closing
-                                # `` -- strip the private-use
-                                # bytes so garbled glyphs don't reach
-                                # the renderer.
+                                # Flush any held-over partial marker; strip
+                                # private-use bytes so garbled glyphs don't leak.
                                 if pending_marker_tail:
                                     flushed = _flush_pending_marker_tail(
                                         pending_marker_tail
@@ -3370,10 +3295,8 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
-                                # Force-drain any segment still
-                                # waiting for an annotation. Lingering
-                                # markers are stripped so no codepoint
-                                # leaks at end of stream.
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )
@@ -3396,22 +3319,16 @@ class ExternalProviderClient:
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
-                                # Process inline annotations FIRST so that
-                                # any source_ids referenced by markers in
-                                # the same delta are already in the lookup
-                                # table when the rewriter runs below. Some
-                                # API versions inline url citations on the
-                                # delta event itself rather than as a
-                                # separate response.output_text.annotation
-                                # .added event.
+                                # Process inline annotations first so source_ids
+                                # referenced by same-delta markers are in the lookup
+                                # before the rewriter runs. Some API versions inline
+                                # url citations on the delta event itself.
                                 for ann in event.get("annotations") or []:
                                     if isinstance(ann, dict):
                                         _record_url_citation(ann)
                                 if delta_text or pending_marker_tail:
-                                    # Concatenate any unterminated marker
-                                    # tail held over from the previous
-                                    # delta so a marker that straddles
-                                    # two SSE events resolves cleanly.
+                                    # Prepend any held-over tail so a marker
+                                    # straddling two SSE events resolves cleanly.
                                     combined = pending_marker_tail + delta_text
                                     head, pending_marker_tail = (
                                         _split_pending_citation_tail(combined)
@@ -3420,11 +3337,9 @@ class ExternalProviderClient:
                                         if reasoning_open:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
-                                        # Re-attempt earlier deferred
-                                        # segments first so output stays
-                                        # in order. The annotation we
-                                        # need may have arrived inline
-                                        # on this same event above.
+                                        # Re-attempt earlier deferred segments first
+                                        # so output stays in order; the needed
+                                        # annotation may have arrived inline above.
                                         flushed = _drain_pending_segments(
                                             force = False,
                                         )
@@ -3711,10 +3626,8 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
-                                # Force-drain any segment still
-                                # waiting for an annotation. Lingering
-                                # markers are stripped so no codepoint
-                                # leaks at end of stream.
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )
@@ -3828,10 +3741,8 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
-                                # Force-drain any segment still
-                                # waiting for an annotation. Lingering
-                                # markers are stripped so no codepoint
-                                # leaks at end of stream.
+                                # Force-drain any segment still awaiting an
+                                # annotation; lingering codepoints are stripped.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )

@@ -3,14 +3,9 @@
 
 """Tests for the OpenAI Responses-API citation marker rewriter.
 
-The Responses stream interleaves text deltas with citation markers
-shaped like ``\\ue200cite\\ue202SOURCE_ID\\ue201``. The private-use
-code points either render as garbled "E202" glyphs in most fonts or
-get stripped by the markdown layer, leaving run-on text like
-"citeturn1view0turn1view1...". The rewriter translates each marker
-into a markdown link `[N](URL)` when the matching annotation has
-arrived, and drops the marker silently otherwise so the prose stays
-clean. The full URL list still flows through to the Sources panel via
+The stream interleaves text deltas with ``\\ue200cite\\ue202SOURCE_ID\\ue201``
+markers. The rewriter resolves each to `[N](URL)` when the annotation has
+arrived and drops it otherwise; the URL list still flows to Sources via
 `_record_url_citation`.
 
 Reference: https://developers.openai.com/api/docs/guides/citation-formatting
@@ -119,9 +114,7 @@ def test_empty_text_returns_verbatim():
 
 
 def test_idempotent_on_pre_stripped_text():
-    """If something upstream already stripped the private-use codepoints
-    (leaving readable run-on text like "citeturn1view0"), don't try to
-    parse them again -- return verbatim."""
+    """Pre-stripped text (no private-use codepoints) returns verbatim."""
     text = "citeturn1view0 plain"
     assert _replace_openai_citation_markers(text, []) == text
 
@@ -143,9 +136,7 @@ def test_citation_without_source_id_does_not_crash(citation):
 
 
 def test_multiple_source_id_aliases_resolve_to_same_url():
-    """When the upstream stream emits several inline markers for the
-    same URL (one per span/locator), every alias must resolve back to
-    that URL rather than getting silently dropped after the first one.
+    """Every alias for the same URL must resolve, not just the first.
     Regression for the Codex P1 on the original PR."""
     a = _marker("turn0view0")
     b = _marker("turn0view0_span_1")
@@ -184,13 +175,9 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
 
 
 # ---------------------------------------------------------------------------
-# _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI
-# emits the url_citation annotation on a subsequent SSE event rather
-# than alongside the delta that contains the inline marker. The
-# stateless rewriter cannot tell pending-annotation apart from
-# bogus-source so it drops the marker; this helper instead reports
-# `has_unresolved` so the streaming loop can defer emission until the
-# annotation arrives. See PR #5713 audit.
+# _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI emits
+# url_citation annotations on a subsequent SSE event; this helper reports
+# `has_unresolved` so the stream loop defers emission. See PR #5713 audit.
 # ---------------------------------------------------------------------------
 
 
@@ -215,8 +202,7 @@ def test_partial_unknown_marker_preserves_verbatim_and_flags():
 
 
 def test_partial_resolves_after_late_annotation():
-    """Two-pass scenario: first call sees no citations, second call
-    receives the annotation and resolves the same buffered text."""
+    """Two-pass: first call sees no citations, second resolves after annotation."""
     text = f"See {_marker('s1')} for details."
     out1, unresolved1 = _rewrite_citation_markers_partial(text, [])
     assert unresolved1 is True
@@ -228,13 +214,9 @@ def test_partial_resolves_after_late_annotation():
 
 
 def test_partial_multi_source_partial_resolution_keeps_marker_pending():
-    """When any token in a multi-source marker is unresolved, the
-    whole marker is left verbatim and ``unresolved`` is True. Emitting
-    just the resolved token would discard the unresolved id once the
-    caller drops the segment, so we defer until either every id
-    resolves (a follow-up partial pass) or end-of-stream forces a
-    flush (the non-partial helper drops unresolved tokens then).
-    """
+    """Any unresolved token in a multi-source marker leaves the whole marker
+    verbatim with ``unresolved`` True; defer until every id resolves or
+    end-of-stream forces a flush (dropping unresolved tokens then)."""
     cite = f"{CITE_START}cite{CITE_DELIM}known{CITE_DELIM}locator{CITE_STOP}"
     text = f"Pre {cite} post."
     citations = [{"source_id": "known", "url": "https://example.com/y"}]
