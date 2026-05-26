@@ -587,6 +587,16 @@ def studio_default(
         "--api-only",
         help = "Run API server only, no frontend serving (for Tauri desktop app)",
     ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        help = "Maximum concurrent inference requests (default: UNSLOTH_API_MAX_CONCURRENCY or 1)",
+    ),
+    api_queue_policy: Optional[str] = typer.Option(
+        None,
+        "--api-queue-policy",
+        help = "Overflow policy for concurrent inference requests: wait or reject (default: wait)",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Runs before any subcommand; covers run/setup/update/etc in one place.
@@ -595,6 +605,17 @@ def studio_default(
         return
 
     # Always use the studio venv if it exists and we're not already in it
+    if api_queue_policy is not None and api_queue_policy.lower() not in {
+        "wait",
+        "reject",
+    }:
+        typer.echo(
+            "Error: --api-queue-policy must be either 'wait' or 'reject'.", err = True
+        )
+        raise typer.Exit(1)
+    if api_queue_policy is not None:
+        api_queue_policy = api_queue_policy.lower()
+
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
 
@@ -624,6 +645,10 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
+            if api_max_concurrency is not None:
+                args.extend(["--api-max-concurrency", str(api_max_concurrency)])
+            if api_queue_policy is not None:
+                args.extend(["--api-queue-policy", api_queue_policy])
             # On Windows, os.execvp() spawns a child but the parent lingers,
             # so Ctrl+C only kills the parent leaving the child orphaned.
             # Use subprocess.run() on Windows so the parent waits for the child.
@@ -654,6 +679,7 @@ def studio_default(
             raise typer.Exit(1)
 
     from studio.backend.run import run_server
+    from utils.api_concurrency import parse_api_max_concurrency
 
     if not silent:
         from studio.backend.run import _resolve_external_ip
@@ -661,7 +687,15 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_kwargs = dict(host = host, port = port, silent = silent, api_only = api_only)
+    run_kwargs = dict(
+        host = host,
+        port = port,
+        silent = silent,
+        api_only = api_only,
+        llama_parallel_slots = parse_api_max_concurrency(api_max_concurrency),
+        api_max_concurrency = api_max_concurrency,
+        api_queue_policy = api_queue_policy,
+    )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
@@ -760,6 +794,16 @@ def run(
             "Default: on for 127.0.0.1, off for 0.0.0.0."
         ),
     ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        help = "Maximum concurrent inference requests (default: UNSLOTH_API_MAX_CONCURRENCY or 1)",
+    ),
+    api_queue_policy: Optional[str] = typer.Option(
+        None,
+        "--api-queue-policy",
+        help = "Overflow policy for concurrent inference requests: wait or reject (default: wait)",
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -783,6 +827,17 @@ def run(
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
+    if api_queue_policy is not None and api_queue_policy.lower() not in {
+        "wait",
+        "reject",
+    }:
+        typer.echo(
+            "Error: --api-queue-policy must be either 'wait' or 'reject'.", err = True
+        )
+        raise typer.Exit(1)
+    if api_queue_policy is not None:
+        api_queue_policy = api_queue_policy.lower()
+
     # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
     # of pairing ``--model`` with ``--gguf-variant``. If both are given
     # and disagree, fail loudly instead of silently picking one.
@@ -848,6 +903,10 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        if api_max_concurrency is not None:
+            args.extend(["--api-max-concurrency", str(api_max_concurrency)])
+        if api_queue_policy is not None:
+            args.extend(["--api-queue-policy", api_queue_policy])
         # Forward the resolved tool policy (always concrete True/False
         # at this point — the resolver above ran before the re-exec).
         if enable_tools:
@@ -878,8 +937,47 @@ def run(
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
     from studio.backend.run import run_server, _resolve_external_ip
+    from utils.api_concurrency import parse_api_max_concurrency
 
-    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = 4)
+    # If user passed --parallel/-np to llama-server, treat that as the
+    # effective concurrency for the API gate so the two never disagree.
+    def _passthrough_parallel(extra: List[str]) -> Optional[int]:
+        for i, a in enumerate(extra):
+            v = None
+            if a in {"--parallel", "-np"} and i + 1 < len(extra):
+                v = extra[i + 1]
+            elif a.startswith("--parallel="):
+                v = a.split("=", 1)[1]
+            elif a.startswith("-np="):
+                v = a.split("=", 1)[1]
+            if v is not None:
+                try:
+                    n = int(v)
+                except ValueError:
+                    return None
+                return n if n >= 1 else None
+        return None
+
+    api_concurrency_configured = (
+        api_max_concurrency is not None
+        or os.environ.get("UNSLOTH_API_MAX_CONCURRENCY") is not None
+    )
+    if api_concurrency_configured:
+        effective_api_max_concurrency = parse_api_max_concurrency(api_max_concurrency)
+    else:
+        # Default 4 to preserve pre-PR `unsloth studio run` throughput;
+        # passthrough --parallel N overrides.
+        passthrough = _passthrough_parallel(extra_llama_args)
+        effective_api_max_concurrency = passthrough if passthrough is not None else 4
+
+    run_kwargs = dict(
+        host = host,
+        port = port,
+        silent = True,
+        llama_parallel_slots = effective_api_max_concurrency,
+        api_max_concurrency = effective_api_max_concurrency,
+        api_queue_policy = api_queue_policy,
+    )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
