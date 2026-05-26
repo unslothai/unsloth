@@ -126,6 +126,25 @@ export async function listMetrics(): Promise<MetricInfo[]> {
   return data.metrics;
 }
 
+export interface SchemaComparatorField {
+  path: string;
+  comparator: string;
+}
+
+/** Preview which comparator each field resolves to for a schema (our
+ *  field→comparator mapping OR a standard JSON Schema). */
+export async function previewSchemaComparators(
+  schema: unknown,
+): Promise<SchemaComparatorField[]> {
+  const res = await authFetch("/api/eval/schema-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schema }),
+  });
+  const data = await parseJson<{ fields: SchemaComparatorField[] }>(res);
+  return data.fields;
+}
+
 export async function startEval(
   payload: EvalStartRequest,
 ): Promise<{ run_id: string }> {

@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
 from eval.jobs import EvalBusyError, EvalJobManager, build_eval_run_fn
+from eval.json_score.schema import (ArrayNode, LeafNode, Node, ObjectNode,
+                                     normalize_schema)
 from eval.metrics.registry import list_metrics
 from models import (EvalProgress, EvalResultRow, EvalRunDetail, EvalRunSummary,
                     EvalStartRequest, MetricInfo)
@@ -33,6 +35,37 @@ def get_eval_manager() -> EvalJobManager:
 @router.get("/metrics")
 async def get_metrics(current_subject: str = Depends(get_current_subject)):
     return {"metrics": [MetricInfo(**m).model_dump() for m in list_metrics()]}
+
+
+def _flatten_comparators(node: Node, prefix: str = "") -> list[dict]:
+    """Walk a normalized schema into a flat [{path, comparator}] list, so the UI
+    can show which comparator each field resolved to."""
+    if isinstance(node, ObjectNode):
+        out: list[dict] = []
+        for key, child in node.fields.items():
+            path = key if not prefix else f"{prefix}.{key}"
+            out.extend(_flatten_comparators(child, path))
+        return out
+    if isinstance(node, ArrayNode):
+        return _flatten_comparators(node.item, f"{prefix}[]")
+    if isinstance(node, LeafNode):
+        return [{"path": prefix or "(value)", "comparator": node.comparator}]
+    return []
+
+
+@router.post("/schema-preview")
+async def schema_preview(payload: dict = Body(default={}),
+                         current_subject: str = Depends(get_current_subject)):
+    """Preview the comparator each field resolves to for a given schema —
+    accepts our field→comparator mapping OR a standard JSON Schema."""
+    schema = payload.get("schema")
+    if schema is None or schema == "":
+        return {"fields": []}
+    try:
+        node = normalize_schema(schema)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"fields": _flatten_comparators(node)}
 
 
 @router.post("/start")

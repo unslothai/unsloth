@@ -25,6 +25,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { listMetrics, type EvalStartRequest, type MetricInfo } from "../api/eval-api";
 import { MetricConfigFields } from "./metric-config-fields";
+import { SchemaComparatorPreview } from "./schema-comparator-preview";
 import { EvalModelFields } from "./eval-model-fields";
 import { EvalDatasetFields } from "./eval-dataset-fields";
 import { useEvalConfigStore } from "../stores/eval-config-store";
@@ -222,6 +223,9 @@ export function EvalConfigForm({
                 values={metricConfig}
                 onChange={setMetricConfig}
               />
+            )}
+            {metricName === "json_document" && (
+              <SchemaComparatorPreview schemaText={metricConfig.schema} />
             )}
             {metricsError && (
               <p className="text-sm text-red-500">{metricsError}</p>
