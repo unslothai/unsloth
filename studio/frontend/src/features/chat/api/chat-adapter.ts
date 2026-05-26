@@ -21,6 +21,7 @@ import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -1703,18 +1704,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.topP !== false
                 ? { top_p: params.topP }
                 : {}),
-              // Clamp to the cross-provider output cap so a maxTokens value
-              // carried over from a local-model session does not blow past
-              // provider limits (e.g. Claude Opus 400s on >128k). Also
-              // floor to the provider's documented minimum — Kimi's
-              // thinking models need >=16k or the response truncates
-              // before the answer fits alongside reasoning_content.
+              // Floor at the provider's documented min (Kimi thinking
+              // needs >=16k); clamp at the per-model max.
               max_tokens: Math.min(
                 Math.max(
                   params.maxTokens,
                   getExternalMinOutputTokens(externalProvider?.providerType),
                 ),
-                EXTERNAL_MAX_OUTPUT_TOKENS,
+                getExternalMaxOutputTokens(
+                  externalProvider?.providerType,
+                  externalSelection?.modelId,
+                ),
               ),
               // Only forward sampling knobs the provider actually accepts; the
               // backend's external-provider proxy is param-permissive and would

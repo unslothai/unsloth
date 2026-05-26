@@ -85,6 +85,7 @@ import {
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
@@ -1309,7 +1310,10 @@ export function ChatSettingsPanel({
               }
               max={
                 isExternalModel
-                  ? EXTERNAL_MAX_OUTPUT_TOKENS
+                  ? getExternalMaxOutputTokens(
+                      externalProviderType,
+                      externalSelection?.modelId,
+                    )
                   : isGguf && ggufContextLength
                     ? ggufContextLength
                     : 32768
