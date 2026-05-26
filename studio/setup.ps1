@@ -1725,9 +1725,11 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
-    # Check unsloth + unsloth-zoo. A stale zoo with unsloth at latest is the
-    # common macOS arm64 backtrack symptom; single-package check would say
-    # "up to date" and skip the update.
+    # Only check when NOT called from install.ps1 (which just installed the package).
+    # Check BOTH unsloth and unsloth-zoo -- a stale zoo while unsloth itself is
+    # at latest is the most common bug-trigger after the macOS arm64 resolver
+    # backtrack (PR #5767); the old single-package check would print
+    # "up to date" and skip the update entirely.
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
     $LatestVer = ""
     try {
@@ -1735,8 +1737,10 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    # Only probe public unsloth-zoo when managing unsloth itself. Custom
-    # STUDIO_PACKAGE_NAME builds may pin their own zoo fork.
+    # Only probe public unsloth-zoo when the package being managed IS unsloth.
+    # Custom side packages (e.g. $env:STUDIO_PACKAGE_NAME=roland-sloth) ship
+    # their own zoo fork via dependency metadata and may not install public
+    # unsloth-zoo at all; checking it would force a no-op update.
     $CheckZoo = ($_PkgName -eq "unsloth")
 
     $InstalledZooVer = ""
