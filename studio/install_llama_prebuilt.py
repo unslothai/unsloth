@@ -3874,7 +3874,12 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return ["llama-server", "llama-quantize", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
-    if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip", "windows-arm64"}:
+    if choice.install_kind in {
+        "windows-cpu",
+        "windows-cuda",
+        "windows-hip",
+        "windows-arm64",
+    }:
         return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
     raise PrebuiltFallback(
         f"unsupported install kind for runtime overlay: {choice.install_kind}"
