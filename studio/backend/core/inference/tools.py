@@ -538,7 +538,7 @@ def execute_tool(
     ``tool_context``: optional per-request extras the LLM does not see (RAG scope,
     future per-tool overrides). Keys consumed:
       - ``rag_scope``: ``{kb_id?, thread_id?, enable_rerank?, default_top_k?,
-        reranker_model?}`` — consumed by ``search_knowledge_base``.
+        reranker_model?, min_score?, mode?}`` — consumed by ``search_knowledge_base``.
     """
     logger.info(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
@@ -562,6 +562,8 @@ def execute_tool(
         from core.rag.tool import search_knowledge_base
 
         scope = (tool_context or {}).get("rag_scope") or {}
+        raw_mode = scope.get("mode")
+        mode = raw_mode if raw_mode in ("bm25", "dense", "hybrid") else "hybrid"
         return search_knowledge_base(
             query = arguments.get("query", ""),
             top_k = arguments.get("top_k"),
@@ -571,6 +573,7 @@ def execute_tool(
             reranker_model = scope.get("reranker_model"),
             default_top_k = int(scope.get("default_top_k") or 5),
             min_score = float(scope.get("min_score") or 0.0),
+            mode = mode,
         )
     return f"Unknown tool: {name}"
 

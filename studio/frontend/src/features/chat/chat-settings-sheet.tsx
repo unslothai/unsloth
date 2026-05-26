@@ -90,7 +90,7 @@ import {
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
-import type { RagSource } from "./api/chat-settings-api";
+import type { RagMode, RagSource } from "./api/chat-settings-api";
 import { DocumentRow } from "@/features/rag/components/document-row";
 import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { useKnowledgeBases } from "@/features/rag/hooks/use-knowledge-bases";
@@ -441,6 +441,8 @@ export function ChatSettingsPanel({
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const ragMode = useChatRuntimeStore((s) => s.ragMode);
+  const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
   const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
   const enableRerank = useChatRuntimeStore((s) => s.enableRerank);
   const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
@@ -1358,6 +1360,32 @@ export function ChatSettingsPanel({
               <p className="text-[11px] text-muted-foreground">
                 Each message retrieves matching context from the selected
                 source before sending.
+              </p>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[12px] font-medium text-muted-foreground">
+                Search mode
+              </label>
+              <Select
+                value={ragMode}
+                onValueChange={(v) => setRagMode(v as RagMode)}
+                disabled={!ragEnabled}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="hybrid">
+                    Hybrid (BM25 + semantic)
+                  </SelectItem>
+                  <SelectItem value="dense">Semantic only</SelectItem>
+                  <SelectItem value="bm25">BM25 (lexical) only</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Hybrid blends keyword (BM25) with vector similarity — best
+                default. Semantic-only ignores exact terms; BM25-only ignores
+                meaning.
               </p>
             </div>
             <KBCreateDialog

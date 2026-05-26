@@ -20,6 +20,8 @@ export type RagSource =
   | { kind: "thread" }
   | { kind: "kb"; kbId: string };
 
+export type RagMode = "bm25" | "dense" | "hybrid";
+
 export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
   customPresets?: PersistedChatPreset[];
@@ -32,6 +34,7 @@ export interface PersistedChatSettings {
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
   ragSource?: RagSource;
+  ragMode?: RagMode;
   enableRerank?: boolean;
   ragTopK?: number;
   ragMinScore?: number;

@@ -16,7 +16,7 @@ LLM doesn't need to know about KB UUIDs.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from loggers import get_logger
 
@@ -93,6 +93,7 @@ def search_knowledge_base(
     reranker_model: str | None = None,
     default_top_k: int = 5,
     min_score: float = 0.0,
+    mode: Literal["bm25", "dense", "hybrid"] = "hybrid",
 ) -> str:
     """Execute the RAG search and return a tool-result string.
 
@@ -130,9 +131,10 @@ def search_knowledge_base(
     scope_embedder = resolve_scope_embedder(scope)
 
     logger.info(
-        "search_knowledge_base: scope=%s embedder=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        "search_knowledge_base: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
         scope,
         scope_embedder or "<default>",
+        mode,
         k,
         min_score,
         enable_rerank,
@@ -140,12 +142,22 @@ def search_knowledge_base(
     )
 
     try:
-        hits = retrieval.retrieve_hybrid(
-            scope,
-            query.strip(),
-            k = candidate_k,
-            embedder_model = scope_embedder,
-        )
+        if mode == "bm25":
+            hits = retrieval.retrieve_bm25(scope, query.strip(), candidate_k)
+        elif mode == "dense":
+            hits = retrieval.retrieve_dense(
+                scope,
+                query.strip(),
+                candidate_k,
+                embedder_model = scope_embedder,
+            )
+        else:
+            hits = retrieval.retrieve_hybrid(
+                scope,
+                query.strip(),
+                k = candidate_k,
+                embedder_model = scope_embedder,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("search_knowledge_base retrieval failed")
         return f"Error: retrieval failed ({type(exc).__name__})."

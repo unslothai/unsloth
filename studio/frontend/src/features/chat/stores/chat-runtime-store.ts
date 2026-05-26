@@ -19,7 +19,7 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
-import type { RagSource } from "../api/chat-settings-api";
+import type { RagMode, RagSource } from "../api/chat-settings-api";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
@@ -298,6 +298,7 @@ type ChatRuntimeStore = {
   modelLoading: boolean;
   activeNativePathToken: string | null;
   ragSource: RagSource;
+  ragMode: RagMode;
   enableRerank: boolean;
   ragTopK: number;
   // Cosine-similarity floor for RAG hits. Off (0) by default — set
@@ -349,6 +350,7 @@ type ChatRuntimeStore = {
   clearPendingAudio: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
   setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
   setEnableRerank: (value: boolean) => void;
   setRagTopK: (value: number) => void;
   setRagMinScore: (value: number) => void;
@@ -370,6 +372,7 @@ type ScalarSettingKey =
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "ragSource"
+  | "ragMode"
   | "enableRerank"
   | "ragTopK"
   | "ragMinScore";
@@ -407,6 +410,7 @@ const SCALAR_SETTING_KEYS = [
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "ragSource",
+  "ragMode",
   "enableRerank",
   "ragTopK",
   "ragMinScore",
@@ -619,6 +623,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelLoading: false,
   activeNativePathToken: null,
   ragSource: { kind: "thread" },
+  ragMode: "hybrid",
   enableRerank: false,
   ragTopK: 5,
   ragMinScore: 0,
@@ -840,6 +845,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("ragSource", ragSource, state.ragSource);
       return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set((state) => {
+      setScalarSettingVersion("ragMode", ragMode, state.ragMode);
+      return { ragMode };
     }),
   setEnableRerank: (enableRerank) =>
     set((state) => {

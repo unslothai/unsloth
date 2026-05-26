@@ -61,7 +61,7 @@ import {
   type SearchRequest,
   search as ragSearch,
 } from "@/features/rag/api/rag-api";
-import type { RagSource } from "./chat-settings-api";
+import type { RagMode, RagSource } from "./chat-settings-api";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -95,11 +95,12 @@ function buildRagRequest(
   enableRerank: boolean,
   topK: number,
   minScore: number,
+  mode: RagMode,
 ): SearchRequest | null {
   const base: SearchRequest = {
     query,
     top_k: topK,
-    mode: "hybrid",
+    mode,
     enable_rerank: enableRerank,
     min_score: minScore,
   };
@@ -1023,6 +1024,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             runtime.enableRerank,
             runtime.ragTopK,
             runtime.ragMinScore,
+            runtime.ragMode,
           );
           if (ragReq) {
             try {
@@ -1664,6 +1666,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           enable_rerank: runtime.enableRerank,
                           default_top_k: runtime.ragTopK,
                           min_score: runtime.ragMinScore,
+                          mode: runtime.ragMode,
                         },
                       }
                     : {}),
