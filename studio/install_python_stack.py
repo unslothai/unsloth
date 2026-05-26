@@ -450,9 +450,7 @@ LOCAL_DD_GITHUB_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 )
 
-# Apple Silicon: tell uv to override mlx-vlm/mlx-lm's aggressive transformers
-# pin so it does not conflict with constraints.txt's transformers==4.57.6.
-# Per-model 5.x routing happens at runtime via the side-car venvs.
+# Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides file).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
 if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
     os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
@@ -969,9 +967,8 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
-    # macOS arm64: install MLX stack at latest. UV_OVERRIDE (set at module load)
-    # relaxes mlx-vlm/mlx-lm's transformers pin so it does not conflict with
-    # the main venv's transformers==4.57.6 pin.
+    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
+    # mlx-vlm / mlx-lm transformers pin -- set at module load).
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(

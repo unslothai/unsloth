@@ -1290,10 +1290,7 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-# Apple Silicon: tell uv to override mlx-vlm / mlx-lm's aggressive transformers
-# pin so it does not conflict with constraints.txt's transformers==4.57.6.
-# Per-model 5.x routing happens at runtime via the side-car venvs in
-# studio/backend/utils/transformers_version.py.
+# Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
