@@ -21,6 +21,7 @@ import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -1460,6 +1461,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      const orderAssistantContent = (
+        textParts: ReturnType<typeof parseAssistantContent>,
+      ) => {
+        const imageToolParts = toolCallParts.filter(
+          (part) => part.toolName === "image_generation",
+        );
+        const otherToolParts = toolCallParts.filter(
+          (part) => part.toolName !== "image_generation",
+        );
+        return [...otherToolParts, ...textParts, ...imageToolParts];
+      };
       // Anthropic document_citations tool_event payload, converted to
       // Sources-panel source parts at end-of-stream so the inline [N]
       // markers have matching entries.
@@ -1719,18 +1731,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.topP !== false
                 ? { top_p: params.topP }
                 : {}),
-              // Clamp to the cross-provider output cap so a maxTokens value
-              // carried over from a local-model session does not blow past
-              // provider limits (e.g. Claude Opus 400s on >128k). Also
-              // floor to the provider's documented minimum — Kimi's
-              // thinking models need >=16k or the response truncates
-              // before the answer fits alongside reasoning_content.
+              // Floor at the provider's documented min (Kimi thinking
+              // needs >=16k); clamp at the per-model max.
               max_tokens: Math.min(
                 Math.max(
                   params.maxTokens,
                   getExternalMinOutputTokens(externalProvider?.providerType),
                 ),
-                EXTERNAL_MAX_OUTPUT_TOKENS,
+                getExternalMaxOutputTokens(
+                  externalProvider?.providerType,
+                  externalSelection?.modelId,
+                ),
               ),
               // Only forward sampling knobs the provider actually accepts; the
               // backend's external-provider proxy is param-permissive and would
@@ -2069,10 +2080,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates (tools first, text after)
+                // Yield cumulative state so tool UI updates. Search/code tools stay
+                // before the text, while generated images sit after the answer.
                 const textParts = parseAssistantContent(cumulativeText);
                 yield {
-                  content: [...toolCallParts, ...textParts],
+                  content: orderAssistantContent(textParts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2220,7 +2232,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
               if (parts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: [...toolCallParts, ...parts],
+                  content: orderAssistantContent(parts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2316,8 +2328,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            ...orderAssistantContent(parseAssistantContent(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
           ],

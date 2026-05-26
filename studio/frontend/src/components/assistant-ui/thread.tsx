@@ -77,7 +77,6 @@ import {
   FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
-  ImageIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -91,6 +90,7 @@ import {
   Copy01Icon,
   Delete02Icon,
   Edit03Icon,
+  Image03Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -273,17 +273,17 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
             className="w-full max-w-[min(100%,46rem)] shrink-0 text-center"
             title={overlay.title}
           >
-            <p className="truncate font-medium text-foreground/70 text-xs">
+            <p className="truncate text-xs font-semibold text-foreground/80">
               Generated image
             </p>
             {overlay.metadata ? (
-              <p className="truncate text-[11px] text-muted-foreground/75">
+              <p className="truncate text-[11px] font-medium text-muted-foreground">
                 {overlay.metadata}
               </p>
             ) : null}
             {hideComposer ? null : (
-              <p className="mt-1 text-muted-foreground text-xs">
-                Type edits below, then send.
+              <p className="mx-auto mt-2 inline-flex rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+                Type edits below, then send
               </p>
             )}
           </div>
@@ -527,13 +527,15 @@ const Composer: FC<{
       <PendingAudioChip />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
-        placeholder="Send a message..."
+        placeholder={
+          overlay ? "Type your edits for your image" : "Send a message..."
+        }
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={12}
         autoFocus={!disabled}
         disabled={disabled}
-        aria-label="Message input"
+        aria-label={overlay ? "Image edit instructions" : "Message input"}
         // dir="auto": browser picks LTR/RTL from the first strong char;
         // no effect on Latin / CJK / Devanagari.
         dir="auto"
@@ -1109,7 +1111,7 @@ const ImagesToggle: FC = () => {
           : "Enable image generation"
       }
     >
-      <ImageIcon className="size-3.5" />
+      <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
       <span>Images</span>
     </button>
   );

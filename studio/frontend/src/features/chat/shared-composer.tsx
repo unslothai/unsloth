@@ -27,7 +27,6 @@ import {
   FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
-  ImageIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -35,6 +34,8 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
+import { Image03Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
@@ -1227,7 +1228,11 @@ export function SharedComposer({
                   : "Enable image generation"
               }
             >
-              <ImageIcon className="size-3.5" />
+              <HugeiconsIcon
+                icon={Image03Icon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
               <span>Images</span>
             </button>
           )}

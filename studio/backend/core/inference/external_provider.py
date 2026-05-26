@@ -3873,14 +3873,16 @@ class ExternalProviderClient:
                                             ),
                                         }
                                     )
+                                    # Per-card text; last call gets overwritten
+                                    # with citations at response.completed.
+                                    per_call_result = (
+                                        f"Searching: {query}" if query else ""
+                                    )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            # Empty result — the last call gets
-                                            # overwritten with citations at
-                                            # response.completed.
-                                            "result": "",
+                                            "result": per_call_result,
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
@@ -3908,7 +3910,11 @@ class ExternalProviderClient:
                                     )
                                     shell_calls.setdefault(
                                         item_id,
-                                        {"commands": [], "output": None},
+                                        {
+                                            "commands": [],
+                                            "output": None,
+                                            "tool_end_emitted": False,
+                                        },
                                     )
                                     shell_calls[item_id]["commands"] = (
                                         list(commands)
@@ -3926,6 +3932,24 @@ class ExternalProviderClient:
                                             },
                                         }
                                     )
+                                    # Fallback: output may be bundled on the
+                                    # shell_call done event itself.
+                                    embedded_output = item.get("output")
+                                    if (
+                                        isinstance(embedded_output, list)
+                                        and embedded_output
+                                    ):
+                                        shell_calls[item_id]["output"] = embedded_output
+                                        shell_calls[item_id]["tool_end_emitted"] = True
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_end",
+                                                "tool_call_id": item_id,
+                                                "result": _format_shell_output(
+                                                    embedded_output
+                                                ),
+                                            }
+                                        )
                                 elif item.get("type") == "shell_call_output":
                                     # `call_id` links back to the shell_call's
                                     # `id`, which is what we used as the
@@ -3936,8 +3960,15 @@ class ExternalProviderClient:
                                         item.get("call_id") or item.get("id") or ""
                                     )
                                     output = item.get("output") or []
+                                    # Skip if bundled-output path already
+                                    # finalised this card.
+                                    if shell_calls.get(call_id, {}).get(
+                                        "tool_end_emitted"
+                                    ):
+                                        continue
                                     if call_id in shell_calls:
                                         shell_calls[call_id]["output"] = output
+                                        shell_calls[call_id]["tool_end_emitted"] = True
                                     result_text = _format_shell_output(output)
                                     yield _emit_tool_event(
                                         {
@@ -4093,15 +4124,10 @@ class ExternalProviderClient:
                                         }
                                     )
                                     container_id_emitted = True
-                                # Apply the aggregated citation list onto the
-                                # *last* web_search call by overwriting its
-                                # tool_end result. The frontend's
-                                # parseSourcesFromResult flatMaps every
-                                # web_search tool-call result, so a single
-                                # non-empty result is enough to surface the
-                                # whole source-pill set at the message tail —
-                                # no need to fan out across every card (which
-                                # would just duplicate the same pills).
+                                # Overwrite the last web_search call with the
+                                # citation list; the source-pill extractor
+                                # flatMaps across cards. Earlier cards keep
+                                # their per-call "Searching:" text.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks: list[str] = []
@@ -4119,6 +4145,21 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Final flush: finalise any orphan shell_call
+                                # so the card stops spinning.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -4197,6 +4238,22 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Mirror the response.completed flush so
+                                # truncated streams also finalise orphan
+                                # shell_calls.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
