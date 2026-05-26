@@ -655,10 +655,11 @@ function ProjectLanding({
   }, [projectId]);
 
   useEffect(() => {
-    if (
-      !activeThreadId ||
-      activeThreadId === initialActiveThreadRef.current
-    ) {
+    if (!activeThreadId) {
+      setPendingNewThreadId(null);
+      return;
+    }
+    if (activeThreadId === initialActiveThreadRef.current) {
       return;
     }
     setPendingNewThreadId(activeThreadId);
@@ -747,12 +748,6 @@ function ProjectLanding({
                 className="h-10 rounded-full border border-border bg-muted px-5 text-[14px] font-semibold text-foreground"
               >
                 Chats
-              </button>
-              <button
-                type="button"
-                className="h-10 rounded-full px-5 text-[14px] font-semibold text-muted-foreground"
-              >
-                Sources
               </button>
             </div>
 

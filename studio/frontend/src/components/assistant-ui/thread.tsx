@@ -389,7 +389,11 @@ export const ProjectComposer: FC<{
   disabled?: boolean;
   placeholder?: string;
 }> = ({ disabled, placeholder }) => {
-  return <ComposerAnimated disabled={disabled} placeholder={placeholder} />;
+  return (
+    <GeneratedImageOverlayProvider>
+      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+    </GeneratedImageOverlayProvider>
+  );
 };
 
 const ComposerAnimated: FC<{

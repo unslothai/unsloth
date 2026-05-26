@@ -537,7 +537,7 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		letter-spacing: 0.015em;
 	}
 	.sidebar-sticky-label-following {
@@ -546,10 +546,6 @@
 	.dark .sidebar-sticky-label {
 		letter-spacing: 0.03em;
 	}
-	.sidebar-sticky-label.is-scrolled {
-		@apply shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)];
-	}
-
 	/* Neutral panel input surface — sidesteps the green cast on
 	   `--input` / `--border` (both have a small chroma at hue ~165 in
 	   light mode). Same value drives the preset input pill, the system
