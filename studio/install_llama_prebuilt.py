@@ -5499,6 +5499,12 @@ def write_prebuilt_metadata(
         "asset": choice.name,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
+        # Binary-side repo/tag for non-upstream sources (e.g. lemonade).
+        # published_repo/release_tag always refer to the unsloth source tree;
+        # these capture where the actual binaries came from so the install
+        # summary can show both (e.g. "unslothai/llama.cpp@b9334 + lemonade@b1280").
+        "binary_repo": choice.repo,
+        "binary_release_tag": choice.tag,
         "source_asset": source_asset_name,
         "source_sha256": source_sha256,
         "source_commit": approved_checksums.source_commit,

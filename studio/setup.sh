@@ -157,12 +157,21 @@ if not isinstance(payload, dict):
 repo = str(payload.get("published_repo") or "").strip()
 release_tag = str(payload.get("release_tag") or "").strip()
 llama_tag = str(payload.get("tag") or "").strip()
+source = str(payload.get("source") or "").strip()
+binary_repo = str(payload.get("binary_repo") or "").strip()
+binary_tag = str(payload.get("binary_release_tag") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
-message = f"installed release: {repo}@{release_tag}"
-if llama_tag and llama_tag != release_tag:
-    message += f" (tag {llama_tag})"
+# For non-upstream sources (e.g. lemonade) the published_repo/release_tag
+# refer to the unsloth source tree while the actual binaries came from a
+# different repo. Show both so the log is unambiguous.
+if source and source != "upstream" and binary_repo and binary_tag and binary_repo != repo:
+    message = f"installed release: {repo}@{release_tag} + {source}@{binary_tag}"
+else:
+    message = f"installed release: {repo}@{release_tag}"
+    if llama_tag and llama_tag != release_tag:
+        message += f" (tag {llama_tag})"
 print(message)
 PY
 }
