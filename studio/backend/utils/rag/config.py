@@ -33,10 +33,22 @@ RAG_EMBEDDING_MODEL: str = (
 
 # Default embedder per (mode, chunking). (multimodal, late) is unsupported
 # and rejected at KB-create time in routes/rag.py.
+#
+# Multimodal default is BAAI/BGE-VL-large (~400 M params, 768-d, ~800 MB
+# bf16) — small, fast, shared text/image space. Loaded via the
+# `_BGEVLAdapter` in core/rag/embeddings.py which bypasses BGE-VL's
+# fragile sentence-transformers shim and pre-truncates text to CLIP's
+# 77-token cap.
+#
+# To switch back to Qwen3-VL-Embedding-2B (2 B params, 2048-d, no CLIP
+# text cap; ~4 GB bf16 / ~1.5 GB 4-bit via FastSentenceTransformer),
+# change the ("multimodal", "standard") entry below — the in-process
+# loader supports both via `model_name.startswith("BAAI/BGE-VL")`
+# routing.
 RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
     ("text", "standard"): "BAAI/bge-small-en-v1.5",
     ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",
-    ("multimodal", "standard"): "Qwen/Qwen3-VL-Embedding-2B",
+    ("multimodal", "standard"): "BAAI/BGE-VL-large",
 }
 
 

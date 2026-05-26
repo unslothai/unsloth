@@ -441,10 +441,9 @@ def warmup_rag_embedder(
 ) -> dict:
     """Preload the configured default embedder so the first retrieval is warm.
 
-    Called from the frontend when the user enables the RAG pill — moves the
-    cold-load latency (Qwen3-VL-Embedding-2B is ~4 GB) out of the first
-    chat-completion path, where a 30s+ load can race the llama-server
-    prefill timeout.
+    Called from the frontend when the user enables the RAG pill — moves
+    the cold-load latency out of the first chat-completion path, where a
+    multi-second load can race the llama-server prefill timeout.
     """
     from utils.rag.config import resolve_embedder
 

@@ -15,9 +15,10 @@ git+https://github.com/meta-pytorch/OpenEnv.git
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 # Bumped from 5.2.0 to expose the `sentence_transformers.base.modules`
-# package that Qwen3-VL-Embedding-2B (the multimodal RAG embedder)
-# references in its modules.json. Upper bound left at <7 to avoid
-# accidental jumps across a future major rewrite.
+# package that Qwen3-VL-Embedding-2B references in its modules.json
+# (still supported as an alternative multimodal RAG embedder; the
+# current default is BAAI/BGE-VL-large via our in-process adapter).
+# Upper bound at <7 to avoid jumps across a future major rewrite.
 sentence_transformers>=5.3.0,<7
 transformers==4.57.6
 pytorch_tokenizers
