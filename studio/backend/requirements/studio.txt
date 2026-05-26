@@ -7,12 +7,14 @@ packaging
 matplotlib
 pandas
 nest_asyncio
-datasets==4.3.0
+# macOS arm64: gated off -- mlx-vlm chain needs newer datasets/hub. Other
+# platforms still get the pins below.
+datasets==4.3.0 ; sys_platform != "darwin" or platform_machine != "arm64"
 pyjwt
 easydict
 addict
 # gradio>=4.0.0                  # 148 MB - Studio uses React + FastAPI, not Gradio
-huggingface-hub==0.36.2
+huggingface-hub==0.36.2 ; sys_platform != "darwin" or platform_machine != "arm64"
 structlog>=24.1.0
 diceware
 ddgs

@@ -12,12 +12,15 @@ PATH to point at the venv.
 
 from __future__ import annotations
 
+import functools
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -425,6 +428,48 @@ def _infer_no_torch() -> bool:
 NO_TORCH = _infer_no_torch()
 
 
+@functools.lru_cache(maxsize = 8)
+def _resolve_latest_pypi_version(package: str, *, timeout: float = 10.0) -> str | None:
+    """Latest PyPI version, or None on network failure (caller falls back unpinned)."""
+    url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout) as response:
+            data = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return (data.get("info") or {}).get("version") or None
+
+
+def _pin_floor_args(
+    *, include_unsloth: bool = True, include_zoo: bool = True
+) -> list[str]:
+    """Build `unsloth>=LATEST` / `unsloth-zoo>=LATEST` floor args.
+
+    All-or-nothing: if any lookup fails, return `[]` so the caller falls back
+    unpinned. A half-floor would defeat the purpose. Custom STUDIO_PACKAGE_NAME
+    builds skip both (they may not publish to public PyPI).
+    """
+    requested: list[str] = []
+    if include_unsloth:
+        requested.append("unsloth")
+    if include_zoo:
+        requested.append("unsloth-zoo")
+    versions: dict[str, str] = {}
+    for package in requested:
+        latest = _resolve_latest_pypi_version(package)
+        if not latest:
+            _step(
+                "warning",
+                "PyPI unreachable; skipping latest-version floor pin "
+                "(resolver may pick an older release on platforms where a "
+                "transitive dep restricts wheel availability)",
+                _cyan,
+            )
+            return []
+        versions[package] = latest
+    return [f"{pkg}>={version}" for pkg, version in versions.items()]
+
+
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
@@ -783,6 +828,7 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
 def pip_install_try(
     label: str,
     *args: str,
+    req: Path | None = None,
     constrain: bool = True,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
@@ -794,23 +840,94 @@ def pip_install_try(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
-    if USE_UV:
-        cmd = _build_uv_cmd(args) + constraint_args_uv
-    else:
-        cmd = _build_pip_cmd(args) + constraint_args_pip
+    actual_req = req
+    temp_reqs: list[Path] = []
+    if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
+        actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    req_args_pip: list[str] = []
+    req_args_uv: list[str] = []
+    if actual_req is not None:
+        req_args_pip = ["-r", str(actual_req)]
+        req_args_uv = ["-r", _uv_safe_path(actual_req)]
 
-    if VERBOSE:
-        _step(_LABEL, f"{label}...", _dim)
-    result = subprocess.run(
-        cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
+    try:
+        if VERBOSE:
+            _step(_LABEL, f"{label}...", _dim)
+        if USE_UV:
+            uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            result = subprocess.run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0:
+                return True
+            if VERBOSE and result.stdout:
+                print(result.stdout.decode(errors = "replace"))
+            # fall through to pip retry (mirrors pip_install)
+        pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+        result = subprocess.run(
+            pip_cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        if result.returncode == 0:
+            return True
+        if VERBOSE and result.stdout:
+            print(result.stdout.decode(errors = "replace"))
+        return False
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
+
+
+def pip_install_with_floor_fallback(
+    label: str,
+    *args: str,
+    floor: list[str],
+    req: Path | None = None,
+    constrain: bool = True,
+) -> None:
+    """3-level fallback: floor+constraints -> floor only -> unpinned.
+
+    Step 2 catches macOS arm64 where constraints.txt pins transformers==4.57.6
+    but mlx-vlm needs >=5.1.0. Step 3 catches air-gapped / lagging mirrors.
+    UNSLOTH_NO_PYPI_FLOOR=1 jumps straight to step 3.
+    """
+    skip_floor = os.environ.get("UNSLOTH_NO_PYPI_FLOOR", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
-    if result.returncode == 0:
-        return True
-    if VERBOSE and result.stdout:
-        print(result.stdout.decode(errors = "replace"))
-    return False
+    if skip_floor or not floor:
+        pip_install(label, *args, req = req, constrain = constrain)
+        return
+    if pip_install_try(label, *args, *floor, req = req, constrain = constrain):
+        return
+    # Step 2: drop constraints (downstream steps re-apply where needed)
+    if pip_install_try(label, *args, *floor, req = req, constrain = False):
+        _step(
+            "warning",
+            "Floor pin needed --no-constraints to resolve on this "
+            "platform; subsequent steps re-apply the single-env pins",
+            _cyan,
+        )
+        return
+    _step(
+        "warning",
+        "Floor pin unsatisfiable on this platform; falling back to "
+        "the unpinned resolution (you may end up on an older release "
+        "if a transitive dep restricts wheel availability -- check the "
+        "post-update version with `unsloth --version`)",
+        _cyan,
+    )
+    pip_install(label, *args, req = req, constrain = constrain)
 
 
 def pip_install(
@@ -962,26 +1079,6 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
-    # 3a. macOS arm64: install MLX stack --no-deps BEFORE unsloth-zoo so its
-    #     mlx-vlm>=0.4.4 dep is already satisfied. This stops the resolver from
-    #     inspecting mlx-vlm's transformers>=5.5.0 metadata (which would conflict
-    #     with the venv's transformers==4.57.6 pin and backtrack unsloth). Per-
-    #     model transformers routing is handled at runtime by the side-car venvs
-    #     in utils/transformers_version.py.
-    if IS_MAC_ARM and not skip_base:
-        _progress("MLX stack (Apple Silicon)")
-        pip_install(
-            "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
-            "--no-cache-dir",
-            "--no-deps",
-            "--upgrade",
-            "mlx",
-            "mlx-metal",
-            "mlx-lm",
-            "mlx-vlm",
-            constrain = False,
-        )
-
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         pass
@@ -990,7 +1087,7 @@ def install_python_stack() -> int:
         # (current PyPI metadata still declares torch as a hard dep), then
         # runtime deps with --no-deps (avoids transitive torch).
         _progress("base packages (no torch)")
-        pip_install(
+        pip_install_with_floor_fallback(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
             "--no-deps",
@@ -998,8 +1095,18 @@ def install_python_stack() -> int:
             package_name,
             "--upgrade-package",
             "unsloth-zoo",
+            # Re-resolve transformers + mlx-vlm so a stale transformers does
+            # not stay paired with a newer unsloth-zoo (no-op off darwin arm64).
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
             package_name,
             "unsloth-zoo",
+            floor = _pin_floor_args(
+                include_unsloth = package_name == "unsloth",
+                include_zoo = package_name == "unsloth",
+            ),
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # exact version pydantic's metadata declares. Under --no-deps
@@ -1037,17 +1144,22 @@ def install_python_stack() -> int:
                 constrain = False,
             )
     elif local_repo:
-        # Local dev install: update deps from base.txt, then overlay the
-        # local checkout as an editable install (--no-deps so torch is
-        # never re-resolved).
+        # Local dev install (`unsloth studio update --local`): update deps from
+        # base.txt then overlay the local checkout as editable (--no-deps so
+        # torch is preserved). Floor is unconditional -- always uses public PyPI.
         _progress("base packages")
-        pip_install(
+        pip_install_with_floor_fallback(
             "Updating base packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
+            floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
         )
         _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
@@ -1077,18 +1189,59 @@ def install_python_stack() -> int:
             package_name,
         )
     else:
-        # Update path: upgrade only unsloth + unsloth-zoo while preserving
-        # existing torch/CUDA installations.  Torch is pre-installed by
-        # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+        # Update path: upgrade unsloth + unsloth-zoo while preserving existing
+        # torch (--upgrade-package targets only base pkgs). PyPI floor blocks
+        # the resolver from silently backtracking when a transitive constraint
+        # (e.g. macOS arm64 bitsandbytes wheel availability) makes the unpinned
+        # base.txt entry satisfiable by an older release.
         _progress("base packages")
-        pip_install(
+        pip_install_with_floor_fallback(
             "Updating base packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
+            "--upgrade-package",
+            "transformers",
+            "--upgrade-package",
+            "mlx-vlm",
+            floor = _pin_floor_args(),
             req = REQ_ROOT / "base.txt",
+        )
+
+    # 2a. macOS arm64: realign mlx-vlm + transformers + huggingface_hub.
+    #     uv's incumbent bias keeps transformers 4.57.6 even with
+    #     --upgrade-package because it satisfies unsloth-zoo's range, ignoring
+    #     mlx-vlm 0.5.0's stricter >=5.5.0. Uninstall the trio then reinstall
+    #     with no constraints so the resolver picks the unique consistent set.
+    if IS_MAC_ARM and not skip_base and package_name == "unsloth":
+        _progress("mlx-vlm/transformers realign")
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "uninstall",
+                    "-y",
+                    "transformers",
+                    "mlx-vlm",
+                    "huggingface_hub",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            pass
+        pip_install(
+            "Realigning mlx-vlm + transformers (macOS arm64)",
+            "--no-cache-dir",
+            "mlx-vlm",
+            "transformers",
+            "huggingface_hub",
+            constrain = False,
         )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
