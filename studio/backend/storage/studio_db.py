@@ -89,7 +89,9 @@ def _delete_project_workspace(project: dict) -> None:
     try:
         root_resolved = root.resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
-        logger.warning("Skipping project workspace delete for invalid path %r", root_path)
+        logger.warning(
+            "Skipping project workspace delete for invalid path %r", root_path
+        )
         return
 
     project_id = str(project["id"])
