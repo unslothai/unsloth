@@ -1334,7 +1334,7 @@ export function ChatSettingsPanel({
                             ) {
                               void deleteKB(kb.id).then(() => {
                                 if (isActive) {
-                                  setRagSource({ kind: "off" });
+                                  setRagSource({ kind: "thread" });
                                 }
                               });
                             }

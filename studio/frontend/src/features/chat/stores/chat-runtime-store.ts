@@ -618,7 +618,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
-  ragSource: { kind: "off" },
+  ragSource: { kind: "thread" },
   enableRerank: false,
   ragTopK: 5,
   ragMinScore: 0,
