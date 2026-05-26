@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
-import { memo, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
 import { Image, downloadImagePart } from "./image";
 import {
@@ -119,7 +119,7 @@ function GeneratedImagePlaceholder({ label }: { label: string }) {
   return (
     <div
       className={cn(
-        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl bg-muted/15 shadow-sm shadow-foreground/5 dark:shadow-black/10",
+        "generated-image-loading-card flex aspect-square w-[480px] max-w-full items-center justify-center rounded-2xl bg-muted/20 shadow-[0_0_12px_rgba(15,23,42,0.05),0_6px_18px_rgba(15,23,42,0.04)] dark:shadow-[0_0_12px_rgba(0,0,0,0.18),0_6px_18px_rgba(0,0,0,0.12)]",
       )}
       aria-busy="true"
       aria-label={label}
@@ -155,7 +155,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
   const imageTitle =
     imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
   const captionPrompt = imageResult?.prompt?.trim() || prompt.trim();
-  const promptNeedsExpansion = captionPrompt.length > 220;
+  const promptLikelyNeedsExpansion = captionPrompt.length > 220;
   const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
     .filter(Boolean)
     .join(" · ");
@@ -176,8 +176,62 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     : null;
 
   const [open, setOpen] = useState(true);
-  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [expandedCaptionPrompt, setExpandedCaptionPrompt] = useState<
+    string | null
+  >(null);
+  const [promptOverflow, setPromptOverflow] = useState<{
+    prompt: string;
+    canExpand: boolean;
+  } | null>(null);
+  const captionRef = useRef<HTMLDivElement | null>(null);
   const isPendingImage = !imagePart && status?.type === "running";
+
+  const promptOverflowMeasured = promptOverflow?.prompt === captionPrompt;
+  const promptCanExpand = promptOverflowMeasured
+    ? promptOverflow.canExpand
+    : false;
+  const promptExpanded = expandedCaptionPrompt === captionPrompt;
+
+  const updatePromptOverflow = useCallback(() => {
+    const captionElement = captionRef.current;
+    if (!captionElement || !captionPrompt) {
+      return;
+    }
+    const rootFontSize = Number.parseFloat(
+      window.getComputedStyle(document.documentElement).fontSize,
+    );
+    const collapsedHeight =
+      (Number.isFinite(rootFontSize) ? rootFontSize : 16) * 4.75;
+    const hasOverflow = captionElement.scrollHeight > collapsedHeight + 1;
+    setPromptOverflow((current) =>
+      current?.prompt === captionPrompt && current.canExpand === hasOverflow
+        ? current
+        : { prompt: captionPrompt, canExpand: hasOverflow },
+    );
+  }, [captionPrompt]);
+
+  useEffect(() => {
+    const captionElement = captionRef.current;
+    if (!captionElement || !captionPrompt) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(updatePromptOverflow);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updatePromptOverflow);
+    resizeObserver?.observe(captionElement);
+    window.addEventListener("resize", updatePromptOverflow);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updatePromptOverflow);
+    };
+  }, [captionPrompt, updatePromptOverflow]);
+
+  const shouldClampPrompt =
+    (promptOverflowMeasured ? promptCanExpand : promptLikelyNeedsExpansion) &&
+    !promptExpanded;
 
   const runningLabel = "Generating image…";
   const completedLabel = formatGeneratedImageLabel(prompt);
@@ -281,20 +335,23 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
             {captionPrompt ? (
               <figcaption className="max-w-[480px] text-xs leading-snug text-muted-foreground">
                 <div
+                  ref={captionRef}
                   className={cn(
                     "whitespace-pre-wrap break-words",
-                    promptNeedsExpansion &&
-                      !promptExpanded &&
-                      "max-h-[4.75rem] overflow-hidden",
+                    shouldClampPrompt && "max-h-[4.75rem] overflow-hidden",
                   )}
                 >
                   {captionPrompt}
                 </div>
-                {promptNeedsExpansion ? (
+                {promptCanExpand ? (
                   <button
                     type="button"
                     className="mt-1.5 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                    onClick={() => setPromptExpanded((value) => !value)}
+                    onClick={() =>
+                      setExpandedCaptionPrompt((value) =>
+                        value === captionPrompt ? null : captionPrompt,
+                      )
+                    }
                     aria-expanded={promptExpanded}
                   >
                     {promptExpanded ? "Show less" : "Show more"}
