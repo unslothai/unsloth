@@ -503,19 +503,13 @@ TERMINAL_TOOL = {
 }
 
 
-# Lazy import — keeps studio.db init lazy so tools.py doesn't pull in
-# the whole rag stack on inference paths that never see RAG.
+# Lazy import: don't pull rag stack on inference paths that never see RAG.
 def _get_rag_tool_spec():
     from core.rag.tool import SEARCH_KNOWLEDGE_BASE_TOOL
 
     return SEARCH_KNOWLEDGE_BASE_TOOL
 
 
-# RAG_SEARCH_TOOL is included in ALL_TOOLS; routes/inference.py filters
-# the list against payload.enabled_tools so each request only sees the
-# tools the frontend explicitly enabled. When the RAG button is off
-# the tool name won't be in enabled_tools and the LLM will never see
-# the spec.
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, _get_rag_tool_spec()]
 
 

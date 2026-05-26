@@ -9,7 +9,6 @@ from . import ParsedPage, ParseResult
 
 
 def extract(path: Path, *, want_images: bool = False) -> ParseResult:
-    # want_images is ignored — plain text / Markdown have no embedded images.
     raw = path.read_bytes()
     try:
         text = raw.decode("utf-8")

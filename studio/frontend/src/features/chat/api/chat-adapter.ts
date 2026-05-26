@@ -992,19 +992,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
 
-      // RAG: optionally retrieve context for the last user turn and
-      // prepend it as a system-role block. Failures are logged but
-      // don't break the chat — better to answer without context than
-      // to drop a message the user just sent.
-      //
-      // Pre-fetch RAG context unconditionally when the RAG button is
-      // on and a source is selected. This runs for every provider —
-      // local-tool, local-no-tool, and external — so users don't have
-      // to phrase their query as "the document I attached" for
-      // retrieval to fire. On local tool-capable models the
-      // `search_knowledge_base` tool is *also* registered below as an
-      // optional refinement path (the LLM can run a second, narrower
-      // query if the pre-fetched chunks weren't enough).
+      // Pre-fetch RAG context for the last user turn; failures don't block chat.
+      // Runs for all providers; local tool-capable models also get the tool below
+      // for a narrower follow-up query if needed.
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
       const ragToolPathTaken =
@@ -1647,11 +1637,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ...(ragToolPathTaken ? ["search_knowledge_base"] : []),
                   ],
-                  // Phase 4: per-request RAG context the backend's
-                  // `search_knowledge_base` handler reads when the LLM
-                  // invokes the tool. Only sent when the tool path
-                  // is taken — external providers fall through to the
-                  // pre-fetch block above.
+                  // Per-request scope for the LLM-invoked tool; tool path only.
                   ...(ragToolPathTaken
                     ? {
                         rag_scope: {

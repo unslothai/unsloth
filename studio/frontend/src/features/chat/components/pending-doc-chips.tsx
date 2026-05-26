@@ -12,9 +12,6 @@ interface PendingDocChipsProps {
   onRemove: (id: string) => void;
 }
 
-// Renders the upload/index/ready/error chips for in-flight RAG
-// document uploads above the composer textarea. Mirrors the
-// inline chip markup SharedComposer uses on the empty state.
 export const PendingDocChips: FC<PendingDocChipsProps> = ({ docs, onRemove }) => {
   if (docs.length === 0) return null;
   return (

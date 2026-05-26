@@ -464,10 +464,8 @@ export function ChatSettingsPanel({
   const updateThreadSettings = useRagStore((s) => s.updateThreadSettings);
   const ragDefaults = useRagStore((s) => s.defaults);
 
-  // Load this thread's RAG settings once per threadId. Ref-guarded so
-  // `threadSettings` isn't a dep — if it were, the post-load
-  // store-mutation re-triggers the effect and any failure mode where
-  // the selector flickers undefined produces an update loop.
+  // Load thread RAG settings once per threadId. Ref-guarded; keep
+  // `threadSettings` out of deps to avoid post-load update loops.
   const threadSettingsLoadedRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -492,7 +490,6 @@ export function ChatSettingsPanel({
   ) => {
     if (!activeThreadId) return;
     if (threadDocs.length === 0) {
-      // No existing chunks to invalidate — just persist.
       void updateThreadSettings(activeThreadId, patch);
       return;
     }
@@ -503,8 +500,7 @@ export function ChatSettingsPanel({
     if (ok) {
       void reingestThread(activeThreadId, patch);
     } else {
-      // User declined — refresh the store so the select snaps back
-      // to the unchanged settings.
+      // User declined: refresh so the select snaps back.
       void loadThreadSettings(activeThreadId);
     }
   };
@@ -645,8 +641,6 @@ export function ChatSettingsPanel({
       activeExternalProvider.baseUrl,
     ) &&
     activeExternalProvider.providerType === "openai";
-  // (activeThreadId is declared earlier in this component — see the
-  // RAG retrieval-section block above.)
   const openAiApiKeyForSection = activeExternalProvider
     ? getExternalProviderApiKey(activeExternalProvider.id) || null
     : null;

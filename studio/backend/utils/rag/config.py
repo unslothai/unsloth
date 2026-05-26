@@ -31,32 +31,17 @@ RAG_EMBEDDING_MODEL: str = (
     or "BAAI/bge-small-en-v1.5"
 )
 
-# Phase 3: default embedders per (mode, chunking_strategy). Ingestion in
-# Phase 3B-late and Phase 3B-multimodal looks the embedder up here at job
-# start, falling back to RAG_EMBEDDING_MODEL (above) for legacy KBs that
-# pre-date the columns. The (multimodal, late) combo is intentionally
-# absent — no public open-weight embedder supports both at once, and
-# routes/rag.py rejects the combo with a 400 at KB create time.
+# Default embedder per (mode, chunking). (multimodal, late) is unsupported
+# and rejected at KB-create time in routes/rag.py.
 RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
     ("text", "standard"): "BAAI/bge-small-en-v1.5",
     ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",
-    # Qwen3-VL-Embedding-2B: 2B-param multimodal embedder built on
-    # Qwen3 (not CLIP), so no 77-token text cap — long chunks embed
-    # losslessly. Loads through vanilla SentenceTransformer with
-    # trust_remote_code, no shim. 2048-d shared text/image space.
-    # Trade-off: ~4 GB download / VRAM vs BGE-VL-base's ~600 MB.
     ("multimodal", "standard"): "Qwen/Qwen3-VL-Embedding-2B",
 }
 
 
 def resolve_embedder(mode: str, chunking_strategy: str) -> str:
-    """Look up the default embedder for a (mode, chunking_strategy) pair.
-
-    Unknown combos fall back to the legacy single default so old KBs
-    keep working. Callers that explicitly require the new matrix
-    behaviour (Phase 3B paths) should validate the inputs before
-    calling.
-    """
+    """Embedder for (mode, chunking); unknown combos fall back to RAG_EMBEDDING_MODEL."""
     return RAG_EMBEDDER_MATRIX.get(
         (mode, chunking_strategy),
         RAG_EMBEDDING_MODEL,
@@ -76,9 +61,6 @@ RAG_MAX_UPLOAD_MB: int = _env_int("UNSLOTH_RAG_MAX_UPLOAD_MB", 50)
 
 RAG_EMBED_BATCH_SIZE: int = _env_int("UNSLOTH_RAG_EMBED_BATCH_SIZE", 32)
 
-# Reranking is off by default. The CrossEncoder runs on GPU and competes
-# with the active chat model — callers opt in per-request via
-# `enable_rerank` on SearchRequest.
 RAG_RERANKER_MODEL: str = (
     os.environ.get("UNSLOTH_RAG_RERANKER_MODEL", "").strip() or "BAAI/bge-reranker-base"
 )

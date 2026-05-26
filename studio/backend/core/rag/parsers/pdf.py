@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Layout-aware PDF parsing via pymupdf + pymupdf4llm.
-
-Produces Markdown per page (headings, pipe-tables, lists survive) so the
-recursive chunker can split on heading boundaries. Falls back to pypdf
-text-extraction only when pymupdf fails to open the file — keeps the
-pipeline alive for malformed PDFs.
-
-Image extraction is gated behind `want_images=True` so text-only KBs
-pay zero cost for images they don't index.
-"""
+"""PDF → Markdown via pymupdf4llm; pypdf fallback for malformed files."""
 
 from __future__ import annotations
 
@@ -39,8 +30,7 @@ def _extract_with_pymupdf(path: Path, want_images: bool) -> ParseResult:
                     show_progress = False,
                 )
             except Exception:
-                # pymupdf4llm can choke on individual pages (rare). Fall
-                # back to plain text extraction for just that page.
+                # pymupdf4llm can choke on a single page; fall back to plain text.
                 md = doc[page_index].get_text("text") or ""
             md = md.strip()
             if md:
@@ -55,7 +45,6 @@ def _extract_with_pymupdf(path: Path, want_images: bool) -> ParseResult:
 
 
 def _extract_images_pymupdf(doc, pages: list[ParsedPage]) -> list[ParsedImage]:
-    """Pull embedded images and pair each with the nearest text on the same page."""
     captions_by_page: dict[int, str] = {
         p.page_number: p.text for p in pages if p.page_number
     }

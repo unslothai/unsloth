@@ -9,35 +9,19 @@ import { useEffect, useRef, useState } from "react";
 import { useRagStore } from "../stores/rag-store";
 import { IngestionProgress } from "./ingestion-progress";
 
-/**
- * Floating progress stack for in-flight RAG ingestion jobs.
- *
- * Watches the rag-store `jobs` map (populated by `subscribeJob`) and
- * renders one card per job that's neither completed nor errored. On
- * completion the card stays for a few seconds with a success state
- * before fading out, so users notice the run finished even if they
- * weren't watching the per-doc progress chips.
- *
- * Mounted once at the app root (`__root.tsx`) so it follows users
- * across pages.
- */
+/** Floating per-job progress stack; mounted at the app root. */
 
 const DISMISS_DELAY_MS = 4000;
 
 export function IngestionToastStack() {
   const jobs = useRagStore((s) => s.jobs);
   const reduced = useReducedMotion();
-  // Per-job timeout handles so terminal toasts auto-dismiss.
   const [dismissedJobs, setDismissedJobs] = useState<Set<string>>(
     () => new Set(),
   );
 
-  // Schedule auto-dismiss for jobs that have reached a terminal state.
-  // Ref-tracked so `dismissedJobs` isn't a useEffect dep — the setter
-  // fires *inside* the effect, and depending on its output here is a
-  // recipe for update-depth loops if the scheduler ever runs faster
-  // than the cleanup. We snapshot the latest dismissed set into a ref
-  // and read from it inside the scheduling loop instead.
+  // Ref-tracked dismissed set so it stays out of the effect deps
+  // (avoids update-depth loops when the scheduler races cleanup).
   const scheduledJobsRef = useRef<Set<string>>(new Set());
   const dismissedJobsRef = useRef<Set<string>>(dismissedJobs);
   dismissedJobsRef.current = dismissedJobs;

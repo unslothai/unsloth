@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTML parsing via markdownify.
-
-Converts HTML to Markdown so headings (`<h1>`…`<h6>`), tables, and lists
-arrive at the chunker as Markdown structure. The previous
-`BeautifulSoup.get_text()` approach stripped all tags and made every
-heading indistinguishable from body text.
-
-Image extraction (when `want_images=True`) only handles local file
-references — remote URLs are skipped to avoid network calls during
-ingestion. Phase 3B-multimodal can revisit this if HTML inputs with
-remote images become a common pattern.
-"""
+"""HTML → Markdown via markdownify. Images only resolve local file refs."""
 
 from __future__ import annotations
 
@@ -35,13 +24,12 @@ def _collect_local_images(soup, html_path: Path) -> list[ParsedImage]:
         src = tag.get("src") or ""
         parsed = urlparse(src)
         if parsed.scheme and parsed.scheme not in ("file", ""):
-            # Remote / data URLs — skip; we don't fetch over network.
             continue
         local_path = (base_dir / unquote(parsed.path or src)).resolve()
         try:
             local_path.relative_to(base_dir.resolve())
         except ValueError:
-            # Refuse to read outside the source's own directory.
+            # Path traversal: refuse to read outside the source's directory.
             continue
         if not local_path.is_file():
             continue

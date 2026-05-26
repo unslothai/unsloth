@@ -27,8 +27,6 @@ const DOCUMENT_EXTENSIONS = new Set([
   ".htm",
 ]);
 
-// File-input accept attribute matching DOCUMENT_EXTENSIONS so the
-// browser picker filters to formats the RAG ingester actually handles.
 export const DOCUMENT_ACCEPT =
   ".pdf,.txt,.md,.markdown,.docx,.html,.htm,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/html";
 
@@ -47,12 +45,7 @@ export interface UseThreadDocUploadsResult {
   isIndexing: boolean;
 }
 
-// Encapsulates the per-thread RAG document upload lifecycle:
-//   pick file → POST /api/rag/threads/{id}/documents → subscribe to
-//   ingestion SSE → flip chip status → on send, clear chips (docs
-//   live in the backend KB and don't need to be re-attached).
-// Used by both the empty-state SharedComposer and the in-thread
-// assistant-ui Composer so the upload UX is identical in both.
+/** Per-thread RAG upload: file → POST → SSE → chip status. */
 export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
@@ -83,9 +76,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                     d.id === id ? { ...d, status: "ready" } : d,
                   ),
                 );
-                // First successful ingest in an off-source thread should
-                // flip the source to 'thread' so the tool / pre-fetch
-                // path has somewhere to search.
+                // First ingest on an off-source thread → flip to 'thread'.
                 if (useChatRuntimeStore.getState().ragSource.kind === "off") {
                   useChatRuntimeStore
                     .getState()
@@ -126,9 +117,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           void useRagStore
             .getState()
             .deleteDocument(doc.documentId, `thread:${activeThreadId ?? ""}`)
-            .catch(() => {
-              // Best effort — the chip is going away regardless.
-            });
+            .catch(() => {});
         }
         return prev.filter((d) => d.id !== id);
       });

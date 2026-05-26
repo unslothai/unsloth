@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""RAG API routes.
-
-Surface:
-  - Knowledge-base CRUD
-  - Document upload (KB-scoped and per-thread)
-  - Document list/delete
-  - Ingestion-job SSE stream
-  - Search (BM25 / dense / hybrid)
-
-Per-thread document uploads are scoped to a single chat thread and
-share the same chunk/embed/index pipeline as KB documents — they only
-differ in the scope key (``thread_<id>`` vs ``kb_<id>``) and lifecycle
-(per-thread docs are dropped when the thread is deleted, via the
-ON DELETE CASCADE on rag_documents.thread_id).
-"""
+"""RAG API: KB CRUD, document upload (KB + per-thread), ingestion SSE, search."""
 
 from __future__ import annotations
 
@@ -69,9 +55,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-# ------------------------------------------------------------------
-# Pydantic schemas
-# ------------------------------------------------------------------
+# --- Pydantic schemas ---
 
 ChunkingStrategy = Literal["standard", "late"]
 KBMode = Literal["text", "multimodal"]
@@ -81,9 +65,6 @@ class CreateKBRequest(BaseModel):
     name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
     embedding_model: str | None = None
-    # Phase 3 introduces two per-KB knobs. Both default to today's
-    # behaviour so existing API clients are unaffected. The (multimodal,
-    # late) combination is rejected at create time — see _validate_mode_combo.
     chunking_strategy: ChunkingStrategy = "standard"
     mode: KBMode = "text"
 
@@ -145,9 +126,6 @@ class SearchRequest(BaseModel):
     document_ids: list[str] | None = None
     enable_rerank: bool = False
     reranker_model: str | None = None
-    # Cosine-similarity floor on the dense retrieval score. Hits whose
-    # dense_score is below this (or absent — BM25-only hits) are
-    # dropped before the response is sent. 0.0 disables the filter.
     min_score: float = Field(default = 0.0, ge = 0.0, le = 1.0)
 
 
@@ -167,9 +145,7 @@ class SearchResponse(BaseModel):
     hits: list[SearchHit]
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
+# --- Helpers ---
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -181,15 +157,10 @@ def _now_ms() -> int:
     return int(time.time())
 
 
-# Per-scope embedder lookup lives in core/rag/scope.py so the
-# inference-side tool handler can use it without a routes-→-core
-# import cycle.
 from core.rag.scope import resolve_scope_embedder as _resolve_scope_embedder  # noqa: E402
 
 
 def _row_to_kb(row: Any) -> KBResponse:
-    # chunking_strategy / mode may be absent on rows fetched through a
-    # pre-Phase-3 connection in tests; fall back to the schema defaults.
     keys = row.keys() if hasattr(row, "keys") else ()
     chunking_strategy = (
         row["chunking_strategy"] if "chunking_strategy" in keys else "standard"
@@ -207,12 +178,7 @@ def _row_to_kb(row: Any) -> KBResponse:
 
 
 def _validate_mode_combo(mode: KBMode, chunking_strategy: ChunkingStrategy) -> None:
-    """Reject the one illegal (mode, strategy) combination.
-
-    No public open-weight embedder supports both late-chunking pooling
-    and shared text/image embedding. Surface the constraint as a 400
-    rather than failing silently during ingestion.
-    """
+    """Reject (multimodal, late) — no embedder supports both at once."""
     if mode == "multimodal" and chunking_strategy == "late":
         raise HTTPException(
             status_code = 400,
@@ -287,11 +253,9 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
     stored_path = upload_dir / stored_name
     max_bytes = RAG_MAX_UPLOAD_MB * 1024 * 1024
     written = 0
-    # anyio.open_file routes each write through a worker thread so a
-    # multi-MB upload doesn't stall concurrent requests on the event
-    # loop. The async-with handles close on both happy and error
-    # paths; the outer try/except cleans up the partial file after
-    # the file handle is closed (Windows refuses unlink on an open fd).
+    # Route writes through anyio worker thread so the event loop stays free.
+    # Outer try/except cleans up partial files after async-with closes the fd
+    # (Windows refuses unlink on an open fd).
     try:
         async with await anyio.open_file(stored_path, "wb") as f:
             while True:
@@ -369,9 +333,7 @@ def _unlink_if_under_uploads(path: Path) -> None:
     real.unlink(missing_ok = True)
 
 
-# ------------------------------------------------------------------
-# Knowledge bases
-# ------------------------------------------------------------------
+# --- Knowledge bases ---
 
 
 @router.post("/knowledge-bases", response_model = KBResponse)
@@ -384,9 +346,7 @@ def create_knowledge_base(
     _validate_mode_combo(payload.mode, payload.chunking_strategy)
 
     kb_id = str(uuid4())
-    # If the caller didn't override embedding_model, resolve from the
-    # Phase-3 matrix using their (mode, strategy) selection. Unknown
-    # combos fall back to the legacy default — see resolve_embedder.
+    # No override: resolve from (mode, strategy) matrix.
     embedding_model = payload.embedding_model or resolve_embedder(
         payload.mode, payload.chunking_strategy
     )
@@ -483,8 +443,7 @@ def set_rag_defaults(
     current = _load_rag_defaults()
     new_strategy = payload.chunking_strategy or current.chunking_strategy
     new_mode = payload.mode or current.mode
-    # PATCH-style — passing an empty string clears the override; a
-    # null/missing field keeps the current value.
+    # PATCH-style: empty string clears, null/missing keeps current.
     if payload.embedding_model is None:
         new_embedder = current.embedding_model
     elif payload.embedding_model.strip() == "":
@@ -526,11 +485,7 @@ def _thread_settings_key(thread_id: str) -> str:
 
 
 def _load_thread_settings(thread_id: str) -> ThreadRagSettings:
-    """Per-thread RAG settings, falling back to app-level defaults.
-
-    Stored in chat_settings under "thread:<id>:rag" as a nested JSON
-    dict — same shape as RagDefaults.
-    """
+    """Per-thread RAG settings (chat_settings['thread:<id>:rag']) with defaults fallback."""
     settings = list_chat_settings()
     raw = settings.get(_thread_settings_key(thread_id)) or {}
     if not isinstance(raw, dict):
@@ -611,11 +566,7 @@ def _reingest_scope(
     mode: str,
     embedding_model: str,
 ) -> ReingestResponse:
-    """Wipe scope artifacts and re-enqueue every stored document.
-
-    The chat_settings / per-thread defaults aren't touched — caller is
-    responsible for updating any associated metadata before calling.
-    """
+    """Wipe scope artifacts and re-enqueue every document; metadata untouched."""
     scope = kb_scope(kb_id) if kb_id else thread_scope(thread_id)  # type: ignore[arg-type]
     with get_connection() as conn:
         if kb_id:
@@ -628,9 +579,7 @@ def _reingest_scope(
                 "SELECT id, stored_path FROM rag_documents WHERE thread_id = ?",
                 (thread_id,),
             ).fetchall()
-        # Delete the rag_documents rows (cascade drops chunks); the
-        # uploaded file on disk is preserved so we can re-ingest from
-        # it. We re-INSERT a fresh row per stored_path below.
+        # Drop rag_documents (chunks cascade); files on disk are reused below.
         doc_ids = [r["id"] for r in rows]
         if doc_ids:
             placeholders = ",".join("?" for _ in doc_ids)
@@ -648,8 +597,7 @@ def _reingest_scope(
         if not stored_path.is_file():
             continue
         filename = stored_path.name
-        # Strip the UUID prefix we attached at upload time so the
-        # re-inserted document carries the original name.
+        # Strip the upload-time UUID prefix; keep the original filename.
         if "_" in filename:
             _uuid_prefix, _, original = filename.partition("_")
             if original:
@@ -728,14 +676,7 @@ def reingest_thread_documents(
     payload: UpdateThreadRagSettingsRequest | None = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ReingestResponse:
-    """Rebuild a thread's RAG index.
-
-    Optional body lets the caller change the thread's chunking
-    strategy / mode / embedder at the same time — persisted into
-    chat_settings before re-ingestion so subsequent uploads pick up
-    the new values too. With an empty body, current settings are
-    reused.
-    """
+    """Rebuild a thread's RAG index; optional body updates settings before reingest."""
     from utils.rag.config import resolve_embedder
 
     if payload is None:
@@ -745,7 +686,6 @@ def reingest_thread_documents(
         or payload.mode is not None
         or payload.embedding_model is not None
     ):
-        # set_thread_rag_settings handles validation + persistence.
         settings = set_thread_rag_settings(
             thread_id,
             payload,
@@ -786,9 +726,7 @@ def delete_knowledge_base(
     return {"ok": True}
 
 
-# ------------------------------------------------------------------
-# Document upload (KB and per-thread)
-# ------------------------------------------------------------------
+# --- Document upload (KB and per-thread) ---
 
 
 @router.post("/knowledge-bases/{kb_id}/documents", response_model = UploadResponse)
@@ -799,9 +737,7 @@ async def upload_kb_document(
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
     stored_path, filename, byte_size = await _save_upload(file)
-    # Defensive .get() — rows fetched through a connection that pre-dates
-    # the Phase 3 schema (e.g. in tests) lack chunking_strategy/mode;
-    # fall back to the same defaults as the column.
+    # Tolerate pre-Phase-3 rows missing chunking_strategy/mode.
     kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
     chunking_strategy = (
         kb_row["chunking_strategy"] if "chunking_strategy" in kb_keys else "standard"
@@ -828,12 +764,8 @@ async def upload_thread_document(
 ) -> UploadResponse:
     from utils.rag.config import resolve_embedder
 
-    # Don't validate against chat_threads — a brand-new chat won't be
-    # persisted there until after the first runStart/runEnd. Users who
-    # attach a document on a fresh thread would otherwise hit a 404.
+    # No chat_threads check — fresh threads aren't persisted until first run.
     stored_path, filename, byte_size = await _save_upload(file)
-    # Per-thread settings fall back to app-level defaults inside the
-    # helper, so first-time-uploaded threads inherit user preferences.
     settings = _load_thread_settings(thread_id)
     embedder = settings.embedding_model or resolve_embedder(
         settings.mode,
@@ -852,9 +784,7 @@ async def upload_thread_document(
     )
 
 
-# ------------------------------------------------------------------
-# Document list / delete
-# ------------------------------------------------------------------
+# --- Document list / delete ---
 
 
 @router.get("/knowledge-bases/{kb_id}/documents", response_model = DocumentListResponse)
@@ -890,13 +820,7 @@ def get_rag_image(
     filename: str,
     current_subject: str = Depends(get_current_subject),
 ) -> FileResponse:
-    """Serve an image extracted during multimodal ingestion.
-
-    Files live under ``rag_uploads_root() / 'images' / <document_id>``.
-    We realpath-check the resolved file against that root to refuse
-    path-traversal attempts (``..`` segments, symlinks pointing
-    elsewhere). Filenames are constrained to a single path component.
-    """
+    """Serve an extracted image; realpath-check against the uploads root."""
     if "/" in filename or "\\" in filename or filename.startswith("."):
         raise HTTPException(status_code = 400, detail = "Invalid filename")
     root = Path(os.path.realpath(rag_uploads_root() / "images"))
@@ -930,12 +854,7 @@ def delete_document(
 def list_thread_indexes(
     current_subject: str = Depends(get_current_subject),
 ) -> ThreadIndexListResponse:
-    """List every chat thread that has at least one RAG document.
-
-    LEFT JOIN to chat_threads so threads that were never persisted
-    (user attached a file but never sent a message) still show up —
-    just with a null title.
-    """
+    """List threads with >=1 RAG doc. LEFT JOIN keeps unpersisted threads (null title)."""
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -969,19 +888,12 @@ def clear_thread_documents(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
-    """Purge every RAG document attached to ``thread_id``.
-
-    Removes the per-thread vector rows, the bm25 index, the
-    rag_documents/rag_chunks rows, and the uploaded files. The chat
-    thread itself is untouched.
-    """
+    """Drop all RAG artifacts for thread_id; chat thread itself untouched."""
     ingestion.purge_thread_documents([thread_id])
     return {"ok": True}
 
 
-# ------------------------------------------------------------------
-# Ingestion job SSE
-# ------------------------------------------------------------------
+# --- Ingestion job SSE ---
 
 
 @router.get("/jobs/{job_id}/events")
@@ -1050,9 +962,7 @@ async def _replay_terminal_state(row: Any):
     yield f"data: {json.dumps(payload)}\n\n"
 
 
-# ------------------------------------------------------------------
-# Search
-# ------------------------------------------------------------------
+# --- Search ---
 
 
 @router.post("/search", response_model = SearchResponse)
@@ -1071,9 +981,7 @@ def search(
     else:
         scope = thread_scope(payload.thread_id)
 
-    # Embed the query with the same model that populated this scope's
-    # vectors. Mixing spaces (e.g. Qwen3-VL 2048-d docs vs bge-small
-    # 384-d query) crashes inside the cosine-distance compute.
+    # Query must use the same embedder as the scope (dim must match).
     scope_embedder = _resolve_scope_embedder(scope)
     logger.info(
         "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
@@ -1086,8 +994,7 @@ def search(
         payload.query[:120],
     )
 
-    # When reranking is opt-in, pull a wider candidate pool so the
-    # CrossEncoder has more to choose from before truncating to top_k.
+    # Reranker needs a wider candidate pool than top_k.
     candidate_k = (
         max(payload.top_k, RAG_RERANK_CANDIDATE_K)
         if payload.enable_rerank
@@ -1168,8 +1075,7 @@ def search(
         image_url: str | None = None
         if kind == "image" and meta.get("image_path"):
             image_url = (
-                f"/api/rag/images/{meta['document_id']}/"
-                f"{Path(meta['image_path']).name}"
+                f"/api/rag/images/{meta['document_id']}/{Path(meta['image_path']).name}"
             )
         out.append(
             SearchHit(

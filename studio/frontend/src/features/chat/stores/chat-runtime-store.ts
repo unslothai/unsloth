@@ -301,10 +301,7 @@ type ChatRuntimeStore = {
   ragMode: RagMode;
   enableRerank: boolean;
   ragTopK: number;
-  // Cosine-similarity floor for RAG hits. Off (0) by default — set
-  // > 0 to drop chunks below the threshold so unrelated docs don't
-  // get injected into the prompt (e.g., asking about the weather
-  // when the indexed docs are about economics).
+  // Cosine floor; 0 disables. Set > 0 to drop off-topic hits.
   ragMinScore: number;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
@@ -593,9 +590,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
-  // Phase 4: RAG button defaults off. Migration nudge happens after
-  // settings hydration, when the persisted ragSource becomes visible —
-  // see hydratePersistedSettings.
+  // Defaults off; hydratePersistedSettings nudges it on for existing users.
   ragToolEnabled: loadBool(CHAT_RAG_TOOL_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
@@ -651,11 +646,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             ),
             ...getHydratedSettingsState(settings, state, hydrationVersions),
           };
-          // Phase 4 migration: pre-existing users with ragSource set
-          // before the RAG button shipped should keep getting RAG —
-          // auto-flip ragToolEnabled so the button starts ON for them.
-          // The CHAT_RAG_TOOL_ENABLED_KEY localStorage write makes the
-          // migration stick across reloads.
+          // Migration: pre-existing ragSource → auto-enable ragToolEnabled.
           const hydratedRagSource =
             (nextState.ragSource as RagSource | undefined) ?? state.ragSource;
           if (

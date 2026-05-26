@@ -14,15 +14,7 @@ import { useEffect, useState } from "react";
 import type { ChunkingStrategy, KBMode } from "../api/rag-api";
 import { useRagStore } from "../stores/rag-store";
 
-/**
- * Defaults for newly-created KBs, surfaced in the Settings → Knowledge
- * Bases tab. Values pre-fill the KB create dialog so power users can
- * pick their preferred strategy/mode once instead of toggling per KB.
- *
- * Backed by chat_settings via PUT /api/rag/defaults. The selects
- * enforce the same (multimodal, late) constraint as the create
- * dialog.
- */
+/** Defaults pre-fill the KB create dialog. Same (multimodal, late) rejection as create. */
 export function RagDefaultsSection() {
   const defaults = useRagStore((s) => s.defaults);
   const loadDefaults = useRagStore((s) => s.loadDefaults);
@@ -34,7 +26,6 @@ export function RagDefaultsSection() {
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Load defaults on mount; reflect them in local state.
   useEffect(() => {
     void loadDefaults();
   }, [loadDefaults]);

@@ -580,12 +580,10 @@ export function SharedComposer({
         });
         continue;
       }
-      // Handle RAG document files (route to per-thread ingest pipeline).
       if (isDocumentFile(file)) {
         addDoc(file);
         continue;
       }
-      // Handle image files
       if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
       if (attachUnavailableReason) {
@@ -614,9 +612,7 @@ export function SharedComposer({
             doc.documentId,
             `thread:${activeThreadId ?? ""}`,
           )
-          .catch(() => {
-            // Best effort — the chip is going away regardless.
-          });
+          .catch(() => {});
       }
       return prev.filter((d) => d.id !== id);
     });
@@ -709,9 +705,7 @@ export function SharedComposer({
     setPendingImages([]);
     setPendingAudio(null);
     clearPendingAudioStore();
-    // Docs remain in the backend (already uploaded); just drop the
-    // composer-side chips. The settings panel still shows them in the
-    // thread's document list.
+    // Docs stay in backend; drop chips only.
     setPendingDocs([]);
     textareaRef.current?.focus();
 
@@ -1277,12 +1271,7 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
-          {/* RAG: master switch for retrieval. On local models with
-              tool-use support, registers `search_knowledge_base` as a
-              tool the LLM can call. On external providers, falls back
-              to the pre-fetch path. The sidebar Retrieval section
-              configures the source / top-K / reranker; the button is
-              the only on/off control. */}
+          {/* Master RAG toggle; sidebar Retrieval section configures the rest. */}
           <button
             type="button"
             disabled={!modelLoaded}

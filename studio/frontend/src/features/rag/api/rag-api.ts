@@ -45,9 +45,6 @@ export interface SearchHit {
   score: number;
   page_number: number | null;
   filename: string | null;
-  // Phase 3B-multimodal: "image" hits have an image_url (served by
-  // GET /api/rag/images/{document_id}/{filename}); "caption" hits
-  // carry the paired image's caption text and are LLM-friendly.
   kind?: "text" | "image" | "caption";
   image_url?: string | null;
 }
@@ -94,9 +91,7 @@ async function throwOnError(response: Response): Promise<void> {
   throw new Error(parseErrorText(response.status, body));
 }
 
-// ------------------------------------------------------------------
-// Knowledge bases
-// ------------------------------------------------------------------
+// --- Knowledge bases ---
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const response = await authFetch("/api/rag/knowledge-bases");
@@ -108,8 +103,6 @@ export interface CreateKnowledgeBaseRequest {
   name: string;
   description?: string;
   embedding_model?: string;
-  // Phase 3: both default server-side to "standard" / "text" — clients
-  // that pre-date the field send the same payloads as before.
   chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
 }
@@ -133,9 +126,7 @@ export async function deleteKnowledgeBase(kbId: string): Promise<void> {
   await throwOnError(response);
 }
 
-// ------------------------------------------------------------------
-// Documents
-// ------------------------------------------------------------------
+// --- Documents ---
 
 export async function listKBDocuments(kbId: string): Promise<RagDocument[]> {
   const response = await authFetch(
@@ -313,9 +304,7 @@ export async function setRagDefaults(
   return parseJsonOrThrow<RagDefaults>(response);
 }
 
-// ------------------------------------------------------------------
-// Search
-// ------------------------------------------------------------------
+// --- Search ---
 
 export async function search(req: SearchRequest): Promise<SearchHit[]> {
   const response = await authFetch("/api/rag/search", {
@@ -327,19 +316,10 @@ export async function search(req: SearchRequest): Promise<SearchHit[]> {
   return body.hits;
 }
 
-// ------------------------------------------------------------------
-// Ingestion SSE
-// ------------------------------------------------------------------
+// --- Ingestion SSE ---
 
-/**
- * Subscribe to an ingestion job's SSE event stream.
- *
- * EventSource cannot send custom headers, so we pass the bearer token
- * as a `?token=…` query param. The backend's /jobs/{id}/events route
- * accepts either the query param or the Authorization header.
- *
- * Returns an unsubscribe function that closes the EventSource.
- */
+/** Subscribe to a job's SSE stream; returns an unsubscribe fn.
+ *  Token goes via ?token= since EventSource cannot send headers. */
 export function subscribeToJobEvents(
   jobId: string,
   handlers: {
@@ -367,8 +347,7 @@ export function subscribeToJobEvents(
   };
 
   source.onerror = () => {
-    // Browser auto-reconnects unless we close explicitly. We close on
-    // any error so the consumer can decide whether to resubscribe.
+    // Browser auto-reconnects unless we close; let the consumer decide instead.
     source.close();
     handlers.onError?.(new Error("SSE connection lost"));
     handlers.onClose?.();

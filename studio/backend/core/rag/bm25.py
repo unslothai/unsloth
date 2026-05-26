@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-scope BM25 lexical index using the ``bm25s`` library.
+"""Per-scope BM25 index (rebuild on change; bm25s has no cheap incremental insert).
 
-bm25s does not support incremental insertion cheaply, so we rebuild the
-full per-scope index whenever its document set changes. At studio
-scale (a few hundred to a few tens of thousands of chunks per KB) this
-is fast enough; the upside is that deletes are trivial.
-
-A scope is ``kb_<uuid>`` or ``thread_<uuid>``. Each scope stores:
-  - ``<scope>/`` directory holding the bm25s index files
-  - ``<scope>/ids.json`` mapping the index's positional ids back to
-    chunk-id strings (bm25s returns row indices, not our ids).
+Each scope dir holds the bm25s files + ids.json mapping row index → chunk_id.
 """
 
 from __future__ import annotations
@@ -48,11 +40,7 @@ def _evict(scope: str) -> None:
 
 
 def rebuild_index(scope: str, chunks: list[dict]) -> None:
-    """Rebuild the BM25 index for ``scope`` from the full chunk list.
-
-    Each chunk dict must contain ``id`` and ``text``. Passing an empty
-    list deletes the scope's index files.
-    """
+    """Rebuild scope's BM25 from full chunk list. Empty list deletes the index."""
     import bm25s
 
     base = _scope_dir(scope)
@@ -64,9 +52,7 @@ def rebuild_index(scope: str, chunks: list[dict]) -> None:
     tokens = bm25s.tokenize(texts, show_progress = False)
     retriever = bm25s.BM25()
     retriever.index(tokens, show_progress = False)
-    # Drop stale files from any previous build/library version before
-    # writing the new index so we never mix old + new artifacts in the
-    # scope dir (bm25s.BM25.save does not unlink files it does not write).
+    # bm25s.BM25.save does not unlink stale files; clear the dir first.
     delete_scope(scope)
     ensure_dir(base)
     retriever.save(str(base))
@@ -87,10 +73,7 @@ def _load(scope: str) -> tuple[Any, list[str]] | None:
             retriever = bm25s.BM25.load(str(_scope_dir(scope)), load_corpus = False)
             ids = json.loads(_ids_path(scope).read_text())
         except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError) as exc:
-            # Corrupt or partially-written index files: treat as a
-            # missing index so search returns empty and a future
-            # re-ingest can rebuild cleanly. Log so the failure
-            # is visible without crashing the request.
+            # Corrupt/partial index: treat as missing so re-ingest rebuilds cleanly.
             logger.warning(
                 "bm25 index unreadable for scope %s (%s: %s); treating as missing",
                 scope,

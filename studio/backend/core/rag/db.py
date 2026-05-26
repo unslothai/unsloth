@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""sqlite-vec backed connection helper for RAG vectors.
-
-Single process-wide connection, opened lazily on first use. The
-extension-load step runs once at open time. studio.db (chat history,
-RAG metadata) stays untouched, so the extension-load surface is scoped
-to the RAG code path only — chat code keeps its plain sqlite handle.
-"""
+"""Lazy process-wide rag.db connection with sqlite-vec loaded."""
 
 from __future__ import annotations
 
@@ -29,14 +23,6 @@ def rag_db_path() -> Path:
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
-    """Enable extension loading and pull in sqlite-vec.
-
-    install.sh creates the studio venv via `uv venv --python <ver>`,
-    which uses uv's managed python-build-standalone build. That CPython
-    is compiled with --enable-loadable-sqlite-extensions, so this path
-    succeeds on standard installs. The actionable error message is
-    here for the rare custom-interpreter case.
-    """
     try:
         conn.enable_load_extension(True)
     except AttributeError as exc:
@@ -77,12 +63,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def get_rag_connection() -> sqlite3.Connection:
-    """Lazy process-wide sqlite connection to rag.db with sqlite-vec loaded.
-
-    Returns the cached connection on subsequent calls. FastAPI's thread
-    pool plus check_same_thread=False + WAL mode handles concurrent
-    reads; writes are serialized by SQLite itself.
-    """
     global _conn
     with _conn_lock:
         if _conn is None:
@@ -101,7 +81,6 @@ def get_rag_connection() -> sqlite3.Connection:
 
 
 def _reset_for_tests() -> None:
-    """Drop the cached connection. Test-only — production never calls."""
     global _conn
     with _conn_lock:
         if _conn is not None:

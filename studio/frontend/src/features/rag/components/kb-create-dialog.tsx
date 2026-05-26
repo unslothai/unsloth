@@ -41,8 +41,6 @@ export function KBCreateDialog({
   const defaults = useRagStore((s) => s.defaults);
   const loadDefaults = useRagStore((s) => s.loadDefaults);
 
-  // Cache the initial values so reset() puts us back to the latest
-  // saved defaults rather than the hard-coded ones.
   const initialStrategy: ChunkingStrategy =
     defaults?.chunking_strategy ?? "standard";
   const initialMode: KBMode = defaults?.mode ?? "text";
@@ -57,7 +55,6 @@ export function KBCreateDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch defaults on first open and re-sync the form when they arrive.
   useEffect(() => {
     if (open && !defaults) {
       void loadDefaults();
@@ -70,7 +67,7 @@ export function KBCreateDialog({
       setMode(defaults.mode);
       setEmbeddingModel(defaults.embedding_model ?? "");
     }
-    // Intentional: only when `open` flips, not on every defaults change.
+    // Only on open-flip, not on every defaults change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -84,8 +81,7 @@ export function KBCreateDialog({
     setSubmitting(false);
   };
 
-  // Forbidden combo: multimodal + late chunking. We disable each side
-  // when the other side is picking it, with a tooltip explaining why.
+  // Forbid (multimodal, late); disable the other side when one is picked.
   const lateDisabled = mode === "multimodal";
   const multimodalDisabled = chunkingStrategy === "late";
 

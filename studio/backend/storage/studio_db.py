@@ -205,13 +205,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # RAG: knowledge bases, documents, chunks, ingestion jobs.
-    # rag_documents enforces XOR on (kb_id, thread_id): a document belongs
-    # to either a standalone KB or a single chat thread, never both.
-    # chunking_strategy and mode are set at KB-creation time and are
-    # immutable thereafter — changing either invalidates existing chunks
-    # because they were ingested through a specific pipeline (different
-    # chunker, different embedder). See Phase 3 in the plan.
+    # RAG schema. rag_documents enforces XOR on (kb_id, thread_id).
+    # chunking_strategy/mode are immutable post-create (invalidates chunks).
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS rag_knowledge_bases (
@@ -226,9 +221,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Idempotent ALTER for existing installs that pre-date the columns.
-    # Mirrors the chat_threads display_name / *_code_exec_container_id
-    # pattern earlier in this file.
+    # Idempotent ALTER for pre-existing installs.
     kb_cols = {
         row[1]
         for row in conn.execute("PRAGMA table_info(rag_knowledge_bases)").fetchall()
@@ -243,11 +236,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE rag_knowledge_bases "
             "ADD COLUMN mode TEXT NOT NULL DEFAULT 'text'"
         )
-    # thread_id has no FK to chat_threads. A user can attach a document
-    # to a thread that hasn't yet been persisted (saveThread only runs
-    # after the first model exchange — see runtime-provider.tsx). The
-    # chat-thread DELETE handlers in routes/chat_history.py purge
-    # matching rag_documents explicitly so lifecycle stays clean.
+    # thread_id has no FK: docs can attach before the thread is persisted.
+    # chat_history DELETE handlers purge matching rag_documents explicitly.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS rag_documents (
@@ -272,11 +262,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_thread_id ON rag_documents(thread_id)"
     )
-    # kind = 'text' | 'image' | 'caption'. image_path is set when kind = 'image'
-    # (path to the extracted figure under rag_uploads_root() / 'images/').
-    # linked_chunk_id pairs an 'image' chunk with its 'caption' chunk (and vice
-    # versa) so retrieval can hydrate the matching half. Both default to NULL
-    # so today's text-only ingestion is unaffected. See Phase 3B-multimodal.
+    # kind: text|image|caption. linked_chunk_id pairs image↔caption (both null for text).
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS rag_chunks (

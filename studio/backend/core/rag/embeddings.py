@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Embedding model singleton for RAG.
-
-Loads the configured embedder via Unsloth's ``FastSentenceTransformer``
-wrapper with ``for_inference=True`` (which returns a plain
-``sentence_transformers.SentenceTransformer`` instance with proper dtype
-and device handling). Lifecycle is fully independent of the chat
-``InferenceBackend`` so loading an embedder cannot evict the active
-chat model.
-"""
+"""RAG embedder singleton. Independent of the chat InferenceBackend."""
 
 from __future__ import annotations
 
@@ -30,19 +22,13 @@ _embedding_dim: int | None = None
 def _load(model_name: str) -> Any:
     logger.info("Loading RAG embedder: %s", model_name)
 
-    # BGE-VL ships a sentence-transformers shim that's tightly coupled
-    # to a specific ST internal API and breaks across ST version bumps.
-    # Bypass ST entirely and load via the canonical transformers
-    # AutoModel path, wrapped to match the SentenceTransformer API
-    # slice the RAG ingester uses.
+    # BGE-VL's ST shim breaks across ST versions; load via AutoModel.
     if model_name.startswith("BAAI/BGE-VL"):
         return _BGEVLAdapter(model_name)
 
     from unsloth import FastSentenceTransformer
 
-    # trust_remote_code is required for nomic-embed-text-v1.5 (custom
-    # modeling for 8K context). Safe to enable because the embedder
-    # matrix is config-pinned — users don't supply arbitrary names.
+    # trust_remote_code: nomic-embed-text-v1.5 needs custom modeling for 8K ctx.
     return FastSentenceTransformer.from_pretrained(
         model_name,
         for_inference = True,
@@ -51,18 +37,7 @@ def _load(model_name: str) -> Any:
 
 
 class _BGEVLAdapter:
-    """Adapter exposing the slice of SentenceTransformer API the RAG
-    ingester depends on, backed by BGE-VL's transformers AutoModel.
-
-    Supports:
-      - ``encode(list_of_strings, ...)``  → text embeddings
-      - ``encode(list_of_PIL_images, ...)`` → image embeddings
-      - ``get_sentence_embedding_dimension()``
-      - ``tokenize([text])`` for token-aware chunking (best-effort)
-
-    Auto-detects image vs text inputs from the first element. Returns
-    L2-normalized numpy arrays when ``normalize_embeddings=True``.
-    """
+    """SentenceTransformer-shaped adapter over BGE-VL's AutoModel."""
 
     def __init__(self, hf_model_name: str):
         from transformers import AutoModel
@@ -72,9 +47,7 @@ class _BGEVLAdapter:
             hf_model_name,
             trust_remote_code = True,
         )
-        # BGE-VL's encode() requires set_processor to install the
-        # tokenizer / image processor on the model. Without it, the
-        # first encode() raises with a missing-processor error.
+        # Required: BGE-VL's encode() raises without an installed processor.
         self._model.set_processor(hf_model_name)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model.to(device).eval()
@@ -86,10 +59,7 @@ class _BGEVLAdapter:
 
         return F.normalize(tensor, p = 2.0, dim = -1)
 
-    # CLIP-family text encoder context cap. BGE-VL inherits CLIP's
-    # 77-token text positional embedding table — exceeding it triggers
-    # a shape-mismatch in the embedding layer. Pre-truncate any text
-    # chunk to this length before calling the model.
+    # CLIP positional embedding cap; longer text triggers shape mismatch.
     _CLIP_TEXT_MAX_TOKENS = 77
 
     def encode(
@@ -140,13 +110,7 @@ class _BGEVLAdapter:
         return out.numpy() if convert_to_numpy else out
 
     def _encode_text_truncated(self, texts: list[str]):
-        """Tokenize with explicit truncation to CLIP's 77-token limit, then
-        call get_text_features directly. BGE-VL's high-level encode() does
-        not truncate, so longer chunks overflow the position-embedding
-        table and crash inside the text model. Text chunks beyond the cap
-        are silently truncated — the multimodal mode is primarily about
-        the image side; large text chunks should land in text-mode RAG.
-        """
+        """Truncate to CLIP's 77-token limit; long text in multimodal mode is lossy."""
         import torch
 
         tokenizer = self._get_text_tokenizer()
@@ -158,14 +122,7 @@ class _BGEVLAdapter:
             max_length = self._CLIP_TEXT_MAX_TOKENS,
         )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
-        # Some chunks were almost certainly truncated; flag it once per
-        # batch so users running multimodal on long-form text know the
-        # text channel is lossy by design.
-        overflowed = any(
-            len(t.split()) > 30  # ~rough proxy; tokens vary by lang
-            for t in texts
-        )
-        if overflowed:
+        if any(len(t.split()) > 30 for t in texts):
             logger.info(
                 "BGE-VL text encode: truncating chunks to %d tokens (CLIP cap)",
                 self._CLIP_TEXT_MAX_TOKENS,
@@ -174,7 +131,6 @@ class _BGEVLAdapter:
             return self._model.get_text_features(**inputs)
 
     def _get_text_tokenizer(self):
-        """Locate the tokenizer set up by ``set_processor`` for text input."""
         processor = getattr(self._model, "processor", None)
         if processor is not None:
             tok = getattr(processor, "tokenizer", None)
@@ -192,11 +148,6 @@ class _BGEVLAdapter:
         return self._dim
 
     def tokenize(self, texts):
-        """Best-effort tokenize for the token_counter chunking path.
-
-        Falls back gracefully — the caller already handles exceptions
-        by approximating tokens as ``len(text) // 4`` when this raises.
-        """
         return self._get_text_tokenizer()(
             texts,
             return_tensors = "pt",
@@ -205,7 +156,6 @@ class _BGEVLAdapter:
 
 
 def get_embedder(model_name: str | None = None) -> Any:
-    """Return the cached SentenceTransformer, loading it on first use."""
     global _model, _model_name, _embedding_dim
     target = model_name or RAG_EMBEDDING_MODEL
     with _lock:
@@ -255,14 +205,7 @@ def encode_images(
     batch_size: int | None = None,
     normalize: bool = True,
 ):
-    """Embed raw image bytes via a multimodal SentenceTransformer.
-
-    Works with CLIP-family models (BGE-VL, openai/clip-*) whose
-    `encode` accepts PIL.Image objects in the same call as text. The
-    returned vectors live in the same 512-d (or model-specific) space
-    as text vectors from this model, so a single scope's vector rows
-    hold both kinds.
-    """
+    """Embed image bytes via a CLIP-family multimodal encoder."""
     from io import BytesIO
 
     from PIL import Image
@@ -281,11 +224,7 @@ def encode_images(
 
 
 def token_counter(model_name: str | None = None):
-    """Return a ``len(tokenize(text))`` callable using the embedder's tokenizer.
-
-    Avoid loading the model just for chunking by reaching through the
-    SentenceTransformer's ``tokenize`` API.
-    """
+    """Return a token-count callable backed by the embedder's tokenizer."""
     model = get_embedder(model_name)
 
     def _count(text: str) -> int:
@@ -301,9 +240,7 @@ def token_counter(model_name: str | None = None):
     return _count
 
 
-# ------------------------------------------------------------------
-# Late chunking (Phase 3B-late)
-# ------------------------------------------------------------------
+# --- Late chunking (Jina technique) ---
 
 _LATE_WINDOW_OVERLAP_TOKENS = 512
 
@@ -315,18 +252,7 @@ def late_chunk_encode(
     model_name: str | None = None,
     normalize: bool = True,
 ):
-    """Embed each chunk via late-chunking pooling.
-
-    Single forward pass over the full document, then mean-pool the
-    token embeddings whose offset ranges fall inside each chunk's
-    char span. Chunks therefore carry full-document context via the
-    encoder's bidirectional attention — Jina's published technique,
-    works with any encoder that exposes per-token outputs.
-
-    When the doc exceeds the embedder's context, falls back to
-    windowed late chunking with a 512-token overlap between windows
-    so cross-window context is partially preserved.
-    """
+    """Single forward pass over the doc, mean-pool token embeddings per chunk span."""
     import numpy as np
 
     if not char_spans:
@@ -373,7 +299,6 @@ def late_chunk_encode(
 
 
 def _encode_tokens(model, encoded):
-    """Run the embedder's underlying transformer to get per-token last_hidden_state."""
     import torch
 
     transformer = model[0].auto_model
@@ -395,15 +320,11 @@ def _pool_spans(
     doc_text: str,
     token_index_offset: int = 0,
 ):
-    """Mean-pool token embeddings per (char_start, char_end) span.
-
-    `token_index_offset` shifts char_span-derived token indices into
-    a sub-window's local frame (used by the windowed code path).
-    """
+    """Mean-pool token embeddings per (char_start, char_end) span."""
     vectors = []
     n_rows = token_embeddings.shape[0]
     for char_start, char_end in char_spans:
-        # Special tokens (CLS / SEP) report offsets (0, 0) — exclude them.
+        # Skip special tokens whose offsets are (0, 0).
         indices = [
             i - token_index_offset
             for i, (ts, te) in enumerate(offsets)
@@ -411,9 +332,6 @@ def _pool_spans(
         ]
         indices = [i for i in indices if 0 <= i < n_rows]
         if not indices:
-            # Fall back to a standalone encode of the chunk text — rare
-            # (would mean tokenizer produced zero non-special tokens for
-            # the span), but keeps the pipeline alive.
             vec = model.encode(
                 doc_text[char_start:char_end],
                 normalize_embeddings = normalize,
@@ -440,12 +358,7 @@ def _windowed_late_chunk_encode(
     normalize: bool,
     np_module,
 ):
-    """Doc exceeds context window — slice into overlapping windows.
-
-    Each chunk is pooled against the window that contains the most of
-    its tokens. The 512-token window overlap means chunks near a
-    boundary still see context from both sides.
-    """
+    """Doc > ctx window: pool each chunk against the window containing most of its tokens."""
     import torch
 
     tokenizer = model.tokenizer
@@ -464,7 +377,6 @@ def _windowed_late_chunk_encode(
     n_tokens = int(all_input_ids.shape[0])
     stride = max(1, max_length - _LATE_WINDOW_OVERLAP_TOKENS)
 
-    # Build (start_token, end_token) windows.
     windows: list[tuple[int, int]] = []
     pos = 0
     while pos < n_tokens:
@@ -474,7 +386,6 @@ def _windowed_late_chunk_encode(
             break
         pos += stride
 
-    # Cache window → token embeddings (only encode when needed).
     window_embeddings: dict[int, "np_module.ndarray"] = {}
 
     def _window_embeddings(window_index: int):
@@ -491,7 +402,6 @@ def _windowed_late_chunk_encode(
 
     vectors = []
     for char_start, char_end in char_spans:
-        # Collect global token indices in the chunk.
         chunk_token_indices = [
             i
             for i, (ts, te) in enumerate(all_offsets)
@@ -506,7 +416,6 @@ def _windowed_late_chunk_encode(
             )
             vectors.append(vec)
             continue
-        # Pick the window covering the most of this chunk's tokens.
         best_window = 0
         best_overlap = 0
         for wi, (ws, we) in enumerate(windows):

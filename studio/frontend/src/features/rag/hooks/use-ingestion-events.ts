@@ -4,10 +4,7 @@
 import { useEffect } from "react";
 import { useRagStore } from "../stores/rag-store";
 
-/**
- * Subscribe to an ingestion job's SSE events. Returns the latest event
- * for that job from the global jobs map. Pass `null` to skip.
- */
+/** Subscribe to a job's SSE; returns latest event, null skips. */
 export function useIngestionEvents(jobId: string | null) {
   const event = useRagStore((s) =>
     jobId ? (s.jobs[jobId] ?? null) : null,

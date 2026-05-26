@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""High-level retrieval surface for RAG: BM25, dense, and RRF hybrid.
-
-Reciprocal Rank Fusion is parameter-light: each candidate's fused score
-is the sum of ``1 / (rrf_k + rank)`` across rankers. It avoids the
-need to calibrate score scales between BM25 (raw, unbounded) and cosine
-similarity (-1..1).
-
-Hits also carry the raw dense cosine score when available so callers
-can apply a meaningful similarity threshold (e.g., "drop hits below
-0.3 cosine") — the fused RRF score isn't on a comparable scale.
-"""
+"""RAG retrieval: BM25, dense, and RRF hybrid. Hits carry dense_score for thresholding."""
 
 from __future__ import annotations
 
@@ -34,10 +24,7 @@ class Hit:
     document_id: str | None = None
     chunk_index: int | None = None
     kind: str = "text"
-    # Raw cosine similarity from the dense retriever (0..1 for
-    # normalized embeddings). None when this chunk wasn't returned by
-    # the dense pass (BM25-only hit) — callers applying a similarity
-    # floor should treat None as "no signal" and exclude it.
+    # Raw cosine; None for BM25-only hits.
     dense_score: float | None = None
 
 
@@ -54,12 +41,7 @@ def retrieve_dense(
     document_ids: list[str] | None = None,
     embedder_model: str | None = None,
 ) -> list[Hit]:
-    """Dense retrieval. `embedder_model` MUST match the model that
-    populated this scope's vectors — using a different one yields a
-    dim mismatch (shape (N, scope_dim) vs (query_dim,)) at distance
-    compute time. Callers should resolve from the KB / thread settings
-    before passing.
-    """
+    """Dense retrieval. embedder_model MUST match the model that populated this scope."""
     limit = k or RAG_TOP_K_DENSE
     vector = embeddings.encode(
         [query],
@@ -96,8 +78,7 @@ def _rrf_fuse(
 ) -> list[Hit]:
     fused: dict[str, float] = {}
     seen: dict[str, Hit] = {}
-    # Track the dense cosine score per chunk so it survives fusion —
-    # callers downstream filter on this, not the RRF score.
+    # Preserve dense_score through fusion for downstream thresholding.
     dense_scores: dict[str, float] = {}
     for ranking in rankings:
         for rank, hit in enumerate(ranking):
@@ -148,12 +129,7 @@ def retrieve_hybrid(
 
 
 def filter_by_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
-    """Drop hits whose dense cosine score is below ``min_score``.
-
-    Hits without a dense score (BM25-only) are dropped too — there's
-    no comparable signal to evaluate them against the similarity floor.
-    Use ``min_score = 0.0`` (or negative) to disable the filter.
-    """
+    """Drop hits whose dense_score < min_score; BM25-only hits dropped too."""
     if min_score <= 0.0:
         return hits
     return [h for h in hits if h.dense_score is not None and h.dense_score >= min_score]

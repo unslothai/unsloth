@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional cross-encoder reranking stage.
-
-Off by default. Callers opt in per request via ``enable_rerank`` on
-``SearchRequest``. The reranker model is lazy-loaded on first opt-in
-query and competes with the active chat model for GPU memory — keeping
-it opt-in protects chat latency on smaller GPUs.
-
-``sentence_transformers.CrossEncoder`` has no unsloth wrapper today;
-this module loads it directly. A future ``FastCrossEncoder`` addition
-to ``unsloth/models/sentence_transformer.py`` would slot in here by
-replacing the import in ``_load``.
-"""
+"""Opt-in CrossEncoder reranker (off by default; shares GPU with chat model)."""
 
 from __future__ import annotations
 
@@ -51,12 +40,7 @@ def get_reranker(model_name: str | None = None) -> Any:
 
 
 def unload() -> None:
-    """Drop the reranker reference and trigger a GC pass.
-
-    Useful when memory pressure is high — callers can free the
-    reranker without restarting the studio process. Next ``rerank``
-    call lazy-loads it again.
-    """
+    """Drop the reranker; next call lazy-loads again."""
     global _model, _model_name
     with _lock:
         if _model is not None:
@@ -79,16 +63,9 @@ def rerank(
     model_name: str | None = None,
     top_k: int | None = None,
 ) -> list[Hit]:
-    """Re-order ``pairs`` by CrossEncoder relevance to ``query``.
-
-    Each pair is ``(Hit, chunk_text)``. Returns Hits with the new
-    cross-encoder scores attached. If ``top_k`` is given, truncates.
-    """
+    """Re-order (Hit, text) pairs by CrossEncoder score; image hits are appended last."""
     if not pairs:
         return []
-    # CrossEncoder is text-only; image-kind hits get appended at the end
-    # in their original relative order so they're never dropped, just
-    # never reranked. Caption-kind hits are eligible (they carry text).
     text_pairs = [(h, t) for h, t in pairs if h.kind != "image"]
     image_hits = [h for h, _t in pairs if h.kind == "image"]
 

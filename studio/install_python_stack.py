@@ -1205,9 +1205,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "studio.txt",
     )
 
-    # 9. RAG dependencies (vector store + lexical index + layout-aware
-    #    parsers). Skipped in no-torch mode because RAG embeddings go
-    #    through sentence-transformers, which requires torch.
+    # 9. RAG deps; skipped in no-torch mode (sentence-transformers requires torch).
     if not NO_TORCH:
         _progress("rag deps")
         pip_install(

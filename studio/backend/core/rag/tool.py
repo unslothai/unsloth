@@ -3,15 +3,8 @@
 
 """`search_knowledge_base` tool — RAG retrieval surfaced to the LLM.
 
-Invoked from `core/inference/tools.execute_tool` when the local model
-emits a `search_knowledge_base` call. The handler runs the existing
-hybrid retrieval, hydrates chunk text + filename + page number from
-sqlite, and returns a Markdown-with-numbered-citations string that
-the LLM consumes as the tool-result message.
-
-Scope (`kb_id` / `thread_id`) is not exposed as a tool argument — it
-comes from the chat-completions request body (`rag_scope`) so the
-LLM doesn't need to know about KB UUIDs.
+Scope comes from the request body (`rag_scope`), not from the tool args,
+so the model never sees KB UUIDs.
 """
 
 from __future__ import annotations
@@ -61,12 +54,7 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
 
 
 def _format_hits_for_llm(hits: list[Any]) -> str:
-    """Render hits as numbered Markdown citations for the LLM.
-
-    Empty results produce a one-line message rather than an empty
-    string — the model needs to know the search ran but found nothing
-    so it can fall back to its own knowledge or ask the user.
-    """
+    """Render hits as numbered Markdown citations; empty results return a message, not ''."""
     if not hits:
         return (
             "No matching chunks were found in the attached documents. "
@@ -95,13 +83,7 @@ def search_knowledge_base(
     min_score: float = 0.0,
     mode: Literal["bm25", "dense", "hybrid"] = "hybrid",
 ) -> str:
-    """Execute the RAG search and return a tool-result string.
-
-    `kb_id` takes precedence over `thread_id` when both are set —
-    matches the create/upload contract that a document belongs to one
-    or the other, never both. ``min_score`` is a cosine-similarity
-    floor on dense hits; chunks below it are dropped.
-    """
+    """Run RAG and return a tool-result string. kb_id takes precedence over thread_id."""
     if not query or not query.strip():
         return "Error: empty query."
 
@@ -215,8 +197,7 @@ def search_knowledge_base(
     else:
         hits = hits[:k]
 
-    # Image-kind hits don't carry LLM-friendly text — skip them. The
-    # paired caption (linked_chunk_id) usually surfaces separately.
+    # Skip image-kind hits; the paired caption surfaces separately.
     formatted = [
         lookup[hit.chunk_id]
         for hit in hits

@@ -20,7 +20,6 @@ TokenCounter = Callable[[str], int]
 
 
 def _char_token_estimate(text: str) -> int:
-    # Rough 4 chars / token heuristic — only used if no real tokenizer is provided.
     return max(1, (len(text) + 3) // 4)
 
 
@@ -60,7 +59,6 @@ def _atomic_split(
                 tail = separators[separators.index(sep) + 1 :]
                 out.extend(_atomic_split(piece, tail, max_tokens, count))
         return out
-    # No separator made progress — hard-slice by characters.
     approx_chars = max(1, max_tokens * 4)
     return [text[i : i + approx_chars] for i in range(0, len(text), approx_chars)]
 
@@ -71,7 +69,7 @@ def _merge(
     overlap_tokens: int,
     count: TokenCounter,
 ) -> list[str]:
-    """Greedy-merge atomic pieces into chunks <= max_tokens with overlap between adjacent chunks."""
+    """Greedy-merge into <= max_tokens chunks with overlap."""
     chunks: list[str] = []
     buffer: list[str] = []
     buffer_tokens = 0
@@ -100,12 +98,8 @@ def _merge(
     return [c.strip() for c in chunks if c.strip()]
 
 
+# Markdown headings first so layout-aware parser output splits at sections.
 DEFAULT_SEPARATORS: tuple[str, ...] = (
-    # Markdown heading boundaries first — when the parser emits
-    # layout-aware Markdown (PDF via pymupdf4llm, DOCX via mammoth,
-    # HTML via markdownify) chunks split at section breaks rather
-    # than mid-paragraph. Falls back to the original separators on
-    # plain text input where headings are absent.
     "\n# ",
     "\n## ",
     "\n### ",
@@ -126,11 +120,7 @@ def chunk_pages(
     token_counter: TokenCounter | None = None,
     separators: tuple[str, ...] = DEFAULT_SEPARATORS,
 ) -> list[Chunk]:
-    """Split parsed pages into overlapping chunks.
-
-    Each page is split independently so page_number stays meaningful for
-    PDFs — cross-page chunks would lose source attribution.
-    """
+    """Split pages independently so page_number stays attached to chunks."""
     count = token_counter or _char_token_estimate
     out: list[Chunk] = []
     for page in pages:
@@ -158,23 +148,11 @@ def chunk_pages_with_spans(
     token_counter: TokenCounter | None = None,
     separators: tuple[str, ...] = DEFAULT_SEPARATORS,
 ) -> tuple[str, list[Chunk], list[tuple[int, int]]]:
-    """Late-chunking-friendly variant of :func:`chunk_pages`.
+    """Late-chunking variant: joins pages so the embedder sees the whole doc.
 
-    Joins all pages into a single document so the embedder sees the
-    whole text in one pass (that's the point of late chunking — chunk
-    vectors that carry full-document context via the model's
-    bidirectional attention).
-
-    Returns ``(full_doc, chunks, char_spans)`` where
-    ``char_spans[i] = (start, end)`` are byte-character offsets of
-    ``chunks[i].text`` inside ``full_doc``. The embedder layer maps
-    char spans → token spans via the tokenizer's offsets_mapping and
-    mean-pools per chunk.
-
-    Page-number metadata on each :class:`Chunk` is recovered from the
-    chunk's char span — the first page whose range overlaps the chunk
-    wins. PDFs keep useful citations even though chunking ignores page
-    boundaries here.
+    Returns ``(full_doc, chunks, char_spans)``; ``char_spans[i]`` is the
+    (start, end) char offset of ``chunks[i].text`` inside ``full_doc``.
+    Page numbers are recovered by overlap with the original page ranges.
     """
     count = token_counter or _char_token_estimate
 
@@ -203,13 +181,9 @@ def chunk_pages_with_spans(
             continue
         idx = full_doc.find(text, search_cursor)
         if idx < 0:
-            # Overlap can push the search cursor past a chunk's true
-            # start — restart from the document head as a fallback.
+            # Overlap can push past a chunk's true start; restart from head.
             idx = full_doc.find(text)
         if idx < 0:
-            # Chunker output diverged from the source (rare — happens
-            # if a separator-splice mangled the text). Skip the chunk
-            # rather than corrupt the vector store with a wrong span.
             continue
         end_idx = idx + len(text)
         page_number = _page_for_span(idx, end_idx, page_ranges)
@@ -221,8 +195,7 @@ def chunk_pages_with_spans(
             )
         )
         char_spans.append((idx, end_idx))
-        # Advance past the *start* of this chunk so an overlapping
-        # next chunk can still be found.
+        # Advance past start (not end) so overlapping next chunk is findable.
         search_cursor = idx + 1
 
     return full_doc, chunks, char_spans

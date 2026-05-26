@@ -337,8 +337,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         event.preventDefault();
         return;
       }
-      // Send is going through — drop the chips. The docs themselves
-      // remain in the backend thread KB and stay searchable.
+      // Drop chips on send; docs stay searchable in the backend.
       clearDocs();
     },
     [
@@ -941,9 +940,7 @@ const ImagesToggle: FC = () => {
   );
 };
 
-// Mirror of shared-composer's RAG pill (the master switch for
-// retrieval). Visible on every model; the sidebar Retrieval section
-// configures source / top-K / reranker once this is on.
+// Master RAG switch (mirrors shared-composer); sidebar configures the rest.
 const RagToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -1037,11 +1034,7 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-// Custom + button used when RAG is on: opens a picker accepting
-// doc formats the ingester handles and routes selected files to
-// the RAG thread-document pipeline. Replaces the stock
-// ComposerAddAttachment (which base64-attaches files inline) so
-// docs become indexed chunks instead of one-shot model context.
+// RAG-aware + button: picks doc formats and routes to ingest pipeline.
 const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
   onSelect,
 }) => {
@@ -1061,7 +1054,6 @@ const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
             const f = files[i];
             if (f && isDocumentFile(f)) onSelect(f);
           }
-          // Reset so re-selecting the same file fires onChange.
           e.target.value = "";
         }}
       />

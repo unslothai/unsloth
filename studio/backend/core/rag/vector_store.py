@@ -1,21 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite-backed vector store for RAG, distance math via sqlite-vec.
-
-Replaces the previous Qdrant local-mode store. Vectors are stored as
-BLOBs in a single `rag_vectors` table inside rag.db, keyed by
-chunk_id; cosine distance is computed by sqlite-vec's
-`vec_distance_cosine(blob, blob)` scalar function.
-
-A "scope" is `kb_<uuid>` for standalone knowledge bases or
-`thread_<uuid>` for per-thread document sets. The scope column is
-indexed; queries filter by scope before computing distances so
-different scopes can hold vectors of different dimensions without
-breaking the cosine math. The per-scope embedder resolver
-(core/rag/scope.py:resolve_scope_embedder) guarantees one embedder
-per scope, so dims within a scope are always consistent.
-"""
+"""sqlite-vec vector store. Scope filter (kb_<id>/thread_<id>) keeps mixed-dim
+scopes safe — per-scope embedder resolver guarantees one dim per scope."""
 
 from __future__ import annotations
 
@@ -36,11 +23,6 @@ def thread_scope(thread_id: str) -> str:
 
 
 def collection_exists(scope: str) -> bool:
-    """Whether the scope has any indexed vectors.
-
-    Used by callers (notably retrieval.retrieve_dense) to short-circuit
-    when the scope was never populated. Cheap — a covering index hit.
-    """
     from core.rag.db import get_rag_connection
 
     conn = get_rag_connection()
@@ -52,21 +34,12 @@ def collection_exists(scope: str) -> bool:
 
 
 def ensure_collection(scope: str, dim: int) -> None:
-    """No-op for sqlite-vec — vectors get inserted directly into the
-    shared table. Kept for API parity with the previous Qdrant store
-    so ingestion callers don't need conditional logic.
-    """
-    _ = scope, dim  # unused; signature preserved
+    """No-op; kept for API parity. Vectors go straight into the shared table."""
+    _ = scope, dim
 
 
 def upsert_chunks(scope: str, points: Iterable[dict]) -> None:
-    """Insert/update vectors. Each point: {id, vector, payload}.
-
-    Conflict resolution is per chunk_id (the primary key): re-ingesting
-    overwrites in place. Payload is round-tripped as JSON so the
-    Qdrant-shaped {filename, page_number, kind, ...} dicts callers
-    already build can be reused unchanged.
-    """
+    """Insert/update vectors. Each point: {id, vector, payload}."""
     import sqlite_vec
 
     from core.rag.db import get_rag_connection
@@ -116,14 +89,7 @@ def search(
     top_k: int,
     document_ids: list[str] | None = None,
 ) -> list[dict]:
-    """Cosine-distance search filtered to a single scope.
-
-    Returns rows in the same shape as the old Qdrant path —
-    {chunk_id, score, payload} — where ``score`` is cosine similarity
-    in [0, 1] (vec_distance_cosine returns 1 - similarity, so we
-    invert). Filtered-by-document_ids variant for the per-thread
-    "search only these uploads" case.
-    """
+    """Cosine search; returns {chunk_id, score, payload} with score = 1 - distance."""
     import sqlite_vec
 
     from core.rag.db import get_rag_connection

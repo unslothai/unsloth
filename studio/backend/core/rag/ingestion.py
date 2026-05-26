@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document ingestion pipeline.
+"""RAG ingestion pipeline.
 
-Follows the studio's existing job pattern (`core/data_recipe/jobs/manager.py`):
-spawn a fresh subprocess per job with ``mp.get_context("spawn")`` and stream
-progress events back over a queue. The subprocess does the heavy work
-(parse → chunk → load embedder → embed in batches) and ships
-``(chunks, vectors)`` batches back. The parent persists everything:
-sqlite rows, vector_store rows in rag.db, and (at job completion) a
-rebuilt BM25 index.
-
-Only the parent process owns the rag.db connection (sqlite-vec loaded
-there); subprocesses never open it directly. This keeps search
-available throughout the lifetime of an ingestion job.
+Spawn-subprocess per job (parse/chunk/embed); parent persists chunks,
+vectors, and rebuilds BM25 on completion. Only the parent opens rag.db.
 """
 
 from __future__ import annotations
@@ -44,9 +35,7 @@ _CTX = mp.get_context("spawn")
 _QUEUE_TIMEOUT_SECONDS = 300
 
 
-# ------------------------------------------------------------------
-# Subprocess worker
-# ------------------------------------------------------------------
+# --- Subprocess worker ---
 
 _MIME_TO_EXT = {
     "image/png": ".png",
@@ -108,7 +97,6 @@ def _subprocess_worker(
             )
             return
 
-        # Standard chunking path (text + optional images for multimodal mode).
         text_count = _run_standard_chunking(
             pages = pages,
             chunk_size = chunk_size,
@@ -147,12 +135,7 @@ def _run_standard_chunking(
     out_queue,
     send_complete: bool = True,
 ) -> int:
-    """Stream text chunks back to the parent. Returns the number streamed.
-
-    When called as part of the multimodal pipeline, `send_complete` is
-    False because image chunks still need to be streamed before the
-    document is marked complete.
-    """
+    """Stream text chunks; returns count. send_complete=False when images follow."""
     out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
     chunks = chunk_pages(
         pages,
@@ -207,17 +190,7 @@ def _stream_image_chunks(
     out_queue,
     first_index: int,
 ) -> int:
-    """Save extracted images to disk and stream image+caption chunks.
-
-    Each image becomes an `image`-kind chunk; if the parser found an
-    adjacent caption, a paired `caption`-kind chunk is also emitted.
-    Pairs share a ``pair_group`` so the parent can link them via
-    rag_chunks.linked_chunk_id.
-
-    Images are written to ``rag_uploads_root() / 'images' /
-    <document_id> / img-NNN.<ext>`` so the parent can serve them via
-    the static-image route without holding bytes in memory.
-    """
+    """Persist images, emit image+caption chunks; pairs share pair_group."""
     from core.rag.embeddings import encode, encode_images
     from utils.paths.storage_roots import ensure_dir, rag_uploads_root
 
@@ -228,7 +201,6 @@ def _stream_image_chunks(
 
     img_dir = ensure_dir(rag_uploads_root() / "images" / document_id)
 
-    # Persist bytes, build parallel lists for encoding.
     paths: list[str] = []
     bytes_for_encoding: list[bytes] = []
     captions: list[str] = []
@@ -251,7 +223,6 @@ def _stream_image_chunks(
 
     image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
 
-    # Embed only the non-empty captions; track which images they map to.
     caption_to_image: list[int] = [i for i, cap in enumerate(captions) if cap.strip()]
     if caption_to_image:
         caption_vectors_arr = encode(
@@ -280,8 +251,6 @@ def _stream_image_chunks(
             }
         )
         out_vectors.append(image_vectors[idx].tolist())
-        # Emit the caption chunk right after its image so the parent
-        # sees them adjacent (simplifies pair linking).
         if next_cap is not None and next_cap[0] == idx:
             _cap_index, cap_vec = next_cap
             out_chunks.append(
@@ -319,13 +288,7 @@ def _run_late_chunking(
     late_chunk_encode,
     out_queue,
 ) -> None:
-    """Late chunking: chunk once over the whole doc, embed in a single pass.
-
-    There's no per-batch streaming here — the whole doc is encoded in
-    one forward pass (or one per window for long docs). We ship all
-    chunks back to the parent in one message; the parent's pump still
-    handles them via the same chunks_batch handler.
-    """
+    """Chunk once, embed in one pass, ship all chunks in one chunks_batch."""
     from core.rag.chunking import chunk_pages_with_spans
 
     out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
@@ -366,9 +329,7 @@ def _run_late_chunking(
     out_queue.put({"type": "complete", "num_chunks": len(chunks)})
 
 
-# ------------------------------------------------------------------
-# Job manager (parent side)
-# ------------------------------------------------------------------
+# --- Job manager (parent side) ---
 
 
 class _JobState:
@@ -450,13 +411,7 @@ def _insert_chunks_and_collect_for_bm25(
     chunks_meta: list[dict],
     vectors: list[list[float]],
 ) -> list[dict]:
-    """Insert chunks into sqlite + vector_store; return [{id, text}] for BM25.
-
-    Image-kind chunks ship a stable image_path and skip BM25 (no text
-    body to tokenise). Paired image/caption chunks share a pair_group
-    field — the second pass links them via rag_chunks.linked_chunk_id
-    so retrieval can dereference an image hit to its caption.
-    """
+    """Insert chunks into sqlite + vector_store; return [{id, text}] for BM25."""
     rows: list[tuple] = []
     points: list[dict] = []
     bm25_rows: list[dict] = []
@@ -496,9 +451,6 @@ def _insert_chunks_and_collect_for_bm25(
                 },
             }
         )
-        # BM25 indexes text + caption chunks. Image chunks have no
-        # tokenisable body — their caption (if any) is in a separate
-        # caption-kind chunk that BM25 will index.
         if kind in ("text", "caption") and meta["text"]:
             bm25_rows.append({"id": chunk_id, "text": meta["text"]})
     with get_connection() as conn:
@@ -511,9 +463,7 @@ def _insert_chunks_and_collect_for_bm25(
             """,
             rows,
         )
-        # Link image ↔ caption pairs. We only set linked_chunk_id when
-        # a pair_group has exactly two members; lone images stay
-        # unlinked (no caption was paired).
+        # Link only when exactly two members in a pair_group.
         for ids in pair_groups.values():
             if len(ids) != 2:
                 continue
@@ -560,7 +510,7 @@ def _pump(
     proc: Any,
     out_queue: Any,
 ) -> None:
-    """Drain queue messages until the subprocess signals complete/error or dies."""
+    """Drain queue until subprocess completes/errors/dies."""
     bm25_buffer: list[dict] = []
     embedding_dim: int | None = None
     final_status = "failed"
@@ -597,7 +547,6 @@ def _pump(
                 vector_store.ensure_collection(state.scope, embedding_dim)
             elif mtype == "chunks_batch":
                 if embedding_dim is None:
-                    # defensive: subprocess should always emit "dim" first
                     embedding_dim = len(msg["vectors"][0]) if msg["vectors"] else None
                     if embedding_dim is not None:
                         vector_store.ensure_collection(state.scope, embedding_dim)
@@ -675,15 +624,7 @@ def enqueue_ingestion(
     chunking_strategy: str = "standard",
     mode: str = "text",
 ) -> str:
-    """Create the job row, spawn the subprocess, and start the pump thread.
-
-    Returns the job_id. The caller can poll via ``GET /api/rag/jobs/{job_id}/events``
-    or read the ``rag_ingestion_jobs`` table directly.
-
-    chunking_strategy / mode default to today's behaviour. KB-scoped
-    uploads should pass the KB's stored values; per-thread uploads
-    default unless an override is set in chat_settings.
-    """
+    """Create the job row, spawn the subprocess, start the pump; return job_id."""
     from utils.rag.config import resolve_embedder
 
     scope = _scope_for(kb_id, thread_id)
@@ -736,11 +677,7 @@ def enqueue_ingestion(
 
 
 def delete_document_artifacts(document_id: str, scope: str) -> None:
-    """Remove a document's vectors, then rebuild BM25 for the scope.
-
-    The caller is responsible for the sqlite cascade (deleting the
-    rag_documents row triggers ON DELETE CASCADE on rag_chunks).
-    """
+    """Drop the doc's vectors, rebuild BM25. Caller deletes the rag_documents row."""
     vector_store.delete_document(scope, document_id)
     remaining = _all_scope_chunks(scope)
     if remaining:
@@ -755,11 +692,7 @@ def delete_scope_artifacts(scope: str) -> None:
 
 
 def purge_thread_documents(thread_ids: list[str]) -> None:
-    """Remove all RAG artifacts owned by the given chat thread ids.
-
-    Used by the chat-thread DELETE handlers because rag_documents has
-    no FK cascade to chat_threads (see schema comment).
-    """
+    """Drop RAG artifacts for the given thread ids (no FK cascade to chat_threads)."""
     if not thread_ids:
         return
     import os
@@ -791,7 +724,7 @@ def purge_thread_documents(thread_ids: list[str]) -> None:
 
 
 def purge_all_thread_documents() -> None:
-    """Drop every per-thread RAG artifact. Used by clear-all-history."""
+    """Drop every per-thread RAG artifact."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM rag_documents WHERE thread_id IS NOT NULL"

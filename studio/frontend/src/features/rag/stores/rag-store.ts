@@ -194,14 +194,11 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
       scope.kind === "kb"
         ? kbScopeKey(scope.kbId)
         : threadScopeKey(scope.threadId);
-    // Refresh the doc list so the new pending row appears.
     if (scope.kind === "kb") {
       void get().loadKBDocuments(scope.kbId);
     } else {
       void get().loadThreadDocuments(scope.threadId);
     }
-    // Subscribe to the job; refresh docs on completion to pick up
-    // the final num_chunks / status.
     get().subscribeJob(result.job_id, () => {
       if (scope.kind === "kb") {
         void get().loadKBDocuments(scope.kbId);
@@ -254,13 +251,8 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
 
   async reingestKB(kbId, opts) {
     const response = await apiReingestKB(kbId, opts ?? {});
-    // Refresh the KB list so updated chunking_strategy / mode / embedder
-    // values flow back into the UI, and the doc list so old chunk
-    // counts reset to 0 until each job completes.
     void get().loadKnowledgeBases();
     void get().loadKBDocuments(kbId);
-    // Subscribe to every new job so progress chips render and the doc
-    // list refreshes on completion (mirrors uploadDocument's pattern).
     for (const jobId of response.job_ids) {
       get().subscribeJob(jobId, () => {
         void get().loadKBDocuments(kbId);
@@ -274,9 +266,7 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
       const defaults = await apiGetRagDefaults();
       set({ defaults });
     } catch {
-      // Defaults endpoint is best-effort; a 401 / network blip just
-      // leaves defaults null and dialogs fall back to hard-coded
-      // ('standard', 'text', no embedder override).
+      // Best-effort; null defaults fall back to hard-coded UI defaults.
     }
   },
 
@@ -290,8 +280,6 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
     void get().loadThreadDocuments(threadId);
     void get().loadThreadIndexes();
     if (opts) {
-      // The reingest endpoint persists the new settings as a side
-      // effect; refresh the local copy so the UI reflects them.
       void get().loadThreadSettings(threadId);
     }
     for (const jobId of response.job_ids) {
@@ -309,7 +297,7 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
         threadSettings: { ...state.threadSettings, [threadId]: settings },
       }));
     } catch {
-      // Best-effort — falls back to defaults UI-side when missing.
+      // Best-effort; UI falls back to defaults when missing.
     }
   },
 
@@ -322,9 +310,7 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
   },
 
   subscribeJob(jobId, onComplete) {
-    // Object indexing in TS returns V (not V|undefined) without
-    // noUncheckedIndexedAccess, so we test membership explicitly to
-    // avoid the "always-truthy function reference" lint.
+    // `in` check avoids always-truthy lint without noUncheckedIndexedAccess.
     if (jobId in get().jobUnsubscribers) return;
     const unsubscribe = subscribeToJobEvents(jobId, {
       onEvent: (event) => {

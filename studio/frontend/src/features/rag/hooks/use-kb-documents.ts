@@ -5,11 +5,8 @@ import { useEffect } from "react";
 import type { RagDocument } from "../api/rag-api";
 import { kbScopeKey, threadScopeKey, useRagStore } from "../stores/rag-store";
 
-// Module-scope sentinel so the selector returns a stable reference
-// when the scope key isn't populated yet. A `[]` literal in the
-// selector returns a new array on every call → Zustand's Object.is
-// snapshot check flags it as changed → re-render → selector reruns
-// → new `[]` → infinite loop → React error #185.
+// Stable sentinel: inline `[]` in the selector causes React error #185
+// (new ref each call → Zustand re-renders → infinite loop).
 const EMPTY_DOCS: RagDocument[] = [];
 
 export function useKBDocuments(kbId: string | null) {
