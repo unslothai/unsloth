@@ -108,11 +108,13 @@ class TestTrainingRawSupport(unittest.TestCase):
                 training_type = "LoRA/QLoRA",
                 max_grad_norm = 0.7,
                 max_grad_value = 3.0,
+                max_grad_leaf_norm = 1.3,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertEqual(config["max_grad_norm"], 0.7)
         self.assertEqual(config["max_grad_value"], 3.0)
+        self.assertEqual(config["max_grad_leaf_norm"], 1.3)
 
     def test_training_backend_forwards_random_seed_without_internal_mlx_seed_keys(self):
         backend = TrainingBackend()
@@ -202,8 +204,8 @@ class TestTrainingRawSupport(unittest.TestCase):
 
     def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
         # Raw / backend callers can pass `random_seed=None`,
-        # `cast_norm_output_to_input_dtype=None`, and
-        # `max_grad_value=None` (or omit them) and must NOT leak the
+        # `cast_norm_output_to_input_dtype=None`, and MLX clip knobs
+        # as None (or omit them) and must NOT leak the
         # `None` past `TrainingBackend.start_training`. Otherwise
         # transformers.set_seed(None) raises, PEFT init becomes
         # nondeterministic, and the MLX norm-output cast silently flips.
@@ -227,10 +229,18 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(_coerce_optional_nonneg_float("max_grad_value", 0), 0.0)
         with self.assertRaises(ValueError):
             _coerce_optional_nonneg_float("max_grad_value", -1)
+        self.assertIsNone(_coerce_optional_nonneg_float("max_grad_leaf_norm", None))
+        self.assertEqual(
+            _coerce_optional_nonneg_float("max_grad_leaf_norm", "1.3"),
+            1.3,
+        )
+        with self.assertRaises(ValueError):
+            _coerce_optional_nonneg_float("max_grad_leaf_norm", -1)
 
     def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
-        # `cast_norm_output_to_input_dtype`, `dataset_order`, and
-        # `append_eos` ship in the paired unsloth-zoo update. Until that floor is in place, the
+        # `cast_norm_output_to_input_dtype`, `dataset_order`,
+        # `max_grad_leaf_norm`, and `append_eos` ship in the paired
+        # unsloth-zoo update. Until that floor is in place, the
         # worker must gate them so releases that predate those fields can
         # still construct MLXTrainingConfig without TypeError.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
@@ -243,6 +253,11 @@ class TestTrainingRawSupport(unittest.TestCase):
             'if "cast_norm_output_to_input_dtype" in _supported_fields:', source
         )
         self.assertIn('if "dataset_order" in _supported_fields:', source)
+        self.assertIn('if "max_grad_leaf_norm" in _supported_fields:', source)
+        self.assertIn(
+            'mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm',
+            source,
+        )
         self.assertIn('if "append_eos" in _supported_fields:', source)
         self.assertIn('format_type == "raw"', source)
         self.assertIn('mlx_config_kwargs["append_eos"] = bool(raw_text_mode)', source)
@@ -269,6 +284,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         unconditional = source[unconditional_block_start:end]
         self.assertNotIn("cast_norm_output_to_input_dtype", unconditional)
         self.assertNotIn("dataset_order", unconditional)
+        self.assertNotIn("max_grad_leaf_norm", unconditional)
         self.assertNotIn("append_eos", unconditional)
 
     def test_training_route_forwards_embedding_learning_rate(self):

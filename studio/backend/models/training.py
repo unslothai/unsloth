@@ -275,6 +275,15 @@ class TrainingStartRequest(BaseModel):
             "If unset, MLX uses its runtime default."
         ),
     )
+    max_grad_leaf_norm: Optional[float] = Field(
+        None,
+        ge = 0,
+        description = (
+            "MLX-only proportional per-parameter gradient norm cap. "
+            "Preserves each tensor's gradient direction without global norm "
+            "clipping's memory overhead."
+        ),
+    )
     cast_norm_output_to_input_dtype: bool = Field(
         True,
         description = (

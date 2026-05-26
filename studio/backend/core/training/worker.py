@@ -1405,6 +1405,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
                 "(0 or None disables elementwise clipping)."
             )
+    max_grad_leaf_norm = config.get("max_grad_leaf_norm")
+    if max_grad_leaf_norm is not None:
+        max_grad_leaf_norm = float(max_grad_leaf_norm)
+        if max_grad_leaf_norm < 0:
+            raise ValueError(
+                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be >= 0 "
+                "(0 or None disables proportional leaf-norm clipping)."
+            )
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
@@ -1442,6 +1450,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
     if "dataset_order" in _supported_fields:
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
+    if "max_grad_leaf_norm" in _supported_fields:
+        mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
         raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
         # Studio SFT formatting owns rendered examples; raw/CPT text still

@@ -261,6 +261,9 @@ class TrainingBackend:
             "max_grad_value": _coerce_optional_nonneg_float(
                 "max_grad_value", kwargs.get("max_grad_value")
             ),
+            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
+            ),
             "cast_norm_output_to_input_dtype": _coerce_optional_bool(
                 kwargs.get("cast_norm_output_to_input_dtype"), True
             ),
