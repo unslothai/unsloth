@@ -154,6 +154,8 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     : null;
   const imageTitle =
     imageResult?.prompt?.trim() || prompt.trim() || "Generated image";
+  const captionPrompt = imageResult?.prompt?.trim() || prompt.trim();
+  const promptNeedsExpansion = captionPrompt.length > 220;
   const imageMetadata = [imageResult?.size, imageResult?.quality, mime]
     .filter(Boolean)
     .join(" · ");
@@ -174,6 +176,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     : null;
 
   const [open, setOpen] = useState(true);
+  const [promptExpanded, setPromptExpanded] = useState(false);
   const isPendingImage = !imagePart && status?.type === "running";
 
   const runningLabel = "Generating image…";
@@ -232,20 +235,27 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
         {imagePart ? (
           <figure className="m-0 flex flex-col gap-2">
             <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/30 shadow-sm">
+              <img
+                src={imagePart.image}
+                alt=""
+                aria-hidden={true}
+                className="pointer-events-none absolute inset-0 size-full scale-110 object-cover opacity-25 blur-2xl saturate-125"
+              />
+              <div className="pointer-events-none absolute inset-0 bg-background/45" />
               <button
                 type="button"
-                className="block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="relative z-10 block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 onClick={showPreview}
                 aria-label="Open generated image preview"
               >
                 <Image.Preview
                   src={imagePart.image}
                   alt={imageTitle}
-                  containerClassName="size-full min-h-0 bg-background"
-                  className="size-full object-cover"
+                  containerClassName="flex size-full min-h-0 items-center justify-center bg-transparent"
+                  className="size-full object-contain"
                 />
               </button>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
                 <Button
                   type="button"
                   variant="dark"
@@ -268,9 +278,28 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 </Button>
               </div>
             </div>
-            {prompt ? (
+            {captionPrompt ? (
               <figcaption className="max-w-[480px] text-xs leading-snug text-muted-foreground">
-                {prompt}
+                <div
+                  className={cn(
+                    "whitespace-pre-wrap break-words",
+                    promptNeedsExpansion &&
+                      !promptExpanded &&
+                      "max-h-[4.75rem] overflow-hidden",
+                  )}
+                >
+                  {captionPrompt}
+                </div>
+                {promptNeedsExpansion ? (
+                  <button
+                    type="button"
+                    className="mt-1.5 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    onClick={() => setPromptExpanded((value) => !value)}
+                    aria-expanded={promptExpanded}
+                  >
+                    {promptExpanded ? "Show less" : "Show more"}
+                  </button>
+                ) : null}
               </figcaption>
             ) : null}
           </figure>
