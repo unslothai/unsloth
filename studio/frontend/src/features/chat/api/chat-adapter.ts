@@ -341,12 +341,10 @@ function collectImageParts(
   return parts;
 }
 
-// Out-of-band refusal flag stamped onto assistant message metadata by the
-// adapter when the backend emits an `anthropic_refusal` _toolEvent. We
-// drop the entire turn from the next request body because Anthropic's
-// guidance says leaving the refused output in context causes the next
-// call to keep refusing. Using metadata (not text) means assistant
-// content can never spoof a context reset.
+// Refusal flag stamped on assistant metadata when the backend emits the
+// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
+// request body (Anthropic guidance: leaving refusals in context keeps
+// refusing). Metadata (not text) prevents content from spoofing a reset.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
   const metadata = (message as { metadata?: unknown }).metadata as
@@ -376,10 +374,8 @@ function toOpenAIMessage(message: RunMessage): {
       "[audio]",
     );
     if (isAnthropicRefusalMessage(message)) {
-      // Drop refused assistant turns entirely so the next request does
-      // not re-trigger the same safety classifier. The user-visible
-      // notice stays in the rendered transcript; only the outbound
-      // history is pruned.
+      // Prune refused assistant turn from outbound history; the
+      // rendered transcript still shows the user-visible notice.
       return null;
     }
   }
@@ -940,14 +936,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
-      // Two-pass build so a refused assistant turn drops the user
-      // message that triggered it as well. Anthropic's refusal-handling
-      // guidance is explicit that leaving the offending user prompt in
-      // context causes the next request to re-trigger the classifier;
-      // returning null on just the assistant side was not enough.
-      // The refusal flag rides assistant metadata.custom.anthropicRefusal
-      // (set out-of-band from the backend _toolEvent) so assistant text
-      // can never spoof a context reset.
+      // Two-pass build: a refused assistant turn also drops the user
+      // prompt that triggered it (leaving it in context re-triggers
+      // the classifier). Refusal flag rides assistant
+      // metadata.custom.anthropicRefusal, set out-of-band from the
+      // backend _toolEvent.
       const survivingMessages: RunMessage[] = [];
       for (const message of messages) {
         if (isAnthropicRefusalMessage(message)) {
@@ -1030,10 +1023,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           });
         }
       }
-      // Scan the post-prune history so a refused user turn with an
-      // image/audio attachment does not gate / mis-attribute the next
-      // non-refused turn (the refused pair is pruned from the request
-      // body above).
+      // Scan post-prune history so a refused user turn's image/audio
+      // doesn't gate or mis-attribute the next non-refused turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
       const audioBase64 = findLatestUserAudioBase64(survivingMessages);
 
@@ -1182,11 +1173,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
-      // Latched when the backend emits an `anthropic_refusal` tool event
-      // on Anthropic stop_reason="refusal". Stamped onto the final
-      // assistant message metadata as `custom.anthropicRefusal` so the
-      // history-prune logic above can drop the refused pair on the next
-      // request without relying on text-content sentinels.
+      // Latched on the `anthropic_refusal` tool event; stamped onto the
+      // final assistant metadata as `custom.anthropicRefusal` to drive
+      // the history-prune above.
       let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
@@ -1530,11 +1519,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
-              // Anthropic-only fast mode (Opus 4.6 / 4.7 only). The
-              // capability gate hides the toggle on other models so
-              // this branch only fires when the field is meaningful.
-              // Backend silently drops on unsupported models as a
-              // second line of defence.
+              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
+              // silently drops on unsupported models as a second
+              // line of defence.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,
@@ -1661,10 +1648,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   continue;
                 }
                 if (toolEvent.type === "anthropic_refusal") {
-                  // Backend signalled stop_reason="refusal" out-of-band.
-                  // Latch and stamp onto the final message metadata so
-                  // the two-pass history pruner can drop the refused
-                  // pair on the next request.
+                  // Latch the backend refusal signal so the final
+                  // message metadata can drive the prune.
                   anthropicRefusalSeen = true;
                   continue;
                 }
@@ -1988,9 +1973,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             timing: finalTiming,
             custom: {
               reasoningDuration,
-              // Persisted refusal flag; drives the two-pass history
-              // pruner that drops the refused assistant + user pair
-              // on the next request.
+              // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
               contextUsage: meta?.usage

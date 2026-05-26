@@ -105,8 +105,7 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only): 6x standard rates on
-# both input and output across the full context window.
+# Anthropic fast-mode (Opus 4.6 / 4.7 only): 6x standard on input + output.
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
 ANTHROPIC_FAST_MODE_MULT = 6.0
 
@@ -239,11 +238,9 @@ def calculate_cost(
         base = prices["input_per_mtok"]
         out_per = prices["output_per_mtok"]
 
-    # Anthropic fast-mode beta: 6x standard on both input + output across
-    # the full context window. Prompt-cache multipliers stack on top of
-    # the fast-mode base per the docs, so applying the multiplier once
-    # to (base, out_per) propagates correctly into the cache_*_usd
-    # buckets computed below.
+    # Anthropic fast-mode: 6x on input + output. Cache multipliers stack
+    # on top of fast-mode, so applying once to (base, out_per) propagates
+    # into the cache_*_usd buckets computed below.
     if provider == "anthropic" and usage.get("speed") == "fast":
         base *= ANTHROPIC_FAST_MODE_MULT
         out_per *= ANTHROPIC_FAST_MODE_MULT

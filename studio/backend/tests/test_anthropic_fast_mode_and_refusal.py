@@ -3,19 +3,10 @@
 
 """Tests for Anthropic fast-mode wiring and streaming refusal handling.
 
-``fast_mode=True`` on Claude Opus 4.6/4.7 must:
-  * attach the ``fast-mode-2026-02-01`` beta header to the outbound
-    /v1/messages call (alongside any other beta headers the request
-    already needed); and
-  * set the top-level ``speed: "fast"`` field on the body.
-
-Any unsupported model (Sonnet, Haiku, older Opus, non-Anthropic) silently
-drops the flag so a stale frontend cannot make the request 400.
-
-A streaming ``message_delta`` event carrying ``stop_reason: "refusal"``
-must surface a user-facing notice in the assistant message before the
-translated OpenAI chunk emits ``finish_reason="content_filter"``, so the
-chat bubble doesn't render empty. See
+fast_mode=True on Opus 4.6/4.7 attaches the ``fast-mode-2026-02-01``
+beta header and sets ``speed: "fast"``; unsupported models drop both.
+Streaming ``stop_reason: "refusal"`` surfaces a user notice before the
+``content_filter`` finish chunk.
 https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
 """
 
@@ -161,19 +152,13 @@ def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch)
 
 
 def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
-    """Refused turns emit an out-of-band `_toolEvent` the chat-adapter
-    latches into assistant `metadata.custom.anthropicRefusal`.
-
-    The frontend drops any assistant message with that metadata flag
-    from the next request's outbound history, per Anthropic's docs:
-    leaving the refused output in context causes the next call to keep
-    refusing. Using a tool event (not a text sentinel) means assistant
-    content can never spoof a context reset.
+    """Refused turns emit an out-of-band `_toolEvent` that the chat-adapter
+    latches into assistant `metadata.custom.anthropicRefusal`, driving
+    the next-request prune. Tool event (not text) prevents spoofing.
     """
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
-    # The visible refusal notice must NOT carry a text sentinel: an
-    # assistant message that echoes that string would otherwise spoof
-    # a context reset on the next request.
+    # Visible refusal text must not embed a sentinel that could spoof
+    # a context reset if echoed by another assistant message.
     assert "studio:anthropic-refusal" not in body, body

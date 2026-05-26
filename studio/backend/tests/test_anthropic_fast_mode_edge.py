@@ -3,40 +3,10 @@
 
 """Edge-case coverage for the Anthropic fast-mode + refusal wiring.
 
-The base ``test_anthropic_fast_mode_and_refusal.py`` pins the happy path
-(beta header + body field on Opus 4.6/4.7, silent drop on Sonnet / Haiku
-/ older Opus / None / False, refusal notice + content_filter mapping).
-This file fills in the remaining behaviour cliffs:
-
-* Dated-snapshot Opus 4.6 / 4.7 (``claude-opus-4-7-2026-02-01``) still
-  matches the prefix gate.
-* Strict opt-in semantics: a future ``claude-opus-4-8`` / ``claude-opus-5``
-  does NOT auto-enable fast mode -- if a new family ever ships we must
-  bump ``_ANTHROPIC_FAST_MODE_PREFIXES`` explicitly. This codifies the
-  conservative stance.
-* Beta-header merge: the existing ``anthropic-beta`` value (from the
-  provider registry or a previously-set entry) must keep its values and
-  receive ``fast-mode-2026-02-01`` appended as a comma-separated extra,
-  not overwritten.
-* Multi-beta interaction with the code-execution and compaction betas:
-  all three must coexist in one comma-separated header with no
-  duplicates and no truncation.
-* Idempotence: setting ``fast_mode=True`` twice via the same body still
-  results in one beta-header entry.
-* Streaming refusal signal: a single out-of-band ``_toolEvent`` carrying
-  ``{"type": "anthropic_refusal"}`` rides alongside the visible refusal
-  notice. The frontend latches the tool event into assistant
-  metadata.custom.anthropicRefusal; assistant text never controls the
-  pruner. The notice always precedes the finish_reason chunk so a UI
-  reading the SSE in order paints text before flipping to
-  ``content_filter``.
-* Refusal on a non-Opus model: refusal handling is provider-side, not
-  model-gated, so a refusal mid-stream on Sonnet must still surface the
-  notice + tool event.
-* Non-destruction: when ``fast_mode`` is ``None``, the outbound body
-  and headers must be byte-identical to the version that omits the
-  argument entirely. This guarantees the upgrade path is non-breaking
-  on existing Anthropic streams.
+Complements ``test_anthropic_fast_mode_and_refusal.py`` (happy path)
+with dated snapshots, strict opt-in (future Opus families do not
+auto-enable), multi-beta header merging, refusal stream ordering, and
+the non-destruction guarantee for unset/None fast_mode.
 """
 
 import asyncio
@@ -140,13 +110,7 @@ def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
 
 # ──────────────────────────── dated snapshot prefix ────────────────────────────
 def test_fast_mode_attaches_on_dated_opus_4_7_snapshot(monkeypatch):
-    """Dated snapshot ``claude-opus-4-7-2026-02-01`` must match the prefix.
-
-    Anthropic's /v1/models surfaces both the canonical alias and a
-    dated snapshot for each family. The fast-mode gate uses
-    ``str.startswith`` against the tuple of family aliases, so a dated
-    snapshot of an opted-in family is implicitly included.
-    """
+    """Dated snapshot ``claude-opus-4-7-2026-02-01`` must match the prefix."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
@@ -160,12 +124,7 @@ def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
 
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
 def test_fast_mode_does_not_auto_enable_on_future_opus_4_8(monkeypatch):
-    """A hypothetical ``claude-opus-4-8`` is NOT in the prefix tuple, so
-    fast_mode must be silently dropped until the list is updated.
-
-    This codifies the conservative stance documented on
-    ``_ANTHROPIC_FAST_MODE_PREFIXES``: opt-in per model family.
-    """
+    """Future ``claude-opus-4-8`` must not auto-enable; opt-in per family."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
@@ -178,9 +137,7 @@ def test_fast_mode_does_not_auto_enable_on_future_opus_5(monkeypatch):
 
 
 def test_fast_mode_does_not_auto_enable_on_sonnet_dated_snapshot(monkeypatch):
-    """``claude-sonnet-4-6-2026-...`` shares the family prefix tuple with
-    compaction but NOT with fast_mode -- the gate must keep them
-    separate."""
+    """Sonnet snapshots share the compaction prefix but not fast_mode."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-sonnet-4-6-2026-02-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
@@ -193,8 +150,7 @@ def _beta_parts(headers: dict) -> list[str]:
 
 
 def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
-    """fast_mode + enabled_tools=['code_execution'] -> two comma-separated
-    beta entries, no overwrite."""
+    """fast_mode + code_execution -> two comma-separated betas, no overwrite."""
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
@@ -209,7 +165,7 @@ def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
 
 
 def test_fast_mode_merges_with_compaction_beta(monkeypatch):
-    """fast_mode + compaction_threshold>=50K -> both betas."""
+    """fast_mode + compaction_threshold >= 50K -> both betas present."""
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
@@ -222,8 +178,7 @@ def test_fast_mode_merges_with_compaction_beta(monkeypatch):
 
 
 def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
-    """Three betas active simultaneously must all land in a single
-    comma-separated header value, with no duplicates."""
+    """Three betas coexist in one comma-separated header, no duplicates."""
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
@@ -240,12 +195,7 @@ def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
 
 
 def test_fast_mode_beta_value_is_pinned(monkeypatch):
-    """Belt-and-braces: the exact beta tag matches the docs token.
-
-    Anthropic's docs spell it ``fast-mode-2026-02-01`` -- if someone
-    fat-fingers it the API would 400 in production. Pin it here so a
-    rename is caught in CI.
-    """
+    """Pin the exact beta tag ``fast-mode-2026-02-01`` from the docs."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, parts
@@ -256,11 +206,7 @@ def test_fast_mode_beta_value_is_pinned(monkeypatch):
 
 # ──────────────────────────── non-destruction guarantee ────────────────────────────
 def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
-    """Passing ``fast_mode=None`` must produce the same outbound body and
-    headers as omitting the argument entirely.
-
-    The upgrade path for existing Anthropic streams must be non-breaking.
-    """
+    """``fast_mode=None`` must produce the same body/headers as omission."""
     cap_none, _ = _capture(monkeypatch, fast_mode = None, model = "claude-opus-4-7")
 
     # Re-run without passing fast_mode at all.
@@ -309,9 +255,7 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
 
 
 def test_fast_mode_false_on_opus_4_7_byte_identical_to_unset(monkeypatch):
-    """``fast_mode=False`` is the explicit opt-out -- it must produce the
-    same outbound shape as the unset case so we don't accidentally start
-    sending ``speed: 'standard'`` or similar."""
+    """``fast_mode=False`` produces the same outbound shape as unset."""
     cap_false, _ = _capture(monkeypatch, fast_mode = False, model = "claude-opus-4-7")
     assert "speed" not in cap_false["body"], cap_false["body"]
     assert "fast-mode-2026-02-01" not in cap_false["headers"].get("anthropic-beta", "")
@@ -319,9 +263,7 @@ def test_fast_mode_false_on_opus_4_7_byte_identical_to_unset(monkeypatch):
 
 # ──────────────────────────── refusal stream ordering ────────────────────────────
 def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
-    """The user-visible notice must be emitted as a content delta BEFORE
-    the finish_reason chunk so a streaming UI paints the text first,
-    then flips state to ``content_filter``."""
+    """The notice content delta must precede the finish_reason chunk."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
     filter_idx = next(
@@ -331,13 +273,7 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
 
 
 def test_refusal_tool_event_emitted_exactly_once(monkeypatch):
-    """A single refusal must emit the chat-adapter drop signal one time.
-
-    The frontend latches the tool event into assistant metadata and
-    uses it to drop the refused pair from the next request. Emitting
-    twice would still be metadata-idempotent but indicates a backend
-    bug, so pin the count.
-    """
+    """A single refusal emits the chat-adapter drop signal exactly once."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     count = body.count('"_toolEvent": {"type": "anthropic_refusal"}')
@@ -345,20 +281,15 @@ def test_refusal_tool_event_emitted_exactly_once(monkeypatch):
 
 
 def test_refusal_text_carries_no_html_sentinel(monkeypatch):
-    """Belt-and-braces: ensure the assistant-visible refusal text does
-    not embed any ``studio:anthropic-refusal`` marker. The drop signal
-    must ride the out-of-band ``_toolEvent`` channel only -- otherwise
-    an assistant message that echoes the literal marker would spoof a
-    context reset on the next request."""
+    """Visible refusal text must not embed a ``studio:anthropic-refusal``
+    sentinel; the drop signal rides _toolEvent only."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert "studio:anthropic-refusal" not in body, body
 
 
 def test_refusal_handling_works_on_sonnet_model(monkeypatch):
-    """Refusal handling is provider-side, not gated on a fast-mode-capable
-    model. If Anthropic's classifier refuses a Sonnet stream it must
-    surface the same notice + tool event + content_filter mapping."""
+    """Refusal handling is provider-side; Sonnet refusals must also surface."""
     _, lines = _capture(
         monkeypatch, sse = _refusal_sse("claude-sonnet-4-6"), model = "claude-sonnet-4-6"
     )
@@ -369,9 +300,7 @@ def test_refusal_handling_works_on_sonnet_model(monkeypatch):
 
 
 def test_refusal_preserves_partial_assistant_text(monkeypatch):
-    """The classifier may stop mid-completion. The partial deltas already
-    streamed must still reach the client BEFORE the refusal notice is
-    appended -- otherwise users lose context for why the bubble ended."""
+    """Partial deltas already streamed must precede the refusal notice."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     body = "\n".join(lines)
     hello_idx = body.index("Hello.")
@@ -380,10 +309,8 @@ def test_refusal_preserves_partial_assistant_text(monkeypatch):
 
 
 def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
-    """The notice rides a normal ``choices[0].delta.content`` chunk, not
-    a finish_reason chunk, so OpenAI-spec clients (Aurora, OpenAI SDK)
-    treat it as ordinary streamed text. The drop signal arrives on a
-    separate `_toolEvent` chunk (verified below)."""
+    """The notice rides ``choices[0].delta.content`` (not a finish chunk);
+    OpenAI-spec clients treat it as ordinary streamed text."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     # Find the chunk that carries the refusal text.
     notice_chunk = None
@@ -402,11 +329,9 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
 
 
 def test_refusal_tool_event_chunk_shape(monkeypatch):
-    """The out-of-band drop signal rides a separate chunk shaped like a
-    Studio `_toolEvent` envelope (choices=[{index:0, delta:{},
-    finish_reason:null}] + `_toolEvent`). The frontend latches on
-    `_toolEvent.type == "anthropic_refusal"` and stamps the assistant
-    message metadata; assistant text never controls the prune."""
+    """Drop signal rides a Studio `_toolEvent` envelope (delta={},
+    finish_reason=null); the frontend latches on
+    `_toolEvent.type == "anthropic_refusal"`."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     refusal_chunk = None
     for line in lines:
@@ -422,11 +347,8 @@ def test_refusal_tool_event_chunk_shape(monkeypatch):
 
 # ──────────────────────────── future-proofing ────────────────────────────
 def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
-    """If a maintainer extends ``_ANTHROPIC_FAST_MODE_PREFIXES`` they
-    should also extend this test. Today the tuple is exactly the two
-    families called out on
-    https://platform.claude.com/docs/en/build-with-claude/fast-mode.
-    """
+    """Tuple must exactly match the two families in the upstream docs:
+    https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
 
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
@@ -436,26 +358,20 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
 
 
 def test_fast_mode_speed_field_value_is_literal_fast(monkeypatch):
-    """The spec value is the string ``"fast"`` -- not ``True``, not
-    ``"fast-mode"``, not a tier name. Pin so a refactor cannot silently
-    flip the wire shape."""
+    """Pin the wire value to the literal string ``"fast"``."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
     assert cap["body"]["speed"] == "fast", cap["body"]
 
 
 def test_fast_mode_dropped_on_opus_4_5_dated_snapshot(monkeypatch):
-    """``claude-opus-4-5-2025-...`` is the previous-family snapshot
-    pattern; must NOT match the fast-mode prefix."""
+    """Previous-family snapshots like ``claude-opus-4-5-2025-...`` must not match."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-5-2025-08-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_rejects_prefix_collision_4_70(monkeypatch):
-    """The family gate must require a "-" boundary after the supported
-    prefix so hypothetical IDs like ``claude-opus-4-70`` or
-    ``claude-opus-4-7b`` do not get fast-mode on a naive
-    ``startswith`` match."""
+    """IDs like ``claude-opus-4-70`` / ``-4-7b`` must not match the prefix."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-70")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
@@ -493,10 +409,7 @@ def _fast_speed_sse(model: str = "claude-opus-4-7", speed: str = "fast") -> byte
 
 
 def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
-    """When Anthropic returns ``usage.speed == "fast"`` the Studio
-    OpenAI-style usage chunk must carry that field so the cost ledger
-    can apply the 6x multiplier and clients can verify a fast-mode
-    request actually ran fast."""
+    """``usage.speed == "fast"`` from upstream must reach the Studio usage chunk."""
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "fast"))
     usage_lines = [l for l in lines if l.startswith("data: ") and '"usage"' in l]
     assert usage_lines, lines
@@ -517,9 +430,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
 
 
 def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
-    """When the upstream stream omits ``usage.speed`` (pre-fast-mode
-    models / older snapshots), the Studio usage chunk must not invent
-    a value."""
+    """Studio must not invent ``usage.speed`` when upstream omits it."""
     _, lines = _capture(monkeypatch)
     parsed = [
         json.loads(l[len("data: ") :])

@@ -263,9 +263,8 @@ export interface OpenAIChatCompletionsRequest {
    */
   anthropic_code_exec_container_id?: string | null;
   /**
-   * Anthropic fast-mode toggle. Only Claude Opus 4.6 and 4.7 accept
-   * the `speed: "fast"` field upstream; on any other model + provider
-   * the backend drops the flag silently rather than 400ing. See
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
+   * silently on every other model + provider. See
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fast_mode?: boolean | null;

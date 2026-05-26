@@ -136,13 +136,10 @@ export function providerSupportsBuiltinWebFetch(
 }
 
 /**
- * Whether the active provider + model combination supports Anthropic's
- * fast-mode beta (`speed: "fast"` + `fast-mode-2026-02-01` header).
- * Per https://platform.claude.com/docs/en/build-with-claude/fast-mode
- * the docs only list Claude Opus 4.6 and 4.7. Sonnet / Haiku / older
- * Opus would 400 on the body so the picker hides the toggle entirely.
- * The backend silently drops the flag on unsupported models as a
- * second line of defence, so a stale frontend cannot regress.
+ * Whether the active provider + model supports Anthropic fast-mode
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
+ * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * Backend silently drops on unsupported models as a second defence.
  */
 const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
   "claude-opus-4-7",
@@ -155,10 +152,8 @@ export function providerSupportsFastMode(
 ): boolean {
   if (providerType !== "anthropic") return false;
   if (!modelId) return false;
-  // Require the prefix to terminate at a family boundary (end of
-  // string or "-" before a dated snapshot) so the check does not
-  // match unsupported IDs that merely share a prefix, e.g.
-  // "claude-opus-4-70" / "claude-opus-4-7b".
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
+  // / "claude-opus-4-7b" do not match.
   return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
     (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
   );

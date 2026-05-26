@@ -15,11 +15,9 @@ export interface InferenceParams {
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
   /**
-   * Anthropic fast-mode toggle. Only active on Claude Opus 4.6 and 4.7;
-   * silently dropped on every other model + provider. Higher OTPS at
-   * premium pricing -- see
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at
+   * 6x standard Opus pricing. Default false.
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
-   * Default false because pricing is 6x standard Opus.
    */
   fastMode?: boolean;
 }

@@ -62,9 +62,8 @@ def test_anthropic_opus_4_7_input_and_output_math():
 
 
 def test_anthropic_fast_mode_charges_6x_standard_opus():
-    """Per https://platform.claude.com/docs/en/build-with-claude/fast-mode
-    fast-mode requests are billed at 6x the standard Opus rates across
-    the full context window. ``usage.speed == "fast"`` is the trigger."""
+    """6x on input + output when ``usage.speed == "fast"``.
+    https://platform.claude.com/docs/en/build-with-claude/fast-mode"""
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7",
