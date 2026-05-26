@@ -145,6 +145,11 @@ _REGISTRY: dict[str, Callable[..., Comparator]] = {
 }
 
 
+def comparator_names() -> list[str]:
+    """Registered comparator names, for UI dropdowns."""
+    return sorted(_REGISTRY)
+
+
 def is_comparator(name: str) -> bool:
     return name in _REGISTRY
 

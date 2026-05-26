@@ -23,6 +23,7 @@ class ConfigField:
     type: str          # "bool" | "float" | "string" | "json"
     default: Any
     label: str
+    options: Optional[list[str]] = None  # if set, the UI renders a dropdown
 
 
 @dataclass

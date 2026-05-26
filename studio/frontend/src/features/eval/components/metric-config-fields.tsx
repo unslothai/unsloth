@@ -5,6 +5,13 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { MetricConfigField } from "../api/eval-api";
 
 export function MetricConfigFields({
@@ -30,6 +37,28 @@ export function MetricConfigFields({
     <div className="flex flex-col gap-3">
       {fields.map((f) => {
         const current = values[f.name] ?? f.default;
+        if (f.options && f.options.length > 0) {
+          return (
+            <div key={f.name} className="flex flex-col gap-1.5">
+              <Label htmlFor={`mc-${f.name}`}>{f.label}</Label>
+              <Select
+                value={typeof current === "string" ? current : undefined}
+                onValueChange={(v) => set(f.name, v)}
+              >
+                <SelectTrigger id={`mc-${f.name}`} className="w-full">
+                  <SelectValue placeholder="Select…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {f.options.map((opt) => (
+                    <SelectItem key={opt} value={opt}>
+                      {opt}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          );
+        }
         if (f.type === "bool") {
           return (
             <div key={f.name} className="flex items-center justify-between gap-3">

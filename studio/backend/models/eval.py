@@ -82,6 +82,7 @@ class MetricConfigField(BaseModel):
     type: str
     default: Any = None
     label: str
+    options: Optional[list[str]] = None
 
 
 class MetricInfo(BaseModel):

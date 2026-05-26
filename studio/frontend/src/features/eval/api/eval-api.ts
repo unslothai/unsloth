@@ -96,6 +96,7 @@ export interface MetricConfigField {
   type: "bool" | "float" | "json" | "string" | string;
   default: unknown;
   label: string;
+  options?: string[] | null;
 }
 
 export interface MetricInfo {

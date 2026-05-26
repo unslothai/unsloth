@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from eval.json_score import json_anls_score, score_from_text
+from eval.json_score.comparators import comparator_names
 from eval.json_score.core import ScoreNode
 from .base import ConfigField, MetricResult, MetricSpec, Scorer
 
@@ -55,7 +56,10 @@ SPEC = MetricSpec(
     reference_kind="json",
     config_fields=[
         ConfigField("schema", "json", None, "Field schema or JSON Schema (optional)"),
-        ConfigField("default_comparator", "string", "string", "Default comparator"),
+        ConfigField(
+            "default_comparator", "string", "string", "Default comparator",
+            options=comparator_names(),
+        ),
     ],
     build=_build,
 )
