@@ -26,6 +26,9 @@ interface AppProviderProps {
 type TauriWindowMode = "setup" | "app";
 type WindowLayoutGuard = () => boolean;
 
+const MIN_WINDOW_WIDTH = 900;
+const MIN_WINDOW_HEIGHT = 600;
+
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   if (!isCurrent()) return;
@@ -39,33 +42,42 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
 
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
+  const { restoreStateCurrent, StateFlags } = await import("@tauri-apps/plugin-window-state");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
   const monitor = await currentMonitor();
   if (!isCurrent()) return;
 
-  let finalW = 900;
-  let finalH = 600;
+  let finalW = MIN_WINDOW_WIDTH;
+  let finalH = MIN_WINDOW_HEIGHT;
 
   if (monitor) {
     const scale = monitor.scaleFactor;
     const screenW = monitor.size.width / scale;
     const screenH = monitor.size.height / scale;
 
-    finalW = Math.max(900, Math.round(screenW * 0.75));
-    const targetH = Math.max(600, Math.round(finalW / 1.618));
+    finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
+    const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
     finalH = Math.min(targetH, Math.round(screenH * 0.85));
   }
 
   if (!isCurrent()) return;
-  await win.setSize(new LogicalSize(finalW, finalH));
-  if (!isCurrent()) return;
-  await win.setSizeConstraints({ minWidth: 900, minHeight: 600 });
-  if (!isCurrent()) return;
   await win.setResizable(true);
   if (!isCurrent()) return;
-  await win.center();
+  // Set the floor before restoring so a stale/undersized saved size is clamped up.
+  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
+  if (!isCurrent()) return;
+  // First-launch baseline; overwritten by restoreStateCurrent when a state file exists.
+  await win.setSize(new LogicalSize(finalW, finalH));
+  if (!isCurrent()) return;
+  await restoreStateCurrent(StateFlags.SIZE | StateFlags.MAXIMIZED);
+  if (!isCurrent()) return;
+  // Position isn't persisted, so keep the window centered unless it was maximized.
+  if (!(await win.isMaximized())) {
+    if (!isCurrent()) return;
+    await win.center();
+  }
   if (!isCurrent()) return;
   await win.show();
 }

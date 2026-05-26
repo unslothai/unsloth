@@ -23,6 +23,7 @@ use std::fs;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
+use tauri_plugin_window_state::StateFlags;
 
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
@@ -173,6 +174,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::SIZE | StateFlags::MAXIMIZED)
+                .skip_initial_state("main")
+                .build(),
+        )
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(native_intents::new_native_intake_state())
