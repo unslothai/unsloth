@@ -48,31 +48,21 @@ def _load() -> tuple[Any, Any] | None:
         if _model is not None and _processor is not None:
             return _model, _processor
         try:
-            import torch
-            from transformers import (
-                AutoModelForVision2Seq,
-                AutoProcessor,
-                BitsAndBytesConfig,
-            )
+            from unsloth import FastVisionModel
 
-            logger.info("Loading RAG captioner: %s (4-bit)", _CAPTION_MODEL_NAME)
-            processor = AutoProcessor.from_pretrained(
+            logger.info(
+                "Loading RAG captioner: %s (4-bit via Unsloth)",
                 _CAPTION_MODEL_NAME,
-                trust_remote_code = True,
             )
-            quant_config = BitsAndBytesConfig(
+            # FastVisionModel handles 4-bit quantization, dtype selection,
+            # and inference-mode wiring. Returns (model, processor) — for
+            # vision models the "tokenizer" slot carries the processor.
+            model, processor = FastVisionModel.from_pretrained(
+                model_name = _CAPTION_MODEL_NAME,
                 load_in_4bit = True,
-                bnb_4bit_quant_type = "nf4",
-                bnb_4bit_compute_dtype = torch.bfloat16,
-                bnb_4bit_use_double_quant = True,
-            )
-            model = AutoModelForVision2Seq.from_pretrained(
-                _CAPTION_MODEL_NAME,
                 trust_remote_code = True,
-                device_map = "auto",
-                quantization_config = quant_config,
             )
-            model.eval()
+            FastVisionModel.for_inference(model)
             _model = model
             _processor = processor
             return _model, _processor
