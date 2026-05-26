@@ -25,6 +25,8 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
+  "unsloth_chat_web_fetch_tools_enabled";
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -268,9 +270,21 @@ type ChatRuntimeStore = {
    * receive the tool because their runtime cannot dispatch it.
    */
   supportsBuiltinImageGeneration: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_fetch tool (Anthropic's `web_fetch_20250910` /
+   * `web_fetch_20260209`). Gates the composer's Fetch pill,
+   * independent of Search.
+   */
+  supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  /**
+   * Fetch pill state, independent of `toolsEnabled` (Search). Only
+   * consulted when `providerSupportsBuiltinWebFetch` is true.
+   */
+  webFetchToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -298,6 +312,8 @@ type ChatRuntimeStore = {
     completionTokens: number;
     totalTokens: number;
     cachedTokens: number;
+    // Anthropic-only; optional so pre-cache-stats persisted entries load.
+    cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
@@ -331,6 +347,7 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -388,6 +405,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxTokens",
   "systemPrompt",
   "trustRemoteCode",
+  "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
 const SCALAR_SETTING_KEYS = [
@@ -575,9 +593,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
+  supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -652,7 +672,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      return { params };
+      // Mirror setCheckpoint: the local model load path can mutate
+      // params.checkpoint via setParams() before setCheckpoint runs,
+      // leaving stale per-turn counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      return {
+        params,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+      };
     }),
   setCustomPresets: (customPresets) =>
     set(() => {
@@ -716,12 +743,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // mount, and a stale persisted local id would race against the
       // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      // Clear stale per-turn usage when the model changes; the relaxed
+      // external-provider render gate would otherwise show old counters
+      // until the next completion overwrites them.
+      const checkpointChanged = state.params.checkpoint !== modelId;
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
         },
         activeGgufVariant: ggufVariant ?? null,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>
@@ -756,9 +788,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       supportsBuiltinWebSearch: false,
       supportsBuiltinCodeExecution: false,
       supportsBuiltinImageGeneration: false,
+      supportsBuiltinWebFetch: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      webFetchToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -818,6 +852,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
+    }),
+  setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
+      return { webFetchToolsEnabled };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

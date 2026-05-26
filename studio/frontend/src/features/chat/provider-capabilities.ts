@@ -123,16 +123,38 @@ export function providerSupportsBuiltinWebSearch(
 
 /**
  * Whether the external provider exposes a server-side web_fetch tool
- * that retrieves a single URL (text or PDF) and emits a document block.
- * Only Anthropic ships one today (`web_fetch_20250910`); the chat
- * composer pairs it with the Search pill because the typical workflow
- * is "search returns URLs, fetch reads them" and the UI doesn't (yet)
- * expose web_fetch as an independent toggle.
+ * (single URL, text or PDF) emitting a document block. Anthropic-only
+ * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
+ * composer's standalone Fetch pill, independent of Search.
  */
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,
 ): boolean {
   return providerType === "anthropic";
+}
+
+/**
+ * Whether the active provider + model supports Anthropic fast-mode
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
+ * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * Backend silently drops on unsupported models as a second defence.
+ */
+const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+] as const;
+
+export function providerSupportsFastMode(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerType !== "anthropic") return false;
+  if (!modelId) return false;
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
+  // / "claude-opus-4-7b" do not match.
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
+    (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
+  );
 }
 
 /**
