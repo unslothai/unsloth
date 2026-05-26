@@ -639,12 +639,17 @@ def _reconcile_primary_rocm_unified_memory(
 ) -> None:
     """Same fix as _reconcile_rocm_unified_memory for the flat primary-GPU dict."""
     numeric_ids = parent_visible_spec.get("numeric_ids")
-    if numeric_ids:
-        primary_idx = [int(numeric_ids[0])]
-    else:
-        # No CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES set: torch ordinal 0
-        # is the primary visible device.
+    if numeric_ids is None:
+        # No visibility env var set: torch ordinal 0 is the primary device.
         primary_idx = [0]
+    elif len(numeric_ids) == 0:
+        # Empty mask (HIP_VISIBLE_DEVICES="" or "-1"): no GPU is visible to
+        # this process. Querying torch device 0 would raise a RuntimeError or
+        # return stale/wrong data, so bail out rather than writing bad values
+        # into the utilization dict.
+        return
+    else:
+        primary_idx = [int(numeric_ids[0])]
     torch_devices = _torch_get_per_device_info(primary_idx)
     if not torch_devices:
         return

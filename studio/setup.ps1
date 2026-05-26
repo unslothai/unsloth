@@ -758,8 +758,11 @@ if (-not $HasNvidiaSmi) {
                                   else { $null }
                         $gpuIdx = 0
                         if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
-                        $archIdx = [Math]::Min($gpuIdx, $allGfxArches.Count - 1)
-                        $script:ROCmGfxArch = $allGfxArches[$archIdx]
+                        if ($gpuIdx -ge $allGfxArches.Count) {
+                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+                            $gpuIdx = 0
+                        }
+                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
