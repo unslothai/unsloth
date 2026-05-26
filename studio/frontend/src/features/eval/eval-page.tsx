@@ -17,7 +17,10 @@ import { EvalConfigForm } from "./components/eval-config-form";
 import { EvalRunDetail } from "./components/eval-run-detail";
 import { LiveEvalView } from "./components/live-eval-view";
 import { useEvalProgressStream } from "./hooks/use-eval-progress-stream";
-import { emitEvalRunsChanged } from "./hooks/use-eval-history-sidebar";
+import {
+  emitEvalRunsChanged,
+  EVAL_RUNS_CHANGED,
+} from "./hooks/use-eval-history-sidebar";
 import { useEvalRuntimeStore } from "./stores/eval-runtime-store";
 import type { EvalStatus } from "./api/eval-api";
 
@@ -40,16 +43,21 @@ function EvalHistoryList({ onSelect }: { onSelect: (id: string) => void }) {
 
   useEffect(() => {
     let mounted = true;
-    listEvalRuns()
-      .then((res) => {
-        if (mounted) setItems(res.runs);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (mounted) setLoading(false);
-      });
+    const load = () =>
+      listEvalRuns()
+        .then((res) => {
+          if (mounted) setItems(res.runs);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (mounted) setLoading(false);
+        });
+    load();
+    const onChange = () => load();
+    window.addEventListener(EVAL_RUNS_CHANGED, onChange);
     return () => {
       mounted = false;
+      window.removeEventListener(EVAL_RUNS_CHANGED, onChange);
     };
   }, []);
 

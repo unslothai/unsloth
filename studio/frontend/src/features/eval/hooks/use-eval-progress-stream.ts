@@ -14,6 +14,7 @@ export function useEvalProgressStream(runId: string | null, enabled: boolean) {
     if (!runId || !enabled) return;
     const controller = new AbortController();
     let cancelled = false;
+    let sawTerminal = false;
 
     void (async () => {
       try {
@@ -22,9 +23,15 @@ export function useEvalProgressStream(runId: string | null, enabled: boolean) {
           signal: controller.signal,
           onEvent: ({ event, payload }) => {
             applyProgress(payload);
-            if (event === "complete") finishRun(payload.status);
+            if (event === "complete") {
+              sawTerminal = true;
+              finishRun(payload.status);
+            }
           },
         });
+        // Stream ended cleanly without a terminal event (e.g. the manager
+        // evicted the run before we read it). Don't leave it stuck running.
+        if (!cancelled && !sawTerminal) finishRun("interrupted");
       } catch (error) {
         if (!cancelled && !isAbortError(error)) {
           // Stream dropped (e.g. server restart). Mark not-running; the

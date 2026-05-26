@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { listEvalRuns, type EvalRunSummary } from "../api/eval-api";
 
-const EVAL_RUNS_CHANGED = "unsloth:eval-runs-changed";
+export const EVAL_RUNS_CHANGED = "unsloth:eval-runs-changed";
 
 export function emitEvalRunsChanged(): void {
   window.dispatchEvent(new CustomEvent(EVAL_RUNS_CHANGED));

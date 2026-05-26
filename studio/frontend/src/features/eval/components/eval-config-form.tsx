@@ -228,6 +228,10 @@ export function EvalConfigForm({
               onChange={(e) => setHfToken(e.target.value)}
               placeholder="HuggingFace token (optional)"
             />
+            <p className="text-xs text-muted-foreground">
+              Used to detect columns / preview a gated dataset below. Not sent
+              with the eval run.
+            </p>
           </div>
         </CardContent>
       </Card>
