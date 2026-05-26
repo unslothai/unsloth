@@ -325,6 +325,65 @@ def _anthropic_supports_fast_mode(model: str) -> bool:
     )
 
 
+# Cap on ``cited_text`` forwarded in document_citations tool_events;
+# keeps SSE bytes bounded on multi-KB cited spans (frontend trims to
+# 240 chars anyway).
+_CITED_TEXT_MAX_LEN = 512
+
+
+def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
+    """Stable dedup key for an Anthropic ``citations_delta.citation``.
+
+    Anchor fields vary per type (char_location, page_location,
+    content_block_location, search_result_location); both start AND
+    exclusive end indices are part of the key so same-start /
+    different-end pairs stay distinct. search_result_location keys on
+    ``search_result_index`` + ``source`` instead of document_index so
+    distinct results with the same source don't collapse. Unknown
+    shapes fall back to a stringified copy (more entries, never
+    collisions). See
+    https://platform.claude.com/docs/en/build-with-claude/citations
+    and https://platform.claude.com/docs/en/build-with-claude/search-results.
+    """
+    ctype = citation.get("type")
+    doc = citation.get("document_index")
+    title = citation.get("document_title") or ""
+    if ctype == "char_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_char_index"),
+            citation.get("end_char_index"),
+        )
+    if ctype == "page_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_page_number"),
+            citation.get("end_page_number"),
+        )
+    if ctype == "content_block_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("start_block_index"),
+            citation.get("end_block_index"),
+        )
+    if ctype == "search_result_location":
+        return (
+            ctype,
+            citation.get("search_result_index"),
+            citation.get("source"),
+            citation.get("title") or "",
+            citation.get("start_block_index"),
+            citation.get("end_block_index"),
+        )
+    return (ctype, _json.dumps(citation, sort_keys = True))
+
+
 class _MistralThinkingSpec(NamedTuple):
     models: tuple[str, ...]
     style: Literal["prompt_mode", "reasoning_effort", "disabled"]
@@ -1460,6 +1519,11 @@ class ExternalProviderClient:
                                     "media_type": media_type,
                                     "data": b64data,
                                 },
+                                # Opt into Anthropic's natural-citation
+                                # pipeline; without this no citations_delta
+                                # events fire. See
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title
@@ -1471,6 +1535,7 @@ class ExternalProviderClient:
                                     "type": "url",
                                     "url": url,
                                 },
+                                "citations": {"enabled": True},
                             }
                             if title:
                                 doc_block["title"] = title
@@ -1925,6 +1990,12 @@ class ExternalProviderClient:
                 # the next turn.
                 current_compaction: Optional[dict[str, Any]] = None
                 compaction_blocks_seen = 0
+                # Document citations from ``citations_delta`` events.
+                # Deduped by type-specific anchor key; inline [N] is
+                # injected after each cited run, and the full list is
+                # forwarded as a synthetic document_citations tool_event
+                # on message_stop for the Sources panel.
+                document_citations: list[dict[str, Any]] = []
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -2276,10 +2347,27 @@ class ExternalProviderClient:
                                         thinking_open = False
                                     if text:
                                         yield _content_chunk(text)
-                                    # Citations on text deltas are attached
-                                    # per-call by Anthropic via the
-                                    # `web_search_tool_result` block; we don't
-                                    # need to scrape them off the text events.
+                                    # web_search citations: web_search_tool_result.
+                                    # User-doc citations: citations_delta below.
+                            elif delta_type == "citations_delta":
+                                # One citation per event; collapse onto a
+                                # numbered footnote list and inject [N]
+                                # inline. See
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                cit = delta.get("citation")
+                                if isinstance(cit, dict):
+                                    key = _anthropic_citation_key(cit)
+                                    idx_for_marker: Optional[int] = None
+                                    for idx, existing in enumerate(
+                                        document_citations, start = 1
+                                    ):
+                                        if existing.get("_key") == key:
+                                            idx_for_marker = idx
+                                            break
+                                    if idx_for_marker is None:
+                                        document_citations.append({**cit, "_key": key})
+                                        idx_for_marker = len(document_citations)
+                                    yield _content_chunk(f"[{idx_for_marker}]")
                             elif delta_type == "input_json_delta":
                                 # Streamed partial_json carrying tool inputs
                                 # — the search query for web_search, or the
@@ -2609,6 +2697,29 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # Forward document_citations so the Sources
+                            # panel can render the inline [N] footnotes.
+                            # ``cited_text`` is truncated server-side to
+                            # keep SSE bytes bounded on long spans.
+                            if document_citations:
+                                clean_cits = []
+                                for c in document_citations:
+                                    entry = {k: v for k, v in c.items() if k != "_key"}
+                                    cited = entry.get("cited_text")
+                                    if (
+                                        isinstance(cited, str)
+                                        and len(cited) > _CITED_TEXT_MAX_LEN
+                                    ):
+                                        entry["cited_text"] = (
+                                            cited[:_CITED_TEXT_MAX_LEN] + "…"
+                                        )
+                                    clean_cits.append(entry)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "document_citations",
+                                        "citations": clean_cits,
+                                    }
+                                )
                             # Final include_usage-style chunk so callers can
                             # see cache_creation / cache_read without
                             # scraping the server log.
