@@ -26,7 +26,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { listMetrics, type EvalStartRequest, type MetricInfo } from "../api/eval-api";
 import { MetricConfigFields } from "./metric-config-fields";
 import { EvalModelFields } from "./eval-model-fields";
-import { EvalDatasetFields, type EvalDatasetValue } from "./eval-dataset-fields";
+import { EvalDatasetFields } from "./eval-dataset-fields";
+import { useEvalConfigStore } from "../stores/eval-config-store";
 
 export function EvalConfigForm({
   disabled,
@@ -35,56 +36,55 @@ export function EvalConfigForm({
   disabled: boolean;
   onStart: (payload: EvalStartRequest) => void;
 }) {
-  const [modelIdentifier, setModelIdentifier] = useState("");
-  const [hfToken, setHfToken] = useState("");
-  const [dataset, setDataset] = useState<EvalDatasetValue>({
-    isLocal: false,
-    name: "",
-    path: "",
-    split: "train",
-    subset: "",
-    inputColumn: "",
-    referenceColumn: "",
-  });
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [template, setTemplate] = useState("");
+  // Persisted config from store
+  const modelIdentifier = useEvalConfigStore((s) => s.modelIdentifier);
+  const setModelIdentifier = useEvalConfigStore((s) => s.setModelIdentifier);
+  const hfToken = useEvalConfigStore((s) => s.hfToken);
+  const setHfToken = useEvalConfigStore((s) => s.setHfToken);
+  const dataset = useEvalConfigStore((s) => s.dataset);
+  const setDataset = useEvalConfigStore((s) => s.setDataset);
+  const systemPrompt = useEvalConfigStore((s) => s.systemPrompt);
+  const setSystemPrompt = useEvalConfigStore((s) => s.setSystemPrompt);
+  const template = useEvalConfigStore((s) => s.template);
+  const setTemplate = useEvalConfigStore((s) => s.setTemplate);
+  const metricName = useEvalConfigStore((s) => s.metricName);
+  const metricConfig = useEvalConfigStore((s) => s.metricConfig);
+  const setMetricConfig = useEvalConfigStore((s) => s.setMetricConfig);
+  const selectMetric = useEvalConfigStore((s) => s.selectMetric);
+  const runAll = useEvalConfigStore((s) => s.runAll);
+  const setRunAll = useEvalConfigStore((s) => s.setRunAll);
+  const limit = useEvalConfigStore((s) => s.limit);
+  const setLimit = useEvalConfigStore((s) => s.setLimit);
+  const maxNewTokens = useEvalConfigStore((s) => s.maxNewTokens);
+  const setMaxNewTokens = useEvalConfigStore((s) => s.setMaxNewTokens);
+  const temperature = useEvalConfigStore((s) => s.temperature);
+  const setTemperature = useEvalConfigStore((s) => s.setTemperature);
+
+  // Runtime/derived state — NOT persisted
   const [metrics, setMetrics] = useState<MetricInfo[]>([]);
-  const [metricName, setMetricName] = useState("");
-  const [metricConfig, setMetricConfig] = useState<Record<string, unknown>>({});
-  const [runAll, setRunAll] = useState(false);
-  const [limit, setLimit] = useState(100);
-  const [maxNewTokens, setMaxNewTokens] = useState(256);
-  const [temperature, setTemperature] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
 
-  // On mount: load metrics
+  // On mount: load metrics. Only seed metricName/metricConfig if no metric is already persisted.
   useEffect(() => {
     listMetrics()
       .then((loaded) => {
         setMetrics(loaded);
-        if (loaded.length > 0) {
-          // The [metricName, metrics] effect reseeds metricConfig once
-          // both metrics and metricName are set, so no need to seed here.
-          setMetricName(loaded[0].name);
+        if (loaded.length > 0 && !metricName) {
+          // First-ever use: pick the first metric and seed its defaults.
+          const first = loaded[0];
+          const defaults: Record<string, unknown> = {};
+          for (const f of first.config_fields) {
+            defaults[f.name] = f.default;
+          }
+          selectMetric(first.name, defaults);
         }
       })
       .catch((err) => {
         setMetricsError(err instanceof Error ? err.message : "Failed to load metrics.");
       });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // When metricName changes, reseed config defaults
-  useEffect(() => {
-    if (metrics.length === 0 || !metricName) return;
-    const m = metrics.find((x) => x.name === metricName);
-    if (!m) return;
-    const defaults: Record<string, unknown> = {};
-    for (const f of m.config_fields) {
-      defaults[f.name] = f.default;
-    }
-    setMetricConfig(defaults);
-  }, [metricName, metrics]);
 
   const selectedMetric = metrics.find((m) => m.name === metricName) ?? null;
 
@@ -191,7 +191,19 @@ export function EvalConfigForm({
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="ecf-metric">Metric</Label>
-              <Select value={metricName} onValueChange={setMetricName}>
+              <Select
+                value={metricName}
+                onValueChange={(name) => {
+                  const m = metrics.find((x) => x.name === name);
+                  if (m) {
+                    const defaults: Record<string, unknown> = {};
+                    for (const f of m.config_fields) {
+                      defaults[f.name] = f.default;
+                    }
+                    selectMetric(name, defaults);
+                  }
+                }}
+              >
                 <SelectTrigger id="ecf-metric" className="w-full">
                   <SelectValue placeholder="Select a metric…" />
                 </SelectTrigger>
