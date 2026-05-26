@@ -26,7 +26,7 @@ def _block_around(src: str, anchor: str, radius: int = 600) -> str:
 
 
 def test_main_composer_has_dir_auto():
-    block = _block_around(THREAD_TSX.read_text(), 'aria-label="Message input"')
+    block = _block_around(THREAD_TSX.read_text(), '"Message input"')
     assert 'dir="auto"' in block, 'main composer is missing dir="auto"'
 
 

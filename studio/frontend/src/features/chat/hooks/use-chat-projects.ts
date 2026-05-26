@@ -7,6 +7,7 @@ import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
   deleteStoredChatProject,
+  isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
   moveStoredChatItemToProject,
   updateStoredChatProject,
@@ -20,8 +21,15 @@ export function useChatProjects(): { projects: ProjectRecord[] } {
     let cancelled = false;
 
     async function load() {
-      const next = await listStoredChatProjects({ includeArchived: false });
-      if (!cancelled) setProjects(next);
+      try {
+        const next = await listStoredChatProjects({ includeArchived: false });
+        if (!cancelled) setProjects(next);
+      } catch (error) {
+        if (isExpectedBackgroundChatStorageError(error)) {
+          return;
+        }
+        if (!cancelled) throw error;
+      }
     }
 
     const onHistoryUpdated = () => {
