@@ -28,7 +28,13 @@ def has_resume_state(path_value: Optional[str]) -> bool:
 def artifacts_present(path_value: Optional[str]) -> bool:
     if not path_value:
         return False
-    path = resolve_output_dir(path_value)
+    # Stored output_dirs can fall outside outputs_root (older DB rows, moved
+    # outputs dir, hand-edited records). resolve_output_dir raises in that
+    # case; a yes/no predicate should treat it as "no" rather than propagate.
+    try:
+        path = resolve_output_dir(path_value)
+    except ValueError:
+        return False
     return _is_under_outputs(path) and path.is_dir()
 
 
@@ -40,7 +46,10 @@ def _checkpoint_step(path: Path) -> int:
 
 
 def get_resume_checkpoint_path(path_value: str) -> Optional[str]:
-    path = resolve_output_dir(path_value)
+    try:
+        path = resolve_output_dir(path_value)
+    except ValueError:
+        return None
     if not _is_under_outputs(path) or not path.is_dir():
         return None
     if (path / "trainer_state.json").is_file():

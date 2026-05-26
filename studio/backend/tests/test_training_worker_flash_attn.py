@@ -219,11 +219,27 @@ def _force_missing_fla_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+def _patch_qwen35_discovery(monkeypatch):
+    """Pretend installed transformers ships the Qwen3.5 GDN model type.
+
+    Production discovers FLA-using model types by walking
+    transformers/*/modeling_*.py for ``from fla.*`` imports; in isolated test
+    envs that walk returns an empty set, so ``_model_wants_tilelang`` would
+    refuse to gate the install paths these tests exercise.
+    """
+    monkeypatch.setattr(
+        worker,
+        "_discover_fla_model_types",
+        lambda: frozenset({"qwen3_5"}),
+    )
+
+
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
+    _patch_qwen35_discovery(monkeypatch)
     statuses: list[str] = []
     monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
 
@@ -327,6 +343,7 @@ def test_flash_linear_attention_skipped_via_env(monkeypatch):
 def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 5))
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     statuses: list[str] = []
@@ -346,6 +363,7 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
     monkeypatch.setattr(worker, "_flash_linear_attention_importable", lambda: False)
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
@@ -381,6 +399,7 @@ def test_flash_linear_attention_logs_post_install_import_failure(monkeypatch):
         return False
 
     monkeypatch.setattr(worker, "_flash_linear_attention_importable", fake_importable)
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     statuses: list[str] = []
@@ -417,6 +436,7 @@ def test_tilelang_backend_pins_only_binary(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
     monkeypatch.setattr(worker, "_tilelang_importable", lambda: False)
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
@@ -459,6 +479,7 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_tilelang_imports(monkeypatch)
+    _patch_qwen35_discovery(monkeypatch)
     statuses: list[str] = []
     monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
 
@@ -490,6 +511,7 @@ def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
@@ -556,6 +578,7 @@ def test_tilelang_backend_swallows_install_timeout(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
     _force_missing_tilelang_imports(monkeypatch)
+    _patch_qwen35_discovery(monkeypatch)
 
     def raise_timeout(*a, **kw):
         raise subprocess.TimeoutExpired(cmd = "pip", timeout = 1)
@@ -611,6 +634,7 @@ def test_tilelang_backend_swallows_install_failure(monkeypatch):
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 1, stdout = "boom"))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_tilelang_imports(monkeypatch)
+    _patch_qwen35_discovery(monkeypatch)
     statuses: list[str] = []
     monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
 
@@ -695,6 +719,7 @@ def test_hook_installs_when_gate_returns_false(monkeypatch):
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
     monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _patch_qwen35_discovery(monkeypatch)
 
     worker._install_fast_path_hooks(
         event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
@@ -770,6 +795,7 @@ def test_hook_idempotent_on_repeat_call(monkeypatch):
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
     monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _patch_qwen35_discovery(monkeypatch)
 
     worker._install_fast_path_hooks(
         event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
@@ -1017,6 +1043,7 @@ def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
         worker, "_install_package_wheel_first", mock.Mock(return_value = True)
     )
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _patch_qwen35_discovery(monkeypatch)
 
     worker._install_fast_path_hooks(
         event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
@@ -1037,6 +1064,7 @@ def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.10")
+    _patch_qwen35_discovery(monkeypatch)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
@@ -1183,6 +1211,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     monkeypatch.setattr(worker, "_tilelang_importable", lambda: False)
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _patch_qwen35_discovery(monkeypatch)
 
     worker._install_fast_path_hooks(
         event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"

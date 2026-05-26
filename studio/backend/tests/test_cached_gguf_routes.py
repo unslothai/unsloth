@@ -20,22 +20,7 @@ if "structlog" not in sys.modules:
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
-import pytest
-
 import routes.models as models_route
-
-
-@pytest.fixture(autouse = True)
-def _stub_classify(monkeypatch):
-    """Keep the disk-scan list endpoints offline: ``_classify_cached_repos``
-    hits the live HF API, which makes these unit tests flake on a slow or
-    sandboxed network. Stub it to a no-op so each row keeps the disk-derived
-    fields the assertions actually pin."""
-
-    async def _noop(repos, hf_token):
-        return None
-
-    monkeypatch.setattr(models_route, "_classify_cached_repos", _noop)
 
 
 def _repo(
