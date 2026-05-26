@@ -231,14 +231,23 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
         )}
         aria-label="Generated image preview"
       >
-        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
-          <div className="absolute inset-x-3 top-3 z-10 flex justify-end">
-            <div className="flex shrink-0 items-center gap-1 rounded-full bg-background/70 p-1 ring-1 ring-border/20 backdrop-blur-sm">
+        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3">
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <div className="relative inline-block">
+              <img
+                src={overlay.image}
+                alt={overlay.title}
+                // Keep aspect ratio + downscale only: explicit caps so a
+                // huge viewport doesn't scale a generated image past its
+                // intrinsic resolution and turn soft.
+                className="block h-auto max-h-[min(70vh,620px)] w-auto max-w-[520px] rounded-2xl object-contain"
+              />
+              <div className="absolute right-2 top-2 z-10 flex shrink-0 items-center gap-2 rounded-full bg-background/80 p-1.5 ring-1 ring-border/30 backdrop-blur-sm">
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
-                className="size-7 rounded-full"
+                size="icon"
+                className="size-10 rounded-full bg-primary/10 text-primary ring-1 ring-primary/30 hover:bg-primary/20 hover:text-primary"
                 onClick={() =>
                   downloadImagePart({
                     image: overlay.image,
@@ -247,26 +256,20 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
                 }
                 aria-label="Download generated image"
               >
-                <DownloadIcon className="size-3.5" />
+                <DownloadIcon className="size-5" strokeWidth={2} />
               </Button>
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
-                className="size-7 rounded-full"
+                size="icon"
+                className="size-10 rounded-full bg-primary/10 text-primary ring-1 ring-primary/30 hover:bg-primary/20 hover:text-primary"
                 onClick={closeOverlay}
                 aria-label="Close generated image preview"
               >
-                <XIcon className="size-3.5" />
+                <XIcon className="size-5" strokeWidth={2} />
               </Button>
             </div>
-          </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center pt-1">
-            <img
-              src={overlay.image}
-              alt={overlay.title}
-              className="max-h-full max-w-full object-contain"
-            />
+            </div>
           </div>
           <div
             className="w-full max-w-[min(100%,46rem)] shrink-0 text-center"

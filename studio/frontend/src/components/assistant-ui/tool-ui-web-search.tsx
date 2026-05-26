@@ -70,7 +70,11 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const query = (args as { query?: string })?.query ?? "";
   const url = ((args as { url?: string })?.url ?? "").trim();
-  const isUrlFetch = !!url;
+  const pattern = (args as { pattern?: string })?.pattern ?? "";
+  const actionType = (args as { action_type?: string })?.action_type ?? "";
+  // gpt-5.x agentic action.type: search | open_page | find_in_page.
+  const isFindInPage = actionType === "find_in_page" || (!!url && !!pattern);
+  const isUrlFetch = !!url && !isFindInPage;
   const displayDomain = (() => {
     if (!url) return "";
     try {
@@ -105,11 +109,15 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
         toolName={
-          isUrlFetch
-            ? displayDomain ? `Read ${displayDomain}` : "Read page"
-            : query
-              ? `Searched "${query}"`
-              : "Web Search"
+          isFindInPage
+            ? pattern
+              ? `Found "${pattern}" in ${displayDomain || "page"}`
+              : `Find in ${displayDomain || "page"}`
+            : isUrlFetch
+              ? displayDomain ? `Read ${displayDomain}` : "Read page"
+              : query
+                ? `Searched "${query}"`
+                : "Web Search"
         }
         status={status}
         icon={GlobeIcon}
@@ -119,9 +127,15 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderIcon className="size-3.5 animate-spin" />
             <span>
-              {isUrlFetch
-                ? <>Reading {displayDomain || "page"}&hellip;</>
-                : <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+              {isFindInPage
+                ? pattern
+                  ? <>Finding &ldquo;{pattern}&rdquo; in {displayDomain || "page"}&hellip;</>
+                  : <>Searching {displayDomain || "page"}&hellip;</>
+                : isUrlFetch
+                  ? <>Reading {displayDomain || "page"}&hellip;</>
+                  : query
+                    ? <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+                    : <>Searching&hellip;</>
               }
             </span>
           </div>
@@ -140,14 +154,15 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </Source>
             ))}
           </div>
-        ) : result ? (
-          <div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {typeof result === "string"
-                ? result
-                : JSON.stringify(result, null, 2)}
-            </pre>
-          </div>
+        ) : url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="break-all text-xs text-primary underline-offset-4 hover:underline"
+          >
+            {url}
+          </a>
         ) : null}
       </ToolFallbackContent>
     </ToolFallbackRoot>

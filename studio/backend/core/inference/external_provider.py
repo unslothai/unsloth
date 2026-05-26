@@ -243,6 +243,89 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     return text[:last_open], text[last_open:]
 
 
+def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalise web_search_call.action across variants. gpt-5.x agentic
+    search emits action.type in {search, open_page, find_in_page}; older
+    variants may put query at item.query or use action.queries[0].
+    Returns only non-empty keys among query/url/pattern/action_type.
+    """
+    if not isinstance(item, dict):
+        return {}
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    atype = action.get("type") if isinstance(action.get("type"), str) else ""
+    query = action.get("query") if isinstance(action.get("query"), str) else ""
+    if not query:
+        # Fallbacks: action.queries[0], item.query, item.queries[0].
+        for src in (action.get("queries"), item.get("queries")):
+            if isinstance(src, list) and src and isinstance(src[0], str) and src[0]:
+                query = src[0]
+                break
+        if not query and isinstance(item.get("query"), str):
+            query = item["query"]
+    url = action.get("url") if isinstance(action.get("url"), str) else ""
+    pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
+    out: dict[str, Any] = {}
+    if query:
+        out["query"] = query
+    if url:
+        out["url"] = url
+    if pattern:
+        out["pattern"] = pattern
+    if atype:
+        out["action_type"] = atype
+    return out
+
+
+def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
+    """Format per-call sources as the Title/URL/Snippet block the
+    frontend's parseSearchResults expects. Prefers `results` (snippet
+    bearing, reasoning models) then `action.sources` (urls only).
+    Returns "" when neither is populated.
+    """
+    blocks: list[str] = []
+    if isinstance(results, list):
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            url = r.get("url") if isinstance(r.get("url"), str) else ""
+            if not url:
+                continue
+            title = r.get("title") if isinstance(r.get("title"), str) else url
+            snippet = r.get("snippet") or r.get("text") or ""
+            entry = f"Title: {title}\nURL: {url}"
+            if isinstance(snippet, str) and snippet:
+                entry += f"\nSnippet: {snippet}"
+            blocks.append(entry)
+    if not blocks and isinstance(sources, list):
+        for s in sources:
+            url = ""
+            if isinstance(s, str):
+                url = s
+            elif isinstance(s, dict):
+                url = s.get("url") if isinstance(s.get("url"), str) else ""
+            if not url:
+                continue
+            blocks.append(f"Title: {url}\nURL: {url}")
+    return "\n---\n".join(blocks)
+
+
+def _web_search_card_text(args: dict[str, Any]) -> str:
+    """Single-line summary for the per-card tool_end result."""
+    if not args:
+        return ""
+    q, u, p = args.get("query") or "", args.get("url") or "", args.get("pattern") or ""
+    atype = args.get("action_type") or ""
+    if atype == "open_page" and u:
+        return f"Read: {u}"
+    if atype == "find_in_page" and u:
+        return f"Find {p!r} in {u}" if p else f"Find in {u}"
+    if q:
+        return f"Searching: {q}"
+    if u:
+        return f"Read: {u}"
+    return ""
+
+
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
@@ -2185,7 +2268,7 @@ class ExternalProviderClient:
                             parts.append(f"--- stderr ---\n{stderr}")
                         if isinstance(return_code, int) and return_code != 0:
                             parts.append(f"return_code: {return_code}")
-                        return "\n".join(parts) if parts else "(no output)"
+                        return "\n".join(parts) if parts else ""
                     if inner_type == "text_editor_code_execution_result":
                         # view: file content; create: is_file_update flag;
                         # str_replace: diff `lines` list. The matching
@@ -3233,6 +3316,14 @@ class ExternalProviderClient:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
+            # Opt into the per-call source list (action.sources) and the
+            # per-call snippet list (results, reasoning models only) so
+            # each web_search card can surface what was actually consulted.
+            if "web_search" in enabled_tools:
+                body["include"] = [
+                    "web_search_call.action.sources",
+                    "web_search_call.results",
+                ]
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
@@ -3267,6 +3358,13 @@ class ExternalProviderClient:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
+                if "web_search" in enabled_tools:
+                    attempt_body["include"] = [
+                        "web_search_call.action.sources",
+                        "web_search_call.results",
+                    ]
+                else:
+                    attempt_body.pop("include", None)
             return attempt_body
 
         def _is_openai_container_expired_error(error_text: str) -> bool:
@@ -3468,43 +3566,52 @@ class ExternalProviderClient:
                         return f"data: {_json.dumps(chunk)}"
 
                     def _format_shell_output(output: Any) -> str:
-                        """Render an OpenAI `shell_call_output.output` list
-                        as the preformatted text payload the frontend's
-                        CodeExecutionToolUI displays inside a <pre>. Each
-                        entry has stdout/stderr/outcome — concatenate them
-                        with a separator block per entry and append
-                        `return_code` / `(timeout)` annotations only when
-                        they convey information beyond "succeeded".
+                        """Render OpenAI `shell_call_output.output` for the
+                        CodeExecutionToolUI <pre>. Each entry has
+                        stdout/stderr/outcome (canonical) or `text`/`content`
+                        (older shapes). When the entry contains no
+                        recognised text fields at all, dump the raw JSON so
+                        the user can see what OpenAI actually returned.
                         """
                         if not isinstance(output, list):
                             return ""
                         parts: list[str] = []
                         for entry in output:
                             if not isinstance(entry, dict):
+                                if isinstance(entry, str) and entry:
+                                    parts.append(entry)
                                 continue
-                            stdout = entry.get("stdout") or ""
+                            stdout = (
+                                entry.get("stdout")
+                                or entry.get("text")
+                                or entry.get("content")
+                                or ""
+                            )
                             stderr = entry.get("stderr") or ""
                             outcome = entry.get("outcome") or {}
                             chunk_parts: list[str] = []
-                            if stdout:
+                            if isinstance(stdout, str) and stdout:
                                 chunk_parts.append(stdout)
-                            if stderr:
+                            if isinstance(stderr, str) and stderr:
                                 chunk_parts.append(f"--- stderr ---\n{stderr}")
                             if isinstance(outcome, dict):
                                 outcome_type = outcome.get("type")
                                 if outcome_type == "exit":
                                     exit_code = outcome.get("exit_code")
-                                    if isinstance(exit_code, int) and exit_code != 0:
-                                        chunk_parts.append(f"return_code: {exit_code}")
+                                    if isinstance(exit_code, int):
+                                        chunk_parts.append(f"exit_code: {exit_code}")
                                 elif outcome_type == "timeout":
                                     chunk_parts.append("(timeout)")
+                            if not chunk_parts:
+                                # Unknown shape: surface the raw dict so the
+                                # user can see what OpenAI actually returned.
+                                try:
+                                    chunk_parts.append(_json.dumps(entry, indent = 2))
+                                except (TypeError, ValueError):
+                                    pass
                             if chunk_parts:
                                 parts.append("\n".join(chunk_parts))
-                        return (
-                            "\n--- next command ---\n".join(parts)
-                            if parts
-                            else "(no output)"
-                        )
+                        return "\n--- next command ---\n".join(parts)
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
@@ -3844,45 +3951,56 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # done is the canonical place to read the
-                                    # query, so emit both tool_start and tool_end
-                                    # here. Frontend then renders a card per call
-                                    # with the proper "Searching: <query>" label.
-                                    # Citations are aggregated separately and the
-                                    # *last* call's result is overwritten at
-                                    # response.completed with the citation list
-                                    # (so the source-pill extraction at message
-                                    # tail surfaces them once).
+                                    # Dispatch on action.type so open_page /
+                                    # find_in_page render url+pattern instead
+                                    # of an empty query card. Last call's
+                                    # result is overwritten with citations at
+                                    # response.completed.
                                     item_id = item.get("id", "") or (
                                         f"ws_{len(web_search_calls)}"
                                     )
-                                    action = item.get("action")
-                                    query = (
-                                        action.get("query", "")
-                                        if isinstance(action, dict)
-                                        else ""
-                                    )
-                                    web_search_calls[item_id] = {"query": query}
+                                    args = _extract_web_search_action(item)
+                                    # Backfill query from any prior event for this id.
+                                    if not args.get("query"):
+                                        prior = web_search_calls.get(item_id) or {}
+                                        prior_q = (
+                                            prior.get("query")
+                                            if isinstance(prior, dict)
+                                            else ""
+                                        )
+                                        if isinstance(prior_q, str) and prior_q:
+                                            args["query"] = prior_q
+                                    web_search_calls[item_id] = dict(args)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": (
-                                                {"query": query} if query else {}
-                                            ),
+                                            "arguments": args,
                                         }
                                     )
-                                    # Per-card text; last call gets overwritten
-                                    # with citations at response.completed.
-                                    per_call_result = (
-                                        f"Searching: {query}" if query else ""
+                                    # Per-call sources: prefer the snippet-bearing
+                                    # `results` list (reasoning models only), then
+                                    # fall back to `action.sources` URLs. Formatted
+                                    # as the Title/URL/Snippet block the frontend
+                                    # parser already understands.
+                                    action_obj = (
+                                        item.get("action")
+                                        if isinstance(item.get("action"), dict)
+                                        else {}
+                                    ) or {}
+                                    per_call_sources = (
+                                        _format_web_search_per_call_sources(
+                                            item.get("results"),
+                                            action_obj.get("sources"),
+                                        )
                                     )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            "result": per_call_result,
+                                            "result": per_call_sources
+                                            or _web_search_card_text(args),
                                         }
                                     )
                                 elif item.get("type") == "shell_call":

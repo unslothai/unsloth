@@ -175,6 +175,12 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     [resultText],
   );
 
+  // Surface the full untruncated command in the expanded body so a
+  // user clicking the row can read the heredoc that was clipped in
+  // the trigger label.
+  const showFullCommand = !isRunning && kind === "bash" && !!command && command !== commandLabel;
+  const emptyOutput = !isRunning && !resultText;
+
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
@@ -188,16 +194,36 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <LoaderIcon className="size-3.5 animate-spin" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <div>
-            <div className="flex justify-end">
-              <CopyBtn text={resultText} />
-            </div>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {displayedResult}
-            </pre>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {showFullCommand ? (
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">Command</span>
+                  <CopyBtn text={command} />
+                </div>
+                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                  {command}
+                </pre>
+              </div>
+            ) : null}
+            {resultText ? (
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">Output</span>
+                  <CopyBtn text={resultText} />
+                </div>
+                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                  {displayedResult}
+                </pre>
+              </div>
+            ) : emptyOutput ? (
+              <p className="text-xs italic text-muted-foreground">
+                Command completed with no output.
+              </p>
+            ) : null}
           </div>
-        ) : null}
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
