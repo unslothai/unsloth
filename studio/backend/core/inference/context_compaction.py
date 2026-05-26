@@ -36,20 +36,15 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
-# Char-to-token heuristic. Conservative on the high side so the
-# compactor triggers earlier rather than later. Tokenizer-aware
-# estimates may land in a follow-up.
+# Conservative char-to-token ratio so compaction fires early.
 _CHARS_PER_TOKEN = 4
 
 
 def estimate_tokens(messages: list[dict]) -> int:
-    """Rough token count for ``messages``. Uses a 4-char-per-token
-    char-count heuristic on the visible ``content`` (str) and on
-    serialized ``tool_calls`` arguments. Multimodal parts (list-typed
-    content) contribute only their text parts. Studio's ``compaction``
-    content parts (Anthropic round-trip state) also contribute their
-    ``content`` string so a multi-KB compaction summary does not
-    estimate as zero and slip past the threshold.
+    """Rough token count via 4-char-per-token heuristic.
+
+    Counts visible content, multimodal text parts, ``compaction``
+    summary text, and serialized tool_calls arguments.
     """
     total_chars = 0
     for m in messages:
@@ -63,8 +58,7 @@ def estimate_tokens(messages: list[dict]) -> int:
                 t = part.get("text")
                 if isinstance(t, str):
                     total_chars += len(t)
-                # Studio's compaction content part: {"type":"compaction",
-                # "content": "<summary>"}. Count the summary string.
+                # Count compaction summary text.
                 if part.get("type") == "compaction":
                     summary = part.get("content")
                     if isinstance(summary, str):
@@ -72,27 +66,19 @@ def estimate_tokens(messages: list[dict]) -> int:
         tcs = m.get("tool_calls")
         if isinstance(tcs, list):
             for tc in tcs:
-                # Defensive: pre-pydantic OpenAI payloads occasionally
-                # carry malformed entries (string, None) before
-                # validation. Skip non-dict items instead of raising
-                # AttributeError mid-compaction.
+                # Skip malformed pre-pydantic entries.
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function")
                 args = (fn or {}).get("arguments") if isinstance(fn, dict) else None
                 if isinstance(args, str):
                     total_chars += len(args)
-    # Ceil-style division: floor (`// 4`) would systematically
-    # underestimate non-multiple-of-4 lengths, letting just-over-budget
-    # prompts appear under threshold and bypass compaction — the exact
-    # failure this module exists to prevent. Round up so the heuristic
-    # stays on the conservative side described above.
+    # Ceil-divide: floor would let just-over-budget prompts bypass compaction.
     return -(-total_chars // _CHARS_PER_TOKEN)
 
 
-# Content-part types that carry no media payload and shouldn't anchor the
-# message. ``compaction`` is Studio's Anthropic round-trip state -- pinning
-# it would keep the very thing we're trying to compact away.
+# Text-only parts (don't anchor); ``compaction`` is Anthropic round-trip
+# state so pinning it would defeat compaction.
 _TEXT_ONLY_PART_TYPES = {"text", "compaction"}
 
 
@@ -101,9 +87,7 @@ def _is_multimodal(msg: dict) -> bool:
     if not isinstance(content, list):
         return False
     for part in content:
-        # Unknown shapes (raw strings, ints, None) keep the conservative
-        # "treat as multimodal" stance -- there's no test rendering for
-        # them either.
+        # Unknown shape => conservatively treat as multimodal.
         if not isinstance(part, dict):
             return True
         if part.get("type") not in _TEXT_ONLY_PART_TYPES:
@@ -112,12 +96,7 @@ def _is_multimodal(msg: dict) -> bool:
 
 
 def _assistant_tool_call_ids(msg: dict) -> set[str]:
-    """Return the set of ``id`` values from an assistant message's
-    ``tool_calls``. Empty set when the message has no tool calls.
-    Mirrors ``estimate_tokens``: skip non-dict entries so malformed
-    pre-pydantic inputs (a string or ``None`` in the list) don't crash
-    ``_pair_linked_indices`` mid-compaction.
-    """
+    """Return tool_call ids on an assistant message; skip malformed entries."""
     out: set[str] = set()
     tcs = msg.get("tool_calls")
     if isinstance(tcs, list):
@@ -131,20 +110,13 @@ def _assistant_tool_call_ids(msg: dict) -> set[str]:
 
 
 def _pair_linked_indices(messages: list[dict]) -> dict[int, set[int]]:
-    """Map an assistant-message index to the indices of its tool-role
-    follow-ups (matching ``tool_call_id``). Used so the compactor drops
-    or keeps an assistant+tool group as a unit.
+    """Map asst index -> indices of its tool-role follow-ups so the
+    compactor drops or keeps the group as a unit.
     """
     out: dict[int, set[int]] = {}
-    # Walk in order so the next tool-role messages after an assistant
-    # call are the natural matches. A tool message is matched to the
-    # most recent prior assistant whose ``tool_calls`` contain that id.
-    # ANY non-tool boundary (user, system, OR another assistant) ends
-    # the pending window: per the OpenAI chat schema tool messages
-    # must follow their assistant directly. A later assistant turn
-    # arriving before the matching tool means that tool is malformed
-    # input -- treating the late tool as still paired would let the
-    # compactor drop a stale assistant + a later-turn tool together.
+    # OpenAI schema: tool messages must follow their asst directly.
+    # ANY non-tool boundary (user, system, another asst) clears the
+    # pending window so a stale asst can't snap to a later-turn tool.
     pending_ids: dict[str, int] = {}
     for i, m in enumerate(messages):
         role = m.get("role")
@@ -183,14 +155,8 @@ class NoCompact(CompactStrategy):
 
 
 class SlidingWindowCompact(CompactStrategy):
-    """Keep the system message, the first user message, and the last
-    ``keep_recent`` non-droppable turns. Multimodal turns are never
-    dropped (no compacted-media representation today). Assistant
-    messages with ``tool_calls`` are grouped with their matching
-    tool-role responses and treated as one unit.
-
-    The strategy is a no-op when the estimated token count is already
-    within ``budget_tokens`` or when there is nothing left to drop.
+    """Keep system, first user, multimodal, and last ``keep_recent``
+    groups. Asst+tools form one group. No-op when within budget.
     """
 
     def __init__(self, keep_recent: int = 2, compact_threshold: float = 0.85) -> None:
@@ -224,16 +190,10 @@ class SlidingWindowCompact(CompactStrategy):
             if _is_multimodal(m):
                 anchor_idx.add(i)
 
-        # Tool-call / tool-result grouping. An assistant tool-call
-        # message and its matching tool-role responses get the same
-        # group id so we keep or drop them as a unit.
+        # Group asst tool-call with its tool responses so they drop together.
         pair_map = _pair_linked_indices(messages)
-        # If any member of a valid asst+tools group is anchored,
-        # anchor the whole group. Without this an anchored multimodal
-        # tool whose assistant is droppable (or an anchored multimodal
-        # assistant whose tools are droppable) would survive alone,
-        # leaving the chat template invalid (OpenAI 400s on dangling
-        # tool_calls / orphan tool messages).
+        # If any pair member is anchored, anchor the whole group; otherwise
+        # an anchored multimodal asst/tool could orphan its partner.
         for asst_idx, tool_idxs in pair_map.items():
             if not tool_idxs:
                 continue
@@ -251,13 +211,8 @@ class SlidingWindowCompact(CompactStrategy):
             for ti in tool_idxs:
                 group_id[ti] = g
 
-        # The "recent window" is the last ``keep_recent`` distinct
-        # groups encountered scanning from the end. ``keep_recent == 0``
-        # must collect ZERO groups so the caller can drop everything
-        # outside the anchor set (system + first user + multimodal).
-        # The pre-fix loop tested the limit AFTER appending and so
-        # always preserved at least one group even when keep_recent
-        # was 0; flip the check to BEFORE appending so the bound holds.
+        # Last ``keep_recent`` distinct groups from the end. The limit
+        # check runs BEFORE appending so ``keep_recent == 0`` keeps zero.
         recent_groups: list[int] = []
         seen_groups: set[int] = set()
         for i in range(len(messages) - 1, -1, -1):
@@ -270,8 +225,7 @@ class SlidingWindowCompact(CompactStrategy):
             recent_groups.append(g)
         recent_groups_set = set(recent_groups)
 
-        # Decide drop set: every index whose group is NOT in the recent
-        # window AND that is not an anchor.
+        # Droppable = non-anchor indices outside the recent window.
         droppable: list[int] = []
         for i in range(len(messages)):
             if i in anchor_idx:
@@ -289,21 +243,9 @@ class SlidingWindowCompact(CompactStrategy):
                 break
             dropped.add(i)
 
-        # When dropping an assistant-with-tool-calls message we must
-        # also drop the matching tool-role messages (and vice versa)
-        # so the chat template stays valid. Iterate pair_map once.
-        # Anchor indices stay regardless: dragging an anchored
-        # multimodal assistant or first-user message into the drop
-        # set just because its tool-pair partner was dropped would
-        # violate the structural invariant the anchor set exists to
-        # enforce, and llama-server would 400 on the resulting
-        # template (a tool message whose tool_call_id has no
-        # surviving assistant tool_calls entry).
-        # Assistants whose tool_calls all got orphaned are repaired in
-        # the final pass below: we keep the multimodal content but
-        # strip the dangling tool_calls so OpenAI does not 400 on
-        # "assistant message with tool_calls must be followed by tool
-        # messages".
+        # Drop the partner when one side of a pair is dropped, except
+        # anchored asst whose tools all died -- keep their content but
+        # strip the dangling tool_calls in the final pass.
         rewrite_strip_tool_calls: set[int] = set()
         for asst_idx, tool_idxs in pair_map.items():
             if asst_idx in dropped:
@@ -314,21 +256,13 @@ class SlidingWindowCompact(CompactStrategy):
                 else:
                     rewrite_strip_tool_calls.add(asst_idx)
 
-        # Final invariant sweep, two passes so the asst-strip decision
-        # sees the post-orphan-drop tool set:
-        #   pass 1: drop tools whose tcid has no matching assistant
-        #     ``tool_calls`` earlier in the kept output;
-        #   pass 2: recompute responded_ids from the surviving tools and
-        #     mark assts whose tool_calls aren't all responded for strip.
-        # Computing responded_ids before pass 1 would let a stale tcid
-        # of a just-dropped orphan tool satisfy `ids <= responded_ids`,
-        # leaving the asst with dangling tool_calls (OpenAI 400).
-        # Anchored (multimodal) orphan tools are still dropped here:
-        # keeping them violates the chat-template pair invariant (a hard
-        # invariant that 400s upstream) to honor the multimodal-anchor
-        # quality preference, which the docstring describes as a soft
-        # quality rule. The pair-validity wins; the image content is
-        # lost rather than the entire turn.
+        # Two-pass invariant sweep:
+        #   1) drop tools whose tcid has no prior surviving asst
+        #      (anchored ones too -- pair-validity beats anchor rule);
+        #   2) recompute responded_ids from survivors, then mark assts
+        #      with unanswered tool_calls for strip.
+        # Order matters: a stale orphan tcid in responded_ids would let
+        # the asst keep dangling tool_calls (OpenAI 400).
         seen_ids: set[str] = set()
         for i, m in enumerate(messages):
             if i in dropped:
@@ -360,8 +294,7 @@ class SlidingWindowCompact(CompactStrategy):
             if i in dropped:
                 continue
             if i in rewrite_strip_tool_calls:
-                # Keep the message (multimodal content stays) but strip
-                # tool_calls entries with no surviving tool follow-up.
+                # Keep content but strip dangling tool_calls.
                 kept_tcs = [
                     tc
                     for tc in (m.get("tool_calls") or [])
@@ -387,9 +320,5 @@ _STRATEGIES: dict[str, CompactStrategy] = {
 
 
 def get_strategy(name: str) -> CompactStrategy:
-    """Return the compaction strategy registered under ``name``.
-
-    Falls back to ``NoCompact`` for unknown names so a misconfigured
-    request degrades to no-op rather than raising.
-    """
+    """Return strategy by name; unknown names fall back to ``NoCompact``."""
     return _STRATEGIES.get(name, _STRATEGIES["none"])
