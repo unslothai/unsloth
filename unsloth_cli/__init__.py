@@ -18,9 +18,8 @@ from unsloth_cli.commands.studio import (
 )
 
 
-# Canonicalise `-np<N>` only under the declared `unsloth` console-script.
-# Generic names like `cli.py` would mutate argv for any third-party script
-# that imports unsloth_cli; the space form `--parallel N` works without us.
+# Canonicalise `-np<N>` only under the `unsloth` console-script;
+# third-party scripts that import unsloth_cli keep their argv intact.
 _entry_base = _osp.basename(_sys.argv[0]).lower() if _sys.argv else ""
 if _entry_base in {"unsloth", "unsloth.exe"}:
     _expand_attached_np_short()
@@ -63,8 +62,8 @@ app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
 app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
 
-# Top-level alias for `unsloth studio run ...`; same context_settings so
-# unknown flags still pass through to llama-server.
+# Top-level `unsloth run` aliases `unsloth studio run`; same context
+# so unknown flags still pass through to llama-server.
 app.command(
     "run",
     context_settings = {

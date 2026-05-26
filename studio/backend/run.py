@@ -727,9 +727,9 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
-    # Mirrors unsloth_cli/commands/studio.py's _PARALLEL_*. This default
-    # only applies to direct backend launches; `unsloth studio run`
-    # always passes its own value (4) on every invocation.
+    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1
+    # applies only to direct backend launches; `unsloth studio run`
+    # always passes its own value (4) explicitly.
     _PARALLEL_MIN = 1
     _PARALLEL_MAX = 64
     _PARALLEL_DEFAULT_PLAIN = 1

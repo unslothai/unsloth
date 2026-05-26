@@ -3,13 +3,13 @@
 
 """Boundary validator for user-supplied llama-server pass-through args.
 
-Reject only flags Studio fundamentally manages (model identity, auth,
-network endpoint, parallel slots). Everything else (sampling,
-``-c``, ``-ngl``, ``--flash-attn``, ``--cache-type-*``, ``--spec-*``,
-``--jinja``, ``--no-context-shift``, etc) is appended after Studio's
-auto-set flags so llama.cpp's last-wins parser lets the user override.
+Reject only flags Studio manages (model identity, auth, network,
+parallel slots). Everything else (sampling, ``-c``, ``-ngl``,
+``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...)
+is appended after Studio's auto-set flags so llama.cpp's last-wins
+parser lets the user override.
 
-Reference: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 """
 
 from __future__ import annotations
@@ -19,12 +19,11 @@ from typing import Iterable, Optional
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Parallel slots: owned by typer --parallel on `unsloth studio run`
-    # (1..64). A pass-through would desync app.state.llama_parallel_slots
-    # from the running llama-server.
+    # Parallel slots: owned by typer --parallel; a pass-through would
+    # desync app.state.llama_parallel_slots from llama-server.
     frozenset({"-np", "--parallel", "--n-parallel"}),
     # Model identity: Studio resolves it from LoadRequest; a second
-    # -m would point at a different model than the one Studio loaded.
+    # -m would load a different model than Studio thinks it loaded.
     frozenset({"-m", "--model"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
@@ -35,22 +34,21 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hft", "--hf-token"}),
     frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
-    # Networking: Studio binds the port and proxies; retargeting would
-    # orphan the proxy.
+    # Networking: Studio binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
     frozenset({"--port"}),
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
     # Auth / TLS: Studio terminates auth; upstream --api-key / TLS
-    # would shadow Studio's key and break the local proxy hop.
+    # shadows Studio's key and breaks the proxy hop.
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
     frozenset({"--ssl-key-file"}),
     frozenset({"--ssl-cert-file"}),
-    # Single-model server / built-in web UI. --webui/--no-webui is the
-    # legacy spelling; upstream now uses --ui/--no-ui + --ui-*. Keep
-    # both so prebuilt and system llama.cpp binaries both match.
+    # Built-in web UI. --webui/--no-webui is the legacy spelling;
+    # upstream renamed to --ui/--no-ui + --ui-*. Keep both so prebuilt
+    # and system llama.cpp binaries both match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
     frozenset({"--ui-config"}),
@@ -68,12 +66,11 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def _flag_name(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels ``--key=value`` to ``--key``, treats ``-1`` / ``-0.5`` as
-    values (llama-server shorts always start with a letter), strips
-    surrounding whitespace, and normalises attached ``-np<N>`` /
-    signed ``-np-1`` / digit-prefix-with-junk ``-np8x`` to ``-np`` so
-    the denylist matches every form. Kept in lockstep with the CLI's
-    ``_expand_attached_np_short``.
+    Peels `--key=value` to `--key`, treats `-1` / `-0.5` as values
+    (llama-server shorts always start with a letter), strips
+    whitespace, and normalises attached `-np8` / signed `-np-1` /
+    digit-prefix-junk `-np8x` to `-np`. Mirrors the CLI's
+    `_expand_attached_np_short`.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -88,15 +85,10 @@ def _flag_name(token: str) -> Optional[str]:
         ):
             return "-np"
     return name
-
-
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args.
-
-    Returns a flat list ready to extend the llama-server command.
-    Raises ``ValueError`` naming the offending flag the moment a token
-    resolves to a Studio-managed flag.
-    """
+    """Validate user-supplied llama-server args. Returns a flat list
+    ready to extend the llama-server command; raises ``ValueError``
+    naming the offending flag on the first managed token."""
     if not args:
         return []
     out: list[str] = []
@@ -114,14 +106,14 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
 
 def is_managed_flag(flag: str) -> bool:
     """True if ``flag`` is Studio-managed. Normalises via ``_flag_name``
-    so ``-np8`` and ``--parallel=8`` classify like the canonical tokens."""
+    so `-np8` / `--parallel=8` classify like the canonical tokens."""
     normalised = _flag_name(flag)
     return normalised is not None and normalised in _DENYLIST
 
 
-# Pass-through flags that shadow first-class LoadRequest fields. Stripped
-# from inherited extras so they can't last-wins-override an Apply that
-# re-sets the same field.
+# Pass-through flags that shadow first-class LoadRequest fields;
+# stripped from inherited extras so they can't last-wins-override an
+# Apply that re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
 _CACHE_FLAGS: frozenset[str] = frozenset(
     {"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"}
@@ -175,14 +167,11 @@ def strip_shadowing_flags(
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
-    Used by the route when inheriting a previous load's
-    ``llama_extra_args`` so an inherited ``-c 4096`` cannot override
-    the current request's ``max_seq_length`` (same for cache / spec /
-    template). Each ``strip_*`` toggle controls one group; the route
-    only strips groups whose first-class field the caller actually
-    supplied, so an inherited ``--chat-template-file`` survives an
-    Apply that omits both ``llama_extra_args`` and
-    ``chat_template_override``.
+    Used when inheriting a previous load's ``llama_extra_args`` so an
+    inherited `-c 4096` can't override the current `max_seq_length`
+    (same for cache / spec / template). Each ``strip_*`` toggle
+    controls one group; the route only strips groups whose first-class
+    field the caller actually supplied.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -204,8 +193,8 @@ def strip_shadowing_flags(
             out.append(tok)
             i += 1
             continue
-        # Drop this token; boolean shadowing flags carry no value, others
-        # also consume the next token unless it's a flag or already inline.
+        # Drop the flag; consume the next token too unless it's
+        # boolean, already inline (`-c=4096`), or another flag.
         if flag in _BOOLEAN_SHADOWING_FLAGS or "=" in tok:
             i += 1
         elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
