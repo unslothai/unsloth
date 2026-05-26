@@ -28,7 +28,6 @@
       "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
     },
     "updater:default",
-    "clipboard-manager:allow-write-text",
-    "window-state:default"
+    "clipboard-manager:allow-write-text"
   ]
 }

@@ -40,13 +40,21 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   await win.show();
 }
 
+interface WindowState {
+  width: number;
+  height: number;
+  maximized: boolean;
+}
+
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
-  const { restoreStateCurrent, StateFlags } = await import("@tauri-apps/plugin-window-state");
+  const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
   const monitor = await currentMonitor();
+  if (!isCurrent()) return;
+  const saved = await invoke<WindowState | null>("load_window_state");
   if (!isCurrent()) return;
 
   let finalW = MIN_WINDOW_WIDTH;
@@ -65,17 +73,15 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
   await win.setResizable(true);
   if (!isCurrent()) return;
-  // Set the floor before restoring so a stale/undersized saved size is clamped up.
+  // Set the floor before applying a remembered size so a stale/undersized one is clamped up.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
   if (!isCurrent()) return;
-  // First-launch baseline; overwritten by restoreStateCurrent when a state file exists.
-  await win.setSize(new LogicalSize(finalW, finalH));
-  if (!isCurrent()) return;
-  await restoreStateCurrent(StateFlags.SIZE | StateFlags.MAXIMIZED);
+  await win.setSize(new LogicalSize(saved?.width ?? finalW, saved?.height ?? finalH));
   if (!isCurrent()) return;
   // Position isn't persisted, so keep the window centered unless it was maximized.
-  if (!(await win.isMaximized())) {
-    if (!isCurrent()) return;
+  if (saved?.maximized) {
+    await win.maximize();
+  } else {
     await win.center();
   }
   if (!isCurrent()) return;

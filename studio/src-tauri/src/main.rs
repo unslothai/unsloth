@@ -12,6 +12,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod update;
+mod window_state;
 mod windows_job;
 
 use log::info;
@@ -23,7 +24,6 @@ use std::fs;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
-use tauri_plugin_window_state::StateFlags;
 
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
@@ -174,12 +174,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .manage(window_state::WindowStateCache::default())
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(native_intents::new_native_intake_state())
@@ -211,6 +206,7 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            window_state::load_window_state,
         ])
         .setup(|app| {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -218,22 +214,28 @@ fn main() {
             setup_tray(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Resized(_) => {
+                window_state::track_resize(window);
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 // Hide window instead of closing — this is a tray app.
                 // Processes keep running so the backend stays available.
                 // Full cleanup happens via:
                 //   - Tray "Quit" menu item (explicit user action)
                 //   - RunEvent::Exit handler (OS shutdown, SIGTERM, etc.)
+                window_state::save(window.app_handle());
                 let _ = window.hide();
                 api.prevent_close();
             }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Cleanup on ALL exit paths — safety net for non-tray exits
+                window_state::save(app);
                 cleanup_child_processes(app);
             }
         });
