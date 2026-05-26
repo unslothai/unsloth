@@ -505,23 +505,57 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
+  const ensureThreadId = useCallback(async (): Promise<string | null> => {
+    const stored = useChatRuntimeStore.getState().activeThreadId;
+    if (stored) return stored;
+    try {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) return null;
+      const localId = runtime.threads.getState().mainThreadId;
+      if (!localId) return null;
+      const { remoteId } = await runtime.threads
+        .getItemById(localId)
+        .initialize();
+      useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+      return remoteId;
+    } catch {
+      return null;
+    }
+  }, [aui]);
+
   const addDoc = useCallback(
     (file: File) => {
-      if (!activeThreadId) {
-        toast.error("Attach to a thread first");
-        return;
-      }
-      const id = crypto.randomUUID();
+      const localChipId = crypto.randomUUID();
       setPendingDocs((prev) => [
         ...prev,
-        { id, file, status: "uploading" },
+        { id: localChipId, file, status: "uploading" },
       ]);
-      const uploadDocument = useRagStore.getState().uploadDocument;
-      uploadDocument({ kind: "thread", threadId: activeThreadId }, file)
-        .then(({ documentId, jobId }) => {
+      void (async () => {
+        const threadId = await ensureThreadId();
+        if (!threadId) {
           setPendingDocs((prev) =>
             prev.map((d) =>
-              d.id === id
+              d.id === localChipId
+                ? {
+                    ...d,
+                    status: "error",
+                    errorMessage: "Could not create thread for upload",
+                  }
+                : d,
+            ),
+          );
+          toast.error("Could not create thread for upload");
+          return;
+        }
+        const uploadDocument = useRagStore.getState().uploadDocument;
+        try {
+          const { documentId, jobId } = await uploadDocument(
+            { kind: "thread", threadId },
+            file,
+          );
+          setPendingDocs((prev) =>
+            prev.map((d) =>
+              d.id === localChipId
                 ? { ...d, status: "ingesting", jobId, documentId }
                 : d,
             ),
@@ -531,7 +565,7 @@ export function SharedComposer({
               if (event.type === "complete") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
-                    d.id === id ? { ...d, status: "ready" } : d,
+                    d.id === localChipId ? { ...d, status: "ready" } : d,
                   ),
                 );
                 if (useChatRuntimeStore.getState().ragSource.kind === "off") {
@@ -542,7 +576,7 @@ export function SharedComposer({
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
-                    d.id === id
+                    d.id === localChipId
                       ? { ...d, status: "error", errorMessage: event.error }
                       : d,
                   ),
@@ -550,19 +584,21 @@ export function SharedComposer({
               }
             },
           });
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           const message =
             err instanceof Error ? err.message : "Upload failed";
           setPendingDocs((prev) =>
             prev.map((d) =>
-              d.id === id ? { ...d, status: "error", errorMessage: message } : d,
+              d.id === localChipId
+                ? { ...d, status: "error", errorMessage: message }
+                : d,
             ),
           );
           toast.error(`Document upload failed: ${message}`);
-        });
+        }
+      })();
     },
-    [activeThreadId],
+    [ensureThreadId],
   );
 
   const addFiles = useCallback((files: FileList | null) => {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAui } from "@assistant-ui/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
@@ -47,23 +48,65 @@ export interface UseThreadDocUploadsResult {
 
 /** Per-thread RAG upload: file → POST → SSE → chip status. */
 export function useThreadDocUploads(): UseThreadDocUploadsResult {
+  const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
 
+  // Brand-new chats have no backend thread until the first message is sent.
+  // Initialize the current local thread to mint a remoteId so RAG uploads
+  // can attach before-send; the saved thread row gets created on first send.
+  const ensureThreadId = useCallback(async (): Promise<string | null> => {
+    const stored = useChatRuntimeStore.getState().activeThreadId;
+    if (stored) return stored;
+    try {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) return null;
+      const localId = runtime.threads.getState().mainThreadId;
+      if (!localId) return null;
+      const { remoteId } = await runtime.threads
+        .getItemById(localId)
+        .initialize();
+      useChatRuntimeStore.getState().setActiveThreadId(remoteId);
+      return remoteId;
+    } catch {
+      return null;
+    }
+  }, [aui]);
+
   const addDoc = useCallback(
     (file: File) => {
-      if (!activeThreadId) {
-        toast.error("Attach to a thread first");
-        return;
-      }
-      const id = crypto.randomUUID();
-      setPendingDocs((prev) => [...prev, { id, file, status: "uploading" }]);
-      const uploadDocument = useRagStore.getState().uploadDocument;
-      uploadDocument({ kind: "thread", threadId: activeThreadId }, file)
-        .then(({ documentId, jobId }) => {
+      const localChipId = crypto.randomUUID();
+      setPendingDocs((prev) => [
+        ...prev,
+        { id: localChipId, file, status: "uploading" },
+      ]);
+
+      void (async () => {
+        const threadId = await ensureThreadId();
+        if (!threadId) {
           setPendingDocs((prev) =>
             prev.map((d) =>
-              d.id === id
+              d.id === localChipId
+                ? {
+                    ...d,
+                    status: "error",
+                    errorMessage: "Could not create thread for upload",
+                  }
+                : d,
+            ),
+          );
+          toast.error("Could not create thread for upload");
+          return;
+        }
+        const uploadDocument = useRagStore.getState().uploadDocument;
+        try {
+          const { documentId, jobId } = await uploadDocument(
+            { kind: "thread", threadId },
+            file,
+          );
+          setPendingDocs((prev) =>
+            prev.map((d) =>
+              d.id === localChipId
                 ? { ...d, status: "ingesting", jobId, documentId }
                 : d,
             ),
@@ -73,10 +116,9 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
               if (event.type === "complete") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
-                    d.id === id ? { ...d, status: "ready" } : d,
+                    d.id === localChipId ? { ...d, status: "ready" } : d,
                   ),
                 );
-                // First ingest on an off-source thread → flip to 'thread'.
                 if (useChatRuntimeStore.getState().ragSource.kind === "off") {
                   useChatRuntimeStore
                     .getState()
@@ -85,7 +127,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
-                    d.id === id
+                    d.id === localChipId
                       ? { ...d, status: "error", errorMessage: event.error }
                       : d,
                   ),
@@ -93,20 +135,20 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
               }
             },
           });
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           const message = err instanceof Error ? err.message : "Upload failed";
           setPendingDocs((prev) =>
             prev.map((d) =>
-              d.id === id
+              d.id === localChipId
                 ? { ...d, status: "error", errorMessage: message }
                 : d,
             ),
           );
           toast.error(`Document upload failed: ${message}`);
-        });
+        }
+      })();
     },
-    [activeThreadId],
+    [ensureThreadId],
   );
 
   const removeDoc = useCallback(
