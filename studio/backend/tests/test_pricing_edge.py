@@ -530,5 +530,3 @@ def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
     # 1M tokens at 1h-premium (2x of $5 = $10/M = $10). 5m baseline
     # would be 1.25x ($6.25). 2x means cache_write_usd ~= $10.
     assert math.isclose(r["cache_write_usd"], 10.0, rel_tol = 1e-2), r
-
-
