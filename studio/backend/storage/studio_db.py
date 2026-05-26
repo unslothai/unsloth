@@ -15,6 +15,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -78,6 +79,54 @@ def _ensure_project_workspace(root_path: str) -> str:
     for subdir in _PROJECT_WORKSPACE_SUBDIRS:
         ensure_dir(root_resolved / subdir)
     return str(root_resolved)
+
+
+def _delete_project_workspace(project: dict) -> None:
+    root_path = project.get("rootPath")
+    if not root_path:
+        return
+    root = Path(root_path).expanduser()
+    try:
+        root_resolved = root.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("Skipping project workspace delete for invalid path %r", root_path)
+        return
+
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    if not root_resolved.name.endswith(f"-{suffix}"):
+        logger.warning(
+            "Skipping project workspace delete for unexpected project path %s",
+            root_resolved,
+        )
+        return
+    if root_resolved.parent == root_resolved or root_resolved == Path.home().resolve():
+        logger.warning(
+            "Skipping project workspace delete for unsafe project path %s",
+            root_resolved,
+        )
+        return
+    check = (
+        os.path.normcase(str(root_resolved))
+        if platform.system() == "Windows"
+        else str(root_resolved)
+    )
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            logger.warning(
+                "Skipping project workspace delete under denied path %s",
+                root_resolved,
+            )
+            return
+    if not root_resolved.exists():
+        return
+    if root_resolved.is_symlink() or not root_resolved.is_dir():
+        logger.warning(
+            "Skipping project workspace delete for non-directory path %s",
+            root_resolved,
+        )
+        return
+    shutil.rmtree(root_resolved)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -1028,7 +1077,7 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
         conn.close()
 
 
-def delete_chat_project(id: str) -> Optional[dict]:
+def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1040,6 +1089,8 @@ def delete_chat_project(id: str) -> Optional[dict]:
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
         conn.commit()
+        if delete_files:
+            _delete_project_workspace(project)
         return project
     except Exception:
         conn.rollback()

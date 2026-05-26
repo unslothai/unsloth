@@ -638,8 +638,11 @@ export async function updateStoredChatProject(
   });
 }
 
-export async function deleteStoredChatProject(projectId: string): Promise<void> {
-  await deleteChatProject(projectId);
+export async function deleteStoredChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  await deleteChatProject(projectId, args);
 }
 
 export async function moveStoredChatItemToProject(

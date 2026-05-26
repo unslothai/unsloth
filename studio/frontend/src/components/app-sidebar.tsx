@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
@@ -528,10 +529,19 @@ export function AppSidebar() {
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
+  const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
+
+  useEffect(() => {
+    if (confirmingDelete?.kind !== "project") {
+      setDeleteProjectFiles(false);
+    }
+  }, [confirmingDelete]);
 
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
+    const shouldDeleteProjectFiles =
+      target.kind === "project" && deleteProjectFiles;
     setConfirmingDelete(null);
     if (target.kind === "chat") {
       try {
@@ -545,7 +555,9 @@ export function AppSidebar() {
     }
     if (target.kind === "project") {
       try {
-        await deleteChatProject(target.project.id);
+        await deleteChatProject(target.project.id, {
+          deleteFiles: shouldDeleteProjectFiles,
+        });
         if (activeProjectId === target.project.id) {
           useChatRuntimeStore.getState().setActiveProjectId(null);
           navigate({ to: "/chat", search: { new: createNavigationNonce() } });
@@ -1183,7 +1195,10 @@ export function AppSidebar() {
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {
-        if (!open) setConfirmingDelete(null);
+        if (!open) {
+          setConfirmingDelete(null);
+          setDeleteProjectFiles(false);
+        }
       }}
     >
       <DialogContent className="menu-flat-destructive corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
@@ -1208,12 +1223,35 @@ export function AppSidebar() {
               </>
             ) : confirmingDelete?.kind === "project" ? (
               <>
-                Delete <em>{confirmingDelete.project.name}</em>? Its chats will
-                be permanently deleted.
+                Delete{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{confirmingDelete.project.name}&quot;
+                </span>
+                ? Its chats will be permanently deleted.
               </>
             ) : null}
           </DialogDescription>
         </DialogHeader>
+        {confirmingDelete?.kind === "project" ? (
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+              <span className="block text-sm font-medium text-foreground">
+                Delete files and sandbox folder
+              </span>
+              <span className="block break-words text-xs leading-5 text-muted-foreground">
+                {confirmingDelete.project.rootPath
+                  ? confirmingDelete.project.rootPath
+                  : "The project workspace folder will be removed from disk."}
+              </span>
+            </label>
+            <Switch
+              id="delete-project-files"
+              checked={deleteProjectFiles}
+              onCheckedChange={setDeleteProjectFiles}
+              aria-label="Delete project files and sandbox folder"
+            />
+          </div>
+        ) : null}
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button
             type="button"
@@ -1227,7 +1265,9 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            Delete
+            {confirmingDelete?.kind === "project" && deleteProjectFiles
+              ? "Delete all"
+              : "Delete"}
           </Button>
         </DialogFooter>
       </DialogContent>

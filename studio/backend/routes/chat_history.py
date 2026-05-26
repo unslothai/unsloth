@@ -336,9 +336,10 @@ async def patch_project(
 @router.delete("/projects/{project_id}", response_model = ChatProject)
 async def delete_project(
     project_id: str,
+    delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    project = delete_chat_project(project_id)
+    project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
             status_code = 404,

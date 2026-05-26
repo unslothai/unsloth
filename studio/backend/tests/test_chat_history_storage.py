@@ -101,6 +101,22 @@ def test_chat_projects_delete_cascades_threads_and_messages(
     assert studio_db.list_chat_threads(project_id = "project-1") == []
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
+    assert (tmp_path / "Projects" / "Research-project").exists()
+
+
+def test_chat_project_delete_files_removes_workspace(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    project = studio_db.upsert_chat_project(_project())
+    root = tmp_path / "Projects" / "Research-project"
+    marker = root / "sandbox" / "marker.txt"
+    marker.write_text("created by code execution", encoding = "utf-8")
+
+    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert deleted is not None
+    assert deleted["rootPath"] == project["rootPath"]
+    assert not root.exists()
+    assert studio_db.get_chat_project(project["id"]) is None
 
 
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):

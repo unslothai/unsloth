@@ -59,8 +59,11 @@ export async function updateChatProjectInstructions(
   await updateStoredChatProject(projectId, { instructions: instructions.trim() });
 }
 
-export async function deleteChatProject(projectId: string): Promise<void> {
-  await deleteStoredChatProject(projectId);
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  await deleteStoredChatProject(projectId, args);
 }
 
 export async function moveChatItemToProject(

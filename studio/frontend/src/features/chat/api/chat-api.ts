@@ -413,9 +413,15 @@ export async function updateChatProject(
   return project;
 }
 
-export async function deleteChatProject(projectId: string): Promise<void> {
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (args.deleteFiles) params.set("delete_files", "true");
+  const qs = params.toString();
   const response = await authFetch(
-    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
   await parseJsonOrThrow<ProjectRecord>(response);
