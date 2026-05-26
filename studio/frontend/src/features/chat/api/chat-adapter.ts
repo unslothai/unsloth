@@ -28,6 +28,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -70,6 +71,13 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // External prompt-cache fields (see _build_usage_chunk in
+  // external_provider.py). cache_creation is Anthropic-only.
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 /** Server-side timing data from llama-server's timings object. */
@@ -429,6 +437,18 @@ function collectImageParts(
   return parts;
 }
 
+// Refusal flag stamped on assistant metadata when the backend emits the
+// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
+// request body (Anthropic guidance: leaving refusals in context keeps
+// refusing). Metadata (not text) prevents content from spoofing a reset.
+function isAnthropicRefusalMessage(message: RunMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const metadata = (message as { metadata?: unknown }).metadata as
+    | { custom?: Record<string, unknown> }
+    | undefined;
+  return metadata?.custom?.anthropicRefusal === true;
+}
+
 function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
   content: OpenAIMessageContent;
@@ -449,6 +469,11 @@ function toOpenAIMessage(message: RunMessage): {
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
+    if (isAnthropicRefusalMessage(message)) {
+      // Prune refused assistant turn from outbound history; the
+      // rendered transcript still shows the user-visible notice.
+      return null;
+    }
   }
 
   const imageParts = collectImageParts(message);
@@ -922,7 +947,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        webFetchToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -978,14 +1009,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               externalProvider.baseUrl,
             ),
         );
-      // web_fetch shares the Search pill with web_search (no separate
-      // UI toggle), so it follows toolsEnabled. Anthropic is the only
-      // provider that ships it today; on others providerSupportsBuiltinWebFetch
-      // returns false and this stays inert.
+      // Fetch pill is independent of Search (Anthropic bills web_fetch
+      // separately from web_search). Sourced from `webFetchToolsEnabled`;
+      // on providers without web_fetch the toggle is forced off in
+      // chat-page's runtime setState.
       const webFetchEnabledForThisTurn =
         Boolean(
           externalProvider &&
-            toolsEnabled &&
+            webFetchToolsEnabled &&
             providerSupportsBuiltinWebFetch(externalProvider.providerType),
         );
       const providerShipsWebFetch = Boolean(
@@ -1007,7 +1038,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
-      const outboundMessages = messages
+      // Two-pass build: a refused assistant turn also drops the user
+      // prompt that triggered it (leaving it in context re-triggers
+      // the classifier). Refusal flag rides assistant
+      // metadata.custom.anthropicRefusal, set out-of-band from the
+      // backend _toolEvent.
+      const survivingMessages: RunMessage[] = [];
+      for (const message of messages) {
+        if (isAnthropicRefusalMessage(message)) {
+          const last = survivingMessages.at(-1);
+          if (last && last.role === "user") {
+            survivingMessages.pop();
+          }
+          continue;
+        }
+        survivingMessages.push(message);
+      }
+
+      const outboundMessages = survivingMessages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
@@ -1030,14 +1078,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        // Treat search and fetch as a single "any web tool" axis so
+        // the guard only warns when neither pill is on; checking
+        // webSearchEnabledForThisTurn alone mis-fired when only Fetch
+        // was on and suppressed live web_fetch calls.
+        const anyWebEnabledForThisTurn =
+          webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
+        if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
             "Answer from your own knowledge. " +
             "If a request genuinely requires tool use, live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn) {
+        } else if (!anyWebEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
             "You may still use code execution tools when they are available and useful. " +
@@ -1077,8 +1131,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           });
         }
       }
-      const imageBase64 = findLatestUserImageBase64(messages);
-      const audioBase64 = findLatestUserAudioBase64(messages);
+      // Scan post-prune history so a refused user turn's image/audio
+      // doesn't gate or mis-attribute the next non-refused turn.
+      const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      const audioBase64 = findLatestUserAudioBase64(survivingMessages);
 
       // Block when ANY image is in the outbound payload (current or
       // prior turns) and the loaded model can't process images. Keeps
@@ -1114,7 +1170,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
-          const lastUserMsg = [...messages]
+          const lastUserMsg = [...survivingMessages]
             .reverse()
             .find((m) => m.role === "user");
           if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
@@ -1236,6 +1292,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         title: string;
         metadata?: { description: string };
       }> = [];
+      // Latched on the `anthropic_refusal` tool event; stamped onto the
+      // final assistant metadata as `custom.anthropicRefusal` to drive
+      // the history-prune above.
+      let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -1519,13 +1579,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // Pair web_fetch with the Search pill on any
-                      // provider that ships it (Anthropic today). The
-                      // common workflow is "search returns URLs, fetch
-                      // reads them"; without web_fetch the model can
-                      // surface a citation but cannot quote from the
-                      // page body, which is the whole point of the
-                      // tool. There is no separate UI toggle yet.
+                      // web_fetch has its own Fetch pill, independent
+                      // of Search. Anthropic-only today.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                       // OpenAI Responses-API only: `image_generation`
@@ -1577,6 +1632,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
+                : {}),
+              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
+              // silently drops on unsupported models as a second
+              // line of defence.
+              ...(params.fastMode &&
+              providerSupportsFastMode(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+                ? { fast_mode: true }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
@@ -1715,6 +1780,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     })
                       .catch(() => {});
                   }
+                  continue;
+                }
+                if (toolEvent.type === "anthropic_refusal") {
+                  // Latch the backend refusal signal so the final
+                  // message metadata can drive the prune.
+                  anthropicRefusalSeen = true;
                   continue;
                 }
                 if (toolEvent.type === "tool_start") {
@@ -2002,18 +2073,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Update context usage in store if we got valid server data
+        // Prefer llama-server timings; fall back to provider usage envelope.
+        const cachedTokens =
+          meta?.timings?.cache_n ??
+          meta?.usage?.prompt_tokens_details?.cached_tokens ??
+          meta?.usage?.cache_read_input_tokens ??
+          0;
+        // Anthropic-only (billed at the write premium).
+        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+
+        // Gate on the captured checkpoint still being active so a late
+        // completion from provider A doesn't populate the bar after the
+        // user switched to provider B mid-stream.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number"
+          typeof meta.usage.total_tokens === "number" &&
+          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
-            cachedTokens: meta.timings?.cache_n ?? 0,
+            cachedTokens,
+            cacheWriteTokens,
           });
         }
 
@@ -2038,13 +2122,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             timing: finalTiming,
             custom: {
               reasoningDuration,
+              // Persisted refusal flag driving the two-pass prune.
+              anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
               contextUsage: meta?.usage
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
-                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    cachedTokens,
+                    cacheWriteTokens,
                     modelId: params.checkpoint,
                   }
                 : undefined,
