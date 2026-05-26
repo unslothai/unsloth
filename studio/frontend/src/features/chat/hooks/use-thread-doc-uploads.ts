@@ -46,11 +46,19 @@ export interface UseThreadDocUploadsResult {
   isIndexing: boolean;
 }
 
-/** Per-thread RAG upload: file → POST → SSE → chip status. */
+/** RAG upload from the composer "+" button. Routes to whichever source is
+ *  currently selected in the Retrieval dropdown: KB → uploads to that KB;
+ *  thread or off → uploads to (and lazy-initializes) the current chat
+ *  thread, then flips source to "thread" on first ingest if it was "off". */
 export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
+  // Track the scope key per chip so removeDoc can dispatch the right
+  // delete (KB docs vs thread docs use different scope keys in the store).
+  const [chipScopeKeys, setChipScopeKeys] = useState<Record<string, string>>(
+    {},
+  );
 
   // Brand-new chats have no backend thread until the first message is sent.
   // Initialize the current local thread to mint a remoteId so RAG uploads
@@ -82,28 +90,40 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       ]);
 
       void (async () => {
-        const threadId = await ensureThreadId();
-        if (!threadId) {
-          setPendingDocs((prev) =>
-            prev.map((d) =>
-              d.id === localChipId
-                ? {
-                    ...d,
-                    status: "error",
-                    errorMessage: "Could not create thread for upload",
-                  }
-                : d,
-            ),
-          );
-          toast.error("Could not create thread for upload");
-          return;
+        const ragSource = useChatRuntimeStore.getState().ragSource;
+        let scope:
+          | { kind: "kb"; kbId: string }
+          | { kind: "thread"; threadId: string }
+          | null = null;
+        let scopeKey: string | null = null;
+        if (ragSource.kind === "kb") {
+          scope = { kind: "kb", kbId: ragSource.kbId };
+          scopeKey = `kb:${ragSource.kbId}`;
+        } else {
+          // ragSource is "thread" or "off" — fall back to thread.
+          const threadId = await ensureThreadId();
+          if (!threadId) {
+            setPendingDocs((prev) =>
+              prev.map((d) =>
+                d.id === localChipId
+                  ? {
+                      ...d,
+                      status: "error",
+                      errorMessage: "Could not create thread for upload",
+                    }
+                  : d,
+              ),
+            );
+            toast.error("Could not create thread for upload");
+            return;
+          }
+          scope = { kind: "thread", threadId };
+          scopeKey = `thread:${threadId}`;
         }
+        setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey }));
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId } = await uploadDocument(
-            { kind: "thread", threadId },
-            file,
-          );
+          const { documentId, jobId } = await uploadDocument(scope, file);
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId
@@ -119,7 +139,13 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                     d.id === localChipId ? { ...d, status: "ready" } : d,
                   ),
                 );
-                if (useChatRuntimeStore.getState().ragSource.kind === "off") {
+                // First ingest in an off-source chat: flip to thread so
+                // the model has somewhere to search. KB uploads don't
+                // need this — source is already a KB.
+                if (
+                  scope?.kind === "thread" &&
+                  useChatRuntimeStore.getState().ragSource.kind === "off"
+                ) {
                   useChatRuntimeStore
                     .getState()
                     .setRagSource({ kind: "thread" });
@@ -156,15 +182,21 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       setPendingDocs((prev) => {
         const doc = prev.find((d) => d.id === id);
         if (doc?.documentId) {
+          const scopeKey =
+            chipScopeKeys[id] ?? `thread:${activeThreadId ?? ""}`;
           void useRagStore
             .getState()
-            .deleteDocument(doc.documentId, `thread:${activeThreadId ?? ""}`)
+            .deleteDocument(doc.documentId, scopeKey)
             .catch(() => {});
         }
         return prev.filter((d) => d.id !== id);
       });
+      setChipScopeKeys((m) => {
+        const { [id]: _gone, ...rest } = m;
+        return rest;
+      });
     },
-    [activeThreadId],
+    [activeThreadId, chipScopeKeys],
   );
 
   const clearDocs = useCallback(() => setPendingDocs([]), []);

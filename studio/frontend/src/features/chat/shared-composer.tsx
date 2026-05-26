@@ -524,6 +524,9 @@ export function SharedComposer({
     }
   }, [aui]);
 
+  // Composer "+" upload — routes to whichever scope the Retrieval
+  // dropdown currently points at (KB or thread). Keeps "what you see is
+  // what you upload to" so users don't get silent thread-vs-KB mismatches.
   const addDoc = useCallback(
     (file: File) => {
       const localChipId = crypto.randomUUID();
@@ -532,28 +535,35 @@ export function SharedComposer({
         { id: localChipId, file, status: "uploading" },
       ]);
       void (async () => {
-        const threadId = await ensureThreadId();
-        if (!threadId) {
-          setPendingDocs((prev) =>
-            prev.map((d) =>
-              d.id === localChipId
-                ? {
-                    ...d,
-                    status: "error",
-                    errorMessage: "Could not create thread for upload",
-                  }
-                : d,
-            ),
-          );
-          toast.error("Could not create thread for upload");
-          return;
+        const ragSource = useChatRuntimeStore.getState().ragSource;
+        let scope:
+          | { kind: "kb"; kbId: string }
+          | { kind: "thread"; threadId: string }
+          | null = null;
+        if (ragSource.kind === "kb") {
+          scope = { kind: "kb", kbId: ragSource.kbId };
+        } else {
+          const threadId = await ensureThreadId();
+          if (!threadId) {
+            setPendingDocs((prev) =>
+              prev.map((d) =>
+                d.id === localChipId
+                  ? {
+                      ...d,
+                      status: "error",
+                      errorMessage: "Could not create thread for upload",
+                    }
+                  : d,
+              ),
+            );
+            toast.error("Could not create thread for upload");
+            return;
+          }
+          scope = { kind: "thread", threadId };
         }
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId } = await uploadDocument(
-            { kind: "thread", threadId },
-            file,
-          );
+          const { documentId, jobId } = await uploadDocument(scope, file);
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId
@@ -569,7 +579,10 @@ export function SharedComposer({
                     d.id === localChipId ? { ...d, status: "ready" } : d,
                   ),
                 );
-                if (useChatRuntimeStore.getState().ragSource.kind === "off") {
+                if (
+                  scope?.kind === "thread" &&
+                  useChatRuntimeStore.getState().ragSource.kind === "off"
+                ) {
                   useChatRuntimeStore
                     .getState()
                     .setRagSource({ kind: "thread" });
