@@ -897,16 +897,13 @@ class ChatCompletionRequest(BaseModel):
     dynatemp_range: Optional[float] = Field(
         None,
         ge = 0.0,
-        description = (
-            "llama.cpp `dynatemp_range`. 0.0 disables. Local only."
-        ),
+        description = ("llama.cpp `dynatemp_range`. 0.0 disables. Local only."),
     )
     dynatemp_exponent: Optional[float] = Field(
         None,
         ge = 0.0,
         description = (
-            "llama.cpp `dynatemp_exponent`. Local only; pairs with "
-            "dynatemp_range."
+            "llama.cpp `dynatemp_exponent`. Local only; pairs with " "dynatemp_range."
         ),
     )
     mirostat: Optional[int] = Field(
