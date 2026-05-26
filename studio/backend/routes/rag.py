@@ -435,6 +435,32 @@ def get_rag_defaults(
     return _load_rag_defaults()
 
 
+@router.post("/warmup")
+def warmup_rag_embedder(
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """Preload the configured default embedder so the first retrieval is warm.
+
+    Called from the frontend when the user enables the RAG pill — moves the
+    cold-load latency (Qwen3-VL-Embedding-2B is ~4 GB) out of the first
+    chat-completion path, where a 30s+ load can race the llama-server
+    prefill timeout.
+    """
+    from utils.rag.config import resolve_embedder
+
+    defaults = _load_rag_defaults()
+    model_name = defaults.embedding_model or resolve_embedder(
+        defaults.mode,
+        defaults.chunking_strategy,
+    )
+    try:
+        embeddings.get_embedder(model_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG warmup failed for %s: %s", model_name, exc)
+        return {"ok": False, "model": model_name, "error": str(exc)}
+    return {"ok": True, "model": model_name}
+
+
 @router.put("/defaults", response_model = RagDefaults)
 def set_rag_defaults(
     payload: UpdateRagDefaultsRequest,

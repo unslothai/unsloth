@@ -304,6 +304,13 @@ export async function setRagDefaults(
   return parseJsonOrThrow<RagDefaults>(response);
 }
 
+/** Preload the configured embedder on the backend. Long-running (cold
+ *  load can take 30s+). Fire-and-forget: failure is non-fatal because
+ *  the first real query will lazy-load again. */
+export async function warmupRagEmbedder(): Promise<void> {
+  await authFetch("/api/rag/warmup", { method: "POST" });
+}
+
 // --- Search ---
 
 export async function search(req: SearchRequest): Promise<SearchHit[]> {

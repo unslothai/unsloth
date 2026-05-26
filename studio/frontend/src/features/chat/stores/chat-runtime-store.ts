@@ -657,6 +657,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             nextState.ragToolEnabled = true;
             saveBool(CHAT_RAG_TOOL_ENABLED_KEY, true);
           }
+          // After hydration, if RAG is on (persisted or just migrated),
+          // warm the embedder so the first message doesn't pay the
+          // cold load inline.
+          if (
+            nextState.ragToolEnabled === true ||
+            (nextState.ragToolEnabled === undefined && state.ragToolEnabled)
+          ) {
+            void import("@/features/rag/api/rag-api")
+              .then((m) => m.warmupRagEmbedder())
+              .catch(() => {});
+          }
           return nextState;
         });
       } catch {
@@ -869,8 +880,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolsEnabled };
     }),
   setRagToolEnabled: (ragToolEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_RAG_TOOL_ENABLED_KEY, ragToolEnabled);
+      // Warmup on off→on transitions: kick the backend to preload the
+      // embedder so the user's first RAG-using message doesn't pay the
+      // cold-start (~30s for Qwen3-VL-Embedding-2B) inline. Fire-and-forget.
+      if (ragToolEnabled && !state.ragToolEnabled) {
+        void import("@/features/rag/api/rag-api")
+          .then((m) => m.warmupRagEmbedder())
+          .catch(() => {});
+      }
       return { ragToolEnabled };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>

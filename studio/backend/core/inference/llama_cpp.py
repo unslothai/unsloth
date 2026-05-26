@@ -4203,9 +4203,12 @@ class LlamaCppBackend:
             # without triggering a retry storm.  Cancel during both
             # prefill and streaming is handled by the watcher thread
             # which closes the response, unblocking any httpx read.
+            # 300 s headroom for large models (30B+) re-prefilling after
+            # a tool call that returned a long result (e.g. RAG chunks
+            # with images) — prior 120 s was tripping on Gemma-4-31B.
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = 120.0,
+                read = 300.0,
                 write = 10,
                 pool = 10,
             )
