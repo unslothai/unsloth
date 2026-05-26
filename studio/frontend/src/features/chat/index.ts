@@ -3,6 +3,14 @@
 
 export { ChatPage } from "./chat-page";
 export {
+  getInferenceStatus,
+  listGgufVariants,
+  listLocalModels,
+  loadModel,
+  type LocalModelInfo,
+} from "./api/chat-api";
+export type { GgufVariantDetail } from "./types/api";
+export {
   ChatSettingsPanel,
   defaultInferenceParams,
   type InferenceParams,
