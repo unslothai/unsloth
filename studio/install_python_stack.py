@@ -440,6 +440,7 @@ def _relax_mlx_metadata() -> None:
     """
     import re
     import sysconfig
+
     site = Path(sysconfig.get_paths()["purelib"])
     pattern = re.compile(r"^Requires-Dist:\s*transformers\b[^\n]*", re.M)
     replacement = "Requires-Dist: transformers>=4.51.3"
