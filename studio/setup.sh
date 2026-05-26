@@ -536,9 +536,7 @@ if [ "$_COLAB_NO_VENV" = true ]; then
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
-    # Check unsloth + unsloth-zoo. A stale zoo with unsloth at latest is the
-    # common macOS arm64 backtrack symptom; single-package check would say
-    # "up to date" and skip the update.
+    # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
@@ -548,42 +546,12 @@ print(version(sys.argv[1]))
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
-    # Only probe public unsloth-zoo when managing unsloth itself. Custom
-    # STUDIO_PACKAGE_NAME builds may pin their own zoo fork.
-    _CHECK_ZOO=false
-    [ "$_PKG_NAME" = "unsloth" ] && _CHECK_ZOO=true
-
-    INSTALLED_ZOO_VER=""
-    LATEST_ZOO_VER=""
-    if [ "$_CHECK_ZOO" = true ]; then
-        INSTALLED_ZOO_VER=$("$VENV_DIR/bin/python" -c "
-from importlib.metadata import version
-print(version('unsloth-zoo'))
-" 2>/dev/null || echo "")
-
-        LATEST_ZOO_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/unsloth-zoo/json" 2>/dev/null \
-            | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
-            || echo "")
-    fi
-
-    _UNSLOTH_UP_TO_DATE=false
-    _ZOO_UP_TO_DATE=true
-    [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ] && _UNSLOTH_UP_TO_DATE=true
-    if [ "$_CHECK_ZOO" = true ]; then
-        _ZOO_UP_TO_DATE=false
-        [ -n "$INSTALLED_ZOO_VER" ] && [ -n "$LATEST_ZOO_VER" ] && [ "$INSTALLED_ZOO_VER" = "$LATEST_ZOO_VER" ] && _ZOO_UP_TO_DATE=true
-    fi
-
-    if [ "$_UNSLOTH_UP_TO_DATE" = true ] && [ "$_ZOO_UP_TO_DATE" = true ]; then
-        step "python" "$_PKG_NAME $INSTALLED_VER + unsloth-zoo $INSTALLED_ZOO_VER are up to date"
+    if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
+        step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
-    elif [ -n "$LATEST_VER" ] || [ -n "$LATEST_ZOO_VER" ]; then
-        _msg="$_PKG_NAME ${INSTALLED_VER:-unknown} -> ${LATEST_VER:-unknown}"
-        if [ "$_ZOO_UP_TO_DATE" = false ] && [ -n "$LATEST_ZOO_VER" ]; then
-            _msg="$_msg / unsloth-zoo ${INSTALLED_ZOO_VER:-unknown} -> ${LATEST_ZOO_VER:-unknown}"
-        fi
-        substep "$_msg available, updating..."
-    else
+    elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
+        substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
+    elif [ -z "$LATEST_VER" ]; then
         substep "could not reach PyPI, updating to be safe..."
     fi
 fi

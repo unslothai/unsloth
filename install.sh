@@ -1858,8 +1858,7 @@ if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
     substep "upgrading unsloth in migrated environment..."
-    # Apple Silicon: ensure MLX stack is present --no-deps before reinstalling
-    # unsloth-zoo (see comment in fresh-install branch below for rationale).
+    # Apple Silicon: MLX stack --no-deps before unsloth-zoo (see below).
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         substep "installing MLX stack (mlx + mlx-lm + mlx-vlm, --no-deps)..."
         run_install_cmd "install MLX stack" uv pip install --python "$_VENV_PY" \
@@ -2045,11 +2044,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 ;;
         esac
     fi
-    # Fresh: Apple Silicon -- install MLX stack --no-deps BEFORE unsloth so
-    # unsloth-zoo's mlx-vlm>=0.4.4 dep is already satisfied. Stops the resolver
-    # from inspecting mlx-vlm's transformers>=5.5.0 requirement (which would
-    # conflict with the venv's transformers==4.57.6 pin and backtrack unsloth).
-    # Per-model transformers routing happens at runtime via side-car venvs.
+    # Apple Silicon: install MLX stack --no-deps before unsloth so the resolver
+    # does not see mlx-vlm's transformers>=5.5.0 pin (would backtrack unsloth).
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         substep "installing MLX stack (mlx + mlx-lm + mlx-vlm, --no-deps)..."
         run_install_cmd "install MLX stack" uv pip install --python "$_VENV_PY" \
