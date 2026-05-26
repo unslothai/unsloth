@@ -13,6 +13,10 @@
  * a null capability — every knob renders for them.
  */
 
+// NB: when adding a new sampling knob, default it to `false` on every
+// SaaS provider in PROVIDER_CAPABILITIES below (only local backends
+// + the permissive {custom, vllm, ollama, llama_cpp, openrouter}
+// providers should expose llama.cpp-specific samplers).
 export interface ProviderCapabilities {
   /**
    * Temperature sampling. Reasoning-class models (OpenAI's gpt-5.x / o3 via
@@ -58,6 +62,13 @@ export interface ProviderCapabilities {
    * `disable_parallel_tool_use: true` on Anthropic (inverted).
    */
   parallelToolCalls: boolean;
+  /**
+   * llama.cpp `typ_p` (locally typical sampling). Local llama-server
+   * only — no SaaS provider currently accepts this field. Default is
+   * `false` for every external provider and `true` only for the local
+   * permissive {custom, vllm, ollama, llama_cpp} buckets.
+   */
+  typicalP: boolean;
 }
 
 /**
@@ -401,6 +412,7 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   stop: true,
   serviceTier: false,
   parallelToolCalls: true,
+  typicalP: false,
 };
 
 const ALL_SUPPORTED: ProviderCapabilities = {
@@ -415,6 +427,7 @@ const ALL_SUPPORTED: ProviderCapabilities = {
   stop: true,
   serviceTier: false,
   parallelToolCalls: true,
+  typicalP: true,
 };
 
 // Reasoning-class OpenAI models served via /v1/responses fix temperature
@@ -437,6 +450,7 @@ const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
   stop: false,
   serviceTier: true,
   parallelToolCalls: true,
+  typicalP: false,
 };
 const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
@@ -452,6 +466,7 @@ const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   stop: false,
   serviceTier: true,
   parallelToolCalls: true,
+  typicalP: false,
 };
 
 // Prefix list for OpenAI reasoning-class model ids. Kept in sync with
@@ -493,6 +508,23 @@ function isClaude47SamplingRemoved(modelId: string | null | undefined): boolean 
   return ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX.test(normalized);
 }
 
+// DeepSeek reasoning-class models silently ignore temperature, top_p,
+// presence_penalty, frequency_penalty and 400 on logprobs/top_logprobs.
+// `deepseek-reasoner` is the dedicated thinking model;
+// `deepseek-v4-flash` runs reasoning-mode under the same flag as well.
+// Match by prefix so future revisions (deepseek-reasoner-2027 etc.)
+// continue to gate correctly.
+const DEEPSEEK_REASONING_MODEL_PREFIXES = [
+  "deepseek-reasoner",
+  "deepseek-r1",
+] as const;
+
+function isDeepSeekReasoningModelId(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return DEEPSEEK_REASONING_MODEL_PREFIXES.some((p) => normalized.startsWith(p));
+}
+
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // Default OpenAI bucket is reasoning-class (current registry only ships
   // gpt-5.x / o3 ids), but per-model resolution in getProviderCapabilities
@@ -520,6 +552,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     stop: true,
     serviceTier: true,
     parallelToolCalls: true,
+    typicalP: false,
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
@@ -547,8 +580,17 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     stop: true,
     serviceTier: false,
     parallelToolCalls: false,
+    typicalP: false,
   },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
+  // Chat-class defaults (deepseek-chat / deepseek-v4-flash non-thinking):
+  // accept temperature, top_p, seed, stop. Reasoning class
+  // (deepseek-reasoner / deepseek-v4-flash thinking-mode) ignores
+  // temperature, top_p, presence_penalty, frequency_penalty entirely and
+  // 400s on logprobs — see
+  // https://api-docs.deepseek.com/guides/reasoning_model. Per-model
+  // resolution in getProviderCapabilities downshifts reasoner ids onto
+  // DEEPSEEK_REASONING_CAPABILITIES.
   deepseek: {
     temperature: true,
     topP: true,
@@ -561,6 +603,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     stop: true,
     serviceTier: false,
     parallelToolCalls: true,
+    typicalP: false,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
@@ -591,6 +634,8 @@ const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
  *     (OPENAI_REASONING_CAPABILITIES).
  *   - anthropic + claude-*-4-7: temperature/top_p/top_k stripped to
  *     match the backend 400-avoidance regex.
+ *   - deepseek + reasoning model (deepseek-reasoner / r1): hides
+ *     temperature/top_p (silently ignored upstream).
  */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
@@ -603,6 +648,9 @@ export function getProviderCapabilities(
   }
   if (providerType === "anthropic" && isClaude47SamplingRemoved(modelId)) {
     return { ...base, temperature: false, topP: false, topK: false };
+  }
+  if (providerType === "deepseek" && isDeepSeekReasoningModelId(modelId)) {
+    return { ...base, temperature: false, topP: false };
   }
   return base;
 }

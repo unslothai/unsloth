@@ -828,6 +828,18 @@ class ChatCompletionRequest(BaseModel):
             "default (which is `true` everywhere today)."
         ),
     )
+    typical_p: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "Locally typical sampling (llama.cpp `typ_p`). 1.0 disables. "
+            "Local llama-server only — no SaaS provider currently accepts "
+            "this field, so the frontend capability map gates it off for "
+            "every external provider and the local path forwards it on "
+            "/v1/chat/completions."
+        ),
+    )
     fast_mode: Optional[bool] = Field(
         None,
         description = (

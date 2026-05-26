@@ -182,6 +182,16 @@ function sanitizeInferenceParams(
   if (typeof value.parallelToolCalls === "boolean") {
     params.parallelToolCalls = value.parallelToolCalls;
   }
+  // typicalP: nullable float (null = no typ_p on the wire, matching
+  // llama-server's default 1.0). Mirror seed's nullable-float handling.
+  if (value.typicalP === null) {
+    params.typicalP = null;
+  } else if (
+    typeof value.typicalP === "number" &&
+    Number.isFinite(value.typicalP)
+  ) {
+    params.typicalP = value.typicalP;
+  }
   // Mirror trustRemoteCode handling so the toggle survives reload
   // and the /api/chat/settings round-trip.
   if (typeof value.fastMode === "boolean") {

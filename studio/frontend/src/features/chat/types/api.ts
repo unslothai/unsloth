@@ -305,6 +305,14 @@ export interface OpenAIChatCompletionsRequest {
    */
   parallel_tool_calls?: boolean;
   /**
+   * llama.cpp `typ_p` (locally typical sampling). Local llama-server
+   * only — no SaaS provider currently accepts this. 1.0 disables
+   * (llama-server default). External-provider capability map already
+   * gates this off, so on the wire it only appears for local + the
+   * permissive {custom, vllm, ollama, llama_cpp} buckets.
+   */
+  typical_p?: number;
+  /**
    * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
    * silently on every other model + provider. See
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode

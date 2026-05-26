@@ -4248,6 +4248,7 @@ class LlamaCppBackend:
         frequency_penalty: Optional[float] = None,
         seed: Optional[int] = None,
         parallel_tool_calls: Optional[bool] = None,
+        typical_p: Optional[float] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -4306,6 +4307,11 @@ class LlamaCppBackend:
             payload["seed"] = seed
         if parallel_tool_calls is not None:
             payload["parallel_tool_calls"] = parallel_tool_calls
+        # Locally typical sampling. llama-server default 1.0 disables it;
+        # the field is llama.cpp-specific (no cloud provider accepts it),
+        # so we only forward it when the caller explicitly sets one.
+        if typical_p is not None:
+            payload["typical_p"] = typical_p
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4451,6 +4457,7 @@ class LlamaCppBackend:
         frequency_penalty: Optional[float] = None,
         seed: Optional[int] = None,
         parallel_tool_calls: Optional[bool] = None,
+        typical_p: Optional[float] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4548,6 +4555,8 @@ class LlamaCppBackend:
                 payload["seed"] = seed
             if parallel_tool_calls is not None:
                 payload["parallel_tool_calls"] = parallel_tool_calls
+            if typical_p is not None:
+                payload["typical_p"] = typical_p
 
             try:
                 _auth_headers = (
@@ -5240,6 +5249,8 @@ class LlamaCppBackend:
             stream_payload["seed"] = seed
         if parallel_tool_calls is not None:
             stream_payload["parallel_tool_calls"] = parallel_tool_calls
+        if typical_p is not None:
+            stream_payload["typical_p"] = typical_p
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""

@@ -2517,6 +2517,7 @@ async def openai_chat_completions(
                     frequency_penalty = payload.frequency_penalty,
                     seed = payload.seed,
                     parallel_tool_calls = payload.parallel_tool_calls,
+                    typical_p = payload.typical_p,
                 )
 
             _tool_sentinel = object()
@@ -2690,6 +2691,7 @@ async def openai_chat_completions(
                 frequency_penalty = payload.frequency_penalty,
                 seed = payload.seed,
                 parallel_tool_calls = payload.parallel_tool_calls,
+                typical_p = payload.typical_p,
             )
 
         _gguf_sentinel = object()
@@ -4963,6 +4965,7 @@ def _build_passthrough_payload(
     frequency_penalty = None,
     seed = None,
     parallel_tool_calls = None,
+    typical_p = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -5013,6 +5016,11 @@ def _build_passthrough_payload(
         body["seed"] = seed
     if parallel_tool_calls is not None:
         body["parallel_tool_calls"] = parallel_tool_calls
+    # llama.cpp-specific locally-typical sampling (typ_p in the sampler
+    # chain). No SaaS provider accepts this; the frontend capability map
+    # gates it to local only.
+    if typical_p is not None:
+        body["typical_p"] = typical_p
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema
         # when response_format is present. Field is documented flat at the
@@ -5447,6 +5455,7 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         frequency_penalty = payload.frequency_penalty,
         seed = payload.seed,
         parallel_tool_calls = payload.parallel_tool_calls,
+        typical_p = payload.typical_p,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,

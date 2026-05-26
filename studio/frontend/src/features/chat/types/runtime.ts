@@ -44,6 +44,12 @@ export interface InferenceParams {
    * upstream defaults across all three.
    */
   parallelToolCalls: boolean;
+  /**
+   * Locally typical sampling (llama.cpp `typ_p`). Local llama-server
+   * only — no SaaS provider currently accepts this. 1.0 disables (and
+   * is the llama-server default). `null` = unset (not forwarded).
+   */
+  typicalP: number | null;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
@@ -70,6 +76,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   stop: [],
   serviceTier: null,
   parallelToolCalls: true,
+  typicalP: null,
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",

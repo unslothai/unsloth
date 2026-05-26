@@ -1587,6 +1587,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.parallelToolCalls === false
                 ? { parallel_tool_calls: false }
                 : {}),
+              // llama.cpp `typ_p`. External providers all have
+              // capabilities.typicalP=false; only the permissive local
+              // buckets (custom/vllm/ollama/llama_cpp) opt in. `null`
+              // (unset) or `1.0` (llama-server default) is a no-op.
+              ...(externalCapabilities?.typicalP &&
+              params.typicalP !== null &&
+              params.typicalP !== 1
+                ? { typical_p: params.typicalP }
+                : {}),
               // Built-in tools: Search pill maps to provider-side
               // web_search (currently OpenAI / Anthropic / OpenRouter /
               // Kimi); Code pill maps to Anthropic's server-side
@@ -1707,6 +1716,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               : {}),
             ...(params.seed !== null ? { seed: params.seed } : {}),
             ...(params.stop.length > 0 ? { stop: params.stop } : {}),
+            // llama.cpp `typ_p`. Local only — external providers gate
+            // it off via capability map. `null` (unset) or 1.0 (server
+            // default) is a no-op so we forward only meaningful values.
+            ...(params.typicalP !== null && params.typicalP !== 1
+              ? { typical_p: params.typicalP }
+              : {}),
             parallel_tool_calls: params.parallelToolCalls,
             image_base64: imageBase64,
             audio_base64: audioBase64,
