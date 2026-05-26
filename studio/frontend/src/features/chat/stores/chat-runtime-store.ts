@@ -267,22 +267,16 @@ type ChatRuntimeStore = {
   /**
    * Whether the active external provider exposes a server-side
    * web_fetch tool (Anthropic's `web_fetch_20250910` /
-   * `web_fetch_20260209`). Gates the chat composer's Fetch pill so
-   * users can read a URL or PDF without also turning on web_search.
-   * Web fetch used to be implicitly bundled with the Search pill
-   * because the typical workflow is "search returns URLs, fetch
-   * reads them", but enabling them together prevented "just fetch
-   * this one URL" workflows and made the cost surface confusing
-   * (each fetch is metered separately from search hits).
+   * `web_fetch_20260209`). Gates the composer's Fetch pill,
+   * independent of Search.
    */
   supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   /**
-   * Standalone Fetch pill state for the chat composer. Independent
-   * of `toolsEnabled` (Search pill) and only consulted when the
-   * active provider returns true from `providerSupportsBuiltinWebFetch`.
+   * Fetch pill state, independent of `toolsEnabled` (Search). Only
+   * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;

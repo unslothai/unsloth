@@ -447,9 +447,7 @@ export function SharedComposer({
   // the pill row stays compact for providers without the capability.
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
   const showImagePill = supportsBuiltinImageGeneration;
-  // Fetch pill is Anthropic-only today (web_fetch_20250910 /
-  // web_fetch_20260209). Hidden on providers that don't ship it so the
-  // pill row stays clean.
+  // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   // Backwards-compatible alias for any other call site that may still

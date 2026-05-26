@@ -895,14 +895,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               externalProvider.baseUrl,
             ),
         );
-      // Fetch pill is independent of Search. Anthropic bills per
-      // web_fetch invocation separately from web_search hits, so
-      // bundling them used to make the cost surface confusing and
-      // blocked "just fetch this URL" workflows where the user knows
-      // exactly which page they want read. Source from
-      // `webFetchToolsEnabled` directly; on providers that don't ship
-      // web_fetch `providerSupportsBuiltinWebFetch` returns false and
-      // the toggle is forced off in chat-page's runtime setState.
+      // Fetch pill is independent of Search (Anthropic bills web_fetch
+      // separately from web_search). Sourced from `webFetchToolsEnabled`;
+      // on providers without web_fetch the toggle is forced off in
+      // chat-page's runtime setState.
       const webFetchEnabledForThisTurn =
         Boolean(
           externalProvider &&
@@ -951,14 +947,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        // Treat search and fetch as a single "any web tool enabled"
-        // axis. The guard only needs to warn the model when no web
-        // tool is wired in for this turn; once either pill is on the
-        // model can pick the right one from the tool schema. Earlier
-        // revisions checked webSearchEnabledForThisTurn alone, which
-        // mis-fired when the standalone Fetch pill was on and Search
-        // was off and told Claude it had no web_fetch when in fact it
-        // did, suppressing live web_fetch tool calls.
+        // Treat search and fetch as a single "any web tool" axis so
+        // the guard only warns when neither pill is on; checking
+        // webSearchEnabledForThisTurn alone mis-fired when only Fetch
+        // was on and suppressed live web_fetch calls.
         const anyWebEnabledForThisTurn =
           webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
         if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
@@ -1439,10 +1431,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // web_fetch ships as a standalone toggle (Fetch
-                      // pill), independent of Search. Anthropic is the
-                      // only provider that ships it today and bills it
-                      // per invocation separately from web_search hits.
+                      // web_fetch has its own Fetch pill, independent
+                      // of Search. Anthropic-only today.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                       // OpenAI Responses-API only: `image_generation`

@@ -850,9 +850,7 @@ export function ChatPage(): ReactElement {
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
-      // Default Fetch off when the user has not chosen one yet. Anthropic
-      // bills per fetch; surfacing the toggle visible but inactive keeps
-      // it a deliberate opt-in rather than an implicit cost.
+      // Default Fetch off (Anthropic bills per fetch); deliberate opt-in.
       webFetchToolsEnabled: supportsBuiltinWebFetch
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
