@@ -5298,6 +5298,15 @@ def existing_install_matches_choice(
     for binary in ("llama-server", "llama-quantize"):
         if not (runtime_dir / f"{binary}{ext}").exists():
             return False
+    if host.is_linux:
+        try:
+            preflight_linux_installed_binaries(
+                [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
+                install_dir,
+                host,
+            )
+        except Exception:
+            return False
     expected_fingerprint = expected_install_fingerprint(
         llama_tag = llama_tag,
         release_tag = release_tag,
