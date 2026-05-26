@@ -10,7 +10,7 @@ import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
-import { Image, downloadImagePart } from "./image";
+import { downloadImagePart } from "./image";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -289,26 +289,18 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {imagePart ? (
-          <figure className="m-0 flex flex-col gap-2">
-            <div className="group/generated-image relative aspect-square w-[480px] max-w-full overflow-hidden rounded-2xl bg-muted/25 shadow-lg shadow-foreground/5 dark:shadow-black/25">
-              <img
-                src={imagePart.image}
-                alt=""
-                aria-hidden={true}
-                className="pointer-events-none absolute inset-0 size-full scale-110 object-cover opacity-25 blur-2xl saturate-125"
-              />
-              <div className="pointer-events-none absolute inset-0 bg-background/45" />
+          <figure className="m-0 inline-flex max-w-full flex-col items-start gap-2 align-top">
+            <div className="group/generated-image relative inline-block max-w-full overflow-hidden rounded-2xl align-top">
               <button
                 type="button"
-                className="relative z-10 block size-full cursor-zoom-in overflow-hidden rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="block max-w-full cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 onClick={showPreview}
                 aria-label="Open generated image preview"
               >
-                <Image.Preview
+                <img
                   src={imagePart.image}
                   alt={imageTitle}
-                  containerClassName="flex size-full min-h-0 items-center justify-center bg-transparent"
-                  className="size-full object-contain"
+                  className="block h-auto max-h-[min(70vh,620px)] max-w-[min(100%,520px)] rounded-2xl object-contain"
                 />
               </button>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
@@ -335,7 +327,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             </div>
             {captionPrompt ? (
-              <figcaption className="max-w-[480px] text-xs leading-5 text-muted-foreground">
+              <figcaption className="max-w-[min(100%,520px)] text-xs leading-5 text-muted-foreground">
                 <div
                   ref={captionRef}
                   className={cn(
