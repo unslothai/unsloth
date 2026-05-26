@@ -1971,8 +1971,6 @@ def run_training_process(
                 fullname, _StubSubpackageLoader(fullname), is_package = True
             )
 
-    sys.meta_path.append(_StubSubpackageFinder())
-
     # Only stub torchao on Windows ROCm hosts -- on Windows CUDA (NVIDIA) torchao
     # is real and shadowing it breaks torchao-based quantization paths.
     # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
@@ -1992,6 +1990,9 @@ def run_training_process(
         except Exception:
             pass
     if _is_win32_rocm:
+        # Register the finder only on Windows ROCm -- on other platforms there
+        # are no stub modules seeded, so appending is a pure accumulation.
+        sys.meta_path.append(_StubSubpackageFinder())
         # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
             "torchao",
@@ -2298,24 +2299,42 @@ def run_training_process(
     # not need this cap.
     # Unified-memory APUs (gfx1150 Strix Point / gfx1151 Strix Halo) share GPU
     # and system RAM in one pool: 0.90 of 128 GB starves the OS. Use 0.80 there.
-    # Classified via gcnArchName — naming-independent and already parsed
-    # throughout this PR.
+    # Primary classifier: gcnArchName from device properties — stable within a
+    # product family and naming-independent.  AMD SDK / Radeon wheels may omit
+    # gcnArchName or expose it under a variant spelling, so we try several attr
+    # names then fall back to known device-name markers as a last resort.
     # Non-fatal: silently skipped if torch is not importable.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
 
             if _torch_mem.cuda.is_available():
-                # Classify unified vs discrete by gcnArchName, not by device
-                # marketing name or VRAM/RAM ratio.  Name regexes miss "8060S";
-                # ratio (vram >= 0.90 * sys_ram) false-positives on machines
-                # where discrete VRAM == system RAM (e.g. 16 GB card + 16 GB RAM).
-                # gcnArchName is stable within a product family and is already
-                # parsed throughout this PR.
+                # Classify unified vs discrete by gcnArchName, not by VRAM/RAM
+                # ratio (false-positives on 16 GB card + 16 GB RAM hosts).
                 _props = _torch_mem.cuda.get_device_properties(0)
                 _dev_name = _props.name
-                _gcn_arch = (getattr(_props, "gcnArchName", "") or "").split(":")[0]
+                # Try multiple attribute name forms: different ROCm wheel builds
+                # (HIP SDK vs AMD SDK / Radeon wheels) may use different spellings.
+                _gcn_arch = ""
+                for _arch_attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                    _v = (getattr(_props, _arch_attr, "") or "").split(":")[0].strip()
+                    if _v:
+                        _gcn_arch = _v
+                        break
                 _is_unified = _gcn_arch in {"gfx1150", "gfx1151"}
+                if not _is_unified and not _gcn_arch:
+                    # gcnArchName absent (AMD SDK / Radeon wheels may not populate
+                    # it) -- fall back to device name matching for known
+                    # unified-memory iGPU model names (Strix Halo: 890M,
+                    # Strix Point: 880M).
+                    _dev_lower = _dev_name.lower()
+                    _is_unified = "890m" in _dev_lower or "880m" in _dev_lower
+                    if _is_unified:
+                        logger.debug(
+                            "ROCm OOM guard: gcnArchName absent -- inferred "
+                            "unified memory from device name %r; applying 0.80 cap",
+                            _dev_name,
+                        )
                 _mem_fraction = 0.80 if _is_unified else 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
