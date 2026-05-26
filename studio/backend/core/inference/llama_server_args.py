@@ -85,6 +85,8 @@ def _flag_name(token: str) -> Optional[str]:
         ):
             return "-np"
     return name
+
+
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     """Validate user-supplied llama-server args. Returns a flat list
     ready to extend the llama-server command; raises ``ValueError``
