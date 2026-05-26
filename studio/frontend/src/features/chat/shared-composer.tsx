@@ -331,6 +331,7 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
