@@ -2639,20 +2639,45 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
 
     A bare first-match picked the wrong device on mixed APU + dGPU hosts
     (e.g. Strix Halo gfx1151 + discrete RX 7900 gfx1100). Respect
-    HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the asset matches what HIP
-    actually runs on. Falls back to the first GPU when no env var is set.
+    HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES so the
+    asset matches what HIP actually runs on. Falls back to the first GPU when
+    no env var is set.
 
-    rocminfo / hipinfo print the same gfx token multiple times per GPU
-    (Name, ISA, marketing-name), so we de-duplicate consecutive-or-repeated
-    matches before indexing -- otherwise HIP_VISIBLE_DEVICES=1 picks the
-    second occurrence of GPU 0 instead of GPU 1. Empty / "-1" env values
-    mean no AMD GPU is visible to HIP and yield None.
+    rocminfo / hipinfo print the same gfx token multiple times per GPU (Name,
+    ISA, marketing-name). We first try to split the output on per-GPU section
+    headers (rocminfo: "Agent N" blocks, hipinfo: "device#N" entries) and take
+    exactly one gfx token per section. This gives the correct per-GPU list even
+    on same-arch multi-GPU hosts (e.g. two RX 7900 XTX cards) where global
+    dict.fromkeys dedup would collapse both cards to a single entry and make
+    HIP_VISIBLE_DEVICES=1 point out of range.
+
+    Falls back to insertion-order dedup when the output has no recognisable
+    section markers (flat gfx-string inputs, unit-test stubs, etc.).
+
+    Empty / "-1" env values mean no AMD GPU is visible to HIP: return None.
     """
-    raw = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
-    if not raw:
+    # Try to build a per-GPU token list by splitting on section boundaries.
+    # rocminfo sections are introduced by "Agent N" lines (optionally between
+    # rows of asterisks). hipinfo sections start with "device#N".
+    _sections = re.split(
+        r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bdevice\s*#\s*\d+\b",
+        out,
+    )
+    if len(_sections) > 1:
+        # Section-based: one gfx token per GPU section preserves physical order.
+        _tokens: list[str] = []
+        for _sec in _sections[1:]:
+            _m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _sec.lower())
+            if _m:
+                _tokens.append(_m.group(0))
+    else:
+        # Fallback: insertion-order dedup (handles flat strings / unknown formats).
+        _raw = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
+        _tokens = list(dict.fromkeys(_raw))
+
+    if not _tokens:
         return None
-    # Dict preserves insertion order on Python 3.7+; collapses duplicates.
-    _tokens = list(dict.fromkeys(raw))
+
     _vis_raw = None
     # AMD's HIP runtime honours all three env vars with identical semantics.
     for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
@@ -3388,7 +3413,11 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
         return False
     host = (parsed.netloc or "").lower()
     if host == "objects.githubusercontent.com":
-        return True
+        # GitHub's release CDN. Restrict to release-asset paths so a tampered
+        # API response pointing at an arbitrary CDN object is still rejected.
+        # Real release asset URLs carry the "/github-production-release-asset-"
+        # prefix; gist / raw / avatar CDN paths do not.
+        return parsed.path.startswith("/github-production-release-asset-")
     if host == "github.com":
         return parsed.path.startswith(f"/{expected_repo}/releases/download/")
     return False

@@ -308,8 +308,18 @@ def test_lemonade_resolver_rejects_http_scheme():
 
 
 def test_lemonade_resolver_accepts_github_cdn():
+    # Real GitHub release CDN URLs carry the /github-production-release-asset- prefix.
     assert _mod._is_trusted_github_release_url(
-        "https://objects.githubusercontent.com/abc/def", "lemonade-sdk/llamacpp-rocm"
+        "https://objects.githubusercontent.com/github-production-release-asset-abc123/456/789?token=x",
+        "lemonade-sdk/llamacpp-rocm",
+    )
+
+
+def test_lemonade_resolver_rejects_arbitrary_cdn_path():
+    # A CDN URL without the release-asset path prefix must be rejected.
+    assert not _mod._is_trusted_github_release_url(
+        "https://objects.githubusercontent.com/abc/def",
+        "lemonade-sdk/llamacpp-rocm",
     )
 
 
@@ -401,3 +411,24 @@ def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkey
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     assert _pick_rocm_gfx_target(probe_out) is None
+
+
+@pytest.mark.skipif(
+    _pick_rocm_gfx_target is None,
+    reason = "_pick_rocm_gfx_target not present on this branch",
+)
+def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
+    """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
+    return gfx1151, not fall back to GPU 0 due to dict.fromkeys collapsing the
+    two gfx1100 entries into one and making index 2 out of range."""
+    # Simulate rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
+    # Each GPU gets its own Agent section with a few token mentions.
+    probe_out = (
+        "***\nAgent 1\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 2\n***\n  gfx1100 some info\n  gfx1100\n"
+        "***\nAgent 3\n***\n  gfx1151 some info\n  gfx1151\n"
+    )
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
