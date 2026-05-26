@@ -229,8 +229,8 @@ class TestTrainingRawSupport(unittest.TestCase):
             _coerce_optional_nonneg_float("max_grad_value", -1)
 
     def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
-        # `cast_norm_output_to_input_dtype` and `dataset_order` ship in the
-        # paired unsloth-zoo update. Until that floor is in place, the
+        # `cast_norm_output_to_input_dtype`, `dataset_order`, and
+        # `append_eos` ship in the paired unsloth-zoo update. Until that floor is in place, the
         # worker must gate them so releases that predate those fields can
         # still construct MLXTrainingConfig without TypeError.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
@@ -243,7 +243,10 @@ class TestTrainingRawSupport(unittest.TestCase):
             'if "cast_norm_output_to_input_dtype" in _supported_fields:', source
         )
         self.assertIn('if "dataset_order" in _supported_fields:', source)
-        # The unconditional kwargs must NOT include either gated field.
+        self.assertIn('if "append_eos" in _supported_fields:', source)
+        self.assertIn('format_type == "raw"', source)
+        self.assertIn('mlx_config_kwargs["append_eos"] = bool(raw_text_mode)', source)
+        # The unconditional kwargs must NOT include any gated field.
         # Use proper paren tracking; `source.find(")", ...)` would stop at
         # the first close paren inside the dict body (e.g.
         # `int(config.get("save_steps", 0) or 0)`) and miss any future
@@ -266,6 +269,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         unconditional = source[unconditional_block_start:end]
         self.assertNotIn("cast_norm_output_to_input_dtype", unconditional)
         self.assertNotIn("dataset_order", unconditional)
+        self.assertNotIn("append_eos", unconditional)
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(

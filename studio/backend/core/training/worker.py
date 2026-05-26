@@ -1442,6 +1442,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
     if "dataset_order" in _supported_fields:
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
+    if "append_eos" in _supported_fields:
+        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # needs MLX to append EOS like the CUDA raw-text path.
+        mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
     trainer = MLXTrainer(
         model = model,
