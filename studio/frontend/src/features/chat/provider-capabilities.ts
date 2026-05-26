@@ -71,17 +71,94 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Output-token cap for any external provider request. Picked to stay below the
- * tightest declared limit across the providers we ship (Anthropic Claude Opus
- * tops out at 128k, GPT-5.x ~128k, Gemini 2.5 ~65k, DeepSeek 8k) while staying
- * well above what a typical chat reply needs. The local-model path is not
- * subject to this — local backends honour whatever the loaded context allows.
- *
- * If a user's stored maxTokens (e.g. carried over from a prior local-model
- * session with a 128k+ context) exceeds this, chat-adapter clamps the
- * outbound request so the provider does not 400 on it.
+ * Fallback cap for unknown providers / models. Prefer
+ * `getExternalMaxOutputTokens(providerType, modelId)` for the real cap.
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
+
+/**
+ * Per-model max-output caps from each provider's docs:
+ *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
+ *   Anthropic: platform.claude.com/docs/en/about-claude/models
+ *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+ *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
+ * Local-model path is unaffected.
+ */
+const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
+  providerType: string;
+  prefixes: readonly string[];
+  cap: number;
+}> = [
+  // OpenAI
+  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
+  { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
+  // Anthropic
+  {
+    providerType: "anthropic",
+    prefixes: ["claude-opus-4-7"],
+    cap: 128000,
+  },
+  {
+    providerType: "anthropic",
+    prefixes: [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+    ],
+    cap: 64000,
+  },
+  // Gemini
+  {
+    providerType: "gemini",
+    prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
+    cap: 65536,
+  },
+  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
+  { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
+];
+
+/**
+ * Documented per-model output cap; unknown ids fall back to
+ * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). OpenRouter ids are
+ * `provider/model`; the prefix is stripped before matching.
+ */
+export function getExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number {
+  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const stripped =
+    providerType === "openrouter" && normalized.includes("/")
+      ? normalized.split("/").slice(-1)[0]
+      : normalized;
+  const effectiveProvider =
+    providerType === "openrouter"
+      ? _inferProviderFromOpenrouterId(normalized) ?? providerType
+      : providerType;
+  for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
+    if (entry.providerType !== effectiveProvider) continue;
+    if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
+      return entry.cap;
+    }
+  }
+  return EXTERNAL_MAX_OUTPUT_TOKENS;
+}
+
+function _inferProviderFromOpenrouterId(
+  normalizedId: string,
+): string | null {
+  // Map OpenRouter `provider/model` prefix to our internal providerType.
+  if (normalizedId.startsWith("openai/")) return "openai";
+  if (normalizedId.startsWith("anthropic/")) return "anthropic";
+  if (normalizedId.startsWith("google/")) return "gemini";
+  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  return null;
+}
 
 /**
  * Whether the external provider offers a built-in web-search tool that the
