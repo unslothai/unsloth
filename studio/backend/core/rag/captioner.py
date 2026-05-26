@@ -49,22 +49,28 @@ def _load() -> tuple[Any, Any] | None:
             return _model, _processor
         try:
             import torch
-            from transformers import AutoModelForVision2Seq, AutoProcessor
+            from transformers import (
+                AutoModelForVision2Seq,
+                AutoProcessor,
+                BitsAndBytesConfig,
+            )
 
-            logger.info("Loading RAG captioner: %s", _CAPTION_MODEL_NAME)
+            logger.info("Loading RAG captioner: %s (4-bit)", _CAPTION_MODEL_NAME)
             processor = AutoProcessor.from_pretrained(
                 _CAPTION_MODEL_NAME,
                 trust_remote_code = True,
             )
-            # bf16 per the model card; deliberately not 4-bit because
-            # bnb + VLM custom code can be finicky and the model is
-            # small enough to fit in bf16 on any GPU that already
-            # hosts the chat model.
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit = True,
+                bnb_4bit_quant_type = "nf4",
+                bnb_4bit_compute_dtype = torch.bfloat16,
+                bnb_4bit_use_double_quant = True,
+            )
             model = AutoModelForVision2Seq.from_pretrained(
                 _CAPTION_MODEL_NAME,
                 trust_remote_code = True,
                 device_map = "auto",
-                dtype = torch.bfloat16,
+                quantization_config = quant_config,
             )
             model.eval()
             _model = model
