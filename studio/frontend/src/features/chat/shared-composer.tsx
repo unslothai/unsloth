@@ -21,7 +21,20 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  DownloadIcon,
+  GlobeIcon,
+  HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
+  MicIcon,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
+import { Image03Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -34,6 +47,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -336,6 +350,12 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
+  const setWebFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.setWebFetchToolsEnabled,
+  );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -427,6 +447,9 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
+  const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+    selectedExternalProvider?.providerType,
+  );
   // Gemini rejects codeExecution alongside image modalities. Search is
   // blocked on older Gemini image ids but allowed on Gemini 3 image
   // models -- supportsBuiltinWebSearch already encodes the per-model
@@ -458,6 +481,9 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
+  // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
+  const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
+  const showWebFetchPill = supportsBuiltinWebFetch;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1123,8 +1149,29 @@ export function SharedComposer({
                 imageToolsEnabled ? "Disable image generation" : "Enable image generation"
               }
             >
-              <ImageIcon className="size-3.5" />
+              <HugeiconsIcon
+                icon={Image03Icon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
               <span>Images</span>
+            </button>
+          )}
+          {showWebFetchPill && (
+            <button
+              type="button"
+              disabled={webFetchDisabled}
+              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+              }
+              aria-label={
+                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+              }
+            >
+              <DownloadIcon className="size-3.5" />
+              <span>Fetch</span>
             </button>
           )}
         </div>
