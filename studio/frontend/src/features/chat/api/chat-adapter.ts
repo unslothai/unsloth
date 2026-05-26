@@ -2115,7 +2115,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               )
             : [];
 
-        const sourceParts = [...urlSourceParts, ...documentSourceParts];
+        // SDK's SourceMessagePart only types `sourceType: "url"` with a
+        // required `url` field. SourcesGroup branches on `sourceType` at
+        // runtime, so cast the doc-shaped parts through `unknown` rather
+        // than weakening the helper's strict typing.
+        const sourceParts = [
+          ...urlSourceParts,
+          ...(documentSourceParts as unknown as typeof urlSourceParts),
+        ];
 
         const meta = serverMetadata;
         const finalTokenCount =
