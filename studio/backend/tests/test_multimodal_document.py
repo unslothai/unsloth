@@ -117,10 +117,8 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
     types = [p.get("type") for p in parts]
     assert "document" in types, parts
     doc = _strip_cache(next(p for p in parts if p.get("type") == "document"))
-    # citations: {enabled: true} opts the document into Anthropic's
-    # natural-citation pipeline so the streaming proxy can render
-    # inline [N] markers + a Sources panel entry. Without it the
-    # citations_delta handler in external_provider.py is a no-op.
+    # citations: {enabled: true} opts into Anthropic's natural-citation
+    # pipeline; without it the citations_delta handler is a no-op.
     assert doc == {
         "type": "document",
         "source": {

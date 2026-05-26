@@ -145,10 +145,9 @@ async function updateStoredChatThreadEventually(
 
 /**
  * Return ``raw`` when it is a safe-to-navigate http(s) URL, or "" otherwise.
- * Rejects non-string input, CR/LF (header-injection / link-smuggling), and
- * any non-http(s) scheme so provider/tool-controlled strings such as
- * ``javascript:`` / ``data:`` / ``vbscript:`` cannot land in an
- * ``<a href>`` rendered by the Sources panel.
+ * Rejects non-string input, CR/LF (header injection), and non-http(s)
+ * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider /
+ * tool-controlled strings cannot land in an <a href>.
  */
 function isSafeNavigableSourceUrl(raw: unknown): string {
   if (typeof raw !== "string") return "";
@@ -185,12 +184,10 @@ function documentCitationToSource(
     "";
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // Only treat ``source`` as a navigable URL when it is a real
-  // http(s) address. Anthropic search_result_location ``source`` can
-  // be a free-form identifier (e.g. ``kb-doc-42``); a hostile model
-  // can also return ``javascript:`` / ``data:`` / ``vbscript:``
-  // strings that would execute when rendered as an <a href>. Fall
-  // back to a stable doc anchor for anything else.
+  // Only treat ``source`` as a navigable URL when it is real http(s);
+  // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
+  // or a hostile ``javascript:`` / ``data:`` / ``vbscript:`` string.
+  // Fall back to a stable doc anchor otherwise.
   const url =
     isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
@@ -199,14 +196,10 @@ function documentCitationToSource(
   // Trim the cited snippet so the Sources panel stays scannable.
   const description =
     cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Anthropic numbers each inline [N] marker by citation, not by
-  // source URL: two distinct citations from the same document (or
-  // two search_result_locations with the same source but different
-  // search_result_index) must keep distinct entries. Fold the
-  // citation type plus position-bearing fields into the id so the
-  // Sources panel preserves the 1:1 mapping with the inline
-  // footnotes (otherwise char_location(0,5) and page_location(0,5)
-  // for the same source would collapse).
+  // Anthropic numbers inline [N] per citation, not per source URL.
+  // Fold citation type + position-bearing fields into the id so two
+  // distinct citations on the same source (or two search_result_locations
+  // with different search_result_index) keep separate Sources entries.
   const citationType =
     typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
@@ -259,10 +252,9 @@ function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      // Drop blocks whose ``URL:`` is not a safe-to-navigate http(s) link.
-      // Provider/tool output is attacker-controllable, so a hostile
-      // ``URL: javascript:...`` / ``URL: data:...`` line would otherwise
-      // be rendered as a clickable <a href> in the Sources panel.
+      // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
+      // output is attacker-controllable so a hostile ``javascript:`` /
+      // ``data:`` line must not reach the Sources panel <a href>.
       const url = isSafeNavigableSourceUrl(urlMatch[1]);
       if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
@@ -1233,10 +1225,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
-      // Anthropic document citations collected from
-      // `_toolEvent.type === "document_citations"` (emitted on
-      // message_stop). Converted into Sources-panel source parts at
-      // end-of-stream so the inline [N] markers have matching entries.
+      // Anthropic document_citations tool_event payload, converted to
+      // Sources-panel source parts at end-of-stream so the inline [N]
+      // markers have matching entries.
       const documentCitationParts: Array<{
         type: "source";
         sourceType: "url";
@@ -1693,9 +1684,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   continue;
                 }
                 if (toolEvent.type === "document_citations") {
-                  // Anthropic citations_delta footnotes. Convert into
-                  // Sources-panel entries so the inline [N] markers
-                  // emitted by the backend have matching links.
+                  // Convert Anthropic citations_delta footnotes into
+                  // Sources-panel entries matching the inline [N] markers.
                   const cits = toolEvent.citations;
                   if (Array.isArray(cits)) {
                     cits.forEach((entry, idx) => {

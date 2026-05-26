@@ -128,10 +128,9 @@ function Source({
 
 interface SourceData {
   /**
-   * Stable per-citation key. Multiple SourceData entries can intentionally
-   * share the same ``url`` (e.g., two Anthropic document citations into
-   * different spans of the same source), so React lists key on ``id``
-   * rather than ``url`` to keep each footnote distinct.
+   * Stable per-citation key. Two Anthropic document citations into
+   * different spans of the same source share a ``url``, so React keys
+   * on ``id`` to keep each footnote distinct.
    */
   id: string;
   url: string;

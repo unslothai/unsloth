@@ -3,22 +3,12 @@
 
 """Tests for Anthropic ``citations_delta`` handling in the streaming proxy.
 
-When a user enables ``citations: {enabled: true}`` on a document block in
-the request, Anthropic emits ``content_block_delta`` events whose ``delta``
-is shaped as ``{"type": "citations_delta", "citation": {...}}``. Each
-event carries one citation pointing at a source document and the
-citations interleave with ``text_delta`` events on the same content
-block. See https://platform.claude.com/docs/en/build-with-claude/citations
-
-The proxy must:
-  * inject a numbered footnote marker ``[N]`` inline right after the
-    text run the citation refers to;
-  * dedupe by the type-specific anchor so re-cites of the same span
-    collapse onto a single footnote;
-  * forward the full list as a synthetic ``document_citations``
-    tool_event at ``message_stop`` so the Sources panel can render the
-    footnotes next to existing web_search / web_fetch citations;
-  * stay invariant for streams that never emit ``citations_delta``.
+Verifies the proxy injects inline ``[N]`` markers after cited text,
+dedupes by type-specific anchor (char_location, page_location,
+content_block_location, search_result_location), forwards a synthetic
+``document_citations`` tool_event at message_stop, and stays inert when
+no citations_delta events fire. See
+https://platform.claude.com/docs/en/build-with-claude/citations
 """
 
 import asyncio
@@ -137,8 +127,8 @@ def _joined(lines: list[str]) -> str:
 
 
 def test_no_citations_stream_unchanged(monkeypatch):
-    """A plain text stream without citations_delta passes through with no
-    inline markers and no document_citations tool_event."""
+    """Plain text streams pass through with no inline markers and no
+    document_citations tool_event."""
     lines = _capture(
         monkeypatch,
         [
@@ -286,10 +276,8 @@ def test_search_result_location_supported(monkeypatch):
 
 
 def test_same_start_different_end_offsets_get_distinct_numbers(monkeypatch):
-    """char_location citations sharing start_char_index but with
-    different end_char_index are distinct spans (Anthropic ranges
-    are defined by start AND exclusive end) and must get distinct
-    footnote numbers."""
+    """Same start_char_index + different end_char_index = distinct spans,
+    so they must get distinct footnote numbers (ranges use exclusive end)."""
     cit_a = {
         "type": "char_location",
         "document_index": 0,
@@ -326,9 +314,8 @@ def test_same_start_different_end_offsets_get_distinct_numbers(monkeypatch):
 
 
 def test_search_result_location_different_indices_get_distinct_numbers(monkeypatch):
-    """Two search_result_location citations with the same source but
-    different ``search_result_index`` must dedupe as distinct footnotes,
-    matching the Anthropic search-result citation contract."""
+    """Same source + different search_result_index = distinct footnotes
+    (matches the Anthropic search-result citation contract)."""
     cit_a = {
         "type": "search_result_location",
         "search_result_index": 0,

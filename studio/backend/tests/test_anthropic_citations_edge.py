@@ -4,12 +4,11 @@
 """Edge-case tests for Anthropic ``citations_delta`` handling.
 
 Complements ``test_anthropic_citations.py``. Covers malformed payloads,
-unusual orderings, mixed citation types, and the ``citations: {enabled:
-true}`` opt-in we now attach to translated ``input_document`` blocks.
-
-References:
-  * https://platform.claude.com/docs/en/build-with-claude/citations
-  * https://platform.claude.com/docs/en/build-with-claude/search-results
+unusual orderings, mixed citation types, and the ``citations:
+{enabled: true}`` opt-in attached to translated ``input_document``
+blocks. See
+https://platform.claude.com/docs/en/build-with-claude/citations and
+https://platform.claude.com/docs/en/build-with-claude/search-results.
 """
 
 import asyncio
@@ -52,12 +51,9 @@ def _capture(
     captured_body: dict | None = None,
 ) -> list[str]:
     """Drive ``stream_chat_completion`` against a mocked Anthropic
-    response and return the SSE lines we'd send back to the browser.
-
-    Pass ``captured_body`` (a dict) to also capture the request body
-    we sent upstream -- the test can then assert on the translated
-    Anthropic shape (e.g. that ``citations: {enabled: true}`` made it
-    onto the document block).
+    response and return the SSE lines. Pass ``captured_body`` to also
+    capture the outgoing request body for assertions on the translated
+    Anthropic shape.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -152,12 +148,8 @@ def _joined(lines: list[str]) -> str:
 
 
 def _citation_payload(body: str) -> dict:
-    """Pull the ``document_citations`` synthetic tool_event out of the
-    streamed SSE body and return its decoded payload.
-
-    Raises if no such event was emitted -- helper is for the tests that
-    expect the event to be present.
-    """
+    """Pull the ``document_citations`` synthetic tool_event from the
+    SSE body and return its payload. Raises if absent."""
     assert "document_citations" in body, body
     for line in body.splitlines():
         if not line.startswith("data: "):
@@ -179,10 +171,8 @@ def _citation_payload(body: str) -> dict:
 
 
 def test_citation_with_no_preceding_text_still_emits_marker(monkeypatch):
-    """A citations_delta arriving before any text_delta on a fresh
-    content block must not crash -- the marker just lands at the
-    beginning of the block. (Anthropic in practice emits text first,
-    but the proxy must not assume it.)"""
+    """citations_delta before any text_delta must not crash; marker
+    lands at the start of the block."""
     cit = {
         "type": "char_location",
         "document_index": 0,
@@ -209,9 +199,8 @@ def test_citation_with_no_preceding_text_still_emits_marker(monkeypatch):
 
 
 def test_citations_delta_with_non_dict_citation_is_ignored(monkeypatch):
-    """A malformed event where ``delta.citation`` is not a dict (e.g.
-    a future-proof string sentinel) must not crash, must not emit a
-    marker, and must not poison the document_citations list."""
+    """Non-dict ``delta.citation`` must not crash, emit a marker, or
+    poison the document_citations list."""
     lines = _capture(
         monkeypatch,
         [
@@ -235,8 +224,8 @@ def test_citations_delta_with_non_dict_citation_is_ignored(monkeypatch):
 
 
 def test_citations_delta_with_missing_citation_field_is_ignored(monkeypatch):
-    """citations_delta with no ``citation`` field is treated the same as
-    a non-dict citation -- skip without crashing."""
+    """Missing ``citation`` field is treated like a non-dict citation:
+    skip without crashing."""
     lines = _capture(
         monkeypatch,
         [
@@ -260,10 +249,8 @@ def test_citations_delta_with_missing_citation_field_is_ignored(monkeypatch):
 
 
 def test_char_location_with_reversed_indices_does_not_crash(monkeypatch):
-    """A malformed char_location where ``start_char_index >
-    end_char_index`` must not crash the stream -- the dedup key
-    accepts any int pair, and we still surface a footnote for the
-    caller to inspect."""
+    """Malformed char_location with reversed indices must not crash;
+    the dedup key accepts any int pair and still surfaces a footnote."""
     cit = {
         "type": "char_location",
         "document_index": 0,
@@ -292,9 +279,8 @@ def test_char_location_with_reversed_indices_does_not_crash(monkeypatch):
 
 
 def test_page_location_missing_document_index_does_not_crash(monkeypatch):
-    """page_location with no ``document_index`` (e.g. when Anthropic
-    only sends ``document_title``) must still produce a footnote.
-    The dedup key falls back to ``None`` for the missing field."""
+    """page_location missing ``document_index`` still produces a
+    footnote; dedup key falls back to ``None`` for the missing field."""
     cit = {
         "type": "page_location",
         "document_title": "Untitled PDF",
@@ -321,9 +307,8 @@ def test_page_location_missing_document_index_does_not_crash(monkeypatch):
 
 
 def test_content_block_location_with_non_int_block_index_does_not_crash(monkeypatch):
-    """content_block_location whose block indices are unexpectedly
-    strings (future shape / provider bug) must not crash. The dedup
-    key tolerates non-int values."""
+    """content_block_location with string block indices must not crash;
+    dedup key tolerates non-int values."""
     cit = {
         "type": "content_block_location",
         "document_index": 0,
@@ -351,9 +336,8 @@ def test_content_block_location_with_non_int_block_index_does_not_crash(monkeypa
 
 
 def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
-    """An unrecognised citation ``type`` (forward-compat) must still
-    dedupe: identical unknown citations collapse to one footnote;
-    citations that differ in any field get distinct numbers."""
+    """Unknown citation ``type`` (forward-compat) still dedupes:
+    identical ones collapse, differing ones get distinct numbers."""
     cit_a = {
         "type": "future_shape_location",
         "anchor": "abc",
@@ -389,10 +373,8 @@ def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
 
 
 def test_mixed_citation_types_same_document_get_distinct_keys(monkeypatch):
-    """A char_location and a page_location for the same
-    ``document_index`` are different citation shapes and must be
-    treated as distinct footnotes -- the dedup key carries the
-    citation type as its first slot."""
+    """char_location and page_location on the same document_index are
+    distinct shapes; dedup key uses citation type as its first slot."""
     cit_char = {
         "type": "char_location",
         "document_index": 0,
@@ -428,13 +410,9 @@ def test_mixed_citation_types_same_document_get_distinct_keys(monkeypatch):
 
 
 def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
-    """The ``cited_text`` field on a citation must survive into the
-    synthetic ``document_citations`` tool_event so the Sources panel
-    can render the cited snippet as a tooltip / description.
-
-    Per the Anthropic docs, ``cited_text`` is the verbatim cited
-    span and is not counted towards output tokens, so dropping it
-    here would lose user-visible context for free."""
+    """``cited_text`` must survive into the synthetic event so the
+    Sources panel can render it as a tooltip. Anthropic does not bill
+    cited_text against output tokens, so preserving it is free."""
     cit = {
         "type": "char_location",
         "document_index": 0,
@@ -461,10 +439,8 @@ def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
 
 
 def test_internal_key_field_never_leaks_to_client(monkeypatch):
-    """The ``_key`` sentinel we attach to each citation for in-process
-    dedup must be stripped before the synthetic event is forwarded
-    -- it's internal accounting state, not a documented Anthropic
-    field, and surfacing it would confuse downstream consumers."""
+    """The internal ``_key`` dedup sentinel must be stripped before
+    the synthetic event is forwarded; it is not an Anthropic field."""
     cit = {
         "type": "char_location",
         "document_index": 0,
@@ -493,10 +469,8 @@ def test_internal_key_field_never_leaks_to_client(monkeypatch):
 
 
 def test_citation_across_multiple_content_blocks_numbers_continue(monkeypatch):
-    """Footnote numbering must be per-message, not per-content-block.
-    A citation on block index 0 followed by one on block index 2
-    (split across a tool-use block, say) must come out as [1] then
-    [2], not [1] then [1]."""
+    """Footnote numbering is per-message, not per-content-block:
+    citations across separate blocks emit [1] then [2]."""
     cit_a = {
         "type": "char_location",
         "document_index": 0,
@@ -539,10 +513,9 @@ def test_citation_across_multiple_content_blocks_numbers_continue(monkeypatch):
 
 
 def test_inline_marker_lands_after_text_run(monkeypatch):
-    """The inline ``[N]`` marker must come AFTER the text run it
-    annotates, not before -- Anthropic streams the text first and
-    the citation second, and the proxy preserves that order so the
-    footnote reads ``"...grass is green.[1]"``, not ``"[1]...grass``."""
+    """Inline ``[N]`` must land AFTER the cited text run: Anthropic
+    streams text then citation, so the proxy emits ``"...green.[1]"``
+    not ``"[1]green"``."""
     cit = {
         "type": "char_location",
         "document_index": 0,
@@ -572,10 +545,8 @@ def test_inline_marker_lands_after_text_run(monkeypatch):
 
 
 def test_no_synthetic_event_when_only_text_deltas(monkeypatch):
-    """A stream that carries text_delta events but no citations_delta
-    must NOT emit a synthetic ``document_citations`` event -- the
-    Sources panel relies on absence of the event to know there are
-    no document footnotes to render."""
+    """No citations_delta means no synthetic ``document_citations``
+    event; Sources panel relies on absence to suppress the section."""
     lines = _capture(
         monkeypatch,
         [
@@ -594,13 +565,9 @@ def test_no_synthetic_event_when_only_text_deltas(monkeypatch):
 
 
 def test_input_document_translation_enables_citations(monkeypatch):
-    """Studio's normalised ``input_document`` content part must
-    translate to an Anthropic ``document`` block carrying ``citations:
-    {enabled: true}`` so the upstream actually emits citations_delta
-    events. Without this opt-in the rest of the citation plumbing is
-    a no-op for real user requests.
-
-    Covers both the base64 and the url ``source`` branches."""
+    """``input_document`` must translate to an Anthropic ``document``
+    block carrying ``citations: {enabled: true}`` (both base64 and url
+    source branches) so upstream emits citations_delta."""
     captured_b64: dict = {}
     _capture(
         monkeypatch,
@@ -668,10 +635,8 @@ def test_input_document_translation_enables_citations(monkeypatch):
 
 
 def test_cited_text_truncated_in_synthetic_event(monkeypatch):
-    """``cited_text`` is bounded server-side so a multi-KB span does
-    not balloon the SSE payload. The frontend trims to 240 chars
-    anyway; truncating at the source keeps bytes bounded.
-    """
+    """``cited_text`` is capped server-side so multi-KB spans do not
+    balloon the SSE payload."""
     from core.inference.external_provider import _CITED_TEXT_MAX_LEN
 
     long_quote = "x" * (_CITED_TEXT_MAX_LEN + 4000)

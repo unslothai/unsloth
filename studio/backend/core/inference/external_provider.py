@@ -177,35 +177,25 @@ def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
-# Server-side cap on ``cited_text`` forwarded inside the synthetic
-# ``document_citations`` tool_event. The frontend Sources panel trims
-# to 240 chars anyway; truncating here keeps SSE bytes bounded when
-# a long RAG / search-result block returns a multi-KB cited span.
+# Cap on ``cited_text`` forwarded in document_citations tool_events;
+# keeps SSE bytes bounded on multi-KB cited spans (frontend trims to
+# 240 chars anyway).
 _CITED_TEXT_MAX_LEN = 512
 
 
 def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
     """Stable dedup key for an Anthropic ``citations_delta.citation``.
 
-    Shape varies per document type per
+    Anchor fields vary per type (char_location, page_location,
+    content_block_location, search_result_location); both start AND
+    exclusive end indices are part of the key so same-start /
+    different-end pairs stay distinct. search_result_location keys on
+    ``search_result_index`` + ``source`` instead of document_index so
+    distinct results with the same source don't collapse. Unknown
+    shapes fall back to a stringified copy (more entries, never
+    collisions). See
     https://platform.claude.com/docs/en/build-with-claude/citations
-    and https://platform.claude.com/docs/en/build-with-claude/search-results :
-
-    * ``char_location``: ``document_index`` + start/end char index
-    * ``page_location``: ``document_index`` + start/end page number
-    * ``content_block_location``: ``document_index`` + start/end block index
-    * ``search_result_location``: ``search_result_index`` + ``source`` +
-      ``title`` + start/end block index
-      (search-result citations do NOT carry document_index /
-      document_title -- using those would collapse distinct results
-      with the same source into one footnote.)
-
-    The end anchor is part of the key for every variant: Anthropic
-    citation ranges are defined by start AND exclusive end indices,
-    so a same-start / different-end pair is two distinct citations.
-
-    Anything unrecognised falls back to a stringified copy so a future
-    shape still dedupes (worst case: more entries, never collisions).
+    and https://platform.claude.com/docs/en/build-with-claude/search-results.
     """
     ctype = citation.get("type")
     doc = citation.get("document_index")
@@ -1374,12 +1364,9 @@ class ExternalProviderClient:
                                     "media_type": media_type,
                                     "data": b64data,
                                 },
-                                # Opt the document block into Anthropic's
-                                # natural-citation pipeline. Without this,
-                                # the model never emits citations_delta
-                                # events and the inline [N] + Sources
-                                # panel plumbing in the stream handler
-                                # is a no-op for real user uploads. See
+                                # Opt into Anthropic's natural-citation
+                                # pipeline; without this no citations_delta
+                                # events fire. See
                                 # https://platform.claude.com/docs/en/build-with-claude/citations
                                 "citations": {"enabled": True},
                             }
@@ -1845,18 +1832,11 @@ class ExternalProviderClient:
                 # the next turn.
                 current_compaction: Optional[dict[str, Any]] = None
                 compaction_blocks_seen = 0
-                # Document citations accumulator. Anthropic streams
-                # ``citations_delta`` events on content_block_delta when
-                # the user enabled ``citations: {enabled: true}`` on a
-                # document block. Each event carries one citation; we
-                # dedupe by the type-specific anchor key, assign a
-                # 1-based number, and inject ``[N]`` inline right after
-                # the cited run so the reader sees footnote markers.
-                # The full list is forwarded as a synthetic tool_end
-                # on message_stop so the Sources panel can render them
-                # next to web_search / web_fetch citations. See
-                #   https://platform.claude.com/docs/en/build-with-claude/citations
-                #   https://platform.claude.com/docs/en/build-with-claude/search-results
+                # Document citations from ``citations_delta`` events.
+                # Deduped by type-specific anchor key; inline [N] is
+                # injected after each cited run, and the full list is
+                # forwarded as a synthetic document_citations tool_event
+                # on message_stop for the Sources panel.
                 document_citations: list[dict[str, Any]] = []
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
@@ -2212,11 +2192,10 @@ class ExternalProviderClient:
                                     # web_search citations: web_search_tool_result.
                                     # User-doc citations: citations_delta below.
                             elif delta_type == "citations_delta":
+                                # One citation per event; collapse onto a
+                                # numbered footnote list and inject [N]
+                                # inline. See
                                 # https://platform.claude.com/docs/en/build-with-claude/citations
-                                # Each citations_delta carries one citation.
-                                # Collapse onto a numbered footnote list
-                                # and inject [N] inline so the prose has
-                                # reader-visible references.
                                 cit = delta.get("citation")
                                 if isinstance(cit, dict):
                                     key = _anthropic_citation_key(cit)
@@ -2537,14 +2516,10 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
-                            # Forward accumulated document_citations so the
-                            # Sources panel can render the footnotes the
-                            # inline [N] markers point at. No-op when
-                            # the stream carried no citations_delta.
-                            # ``cited_text`` is truncated server-side
-                            # (frontend trims to 240 chars in the
-                            # Sources panel anyway) so SSE bytes stay
-                            # bounded on long RAG / search-result spans.
+                            # Forward document_citations so the Sources
+                            # panel can render the inline [N] footnotes.
+                            # ``cited_text`` is truncated server-side to
+                            # keep SSE bytes bounded on long spans.
                             if document_citations:
                                 clean_cits = []
                                 for c in document_citations:
