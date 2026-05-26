@@ -312,6 +312,25 @@ export interface OpenAIChatCompletionsRequest {
    * permissive {custom, vllm, ollama, llama_cpp} buckets.
    */
   typical_p?: number;
+  /** llama.cpp `top_n_sigma`. -1 disables. Local only. */
+  top_n_sigma?: number;
+  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. Local only. */
+  repeat_last_n?: number;
+  /** llama.cpp `dynatemp_range`. 0 disables. Local only. */
+  dynatemp_range?: number;
+  /** llama.cpp `dynatemp_exponent`. Local only, paired with dynatemp_range. */
+  dynatemp_exponent?: number;
+  /** llama.cpp `mirostat` (0/1/2). 0 disables. Local only. */
+  mirostat?: number;
+  /** llama.cpp `mirostat_tau` target entropy. Local only. */
+  mirostat_tau?: number;
+  /** llama.cpp `mirostat_eta` learning rate. Local only. */
+  mirostat_eta?: number;
+  /**
+   * OpenRouter `top_a` (alternate dynamic-top-P).
+   * https://openrouter.ai/docs/api/reference/parameters — gateway-only.
+   */
+  top_a?: number;
   /**
    * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
    * silently on every other model + provider. See

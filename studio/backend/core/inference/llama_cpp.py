@@ -4249,6 +4249,13 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         parallel_tool_calls: Optional[bool] = None,
         typical_p: Optional[float] = None,
+        top_n_sigma: Optional[float] = None,
+        repeat_last_n: Optional[int] = None,
+        dynatemp_range: Optional[float] = None,
+        dynatemp_exponent: Optional[float] = None,
+        mirostat: Optional[int] = None,
+        mirostat_tau: Optional[float] = None,
+        mirostat_eta: Optional[float] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -4312,6 +4319,23 @@ class LlamaCppBackend:
         # so we only forward it when the caller explicitly sets one.
         if typical_p is not None:
             payload["typical_p"] = typical_p
+        # Extended llama.cpp sampler chain (top_n_sigma, repeat_last_n,
+        # dynatemp_*, mirostat_*). All llama.cpp-specific; the frontend
+        # capability map gates them to local backends only.
+        if top_n_sigma is not None:
+            payload["top_n_sigma"] = top_n_sigma
+        if repeat_last_n is not None:
+            payload["repeat_last_n"] = repeat_last_n
+        if dynatemp_range is not None:
+            payload["dynatemp_range"] = dynatemp_range
+        if dynatemp_exponent is not None:
+            payload["dynatemp_exponent"] = dynatemp_exponent
+        if mirostat is not None:
+            payload["mirostat"] = mirostat
+        if mirostat_tau is not None:
+            payload["mirostat_tau"] = mirostat_tau
+        if mirostat_eta is not None:
+            payload["mirostat_eta"] = mirostat_eta
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4458,6 +4482,13 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         parallel_tool_calls: Optional[bool] = None,
         typical_p: Optional[float] = None,
+        top_n_sigma: Optional[float] = None,
+        repeat_last_n: Optional[int] = None,
+        dynatemp_range: Optional[float] = None,
+        dynatemp_exponent: Optional[float] = None,
+        mirostat: Optional[int] = None,
+        mirostat_tau: Optional[float] = None,
+        mirostat_eta: Optional[float] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4557,6 +4588,20 @@ class LlamaCppBackend:
                 payload["parallel_tool_calls"] = parallel_tool_calls
             if typical_p is not None:
                 payload["typical_p"] = typical_p
+            if top_n_sigma is not None:
+                payload["top_n_sigma"] = top_n_sigma
+            if repeat_last_n is not None:
+                payload["repeat_last_n"] = repeat_last_n
+            if dynatemp_range is not None:
+                payload["dynatemp_range"] = dynatemp_range
+            if dynatemp_exponent is not None:
+                payload["dynatemp_exponent"] = dynatemp_exponent
+            if mirostat is not None:
+                payload["mirostat"] = mirostat
+            if mirostat_tau is not None:
+                payload["mirostat_tau"] = mirostat_tau
+            if mirostat_eta is not None:
+                payload["mirostat_eta"] = mirostat_eta
 
             try:
                 _auth_headers = (
@@ -5251,6 +5296,20 @@ class LlamaCppBackend:
             stream_payload["parallel_tool_calls"] = parallel_tool_calls
         if typical_p is not None:
             stream_payload["typical_p"] = typical_p
+        if top_n_sigma is not None:
+            stream_payload["top_n_sigma"] = top_n_sigma
+        if repeat_last_n is not None:
+            stream_payload["repeat_last_n"] = repeat_last_n
+        if dynatemp_range is not None:
+            stream_payload["dynatemp_range"] = dynatemp_range
+        if dynatemp_exponent is not None:
+            stream_payload["dynatemp_exponent"] = dynatemp_exponent
+        if mirostat is not None:
+            stream_payload["mirostat"] = mirostat
+        if mirostat_tau is not None:
+            stream_payload["mirostat_tau"] = mirostat_tau
+        if mirostat_eta is not None:
+            stream_payload["mirostat_eta"] = mirostat_eta
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""

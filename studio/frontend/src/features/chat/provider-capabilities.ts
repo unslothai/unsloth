@@ -69,6 +69,48 @@ export interface ProviderCapabilities {
    * permissive {custom, vllm, ollama, llama_cpp} buckets.
    */
   typicalP: boolean;
+  /**
+   * llama.cpp `top_n_sigma` sampler (newer top-sigma cutoff). Local
+   * only; -1 disables.
+   * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+   */
+  topNSigma: boolean;
+  /**
+   * llama.cpp repetition window (`repeat_last_n`). Pairs with
+   * `repeat_penalty`. Local only; 0 disables, -1 = ctx-size.
+   */
+  repeatLastN: boolean;
+  /**
+   * llama.cpp dynamic temperature range (`dynatemp_range`). Local
+   * only; 0.0 disables.
+   */
+  dynatempRange: boolean;
+  /**
+   * llama.cpp dynamic temperature exponent (`dynatemp_exponent`).
+   * Local only. Paired with dynatempRange.
+   */
+  dynatempExponent: boolean;
+  /**
+   * llama.cpp Mirostat sampling mode (`mirostat`). Local only.
+   * 0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0.
+   */
+  mirostat: boolean;
+  /**
+   * llama.cpp Mirostat target entropy (`mirostat_tau`). Local only.
+   * Only meaningful when mirostat != 0.
+   */
+  mirostatTau: boolean;
+  /**
+   * llama.cpp Mirostat learning rate (`mirostat_eta`). Local only.
+   * Only meaningful when mirostat != 0.
+   */
+  mirostatEta: boolean;
+  /**
+   * OpenRouter `top_a` (alternate dynamic-top-P). Documented at
+   * https://openrouter.ai/docs/api/reference/parameters. Other
+   * gateways silently drop it; we surface it only for openrouter.
+   */
+  topA: boolean;
 }
 
 /**
@@ -413,9 +455,21 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   serviceTier: false,
   parallelToolCalls: true,
   typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
 };
 
-const ALL_SUPPORTED: ProviderCapabilities = {
+// Local llama.cpp-style backends (own llama-server, vLLM with extended
+// sampler support, Ollama). Exposes the full llama.cpp sampler chain
+// (typical_p / top_n_sigma / mirostat / dynatemp / repeat_last_n) but
+// not OpenRouter's gateway-specific top_a.
+const LOCAL_LLAMA_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
   topP: true,
   topK: true,
@@ -428,6 +482,44 @@ const ALL_SUPPORTED: ProviderCapabilities = {
   serviceTier: false,
   parallelToolCalls: true,
   typicalP: true,
+  topNSigma: true,
+  repeatLastN: true,
+  dynatempRange: true,
+  dynatempExponent: true,
+  mirostat: true,
+  mirostatTau: true,
+  mirostatEta: true,
+  topA: false,
+};
+
+// OpenRouter is a router-of-routers: the gateway accepts a wider set
+// of OpenAI-style sampling fields than any single upstream supports
+// and silently drops what the chosen route does not, per
+// https://openrouter.ai/docs/api/reference/parameters. Surface the
+// router's full documented set (incl. top_a) and leave the
+// llama.cpp-only knobs off (the docs don't list them, so we don't
+// either even though many openrouter routes terminate at llama.cpp).
+const OPENROUTER_CAPABILITIES: ProviderCapabilities = {
+  temperature: true,
+  topP: true,
+  topK: true,
+  minP: true,
+  repetitionPenalty: true,
+  presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: true,
 };
 
 // Reasoning-class OpenAI models served via /v1/responses fix temperature
@@ -451,6 +543,14 @@ const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
   serviceTier: true,
   parallelToolCalls: true,
   typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
 };
 const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
@@ -467,6 +567,14 @@ const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   serviceTier: true,
   parallelToolCalls: true,
   typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
 };
 
 // Prefix list for OpenAI reasoning-class model ids. Kept in sync with
@@ -553,6 +661,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     serviceTier: true,
     parallelToolCalls: true,
     typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
@@ -581,6 +697,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     serviceTier: false,
     parallelToolCalls: false,
     typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
   },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
   // Chat-class defaults (deepseek-chat / deepseek-v4-flash non-thinking):
@@ -604,19 +728,29 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     serviceTier: false,
     parallelToolCalls: true,
     typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
-  // OpenRouter silently drops params the target model does not support, so we
-  // surface every knob and let the gateway handle the per-model fan-out.
-  openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compatible connections are proxied through the OpenAI backend
-  // path, but vLLM/Ollama/llama.cpp users often want top_k / min_p /
-  // repetition controls, so be permissive.
-  custom: ALL_SUPPORTED,
-  vllm: ALL_SUPPORTED,
-  ollama: ALL_SUPPORTED,
-  llama_cpp: ALL_SUPPORTED,
+  // OpenRouter surfaces the gateway's documented sampling field set
+  // (incl. top_a). llama.cpp-specific knobs (typical_p, mirostat,
+  // dynatemp, top_n_sigma, repeat_last_n) are gated off because the
+  // OpenRouter API docs do not list them; they would be silently
+  // dropped on most underlying models.
+  openrouter: OPENROUTER_CAPABILITIES,
+  // Local OpenAI-compatible connections terminate at llama-server-
+  // style backends — full llama.cpp sampler chain available.
+  custom: LOCAL_LLAMA_CAPABILITIES,
+  vllm: LOCAL_LLAMA_CAPABILITIES,
+  ollama: LOCAL_LLAMA_CAPABILITIES,
+  llama_cpp: LOCAL_LLAMA_CAPABILITIES,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;

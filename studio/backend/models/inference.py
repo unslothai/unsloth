@@ -840,6 +840,64 @@ class ChatCompletionRequest(BaseModel):
             "/v1/chat/completions."
         ),
     )
+    top_n_sigma: Optional[float] = Field(
+        None,
+        description = (
+            "llama.cpp `top_n_sigma` sampler. -1.0 disables (server "
+            "default). Local only — no SaaS provider accepts it."
+        ),
+    )
+    repeat_last_n: Optional[int] = Field(
+        None,
+        description = (
+            "llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. "
+            "Pairs with repetition_penalty. Local only."
+        ),
+    )
+    dynatemp_range: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = (
+            "llama.cpp `dynatemp_range`. 0.0 disables. Local only."
+        ),
+    )
+    dynatemp_exponent: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = (
+            "llama.cpp `dynatemp_exponent`. Local only; pairs with "
+            "dynatemp_range."
+        ),
+    )
+    mirostat: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2,
+        description = (
+            "llama.cpp `mirostat` mode. 0 = disabled, 1 = Mirostat, "
+            "2 = Mirostat 2.0. Local only."
+        ),
+    )
+    mirostat_tau: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `mirostat_tau` target entropy. Local only.",
+    )
+    mirostat_eta: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `mirostat_eta` learning rate. Local only.",
+    )
+    top_a: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "OpenRouter `top_a` alternate dynamic-top-P. Documented at "
+            "https://openrouter.ai/docs/api/reference/parameters. "
+            "OpenRouter-only; other gateways silently drop it."
+        ),
+    )
     fast_mode: Optional[bool] = Field(
         None,
         description = (

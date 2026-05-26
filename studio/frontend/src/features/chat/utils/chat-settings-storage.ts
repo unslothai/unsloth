@@ -192,6 +192,25 @@ function sanitizeInferenceParams(
   ) {
     params.typicalP = value.typicalP;
   }
+  // New llama.cpp / OpenRouter samplers — all nullable numbers with
+  // the same handling as `typicalP` / `seed`.
+  for (const key of [
+    "topNSigma",
+    "repeatLastN",
+    "dynatempRange",
+    "dynatempExponent",
+    "mirostat",
+    "mirostatTau",
+    "mirostatEta",
+    "topA",
+  ] as const) {
+    const raw = value[key];
+    if (raw === null) {
+      (params as Record<string, unknown>)[key] = null;
+    } else if (typeof raw === "number" && Number.isFinite(raw)) {
+      (params as Record<string, unknown>)[key] = raw;
+    }
+  }
   // Mirror trustRemoteCode handling so the toggle survives reload
   // and the /api/chat/settings round-trip.
   if (typeof value.fastMode === "boolean") {

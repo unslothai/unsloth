@@ -2518,6 +2518,13 @@ async def openai_chat_completions(
                     seed = payload.seed,
                     parallel_tool_calls = payload.parallel_tool_calls,
                     typical_p = payload.typical_p,
+                    top_n_sigma = payload.top_n_sigma,
+                    repeat_last_n = payload.repeat_last_n,
+                    dynatemp_range = payload.dynatemp_range,
+                    dynatemp_exponent = payload.dynatemp_exponent,
+                    mirostat = payload.mirostat,
+                    mirostat_tau = payload.mirostat_tau,
+                    mirostat_eta = payload.mirostat_eta,
                 )
 
             _tool_sentinel = object()
@@ -2692,6 +2699,13 @@ async def openai_chat_completions(
                 seed = payload.seed,
                 parallel_tool_calls = payload.parallel_tool_calls,
                 typical_p = payload.typical_p,
+                top_n_sigma = payload.top_n_sigma,
+                repeat_last_n = payload.repeat_last_n,
+                dynatemp_range = payload.dynatemp_range,
+                dynatemp_exponent = payload.dynatemp_exponent,
+                mirostat = payload.mirostat,
+                mirostat_tau = payload.mirostat_tau,
+                mirostat_eta = payload.mirostat_eta,
             )
 
         _gguf_sentinel = object()
@@ -4966,6 +4980,13 @@ def _build_passthrough_payload(
     seed = None,
     parallel_tool_calls = None,
     typical_p = None,
+    top_n_sigma = None,
+    repeat_last_n = None,
+    dynatemp_range = None,
+    dynatemp_exponent = None,
+    mirostat = None,
+    mirostat_tau = None,
+    mirostat_eta = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -5021,6 +5042,23 @@ def _build_passthrough_payload(
     # gates it to local only.
     if typical_p is not None:
         body["typical_p"] = typical_p
+    # Extended llama.cpp sampler chain. All llama.cpp-specific; the
+    # frontend capability map gates them to local backends only. Server
+    # silently ignores fields it doesn't recognise.
+    if top_n_sigma is not None:
+        body["top_n_sigma"] = top_n_sigma
+    if repeat_last_n is not None:
+        body["repeat_last_n"] = repeat_last_n
+    if dynatemp_range is not None:
+        body["dynatemp_range"] = dynatemp_range
+    if dynatemp_exponent is not None:
+        body["dynatemp_exponent"] = dynatemp_exponent
+    if mirostat is not None:
+        body["mirostat"] = mirostat
+    if mirostat_tau is not None:
+        body["mirostat_tau"] = mirostat_tau
+    if mirostat_eta is not None:
+        body["mirostat_eta"] = mirostat_eta
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema
         # when response_format is present. Field is documented flat at the
@@ -5456,6 +5494,13 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         seed = payload.seed,
         parallel_tool_calls = payload.parallel_tool_calls,
         typical_p = payload.typical_p,
+        top_n_sigma = payload.top_n_sigma,
+        repeat_last_n = payload.repeat_last_n,
+        dynatemp_range = payload.dynatemp_range,
+        dynatemp_exponent = payload.dynatemp_exponent,
+        mirostat = payload.mirostat,
+        mirostat_tau = payload.mirostat_tau,
+        mirostat_eta = payload.mirostat_eta,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,

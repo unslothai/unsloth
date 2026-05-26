@@ -1596,6 +1596,55 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.typicalP !== 1
                 ? { typical_p: params.typicalP }
                 : {}),
+              // llama.cpp `top_n_sigma`. -1 disables (server default);
+              // only forward meaningful values.
+              ...(externalCapabilities?.topNSigma &&
+              params.topNSigma !== null &&
+              params.topNSigma !== -1
+                ? { top_n_sigma: params.topNSigma }
+                : {}),
+              // llama.cpp `repeat_last_n`. Pairs with repetition_penalty.
+              ...(externalCapabilities?.repeatLastN &&
+              params.repeatLastN !== null
+                ? { repeat_last_n: params.repeatLastN }
+                : {}),
+              // llama.cpp dynamic-temperature. Only forward when the
+              // user opted in (range > 0).
+              ...(externalCapabilities?.dynatempRange &&
+              params.dynatempRange !== null &&
+              params.dynatempRange > 0
+                ? {
+                    dynatemp_range: params.dynatempRange,
+                    ...(externalCapabilities?.dynatempExponent &&
+                    params.dynatempExponent !== null
+                      ? { dynatemp_exponent: params.dynatempExponent }
+                      : {}),
+                  }
+                : {}),
+              // llama.cpp Mirostat. Mode 0 disables; only forward the
+              // sub-params when mode is enabled.
+              ...(externalCapabilities?.mirostat &&
+              params.mirostat !== null &&
+              params.mirostat !== 0
+                ? {
+                    mirostat: params.mirostat,
+                    ...(externalCapabilities?.mirostatTau &&
+                    params.mirostatTau !== null
+                      ? { mirostat_tau: params.mirostatTau }
+                      : {}),
+                    ...(externalCapabilities?.mirostatEta &&
+                    params.mirostatEta !== null
+                      ? { mirostat_eta: params.mirostatEta }
+                      : {}),
+                  }
+                : {}),
+              // OpenRouter `top_a` (alternate dynamic top-P). Documented
+              // range [0, 1]; 0 disables.
+              ...(externalCapabilities?.topA &&
+              params.topA !== null &&
+              params.topA > 0
+                ? { top_a: params.topA }
+                : {}),
               // Built-in tools: Search pill maps to provider-side
               // web_search (currently OpenAI / Anthropic / OpenRouter /
               // Kimi); Code pill maps to Anthropic's server-side
@@ -1721,6 +1770,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // default) is a no-op so we forward only meaningful values.
             ...(params.typicalP !== null && params.typicalP !== 1
               ? { typical_p: params.typicalP }
+              : {}),
+            ...(params.topNSigma !== null && params.topNSigma !== -1
+              ? { top_n_sigma: params.topNSigma }
+              : {}),
+            ...(params.repeatLastN !== null
+              ? { repeat_last_n: params.repeatLastN }
+              : {}),
+            ...(params.dynatempRange !== null && params.dynatempRange > 0
+              ? {
+                  dynatemp_range: params.dynatempRange,
+                  ...(params.dynatempExponent !== null
+                    ? { dynatemp_exponent: params.dynatempExponent }
+                    : {}),
+                }
+              : {}),
+            ...(params.mirostat !== null && params.mirostat !== 0
+              ? {
+                  mirostat: params.mirostat,
+                  ...(params.mirostatTau !== null
+                    ? { mirostat_tau: params.mirostatTau }
+                    : {}),
+                  ...(params.mirostatEta !== null
+                    ? { mirostat_eta: params.mirostatEta }
+                    : {}),
+                }
               : {}),
             parallel_tool_calls: params.parallelToolCalls,
             image_base64: imageBase64,
