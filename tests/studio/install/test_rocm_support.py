@@ -1788,6 +1788,21 @@ class TestDetectBnbRocmDllVer:
         with patch.object(importlib.util, "find_spec", return_value = mock_spec):
             assert stack_mod._detect_bnb_rocm_dll_ver() is None
 
+    def test_picks_highest_suffix_when_multiple_dlls(self, tmp_path):
+        """Returns the highest numeric suffix when multiple ROCm DLL variants exist.
+
+        Filesystem glob order is not guaranteed, so the function must not stop
+        at the first match — it must always return the highest one.
+        """
+        (tmp_path / "libbitsandbytes_rocm72.dll").write_text("")
+        (tmp_path / "libbitsandbytes_rocm713.dll").write_text("")
+        mock_spec = MagicMock()
+        mock_spec.submodule_search_locations = [str(tmp_path)]
+        import importlib.util
+
+        with patch.object(importlib.util, "find_spec", return_value = mock_spec):
+            assert stack_mod._detect_bnb_rocm_dll_ver() == "713"
+
 
 # =============================================================================
 # TEST: install_python_stack.py -- UNSLOTH_ROCM_TORCH_INSTALLED early-return path

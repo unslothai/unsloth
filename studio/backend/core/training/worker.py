@@ -2101,6 +2101,7 @@ def run_training_process(
 
                     _bnb_spec = _ilu.find_spec("bitsandbytes")
                     if _bnb_spec and _bnb_spec.submodule_search_locations:
+                        _all_vers: list[str] = []
                         for _pkg_dir in _bnb_spec.submodule_search_locations:
                             for _dll in _glob.glob(
                                 os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
@@ -2110,10 +2111,13 @@ def run_training_process(
                                     os.path.basename(_dll),
                                 )
                                 if _m:
-                                    _bnb_rocm_ver = _m.group(1)
-                                    break
-                            if _bnb_rocm_ver:
-                                break
+                                    _all_vers.append(_m.group(1))
+                        # Pick the highest numeric suffix so that e.g. "713"
+                        # wins over "72" when both variants are present.
+                        # Filesystem glob order is not guaranteed, so always
+                        # sort rather than stopping at the first match.
+                        if _all_vers:
+                            _bnb_rocm_ver = max(_all_vers, key=lambda v: int(v))
                 except Exception:
                     pass
                 _bnb_rocm_ver = _bnb_rocm_ver or "72"

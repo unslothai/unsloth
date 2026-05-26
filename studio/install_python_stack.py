@@ -361,12 +361,16 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     spec = importlib.util.find_spec("bitsandbytes")
     if spec is None or not spec.submodule_search_locations:
         return None
+    all_vers: list[str] = []
     for pkg_dir in spec.submodule_search_locations:
         for dll in glob.glob(os.path.join(pkg_dir, "libbitsandbytes_rocm*.dll")):
             m = re.search(r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(dll))
             if m:
-                return m.group(1)
-    return None
+                all_vers.append(m.group(1))
+    # Pick the highest numeric suffix so that e.g. "713" wins over "72" when
+    # both variants are present in the wheel.  Filesystem glob order is not
+    # guaranteed, so always sort rather than stopping at the first match.
+    return max(all_vers, key=lambda v: int(v)) if all_vers else None
 
 
 def _has_rocm_gpu() -> bool:

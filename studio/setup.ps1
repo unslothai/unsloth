@@ -742,9 +742,24 @@ if (-not $HasNvidiaSmi) {
                 $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
                 if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                     $HasROCm = $true
-                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output
-                    if ($smiOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                        $script:ROCmGfxArch = $Matches[1].ToLower()
+                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                    # Collect ALL gfx tokens in output order so that on mixed-arch systems
+                    # we can honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES and pick the
+                    # arch for the *runtime-visible* GPU rather than always the first one.
+                    $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                        ForEach-Object { $_.Groups[1].Value.ToLower() } |
+                        Select-Object -Unique)
+                    if ($allGfxArches.Count -gt 0) {
+                        # Resolve which GPU index is runtime-visible.  When a single
+                        # integer index is set, use it; fall back to index 0 otherwise
+                        # (comma-separated lists or unset → first GPU, same as before).
+                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
+                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
+                                  else { $null }
+                        $gpuIdx = 0
+                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
+                        $archIdx = [Math]::Min($gpuIdx, $allGfxArches.Count - 1)
+                        $script:ROCmGfxArch = $allGfxArches[$archIdx]
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
@@ -2378,7 +2393,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                $expectedKind = if ($HasROCm) { "windows-hip" } else { "windows-cpu" }
+                $expectedKind = if ($HasROCm) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
                 if ($existingKind -and $existingKind -ne $expectedKind) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
