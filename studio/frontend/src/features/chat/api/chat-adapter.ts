@@ -858,7 +858,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        webFetchToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -914,14 +920,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               externalProvider.baseUrl,
             ),
         );
-      // web_fetch shares the Search pill with web_search (no separate
-      // UI toggle), so it follows toolsEnabled. Anthropic is the only
-      // provider that ships it today; on others providerSupportsBuiltinWebFetch
-      // returns false and this stays inert.
+      // Fetch pill is independent of Search (Anthropic bills web_fetch
+      // separately from web_search). Sourced from `webFetchToolsEnabled`;
+      // on providers without web_fetch the toggle is forced off in
+      // chat-page's runtime setState.
       const webFetchEnabledForThisTurn =
         Boolean(
           externalProvider &&
-            toolsEnabled &&
+            webFetchToolsEnabled &&
             providerSupportsBuiltinWebFetch(externalProvider.providerType),
         );
       const providerShipsWebFetch = Boolean(
@@ -983,14 +989,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        // Treat search and fetch as a single "any web tool" axis so
+        // the guard only warns when neither pill is on; checking
+        // webSearchEnabledForThisTurn alone mis-fired when only Fetch
+        // was on and suppressed live web_fetch calls.
+        const anyWebEnabledForThisTurn =
+          webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
+        if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
             "Answer from your own knowledge. " +
             "If a request genuinely requires tool use, live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn) {
+        } else if (!anyWebEnabledForThisTurn) {
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
             "You may still use code execution tools when they are available and useful. " +
@@ -1467,13 +1479,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // Pair web_fetch with the Search pill on any
-                      // provider that ships it (Anthropic today). The
-                      // common workflow is "search returns URLs, fetch
-                      // reads them"; without web_fetch the model can
-                      // surface a citation but cannot quote from the
-                      // page body, which is the whole point of the
-                      // tool. There is no separate UI toggle yet.
+                      // web_fetch has its own Fetch pill, independent
+                      // of Search. Anthropic-only today.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                       // OpenAI Responses-API only: `image_generation`

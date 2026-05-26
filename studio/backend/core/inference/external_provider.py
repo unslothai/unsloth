@@ -1664,25 +1664,19 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
-        # Anthropic server-side web_fetch — see
-        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
-        # `web_fetch_20250910` reads a single URL (text or PDF) and
-        # returns a document block in a `web_fetch_tool_result`. For
-        # safety Anthropic only lets the model fetch URLs that already
-        # appeared in the conversation (user message, prior tool
-        # result, web_search hit) — there is no domain restriction we
-        # have to apply locally. No beta header is required today; the
-        # tool ships under the standard `2023-06-01` API version. We
-        # mirror the web_search wiring: max_uses cap, opt in via
-        # `enabled_tools=["web_fetch"]`, citations off by default
-        # because the frontend already paints source pills from the
-        # generic tool_end payload.
+        # Anthropic server-side web_fetch reads a single URL (text/PDF)
+        # and returns a `web_fetch_tool_result` document block. Opt in
+        # via `enabled_tools=["web_fetch"]`; no beta header required.
+        # `_anthropic_web_fetch_version` picks `web_fetch_20260209`
+        # (dynamic filtering) for Opus 4.6/4.7 + Sonnet 4.6, falling
+        # back to `web_fetch_20250910` elsewhere; mismatched variants
+        # return 400 so the per-model picker is required.
         web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "web_fetch_20250910",
+                    "type": _anthropic_web_fetch_version(model),
                     "name": "web_fetch",
                     "max_uses": 5,
                 }

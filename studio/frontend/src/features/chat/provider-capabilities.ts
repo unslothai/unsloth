@@ -123,11 +123,9 @@ export function providerSupportsBuiltinWebSearch(
 
 /**
  * Whether the external provider exposes a server-side web_fetch tool
- * that retrieves a single URL (text or PDF) and emits a document block.
- * Only Anthropic ships one today (`web_fetch_20250910`); the chat
- * composer pairs it with the Search pill because the typical workflow
- * is "search returns URLs, fetch reads them" and the UI doesn't (yet)
- * expose web_fetch as an independent toggle.
+ * (single URL, text or PDF) emitting a document block. Anthropic-only
+ * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
+ * composer's standalone Fetch pill, independent of Search.
  */
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,

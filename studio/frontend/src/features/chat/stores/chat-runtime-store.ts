@@ -25,6 +25,8 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
+  "unsloth_chat_web_fetch_tools_enabled";
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -262,9 +264,21 @@ type ChatRuntimeStore = {
    * receive the tool because their runtime cannot dispatch it.
    */
   supportsBuiltinImageGeneration: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_fetch tool (Anthropic's `web_fetch_20250910` /
+   * `web_fetch_20260209`). Gates the composer's Fetch pill,
+   * independent of Search.
+   */
+  supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  /**
+   * Fetch pill state, independent of `toolsEnabled` (Search). Only
+   * consulted when `providerSupportsBuiltinWebFetch` is true.
+   */
+  webFetchToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -326,6 +340,7 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -567,9 +582,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
+  supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -759,9 +776,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       supportsBuiltinWebSearch: false,
       supportsBuiltinCodeExecution: false,
       supportsBuiltinImageGeneration: false,
+      supportsBuiltinWebFetch: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      webFetchToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -820,6 +839,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
+    }),
+  setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
+      return { webFetchToolsEnabled };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
