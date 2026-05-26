@@ -71,17 +71,111 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Output-token cap for any external provider request. Picked to stay below the
- * tightest declared limit across the providers we ship (Anthropic Claude Opus
- * tops out at 128k, GPT-5.x ~128k, Gemini 2.5 ~65k, DeepSeek 8k) while staying
- * well above what a typical chat reply needs. The local-model path is not
- * subject to this — local backends honour whatever the loaded context allows.
- *
- * If a user's stored maxTokens (e.g. carried over from a prior local-model
- * session with a 128k+ context) exceeds this, chat-adapter clamps the
- * outbound request so the provider does not 400 on it.
+ * Conservative cross-provider output cap, used as a final clamp and as the
+ * fallback for providers/models we don't have a documented limit for.
+ * Prefer `getExternalMaxOutputTokens(providerType, modelId)` for the real
+ * per-model cap (gpt-5.5 / claude-opus-4-7 both ship 128k max output, much
+ * higher than this conservative floor).
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
+
+/**
+ * Per-model max-output cap, sourced from each provider's docs. Used by the
+ * settings-slider max and by chat-adapter's send-time clamp so the slider
+ * never reports a value above what the provider will accept.
+ *
+ * Patterns are ordered most-specific-first so `gpt-5.5-pro` doesn't match
+ * the `gpt-5.5` row, etc. Look-up runs longest-prefix-first via
+ * `_pickByPrefix` below.
+ *
+ * Sources:
+ * - OpenAI: https://developers.openai.com/api/docs/models/gpt-5.5
+ *   (gpt-5.5: 128k max output; gpt-5.4: 64k; gpt-5.3: 16k)
+ * - Anthropic: https://platform.claude.com/docs/en/about-claude/models/
+ *   (Opus 4.7: 128k max output; 4.6 / 4.5 family: 64k)
+ * - Google Gemini 3.x: 65535 max output tokens
+ * - DeepSeek: 8192 max output tokens
+ *
+ * The local-model path is not subject to this; local backends honour
+ * whatever the loaded context allows.
+ */
+const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
+  providerType: string;
+  prefixes: readonly string[];
+  cap: number;
+}> = [
+  // OpenAI
+  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
+  { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
+  // Anthropic
+  {
+    providerType: "anthropic",
+    prefixes: ["claude-opus-4-7"],
+    cap: 128000,
+  },
+  {
+    providerType: "anthropic",
+    prefixes: [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+    ],
+    cap: 64000,
+  },
+  // Gemini
+  { providerType: "gemini", prefixes: ["gemini-3", "gemini-pro", "gemini-flash"], cap: 65535 },
+  // DeepSeek
+  { providerType: "deepseek", prefixes: ["deepseek"], cap: 8192 },
+];
+
+/**
+ * Return the documented max-output-tokens cap for a given external
+ * provider + model. Falls back to `EXTERNAL_MAX_OUTPUT_TOKENS` (32k) for
+ * provider/model combinations we don't have a published number for, so
+ * unknown ids never regress to a higher-than-supported value.
+ *
+ * OpenRouter normalises to `provider/model`; strip the `provider/`
+ * prefix before matching so `openai/gpt-5.5` resolves the same as
+ * `gpt-5.5`.
+ */
+export function getExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number {
+  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const stripped =
+    providerType === "openrouter" && normalized.includes("/")
+      ? normalized.split("/").slice(-1)[0]
+      : normalized;
+  const effectiveProvider =
+    providerType === "openrouter"
+      ? _inferProviderFromOpenrouterId(normalized) ?? providerType
+      : providerType;
+  for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
+    if (entry.providerType !== effectiveProvider) continue;
+    if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
+      return entry.cap;
+    }
+  }
+  return EXTERNAL_MAX_OUTPUT_TOKENS;
+}
+
+function _inferProviderFromOpenrouterId(
+  normalizedId: string,
+): string | null {
+  // OpenRouter ids are `provider/model`. Map the prefix back to one of
+  // our internal providerType keys so the per-model cap table applies.
+  if (normalizedId.startsWith("openai/")) return "openai";
+  if (normalizedId.startsWith("anthropic/")) return "anthropic";
+  if (normalizedId.startsWith("google/")) return "gemini";
+  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  return null;
+}
 
 /**
  * Whether the external provider offers a built-in web-search tool that the

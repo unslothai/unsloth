@@ -14,7 +14,9 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId } from "../external-providers";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -747,10 +749,33 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // external-provider render gate would otherwise show old counters
       // until the next completion overwrites them.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      // Clamp maxTokens to the new model's cap when switching INTO an
+      // external model. Otherwise a value carried over from a prior
+      // local-model session (e.g. Gemma's 262144 context) would render
+      // in the slider above the external cap, even though the wire-side
+      // clamp would still bring it down at send time. Keeps the
+      // displayed value honest.
+      let nextMaxTokens = state.params.maxTokens;
+      if (checkpointChanged && isExternalModelId(modelId)) {
+        const parsed = parseExternalModelId(modelId);
+        const provider = parsed
+          ? useExternalProvidersStore
+              .getState()
+              .providers.find((p) => p.id === parsed.providerId)
+          : null;
+        const cap = getExternalMaxOutputTokens(
+          provider?.providerType,
+          parsed?.modelId,
+        );
+        if (nextMaxTokens > cap) {
+          nextMaxTokens = cap;
+        }
+      }
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
+          maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
