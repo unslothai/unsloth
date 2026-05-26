@@ -93,8 +93,10 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  *   (gpt-5.5: 128k max output; gpt-5.4: 64k; gpt-5.3: 16k)
  * - Anthropic: https://platform.claude.com/docs/en/about-claude/models/
  *   (Opus 4.7: 128k max output; 4.6 / 4.5 family: 64k)
- * - Google Gemini 3.x: 65535 max output tokens
- * - DeepSeek: 8192 max output tokens
+ * - Google Gemini 3.x: 65536 max output tokens
+ *   (https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)
+ * - DeepSeek V4 (deepseek-chat / deepseek-reasoner aliases): 384000 max
+ *   output tokens (https://api-docs.deepseek.com/quick_start/pricing)
  *
  * The local-model path is not subject to this; local backends honour
  * whatever the loaded context allows.
@@ -126,9 +128,14 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     cap: 64000,
   },
   // Gemini
-  { providerType: "gemini", prefixes: ["gemini-3", "gemini-pro", "gemini-flash"], cap: 65535 },
-  // DeepSeek
-  { providerType: "deepseek", prefixes: ["deepseek"], cap: 8192 },
+  {
+    providerType: "gemini",
+    prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
+    cap: 65536,
+  },
+  // DeepSeek (V4 family; deepseek-chat / deepseek-reasoner alias the
+  // non-thinking and thinking modes of deepseek-v4-flash respectively).
+  { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
 /**
