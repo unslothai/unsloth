@@ -191,6 +191,7 @@ def _stream_image_chunks(
     first_index: int,
 ) -> int:
     """Persist images, emit image+caption chunks; pairs share pair_group."""
+    from core.rag.captioner import caption_images
     from core.rag.embeddings import encode, encode_images
     from utils.paths.storage_roots import ensure_dir, rag_uploads_root
 
@@ -203,7 +204,7 @@ def _stream_image_chunks(
 
     paths: list[str] = []
     bytes_for_encoding: list[bytes] = []
-    captions: list[str] = []
+    fallback_captions: list[str] = []
     pages: list[int | None] = []
     for idx, img in enumerate(images):
         ext = _MIME_TO_EXT.get(img.mime_type, ".bin")
@@ -215,11 +216,24 @@ def _stream_image_chunks(
             continue
         paths.append(str(path))
         bytes_for_encoding.append(img.image_bytes)
-        captions.append(img.nearest_caption or "")
+        fallback_captions.append(img.nearest_caption or "")
         pages.append(img.page_number)
 
     if not paths:
         return 0
+
+    # VLM-generated captions; falls back to the parser's nearest_caption
+    # (page-text blob) when the VLM is unavailable or fails for an image.
+    out_queue.put({"type": "progress", "stage": "caption_images", "progress": 0.87})
+    vlm_captions = caption_images(bytes_for_encoding)
+    captions: list[str] = [
+        (
+            vlm_captions[i].strip()
+            if i < len(vlm_captions) and vlm_captions[i].strip()
+            else fallback_captions[i]
+        )
+        for i in range(len(bytes_for_encoding))
+    ]
 
     image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
 

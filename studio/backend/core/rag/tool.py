@@ -10,6 +10,7 @@ so the model never sees KB UUIDs.
 from __future__ import annotations
 
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Literal
 
 from loggers import get_logger
@@ -110,6 +111,13 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
         kind = hit.get("kind")
         if kind and kind != "text":
             attrs.append(f'kind="{_xml_attr(kind)}"')
+        image_path = hit.get("image_path")
+        document_id = hit.get("document_id")
+        if kind == "image" and image_path and document_id:
+            # Mirror routes/rag.py search-response shape so the frontend
+            # tool card can render the image inline via the same route.
+            image_url = f"/api/rag/images/{document_id}/{Path(image_path).name}"
+            attrs.append(f'image_url="{_xml_attr(image_url)}"')
         text = (hit.get("text") or "").strip()
         blocks.append(f"<chunk {' '.join(attrs)}>\n{text}\n</chunk>")
     return "\n\n".join(blocks)
@@ -210,7 +218,8 @@ def search_knowledge_base(
             rows = conn.execute(
                 f"""
                 SELECT c.id AS chunk_id, c.text, c.page_number,
-                       c.token_count, c.kind, d.filename
+                       c.token_count, c.kind, c.image_path,
+                       c.document_id, d.filename
                 FROM rag_chunks c
                 JOIN rag_documents d ON d.id = c.document_id
                 WHERE c.id IN ({placeholders})
@@ -241,13 +250,14 @@ def search_knowledge_base(
     else:
         hits = hits[:k]
 
-    # Skip image-kind hits; the paired caption surfaces separately.
     # Merge Hit-side metadata (score, dense_score, chunk_index) into the
     # sqlite-side row so the formatter sees one flat dict per chunk.
+    # Image-kind hits flow through so the multimodal embedder's match
+    # can reach the LLM; their image_url lets the UI render the picture.
     formatted: list[dict] = []
     for hit in hits:
         row = lookup.get(hit.chunk_id)
-        if row is None or row.get("kind") == "image":
+        if row is None:
             continue
         formatted.append(
             {
