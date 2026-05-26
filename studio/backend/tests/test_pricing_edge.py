@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Adversarial edge cases for ``calculate_cost`` / ``_lookup``.
-
-The companion ``test_pricing.py`` module pins the happy-path math.
-This module pins the corner cases reviewers asked about on the
-pricing follow-up:
-
-- prefix matching must land on a token boundary so a future
-  ``claude-opus-4-15`` can't silently inherit ``claude-opus-4-1``
-  pricing, and a hypothetical ``gpt-5.5-prod`` can't bill as the
-  much more expensive ``gpt-5.5-pro``;
-- negative / non-int token values from a corrupted upstream payload
-  must never produce a negative bill that masks real spend in the
-  running session total;
-- chat-style and raw envelopes must produce identical totals on the
-  cache-heavy boundary cases (zero cache_read, cache_read > prompt,
-  cache_creation > prompt) so the cost ledger doesn't flip per
-  envelope choice;
-- the long-context tier crossover has to fire on the ``billable``
-  input count (which folds cache_creation for OpenAI), not the raw
-  ``input_tokens`` only, otherwise cache-heavy turns dodge the
-  long-context premium they should pay;
-- malformed sub-objects (cache_creation as int, server_tool_use as
-  str) must not raise -- the calculator surfaces zero cost for the
-  malformed bucket and keeps pricing the rest of the turn.
-"""
+"""Adversarial edge cases for ``calculate_cost`` / ``_lookup``: prefix
+boundary, negative tokens, chat vs raw parity, long-context crossover
+on billable count, and malformed sub-objects."""
 
 import math
 
@@ -48,9 +26,8 @@ def _isclose(a, b, tol = 1e-6):
 
 
 def test_prefix_match_requires_dash_boundary_opus_variant():
-    # Hypothetical future ``claude-opus-4-15`` must NOT inherit the
-    # ``claude-opus-4-1`` ($15 / $75) row by way of a naive substring
-    # ``startswith`` -- the next char has to be ``-`` or end-of-string.
+    # `claude-opus-4-15` must not inherit `claude-opus-4-1` pricing;
+    # next char must be `-` or end-of-string.
     assert _lookup("anthropic", "claude-opus-4-15") is None
     out = calculate_cost(
         "anthropic",
@@ -62,9 +39,7 @@ def test_prefix_match_requires_dash_boundary_opus_variant():
 
 
 def test_prefix_match_requires_dash_boundary_gpt_variant():
-    # ``gpt-5.55`` is hypothetical but defends the same invariant:
-    # a different model in the same family tree can't piggy-back on the
-    # ``gpt-5.5`` row just because the canonical id is a string prefix.
+    # Same dash-boundary invariant for OpenAI ids.
     assert _lookup("openai", "gpt-5.55") is None
     assert _lookup("openai", "gpt-5.55-2026-04-23") is None
     out = calculate_cost(
@@ -76,13 +51,8 @@ def test_prefix_match_requires_dash_boundary_gpt_variant():
 
 
 def test_prefix_match_requires_dash_boundary_pro_lookalike():
-    # ``gpt-5.5-pro`` and ``gpt-5.5-prod`` share an undelimited "prod"
-    # / "pro" component. A naive prefix match would land
-    # ``gpt-5.5-prod`` on the ``gpt-5.5-pro`` row ($30 / MTok) -- a 6x
-    # overcharge against the canonical ``gpt-5.5`` row ($5 / MTok). The
-    # dash-boundary check forces the longest matching key to end on
-    # ``-``, so ``gpt-5.5-prod`` falls through ``gpt-5.5-pro`` and
-    # lands on the canonical ``gpt-5.5`` row instead.
+    # `gpt-5.5-prod` must fall through `gpt-5.5-pro` (6x overcharge)
+    # and land on the canonical `gpt-5.5` row.
     prices = _lookup("openai", "gpt-5.5-prod")
     assert prices is not None
     assert (
@@ -98,8 +68,7 @@ def test_prefix_match_requires_dash_boundary_pro_lookalike():
 
 
 def test_prefix_match_still_resolves_legit_dated_snapshots():
-    # The boundary fix must NOT regress the real win the PR is for.
-    # gpt-5.4-mini-2026-04-23 inherits the mini row, NOT gpt-5.4's.
+    # Boundary fix must not regress legit dated snapshots.
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini-2026-04-23",
@@ -108,7 +77,7 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
     assert out["priced"] is True
     assert _isclose(out["input_usd"], 0.75)
 
-    # And an Anthropic dated snapshot still resolves to its canonical row.
+    # And Anthropic dated snapshot still resolves to canonical row.
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7-20260414",
@@ -122,9 +91,7 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
 
 
 def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
-    # Mirror of ``test_explicit_zero_output_tokens_wins_over_stale_completion_tokens``
-    # for the input side -- a turn that genuinely consumed zero prompt
-    # tokens must not silently bill against the chat-style mirror.
+    # Input-side mirror of the output zero precedence test.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -139,8 +106,7 @@ def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
 
 
 def test_none_input_tokens_falls_through_to_prompt_tokens():
-    # ``None`` is the "key present but unset" case -- treated as
-    # missing so the chat-style mirror still wins.
+    # `None` is "key present but unset"; chat-style mirror wins.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -206,9 +172,8 @@ def test_negative_prompt_tokens_chat_style_clamp():
 
 
 def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
-    # If cache_read claims more tokens than prompt_tokens reports,
-    # the uncached_input should clamp at 0 -- but the billable counter
-    # still reflects the cache buckets (we charge for what we got).
+    # cache_read > prompt_tokens clamps uncached_input at 0; billable
+    # still reflects cache buckets (we charge for what we got).
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7",
@@ -229,8 +194,7 @@ def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
 
 
 def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
-    # OpenAI variant of the same defense: cached > input shouldn't
-    # produce a negative "non_cached_input" or a negative input_usd.
+    # OpenAI variant: cached > input must not produce negative input_usd.
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     out = calculate_cost(
         "openai",
@@ -252,9 +216,8 @@ def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
 
 
 def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
-    # 250k raw input + 50k cache_creation pushes billable to 300k, which
-    # crosses the 272k threshold. The whole turn should price at the
-    # long-context tier so we don't undercount.
+    # cache_creation pushes billable past 272k -> long-context tier
+    # must fire to avoid undercounting.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -271,7 +234,7 @@ def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
 
 
 def test_openai_long_context_threshold_boundary_inclusive():
-    # 272_000 exactly should land in the long-context tier (>=).
+    # Threshold is inclusive (>=).
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -309,8 +272,8 @@ def test_openai_chat_envelope_long_context_parity_with_raw():
 
 
 def test_cache_creation_as_int_does_not_crash():
-    # Some upstream proxies fold cache_creation down to a single int.
-    # The calculator must tolerate that and fall back to the 5m default.
+    # Proxies sometimes fold cache_creation to an int; tolerate it
+    # and fall back to the 5m default.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
         "anthropic",
@@ -322,7 +285,7 @@ def test_cache_creation_as_int_does_not_crash():
             "cache_creation": 12345,  # malformed; must not raise
         },
     )
-    # Falls back to the 5m default for the whole cache_creation bucket.
+    # Falls back to 5m default for the whole bucket.
     assert _isclose(
         out["cache_write_usd"],
         1_000_000 / 1_000_000.0 * base * ANTHROPIC_CACHE_5M_WRITE_MULT,
@@ -356,7 +319,7 @@ def test_non_dict_input_tokens_details_is_ignored():
             "prompt_tokens_details": [1, 2, 3],
         },
     )
-    # No cached_tokens recovered, so no cache_read_usd discount.
+    # No cached_tokens recovered -> no discount.
     assert out["cache_read_usd"] == 0.0
 
 
@@ -371,14 +334,13 @@ def test_unknown_provider_priced_false_zero_bill():
     )
     assert out["priced"] is False
     assert out["total_usd"] == 0.0
-    # Tokens still report for the UI counter.
+    # Tokens still report for the UI.
     assert out["billable_input_tokens"] == 1_000_000
     assert out["billable_output_tokens"] == 1_000_000
 
 
 def test_anthropic_provider_with_openai_model_priced_false():
-    # Provider routing mistake: handing an OpenAI id to the Anthropic
-    # table must not falsely match a similar-looking Anthropic key.
+    # OpenAI id against Anthropic table must not falsely match.
     out = calculate_cost(
         "anthropic",
         "gpt-5.5",
@@ -401,35 +363,28 @@ def test_empty_usage_dict_zero_bill():
 
 
 def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
-    """A chat-style envelope without ``cache_read_input_tokens`` but
-    with the mirrored ``prompt_tokens_details.cached_tokens`` should
-    still apply the cache_read discount instead of billing as full
-    uncached input.
-    """
+    """Chat-style envelope without `cache_read_input_tokens` but with
+    mirrored `prompt_tokens_details.cached_tokens` should still apply
+    the cache_read discount."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
         usage = {
             "prompt_tokens": 1_000_000,
             "completion_tokens": 0,
-            # No cache_read_input_tokens; only the mirrored shape.
+            # Only the mirrored shape (no native key).
             "prompt_tokens_details": {"cached_tokens": 1_000_000},
             "cache_creation_input_tokens": 0,
         },
     )
     assert r["billable_input_tokens"] == 1_000_000, r
-    # 1M cached tokens at 0.1x of $5 (opus 4.7 input rate) = $0.50
+    # 1M cached at 0.1x of $5 (opus 4.7) = $0.50
     assert math.isclose(r["cache_read_usd"], 0.5, rel_tol = 1e-3), r
 
 
 def test_anthropic_native_key_takes_precedence_over_mirrored():
-    """When both ``cache_read_input_tokens`` and
-    ``prompt_tokens_details.cached_tokens`` are present, the native
-    Anthropic field wins (the mirror is only a fallback). Studio's
-    canonical envelope always sets both to the same value, so there is
-    no observable difference in production; the precedence rule just
-    keeps the math deterministic on off-spec inputs.
-    """
+    """When both native and mirrored cache-read fields are present,
+    the native Anthropic field wins (mirror is fallback-only)."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
@@ -440,24 +395,16 @@ def test_anthropic_native_key_takes_precedence_over_mirrored():
             "cache_creation_input_tokens": 0,
         },
     )
-    # billable_input_tokens = uncached_input + cache_creation + cache_read
-    # uncached_input = prompt_tokens - cache_creation - cache_read
-    #               = 1_000_000 - 0 - 800_000 = 200_000
-    # billable = 200_000 + 0 + 800_000 = 1_000_000
+    # billable = uncached_input + cache_creation + cache_read
+    #         = (1M - 0 - 800k) + 0 + 800k = 1M
     assert r["billable_input_tokens"] == 1_000_000, r
-    # cache_read_usd uses 800_000 not 1_000_000 (native wins).
+    # cache_read uses 800k (native), not 1M (mirrored).
     assert math.isclose(r["cache_read_usd"], 0.4, rel_tol = 1e-3), r
 
 
 def test_anthropic_native_zero_takes_precedence_over_mirrored():
-    """An explicit ``cache_read_input_tokens: 0`` from the upstream is
-    authoritative -- the mirrored ``prompt_tokens_details.cached_tokens``
-    is a fallback for the *missing-key* case, not an override. A stale
-    proxy that forwards a previous turn's details block must not be
-    able to inflate cache_read past the native zero count, which would
-    overbill the turn (false cache-read line) AND inflate
-    ``billable_input_tokens``.
-    """
+    """Explicit `cache_read_input_tokens: 0` is authoritative; a stale
+    mirrored block from a proxy must not inflate cache_read past it."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
@@ -465,17 +412,15 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
             "input_tokens": 1_000_000,
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
-            # Stale / off-spec mirror from a proxy. Must be ignored
-            # because the native key is present (== 0).
+            # Stale mirror from a proxy; must be ignored (native present).
             "prompt_tokens_details": {"cached_tokens": 1_000_000},
         },
     )
-    # Native says 0, so cache_read stays 0; no cache_read_usd bill.
+    # Native is 0 -> cache_read stays 0.
     assert r["cache_read_usd"] == 0.0, r
-    # billable_input_tokens = input_tokens + cache_creation + cache_read
-    #                      = 1_000_000 + 0 + 0 = 1_000_000
+    # billable = input + cache_creation + cache_read = 1M + 0 + 0
     assert r["billable_input_tokens"] == 1_000_000, r
-    # 1M uncached input tokens at $5/M = $5.00 (no cache discount).
+    # 1M uncached at $5/M (no discount).
     assert math.isclose(r["input_usd"], 5.0, rel_tol = 1e-3), r
     assert math.isclose(r["total_usd"], 5.0, rel_tol = 1e-3), r
 
@@ -484,9 +429,8 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
 
 
 def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
-    """Studio chat-style envelope must carry the 5m / 1h cache-write
-    breakdown so downstream cost calc can apply the 2x 1h premium.
-    """
+    """Chat-style envelope must carry the 5m/1h cache-write breakdown
+    so downstream cost calc applies the 2x 1h premium."""
     import json
     from core.inference.external_provider import _build_usage_chunk
 
@@ -527,6 +471,5 @@ def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
             },
         },
     )
-    # 1M tokens at 1h-premium (2x of $5 = $10/M = $10). 5m baseline
-    # would be 1.25x ($6.25). 2x means cache_write_usd ~= $10.
+    # 1M at 1h-premium (2x of $5 = $10); 5m baseline would be $6.25.
     assert math.isclose(r["cache_write_usd"], 10.0, rel_tol = 1e-2), r

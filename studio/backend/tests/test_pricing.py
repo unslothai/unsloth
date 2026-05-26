@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the per-session cost calculator.
-
-Pricing inputs are baked into ``core/inference/pricing.py``; this
-test verifies the math (with multipliers from the prompt-caching
-docs) and that unknown models / empty usage degrade gracefully.
-"""
+"""Unit tests for the per-session cost calculator. Verifies math
+against ``core/inference/pricing.py`` and graceful degradation."""
 
 import math
 
@@ -102,8 +98,7 @@ def test_anthropic_cache_1h_write_uses_2x_multiplier():
 
 
 def test_anthropic_cache_5m_default_when_no_breakdown():
-    # When the docs/response doesn't surface the 5m/1h split, treat
-    # the full cache_creation bucket as 5m (the upstream default pool).
+    # No 5m/1h split surfaced -> assume the default 5m pool.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
         "anthropic",
@@ -148,8 +143,7 @@ def test_anthropic_code_exec_charged_per_hour():
 
 
 def test_anthropic_dated_id_falls_back_to_canonical_prefix():
-    # Hypothetical dated snapshot of claude-opus-4-7 should still
-    # inherit the canonical-id pricing via the prefix-match fallback.
+    # Dated snapshot inherits canonical pricing via prefix-match.
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7-20260712",
@@ -163,8 +157,7 @@ def test_anthropic_dated_id_falls_back_to_canonical_prefix():
 
 
 def test_openai_gpt55_input_output_math():
-    # Sub-272k input keeps us in the short-context tier ($5/$30).
-    # The dedicated long-context tests below exercise the crossover.
+    # Sub-272k stays in short-context tier ($5/$30).
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -176,11 +169,7 @@ def test_openai_gpt55_input_output_math():
 
 
 def test_openai_cache_read_subtracted_from_input_at_discount():
-    # OpenAI folds cached tokens into input_tokens, unlike Anthropic.
-    # The calculator must subtract cached_tokens from the "full price"
-    # bucket and re-bill them at 0.1x. Use a sub-272k total so the
-    # short-context tier applies (long-context crossover is exercised
-    # in its own test below).
+    # OpenAI folds cached into input_tokens; subtract and re-bill at 0.1x.
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     out = calculate_cost(
         "openai",
@@ -199,9 +188,7 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
 
 
 def test_openai_billable_input_tokens_does_not_double_count_cache_read():
-    # OpenAI's input_tokens already includes cached_tokens, so the
-    # billable counter must NOT add cache_read on top -- otherwise the
-    # tooltip says 180k input when the bill is for 100k.
+    # input_tokens already includes cached; don't double-count.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -215,9 +202,7 @@ def test_openai_billable_input_tokens_does_not_double_count_cache_read():
 
 
 def test_openai_dated_snapshot_inherits_canonical_pricing():
-    # Sub-272k stays in the short-context tier; the prefix-match
-    # fallback is what proves the dated snapshot inherits gpt-5.5
-    # pricing.
+    # Dated snapshot inherits gpt-5.5 pricing via prefix-match.
     out = calculate_cost(
         "openai",
         "gpt-5.5-2026-04-23",
@@ -228,10 +213,7 @@ def test_openai_dated_snapshot_inherits_canonical_pricing():
 
 
 def test_openai_gpt54_family_uses_verified_prices():
-    # Spot-check the lower-tier rows that previously underbilled.
-    # gpt-5.4 has a long-context tier so the input has to stay
-    # below 272k; the mini/nano/codex rows have no crossover so
-    # 1M tokens is fine.
+    # Spot-check lower-tier rows that previously underbilled.
     cases = {
         # (input_tokens, expected_input_usd, expected_output_usd)
         "gpt-5.4": (200_000, 200_000 / 1_000_000.0 * 2.5, 200_000 / 1_000_000.0 * 15.0),
@@ -251,8 +233,7 @@ def test_openai_gpt54_family_uses_verified_prices():
 
 
 def test_openai_unlisted_model_priced_false_not_zero_default():
-    # o-series / gpt-4.5 are no longer on the pricing page, so we
-    # intentionally drop them rather than silently underbill at $0.
+    # o-series / gpt-4.5 are off the pricing page; drop rather than $0.
     for model in ("o3", "o4-mini", "gpt-4.5", "gpt-4.5-preview"):
         out = calculate_cost(
             "openai",
@@ -270,9 +251,7 @@ def test_openai_unlisted_model_priced_false_not_zero_default():
 
 
 def test_anthropic_canonical_4_5_ids_are_priced():
-    # Codex P1: claude-opus-4-5 (no date) is the canonical id used
-    # in backend defaults but was missing from the table, so the
-    # calculator returned priced=False + zero cost. Pin the aliases.
+    # Pin the bare-id aliases (backend defaults reference these).
     cases = {
         "claude-opus-4-5": (5.0, 25.0),
         "claude-sonnet-4-5": (3.0, 15.0),
@@ -307,8 +286,7 @@ def test_openai_gpt55_short_context_under_272k_uses_base_rates():
 
 
 def test_openai_gpt55_long_context_crossover_uses_higher_rates():
-    # 300k billable input > 272k threshold -> long-context tier
-    # applies to the WHOLE turn, not a per-token blend.
+    # >272k billable -> long-context tier on the whole turn.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -330,8 +308,7 @@ def test_openai_gpt54_long_context_crossover():
 
 
 def test_openai_gpt54_mini_has_no_long_context_tier():
-    # Mini/nano/codex don't publish a long-context price; the base
-    # rate must keep applying even at very large prompts.
+    # Mini/nano/codex have no long-context tier; base rate always applies.
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini",
@@ -374,8 +351,7 @@ def test_openai_container_hours_charged():
 
 
 def test_openai_tool_surcharges_added_to_total():
-    # End-to-end: input + output + web_search + container in one
-    # turn. Total must sum all four buckets.
+    # End-to-end: total must sum input + output + web_search + container.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -416,8 +392,7 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert "code_execution_usd_per_hour" in a
     assert "models" in o and "gpt-5.5" in o["models"]
     assert o["cache_read_mult"] == OPENAI_CACHE_READ_MULT
-    # OpenAI tool surcharge constants are also exposed so the frontend
-    # tooltip can render the per-call rate.
+    # OpenAI tool surcharge constants are exposed for the frontend.
     assert o["web_search_usd_per_1k"] == OPENAI_WEB_SEARCH_USD_PER_1K
     assert o["container_usd_per_hour"] == OPENAI_CONTAINER_USD_PER_HOUR
     # Long-context tier metadata travels with the model row.
@@ -428,23 +403,19 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
 
 
 # ── longest-prefix match: dated mini variant must not collide with the
-#    shorter family prefix (regression for PR 5690 review feedback). ──
+#    shorter family prefix. ──
 
 
 def test_longest_prefix_match_wins_for_dated_mini_snapshot():
-    """A `gpt-5.4-mini-2026-...` snapshot must inherit the `mini` rate,
-    not the (much higher) shorter `gpt-5.4` rate it would naively
-    match if `_lookup` returned the first prefix hit instead of the
-    longest one."""
+    """`gpt-5.4-mini-2026-...` must inherit the mini rate, not the
+    shorter `gpt-5.4` rate (longest prefix wins)."""
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini-2026-04-23",
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     assert out["priced"] is True
-    # gpt-5.4-mini = 0.75 / MTok input. gpt-5.4 = 2.5 / MTok input.
-    # Exact match on the longer key gives 0.75; collision on the
-    # shorter one would give 2.5 (>3x overcharge).
+    # mini = 0.75/MTok, shorter gpt-5.4 = 2.5/MTok (>3x overcharge).
     assert _isclose(out["input_usd"], 0.75), out
 
 
@@ -455,20 +426,16 @@ def test_longest_prefix_match_wins_for_dated_pro_snapshot():
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     assert out["priced"] is True
-    # gpt-5.5-pro = 30 / MTok. gpt-5.5 = 5 / MTok. Longest wins.
+    # gpt-5.5-pro = 30/MTok vs gpt-5.5 = 5/MTok; longest wins.
     assert _isclose(out["input_usd"], 30.0), out
 
 
-# ── accept both prompt_tokens (chat-style) and input_tokens (Responses)
-#    so callers can hand either envelope shape. Regression for the
-#    Gemini review on PR 5690. ──
+# ── accept both chat-style and Responses envelope shapes. ──
 
 
 def test_openai_chat_style_usage_keys_priced_correctly():
-    """A caller handing in `prompt_tokens` / `completion_tokens` (the
-    OpenAI-Chat-style envelope Studio re-emits) must still produce a
-    non-zero cost. Previously the calculator only read `input_tokens`
-    / `output_tokens` and silently zeroed the bill."""
+    """Chat-style envelope (`prompt_tokens` / `completion_tokens`) must
+    produce a non-zero cost (previously silently zeroed)."""
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini",
@@ -480,8 +447,7 @@ def test_openai_chat_style_usage_keys_priced_correctly():
 
 
 def test_input_tokens_preferred_when_both_keys_present():
-    """If a caller hands in both shapes, the raw key wins so the test
-    fixtures that mirror the upstream wire stay deterministic."""
+    """Raw key wins when both envelope shapes are present."""
     out = calculate_cost(
         "openai",
         "gpt-5.4-mini",
@@ -496,12 +462,9 @@ def test_input_tokens_preferred_when_both_keys_present():
 
 
 def test_anthropic_chat_style_prompt_tokens_dedupes_cache_buckets():
-    """Anthropic prompt_tokens (Studio's chat-style envelope) already
-    folds cache_creation + cache_read into the total. The calculator
-    must NOT add them again or it double-counts billable input.
-    Regression for the Codex P1 on the pricing follow-up PR."""
-    # 1M uncached + 200K cache_creation + 500K cache_read.
-    # Studio envelope: prompt_tokens = 1.7M (everything folded).
+    """Anthropic chat-style prompt_tokens already folds cache buckets;
+    don't double-count billable input."""
+    # 1M uncached + 200K cache_creation + 500K cache_read -> 1.7M folded.
     raw = calculate_cost(
         "anthropic",
         "claude-opus-4-7",
@@ -522,7 +485,7 @@ def test_anthropic_chat_style_prompt_tokens_dedupes_cache_buckets():
             "completion_tokens": 0,
         },
     )
-    # Both envelopes must price the same -- no double-count.
+    # Both envelopes must price the same.
     assert _isclose(chat["input_usd"], raw["input_usd"]), (chat, raw)
     assert _isclose(chat["cache_write_usd"], raw["cache_write_usd"]), (chat, raw)
     assert _isclose(chat["cache_read_usd"], raw["cache_read_usd"]), (chat, raw)
@@ -531,8 +494,7 @@ def test_anthropic_chat_style_prompt_tokens_dedupes_cache_buckets():
 
 
 def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
-    """For OpenAI, prompt_tokens already includes cache_read just like
-    raw input_tokens, so both envelopes should price identically."""
+    """OpenAI prompt_tokens includes cache_read like raw input_tokens."""
     raw = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -555,10 +517,8 @@ def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
 
 
 def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
-    """``_build_usage_chunk`` emits cached tokens under
-    ``prompt_tokens_details.cached_tokens`` (chat-style), not
-    ``input_tokens_details``. The cost calculator must honour
-    both so cache-heavy chat-style turns get the discounted rate."""
+    """Chat-style envelope ships cached under prompt_tokens_details;
+    calculator must honour both this and input_tokens_details."""
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     raw = calculate_cost(
         "openai",
@@ -584,7 +544,7 @@ def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
         chat_style,
         raw,
     )
-    # And the discount is real: 80k charged at 0.1x base, 20k at full.
+    # 80k at 0.1x base, 20k at full.
     assert _isclose(
         chat_style["cache_read_usd"],
         80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT,
@@ -592,20 +552,15 @@ def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
 
 
 def test_explicit_zero_output_tokens_wins_over_stale_completion_tokens():
-    """``output_tokens: 0`` must beat a stale ``completion_tokens: 50``.
-
-    The previous ``or`` fallback treated 0 as missing and silently
-    re-priced the response against the stale chat-style count. The
-    raw upstream key now takes precedence even when its value is 0.
-    """
+    """Explicit ``output_tokens: 0`` beats a stale ``completion_tokens``;
+    the previous `or` fallback treated 0 as missing."""
     out = calculate_cost(
         "openai",
         "gpt-4o-mini",
         {
             "input_tokens": 100,
             "output_tokens": 0,
-            # Mixed envelope: stale chat-style completion_tokens that
-            # the caller forgot to clear. We must NOT bill against it.
+            # Stale chat-style mirror; must not bill against it.
             "completion_tokens": 50,
         },
     )
