@@ -1116,7 +1116,8 @@ class LlamaCppBackend:
                 env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
-            if result.stderr: logger.warning(result.stderr)
+            if result.stderr:
+                logger.warning(result.stderr)
             # Split into per-flag blocks: each --flag line plus its
             # indented continuation lines, so the "argument has been
             # removed" description sits with its flag.
@@ -1549,16 +1550,31 @@ class LlamaCppBackend:
 
             for _nv_pattern in [
                 os.path.join(
-                    sys.prefix, "lib", "python*", "site-packages",
-                    "nvidia", "cu*", "lib",
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
                 ),
                 os.path.join(
-                    sys.prefix, "lib", "python*", "site-packages",
-                    "nvidia", "cudnn", "lib",
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
                 ),
                 os.path.join(
-                    sys.prefix, "lib", "python*", "site-packages",
-                    "nvidia", "nvjitlink", "lib",
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
                 ),
             ]:
                 for _nv_dir in _glob.glob(_nv_pattern):
@@ -1583,7 +1599,6 @@ class LlamaCppBackend:
             )
 
         return env
-
 
     @staticmethod
     def _select_gpus(
