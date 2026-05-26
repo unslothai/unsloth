@@ -70,9 +70,8 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  // External prompt-cache fields from `_build_usage_chunk` in
-  // studio/backend/core/inference/external_provider.py. cache_read mirrors
-  // prompt_tokens_details.cached_tokens; cache_creation is Anthropic-only.
+  // External prompt-cache fields (see _build_usage_chunk in
+  // external_provider.py). cache_creation is Anthropic-only.
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
@@ -1889,20 +1888,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Cache-hit count: prefer llama-server timings, fall back to the
-        // external-provider usage envelope (Anthropic-native key last).
+        // Prefer llama-server timings; fall back to provider usage envelope.
         const cachedTokens =
           meta?.timings?.cache_n ??
           meta?.usage?.prompt_tokens_details?.cached_tokens ??
           meta?.usage?.cache_read_input_tokens ??
           0;
-        // Anthropic-only cache-write count (billed at the write premium).
+        // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Update context usage in store if we got valid server data.
         // Gate on the captured checkpoint still being active so a late
-        // completion from provider A does not populate the context bar
-        // after the user switched to provider B mid-stream.
+        // completion from provider A doesn't populate the bar after the
+        // user switched to provider B mid-stream.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&

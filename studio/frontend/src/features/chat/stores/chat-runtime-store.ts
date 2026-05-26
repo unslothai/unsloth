@@ -642,11 +642,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      // Mirror setCheckpoint: the local model load path mutates
-      // params.checkpoint via setParams(mergeBackendRecommendedInference(...))
-      // before refresh() eventually calls setCheckpoint, leaving a window
-      // where the relaxed context-bar render gate would show the previous
-      // model's per-turn counters under the new checkpoint.
+      // Mirror setCheckpoint: the local model load path can mutate
+      // params.checkpoint via setParams() before setCheckpoint runs,
+      // leaving stale per-turn counters under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
@@ -715,14 +713,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // mount, and a stale persisted local id would race against the
       // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      // Clear any stale per-turn usage when the active model changes.
-      // The context bar render gate was relaxed for external providers
-      // (no longer requires ggufContextLength), so leaving a previous
-      // turn's counters around would visibly show old token / cache
-      // stats from a different model until the next completion
-      // overwrites them. setActiveThreadId / clearCheckpoint already
-      // do this; keep the invariant on the most-traveled transition
-      // path too.
+      // Clear stale per-turn usage when the model changes; the relaxed
+      // external-provider render gate would otherwise show old counters
+      // until the next completion overwrites them.
       const checkpointChanged = state.params.checkpoint !== modelId;
       return {
         params: {

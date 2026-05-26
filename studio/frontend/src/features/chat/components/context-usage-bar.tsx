@@ -28,11 +28,10 @@ function getSeverityColor(percent: number): {
 
 export const ContextUsageBar: FC<{
   used: number;
-  // Optional: only local llama-server knows the context window. When absent
-  // the bar shows token counts without the "/ total" ratio.
+  // null on external providers (no known window); bar then hides the ratio.
   total?: number | null;
   cached?: number;
-  // Anthropic-only cache-write count (billed at the write premium).
+  // Anthropic-only (billed at the write premium).
   cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;

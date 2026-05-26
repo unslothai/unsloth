@@ -831,14 +831,13 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // Only enforce the fits-in-window check when a local GGUF window
-        // is known; external providers have ggufContextLength === null.
+        // Window check applies only when a local GGUF window is known;
+        // external providers have ggufContextLength === null.
         const withinLocalLimit =
           !store.ggufContextLength ||
           (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-        // Legacy unscoped usage (no modelId) predates the chat-adapter's
-        // model stamp. Only trust it when a known local window also
-        // bounds the totals; otherwise we cannot rule out attributing
+        // Legacy unscoped usage (no modelId) is only trusted when a
+        // known local window bounds the totals, so we can't misattribute
         // an old local turn to a newly-selected external provider.
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint

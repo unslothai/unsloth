@@ -1037,10 +1037,9 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
-          // External selection arrives mid-session: also clear any
-          // pre-existing per-turn usage from the previous model so the
-          // relaxed external-provider render gate does not show stale
-          // counts until the next completion overwrites them.
+          // Clear previous-model counters; the relaxed external-provider
+          // render gate would otherwise show stale stats until the next
+          // completion overwrites them.
           contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -1166,11 +1165,9 @@ export function ChatPage(): ReactElement {
     if (!saved) return;
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore context usage from the active thread's last assistant
-    // message, but only if it was produced by the SAME checkpoint the
-    // user is now sitting on. Without this guard the relaxed render
-    // gate would show stale token / cache stats from a different
-    // provider or a local turn that exceeds the active GGUF window.
+    // Restore usage from the last assistant message, but only if it
+    // matches the currently active checkpoint. Without this guard the
+    // relaxed render gate would show stale stats from another model.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1189,20 +1186,15 @@ export function ChatPage(): ReactElement {
           const activeCheckpoint = store.params.checkpoint;
           const usageModelId =
             (usage as { modelId?: unknown }).modelId;
-          // Scope by modelId when the saved usage carries one (the
-          // chat-adapter stamps it on every external + local turn).
-          // Reject when there is no active checkpoint at all -- model-
-          // scoped usage cannot be safely attributed to "nothing".
+          // Scope by modelId when present; reject if no active checkpoint
+          // (model-scoped usage cannot be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
             if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
               return;
             }
           }
-          // For local llama-server turns, also require that the
-          // restored prompt count fits inside the active context
-          // window. Skip the check when the window is unknown (e.g.
-          // external provider, no ggufContextLength) so the existing
-          // external-provider rendering path stays intact.
+          // For local turns, also require the restored count to fit in
+          // the active window. Skip when unknown (external provider).
           const limit = store.ggufContextLength;
           if (
             typeof limit === "number" &&
