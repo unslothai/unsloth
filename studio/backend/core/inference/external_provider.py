@@ -67,6 +67,50 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+
+
+def _openai_image_replay_requires_reasoning(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("gpt-5") or normalized.startswith("o")
+
+
+def _sanitize_openai_reasoning_replay_item(
+    item: Any,
+) -> Optional[dict[str, Any]]:
+    """Return a Responses input-safe reasoning item, if ``item`` is one.
+
+    OpenAI's image-generation docs allow follow-up edits by sending the
+    previous ``image_generation_call`` id. Reasoning models can additionally
+    require the paired ``reasoning`` output item in manually managed context,
+    so keep the public replay fields only and drop everything else.
+    """
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    item_id = item.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    summary_parts: list[dict[str, str]] = []
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        for part in summary:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "summary_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                summary_parts.append({"type": "summary_text", "text": text})
+    replay_item: dict[str, Any] = {
+        "type": "reasoning",
+        "id": item_id,
+        "summary": summary_parts,
+    }
+    status = item.get("status")
+    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
+        replay_item["status"] = status
+    return replay_item
+
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
 # using private-use codepoints (see
@@ -733,8 +777,7 @@ class ExternalProviderClient:
                     plugins.append({"id": "web"})
                 body["plugins"] = plugins
                 logger.info(
-                    "OpenRouter web_search: attached plugins=[{id: 'web'}] "
-                    "(model=%s)",
+                    "OpenRouter web_search: attached plugins=[{id: 'web'}] (model=%s)",
                     body.get("model"),
                 )
 
@@ -1808,7 +1851,7 @@ class ExternalProviderClient:
             and compaction_threshold > 0
             and _anthropic_supports_compaction(model)
         )
-        if compaction_active:
+        if compaction_active and compaction_threshold is not None:
             trigger_value = max(
                 int(compaction_threshold),
                 _ANTHROPIC_COMPACTION_MIN,
@@ -2864,10 +2907,17 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        image_generation_requested = bool(
+            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+        )
+
         # Split system messages out into a single `instructions` string and
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
+        openai_replay_items: list[dict[str, Any]] = []
+        previous_response_id: Optional[str] = None
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2888,6 +2938,7 @@ class ExternalProviderClient:
 
             if isinstance(content, list):
                 translated_parts: list[dict[str, Any]] = []
+                used_previous_response_id = False
                 for part in content:
                     part_type = part.get("type")
                     if part_type == "text":
@@ -2901,6 +2952,36 @@ class ExternalProviderClient:
                             # https:// URLs and data: URLs are accepted).
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
+                            )
+                    elif (
+                        part_type == "reasoning"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
+                        replay_item = _sanitize_openai_reasoning_replay_item(part)
+                        if replay_item:
+                            openai_replay_items.append(replay_item)
+                    elif (
+                        part_type == "image_generation_call"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
+                        response_id = (
+                            part.get("response_id")
+                            or part.get("openai_response_id")
+                            or part.get("previous_response_id")
+                        )
+                        call_id = part.get("id") or part.get("image_generation_call_id")
+                        if isinstance(call_id, str) and call_id:
+                            if isinstance(response_id, str) and response_id:
+                                previous_response_id = response_id
+                                input_items = []
+                                translated_parts = []
+                                used_previous_response_id = True
+                            else:
+                                previous_response_id = None
+                            openai_replay_items.append(
+                                {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
                         # OpenAI Responses accepts PDFs / docs as
@@ -2939,8 +3020,58 @@ class ExternalProviderClient:
                         if filename:
                             block["filename"] = filename
                         translated_parts.append(block)
-                if translated_parts:
+                if translated_parts and not used_previous_response_id:
                     input_items.append({"role": role, "content": translated_parts})
+
+        if previous_response_id:
+            # OpenAI's documented multi-turn image generation path can use
+            # `previous_response_id` to carry the prior generated image and
+            # paired reasoning state. Prefer that over manual item replay when
+            # we captured the response id; keep replay below as a fallback for
+            # older stored turns that only have an image_generation_call id.
+            openai_replay_items = []
+        elif (
+            _openai_image_replay_requires_reasoning(model)
+            and reasoning_effort != "none"
+            and enable_thinking is not False
+        ):
+            filtered_replay_items: list[dict[str, Any]] = []
+            has_reasoning_replay = False
+            dropped_image_replay_without_reasoning = False
+            for item in openai_replay_items:
+                if item.get("type") == "reasoning":
+                    has_reasoning_replay = True
+                    filtered_replay_items.append(item)
+                elif item.get("type") == "image_generation_call":
+                    if has_reasoning_replay:
+                        filtered_replay_items.append(item)
+                    else:
+                        dropped_image_replay_without_reasoning = True
+                else:
+                    filtered_replay_items.append(item)
+            openai_replay_items = filtered_replay_items
+            if dropped_image_replay_without_reasoning:
+                yield _error_sse_line(
+                    400,
+                    "OpenAI image edit reference is missing paired reasoning state. "
+                    "Regenerate the image, then retry the edit.",
+                    self.provider_type,
+                )
+                return
+        image_generation_has_reference = bool(
+            previous_response_id
+            or any(
+                isinstance(item, dict) and item.get("type") == "image_generation_call"
+                for item in openai_replay_items
+            )
+        )
+        if openai_replay_items:
+            insert_at = len(input_items)
+            for index in range(len(input_items) - 1, -1, -1):
+                if input_items[index].get("role") == "user":
+                    insert_at = index
+                    break
+            input_items[insert_at:insert_at] = openai_replay_items
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
         # temperature and top_p with `Unsupported parameter` 400s on
@@ -2957,6 +3088,8 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        if previous_response_id:
+            body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning
         # summary events — without it OpenAI returns no thinking text on
         # most reasoning models, the SSE handler has no <think>…</think>
@@ -3013,7 +3146,6 @@ class ExternalProviderClient:
         # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
         # without these extensions and would 400 on the unknown body
         # fields, so they intentionally fall outside this gate.
-        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 
@@ -3059,9 +3191,18 @@ class ExternalProviderClient:
         # plus gpt-4.1 / gpt-4o / o3 per the docs; restrict to cloud
         # OpenAI because the local llama.cpp / ollama backends don't
         # implement it and would 400.
-        image_generation_enabled_openai = bool(
-            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
-        )
+        image_generation_enabled_openai = image_generation_requested
+
+        def _openai_image_generation_tool() -> dict[str, Any]:
+            tool: dict[str, Any] = {"type": "image_generation"}
+            if image_generation_has_reference:
+                # OpenAI's Responses image tool defaults to `auto`. For
+                # Studio's explicit follow-up edit flow, force edit mode so
+                # the provider uses the previous response / call id as image
+                # context instead of treating the text as a fresh generation.
+                tool["action"] = "edit"
+            return tool
+
         if enabled_tools:
             tools_array: list[dict[str, Any]] = []
             if "web_search" in enabled_tools:
@@ -3089,7 +3230,7 @@ class ExternalProviderClient:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
             if image_generation_enabled_openai:
-                tools_array.append({"type": "image_generation"})
+                tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
 
@@ -3121,7 +3262,7 @@ class ExternalProviderClient:
                         {"type": "shell", "environment": env_attempt}
                     )
                 if image_generation_enabled_openai:
-                    tools_array_attempt.append({"type": "image_generation"})
+                    tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
                 else:
@@ -3212,7 +3353,7 @@ class ExternalProviderClient:
                     # to a specific search invocation. Hence the shared list.
                     # web_search_calls: { item_id -> {query} }
                     web_search_calls: dict[str, dict[str, Any]] = {}
-                    all_url_citations: list[dict[str, str]] = []
+                    all_url_citations: list[dict[str, Any]] = []
                     # Shell-tool (code execution) state. OpenAI emits
                     # `shell_call` items (model requesting a command list)
                     # paired with `shell_call_output` items (execution
@@ -3235,6 +3376,10 @@ class ExternalProviderClient:
                     # see.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    current_openai_response_id: Optional[str] = None
+                    last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
+                    openai_reasoning_replay_items: dict[str, dict[str, Any]] = {}
+                    image_generation_calls_started: set[str] = set()
                     # Buffer for a citation marker straddling two delta events;
                     # prepended onto the next delta. See _split_pending_citation_tail.
                     pending_marker_tail: str = ""
@@ -3244,6 +3389,18 @@ class ExternalProviderClient:
                     # annotation events and force-flushed at end-of-stream
                     # with leftover private-use codepoints stripped.
                     pending_citation_segments: list[str] = []
+
+                    def _record_openai_response_id(payload: dict[str, Any]) -> None:
+                        nonlocal current_openai_response_id
+                        response_obj = payload.get("response")
+                        candidates: list[Any] = []
+                        if isinstance(response_obj, dict):
+                            candidates.append(response_obj.get("id"))
+                        candidates.append(payload.get("response_id"))
+                        for candidate in candidates:
+                            if isinstance(candidate, str) and candidate:
+                                current_openai_response_id = candidate
+                                return
 
                     def _drain_pending_segments(force: bool) -> str:
                         """Re-attempt resolution on buffered segments in order.
@@ -3392,6 +3549,80 @@ class ExternalProviderClient:
                             }
                         )
 
+                    def _record_openai_reasoning_replay_item(
+                        payload: Any,
+                    ) -> Optional[dict[str, Any]]:
+                        if not isinstance(payload, dict):
+                            return None
+                        item_id = payload.get("id") or payload.get("item_id")
+                        if not isinstance(item_id, str) or not item_id:
+                            return None
+                        existing = openai_reasoning_replay_items.setdefault(
+                            item_id,
+                            {
+                                "type": "reasoning",
+                                "id": item_id,
+                                "summary": [],
+                                "status": "completed",
+                            },
+                        )
+                        if payload.get("type") == "reasoning":
+                            sanitized = _sanitize_openai_reasoning_replay_item(payload)
+                            if sanitized:
+                                existing.update(sanitized)
+                                return existing
+                        summary_text = ""
+                        part = payload.get("part")
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "summary_text"
+                        ):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        elif (
+                            payload.get("type")
+                            == "response.reasoning_summary_text.done"
+                        ):
+                            text = payload.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        if summary_text:
+                            summary_index = payload.get("summary_index")
+                            summary = existing.setdefault("summary", [])
+                            if isinstance(summary, list):
+                                summary_part = {
+                                    "type": "summary_text",
+                                    "text": summary_text,
+                                }
+                                if (
+                                    isinstance(summary_index, int)
+                                    and summary_index >= 0
+                                ):
+                                    while len(summary) <= summary_index:
+                                        summary.append(
+                                            {"type": "summary_text", "text": ""}
+                                        )
+                                    summary[summary_index] = summary_part
+                                else:
+                                    summary.append(summary_part)
+                        return existing
+
+                    def _image_generation_arguments(
+                        prompt: str,
+                        raw_item_id: Any,
+                    ) -> dict[str, Any]:
+                        arguments: dict[str, Any] = {"kind": "image", "prompt": prompt}
+                        if isinstance(raw_item_id, str) and raw_item_id:
+                            arguments["openai_image_generation_call_id"] = raw_item_id
+                        if current_openai_response_id:
+                            arguments["openai_response_id"] = current_openai_response_id
+                        if last_openai_reasoning_replay_item:
+                            arguments["openai_reasoning_item"] = (
+                                last_openai_reasoning_replay_item
+                            )
+                        return arguments
+
                     def _extract_reasoning_text(payload: Any) -> str:
                         if payload is None:
                             return ""
@@ -3478,6 +3709,7 @@ class ExternalProviderClient:
                                 continue
 
                             event_type = event.get("type")
+                            _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
@@ -3534,11 +3766,6 @@ class ExternalProviderClient:
                                     yield _chunk_with_text(flushed)
 
                             elif event_type == "response.output_item.added":
-                                # Track the call early but do NOT emit tool_start
-                                # yet — action.query is not reliably populated on
-                                # added across OpenAI API versions, and the
-                                # frontend's tool_start is a one-shot push (no
-                                # update mechanism). Wait for output_item.done.
                                 item = event.get("item", {})
                                 if (
                                     isinstance(item, dict)
@@ -3579,12 +3806,34 @@ class ExternalProviderClient:
                                             and latched_container_id is None
                                         ):
                                             latched_container_id = probe
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "image_generation_call"
+                                ):
+                                    raw_item_id = item.get("id")
+                                    if isinstance(raw_item_id, str) and raw_item_id:
+                                        arguments = _image_generation_arguments(
+                                            "",
+                                            raw_item_id,
+                                        )
+                                        image_generation_calls_started.add(raw_item_id)
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_start",
+                                                "tool_name": "image_generation",
+                                                "tool_call_id": raw_item_id,
+                                                "arguments": arguments,
+                                            }
+                                        )
 
                             elif event_type == "response.output_item.done":
                                 item = event.get("item", {})
                                 if not isinstance(item, dict):
                                     continue
                                 if item.get("type") == "reasoning":
+                                    last_openai_reasoning_replay_item = (
+                                        _record_openai_reasoning_replay_item(item)
+                                    )
                                     summary_text = _extract_reasoning_text(
                                         item.get("summary")
                                     )
@@ -3716,25 +3965,26 @@ class ExternalProviderClient:
                                     # millisecond resolution so synthesised
                                     # ids stay unique even when two image
                                     # generations resolve in the same ms.
-                                    item_id = item.get("id", "") or (
-                                        f"img_{time.time_ns()}"
-                                    )
+                                    raw_item_id = item.get("id")
+                                    item_id = raw_item_id or f"img_{time.time_ns()}"
                                     prompt_in = (
                                         item.get("revised_prompt")
                                         or item.get("prompt")
                                         or ""
                                     )
-                                    yield _emit_tool_event(
-                                        {
-                                            "type": "tool_start",
-                                            "tool_name": "image_generation",
-                                            "tool_call_id": item_id,
-                                            "arguments": {
-                                                "kind": "image",
-                                                "prompt": prompt_in,
-                                            },
-                                        }
+                                    done_arguments = _image_generation_arguments(
+                                        prompt_in,
+                                        raw_item_id,
                                     )
+                                    if item_id not in image_generation_calls_started:
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_start",
+                                                "tool_name": "image_generation",
+                                                "tool_call_id": item_id,
+                                                "arguments": done_arguments,
+                                            }
+                                        )
                                     b64 = (
                                         item.get("result") or item.get("b64_json") or ""
                                     )
@@ -3744,11 +3994,13 @@ class ExternalProviderClient:
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
                                             "result": "",
+                                            "arguments": done_arguments,
                                             "image_b64": b64,
                                             "image_mime": (f"image/{output_format}"),
                                             "size": item.get("size"),
                                             "quality": item.get("quality"),
                                             "background": item.get("background"),
+                                            "prompt": prompt_in,
                                         }
                                     )
 
@@ -3756,6 +4008,13 @@ class ExternalProviderClient:
                                 isinstance(event_type, str)
                                 and "reasoning" in event_type
                             ):
+                                recorded_reasoning = (
+                                    _record_openai_reasoning_replay_item(event)
+                                )
+                                if recorded_reasoning:
+                                    last_openai_reasoning_replay_item = (
+                                        recorded_reasoning
+                                    )
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:
@@ -3848,8 +4107,7 @@ class ExternalProviderClient:
                                     blocks: list[str] = []
                                     for cit in all_url_citations:
                                         line = (
-                                            f"Title: {cit['title']}\n"
-                                            f"URL: {cit['url']}"
+                                            f"Title: {cit['title']}\nURL: {cit['url']}"
                                         )
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"
@@ -3927,8 +4185,7 @@ class ExternalProviderClient:
                                     blocks = []
                                     for cit in all_url_citations:
                                         line = (
-                                            f"Title: {cit['title']}\n"
-                                            f"URL: {cit['url']}"
+                                            f"Title: {cit['title']}\nURL: {cit['url']}"
                                         )
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"

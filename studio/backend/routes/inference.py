@@ -1709,6 +1709,12 @@ def _build_external_messages(
       see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
       part is stripped so the unknown content type doesn't reach generic
       /chat/completions passthrough and 400 the request.
+    - `reasoning`: OpenAI-only Responses reasoning item paired with a
+      prior tool output. Forwarded ONLY when provider_type=="openai"
+      so follow-up image edits can replay the required reasoning item.
+    - `image_generation_call`: OpenAI-only Responses image reference.
+      Forwarded ONLY when provider_type=="openai" so follow-up image
+      edits can reference prior generated images.
     - `compaction`: Anthropic-only synthetic part (round-trips server-side
       compaction state). Forwarded ONLY when provider_type=="anthropic";
       stripped for every other provider so the unknown part doesn't
@@ -1717,6 +1723,7 @@ def _build_external_messages(
     """
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
+    openai = provider_type == "openai"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1737,6 +1744,30 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif (
+                        part.type == "reasoning" and openai and msg.role == "assistant"
+                    ):
+                        reasoning: dict[str, Any] = {
+                            "type": "reasoning",
+                            "id": part.id,
+                            "summary": part.summary,
+                        }
+                        if part.status:
+                            reasoning["status"] = part.status
+                        parts.append(reasoning)
+                    elif (
+                        part.type == "image_generation_call"
+                        and openai
+                        and msg.role == "assistant"
+                    ):
+                        # ExternalProviderClient maps this onto a top-level
+                        # Responses input item after the current user prompt,
+                        # or onto `previous_response_id` when response_id is
+                        # available from the prior Responses turn.
+                        image_ref = {"type": "image_generation_call", "id": part.id}
+                        if getattr(part, "response_id", None):
+                            image_ref["response_id"] = part.response_id
+                        parts.append(image_ref)
                     elif part.type == "input_document" and document_provider:
                         # ExternalProviderClient maps this onto
                         # Anthropic's `document` or OpenAI Responses'
@@ -1758,6 +1789,8 @@ def _build_external_messages(
                         # provider would 400 on the unknown part, so
                         # gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
+                if msg.role == "assistant" and not parts:
+                    continue
                 result.append({"role": msg.role, "content": parts})
             else:
                 # Non-vision provider: strip images / documents, keep
@@ -1769,8 +1802,28 @@ def _build_external_messages(
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "reasoning" and openai and msg.role == "assistant":
+                        reasoning: dict[str, Any] = {
+                            "type": "reasoning",
+                            "id": p.id,
+                            "summary": p.summary,
+                        }
+                        if p.status:
+                            reasoning["status"] = p.status
+                        preserved.append(reasoning)
+                    elif (
+                        p.type == "image_generation_call"
+                        and openai
+                        and msg.role == "assistant"
+                    ):
+                        image_ref = {"type": "image_generation_call", "id": p.id}
+                        if getattr(p, "response_id", None):
+                            image_ref["response_id"] = p.response_id
+                        preserved.append(image_ref)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
+                if msg.role == "assistant" and not preserved:
+                    continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses back to a string for
                     # providers that don't accept content arrays.

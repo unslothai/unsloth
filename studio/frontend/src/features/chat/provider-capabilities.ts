@@ -207,15 +207,21 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /**
  * Strict check that a provider configuration points at OpenAI's
- * managed cloud (api.openai.com), as opposed to a custom OpenAI-compat
- * backend (ollama / llama.cpp / vLLM / generic "custom" preset). The
- * shell tool ONLY exists on OpenAI cloud; sending it to anything else
- * 400s the request. Mirror of the backend's
- * `is_openai_cloud = "api.openai.com" in self.base_url` guard.
+ * managed cloud (api.openai.com) or Azure OpenAI Foundry
+ * (*.openai.azure.com), as opposed to a custom OpenAI-compat backend
+ * (ollama / llama.cpp / vLLM / generic "custom" preset). The shell and
+ * image-generation tools only exist on cloud backends; sending them to
+ * anything else 400s the request. Mirror of the backend's
+ * `_is_openai_family_cloud` host check.
  */
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
-  return baseUrl.trim().toLowerCase().includes("api.openai.com");
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
 }
 
 export function providerSupportsBuiltinCodeExecution(
