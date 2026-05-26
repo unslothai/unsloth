@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -222,9 +222,8 @@ export function EvalRunDetail({ runId }: { runId: string }) {
               {sorted.map((row) => {
                 const isExpanded = expandedIdx === row.idx;
                 return (
-                  <>
+                  <Fragment key={row.idx}>
                     <TableRow
-                      key={`row-${row.idx}`}
                       className="cursor-pointer"
                       onClick={() =>
                         setExpandedIdx(isExpanded ? null : row.idx)
@@ -256,13 +255,13 @@ export function EvalRunDetail({ runId }: { runId: string }) {
                       </TableCell>
                     </TableRow>
                     {isExpanded ? (
-                      <TableRow key={`exp-${row.idx}`}>
+                      <TableRow>
                         <TableCell colSpan={5}>
                           <ExpandedDetail row={row} />
                         </TableCell>
                       </TableRow>
                     ) : null}
-                  </>
+                  </Fragment>
                 );
               })}
             </TableBody>
