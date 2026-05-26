@@ -202,8 +202,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     const computedStyle = window.getComputedStyle(captionElement);
     const lineHeight = Number.parseFloat(computedStyle.lineHeight);
     const collapsedHeight =
-      (Number.isFinite(lineHeight) ? lineHeight : 20) *
-      CAPTION_COLLAPSED_LINES;
+      (Number.isFinite(lineHeight) ? lineHeight : 20) * CAPTION_COLLAPSED_LINES;
     const hasOverflow = captionElement.scrollHeight > collapsedHeight + 1;
     setPromptOverflow((current) =>
       current?.prompt === captionPrompt && current.canExpand === hasOverflow
