@@ -40,11 +40,9 @@ from core.tool_healing import (
     parse_tool_calls_from_text,
 )
 
-# Stripping and signal-marker constants come from the multi-format
-# parser so Llama-3 / Mistral / Gemma 4 emissions are also detected
-# in the BUFFERING state machine and stripped from the assistant
-# stream. Pre-PR-5615 we used the legacy two-format helper which
-# only knew <tool_call> / <function=.
+# Share strip / signal constants with the multi-format parser so the
+# BUFFERING state machine also catches Llama-3 / Mistral / Gemma 4
+# emissions (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     strip_tool_markup as _shared_strip_tool_markup,
@@ -4473,11 +4471,9 @@ class LlamaCppBackend:
                 return text
             return _shared_strip_tool_markup(text, final = final)
 
-        # Markers the BUFFERING state machine watches for. Empty when
-        # auto-heal is off so the buffer never speculatively holds
-        # content. Covers all five emission formats the shared parser
-        # understands: Qwen <tool_call>, Qwen3.5 <function=, Llama-3
-        # <|python_tag|>, Mistral [TOOL_CALLS], Gemma 4 <|tool_call>.
+        # Markers the BUFFERING state machine watches for; covers Qwen,
+        # Qwen3.5, Llama-3, Mistral, and Gemma 4. Empty when auto-heal
+        # is off so the buffer never speculatively holds content.
         _TOOL_XML_SIGNALS = _SHARED_TOOL_XML_SIGNALS if auto_heal_tool_calls else ()
         _MAX_BUFFER_CHARS = 32
 
@@ -5029,12 +5025,10 @@ class LlamaCppBackend:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
                             if auto_heal_tool_calls:
-                                # Per-tool canonical heal key so a bare
-                                # string emission still runs the right
-                                # tool: ``code`` for python, ``command``
-                                # for terminal, ``query`` for everything
-                                # else (e.g. web_search). Mirrors
-                                # safetensors_agentic._CANONICAL_HEAL_ARG.
+                                # Canonical per-tool heal key (must match
+                                # safetensors_agentic._CANONICAL_HEAL_ARG)
+                                # so bare-string emissions still run the
+                                # intended tool.
                                 _heal_key = {
                                     "python": "code",
                                     "terminal": "command",

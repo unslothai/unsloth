@@ -30,13 +30,8 @@ import re
 from typing import Any
 
 
-# ── Streaming-buffer signal markers ─────────────────────────────────
-
-
-# Prefixes the safetensors / MLX streaming buffer watches for to gate
-# in-progress text. When ANY of these appear in the cumulative text,
-# the state machine switches from STREAMING to DRAINING so we don't
-# leak partial markup to the user before we can parse it.
+# Markers that flip the streaming buffer from STREAMING to DRAINING so
+# partial markup never leaks before the parser sees it.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
     "<function=",
@@ -61,12 +56,8 @@ TOOL_XML_SIGNALS = (
 )
 
 
-# ── Strip patterns for ``strip_tool_markup`` ────────────────────────
-
-
-# _TOOL_CLOSED_PATS: closed pairs only (used during streaming so
-# in-progress XML stays buffered). _TOOL_ALL_PATS: also matches trailing
-# unclosed runs so truncated tails don't leak markup at end-of-turn.
+# Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed
+# tails for end-of-turn cleanup.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
@@ -94,9 +85,6 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
     re.compile(r"<\|tool_call_begin\|>.*$", re.DOTALL),
 ]
-
-
-# ── Nudges + error-result prefixes ──────────────────────────────────
 
 
 TOOL_ERROR_PREFIXES = (
@@ -129,19 +117,16 @@ BUDGET_EXHAUSTED_NUDGE = (
 )
 
 
-# ── Format-specific regexes ─────────────────────────────────────────
-
-
-# Qwen / Hermes <tool_call>{json}
+# Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 / Hermes XML form <function=name><parameter=k>v
+# Qwen3.5 / Hermes XML ``<function=name><parameter=k>v``.
 _TC_FUNC_START_RE = re.compile(r"<function=([\w\.\-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w\.\-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
-# Llama-3 <|python_tag|>NAME.call(...)
+# Llama-3 ``<|python_tag|>NAME.call(...)``.
 _LLAMA3_PYTHON_TAG = "<|python_tag|>"
 _LLAMA3_PY_CALL_RE = re.compile(
     r"<\|python_tag\|>\s*([\w\.\-]+)\s*\.\s*call\s*\(",
@@ -151,9 +136,9 @@ _LLAMA3_KV_RE = re.compile(
     re.VERBOSE,
 )
 
-# Mistral [TOOL_CALLS] trigger. v11+ chains multiple triggers, each
-# followed by a bare name then either ``{json}`` (Magistral) or
-# ``[ARGS]{json}`` (Ministral / Mistral Large 3).
+# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by
+# a bare name plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral
+# / Large 3).
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
@@ -187,9 +172,9 @@ _DEEPSEEK_V3_FUNC_RE = re.compile(
     + re.escape(_DEEPSEEK_SEP),
 )
 
-# GLM 4.5 / 4.6 / 4.7 markers. Body is ``NAME\n<arg_key>K</arg_key>\n
-# <arg_value>V</arg_value>...`` per chat_template.jinja; strings are
-# raw, non-strings are JSON-encoded.
+# GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME\n<arg_key>K</arg_key>\n
+# <arg_value>V</arg_value>...`` per chat_template.jinja. Strings come
+# through raw; non-strings are JSON-encoded.
 _GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*)\n")
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_PAIR_RE = re.compile(
@@ -198,20 +183,17 @@ _GLM_ARG_PAIR_RE = re.compile(
 )
 # Without tool-schema access at the parse site we use a structural
 # heuristic: only deserialize an ``<arg_value>`` body when it
-# unambiguously looks like a JSON literal. The template's rule is
+# unambiguously looks like a JSON literal. Template rule is
 # ``{{ v | tojson(ensure_ascii=False) if v is not string else v }}``,
-# so a *string* arg arrives raw (``42``) and a *non-string* arg arrives
-# JSON-encoded (``"42"`` for an actual string, ``42`` for an int, etc.).
-# Bare ``42`` / ``true`` / ``null`` are therefore the model's choice of
-# representation for string args -- coercing them to int / bool / None
-# would silently mangle a ``search(query="42")`` call. Only the shapes
-# below can be safely decoded.
+# so string args arrive raw and non-strings JSON-encoded. Bare
+# ``42`` / ``true`` / ``null`` remain ambiguous with strings that
+# happen to look like primitives -- inherent limitation without schema.
 _GLM_JSON_NUMERIC_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 
-# Kimi K2 / Moonshot markers (ASCII pipes, NOT full-width). The name
-# arrives as ``functions.NAME:IDX`` between ``<|tool_call_begin|>`` and
-# ``<|tool_call_argument_begin|>``. Strip the prefix and suffix to
-# recover the bare name.
+# Kimi K2 / Moonshot (ASCII pipes, NOT full-width). Name arrives as
+# ``functions.NAME:IDX`` between ``<|tool_call_begin|>`` and
+# ``<|tool_call_argument_begin|>``; strip the ``functions.`` prefix
+# and ``:N`` suffix to recover the bare name.
 _KIMI_SECTION_BEGIN = "<|tool_calls_section_begin|>"
 _KIMI_SECTION_END = "<|tool_calls_section_end|>"
 _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
@@ -219,22 +201,16 @@ _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
 
-# Gemma 4 <|tool_call>call:NAME{...}<tool_call|>. ``<|"|>`` wraps strings.
+# Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_STR_BEGIN = '<|"|>'
 _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
 
-# ── Public API ──────────────────────────────────────────────────────
-
-
 def _balanced_bracket_end(text: str, start: int) -> int | None:
-    """Index of the matching ``]`` for the ``[`` at ``text[start]``.
-
-    Skips brackets inside JSON string literals. Returns ``None`` if no
-    matching close is found.
-    """
+    """Index of `]` matching `[` at ``text[start]``; ignores brackets
+    in JSON strings. None if unmatched."""
     if start >= len(text) or text[start] != "[":
         return None
     depth = 0
@@ -264,18 +240,11 @@ def _balanced_bracket_end(text: str, start: int) -> int | None:
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
-    """Strip ``[TOOL_CALLS]`` blocks with balanced brace/bracket scanning.
+    """Strip cleanly-closed ``[TOOL_CALLS]`` blocks (array, ``name{json}``,
+    or ``name[ARGS]{json}``) via balanced brace/bracket scanning.
 
-    Handles three Mistral emission shapes:
-
-      - ``[TOOL_CALLS] [ {...}, {...} ]``         (v0.3 / Nemo / Small)
-      - ``[TOOL_CALLS] name { json }``            (v11+ / Magistral)
-      - ``[TOOL_CALLS] name [ARGS] { json }``     (Ministral / Large 3)
-
-    The regex ``\\{.*?\\}`` truncates at the first ``}``, losing nested
-    JSON, so this walks balanced braces/brackets instead. Only matches
-    runs that close cleanly; unclosed trailing markup is left in place
-    for ``final=True`` cleanup via ``_TOOL_ALL_PATS``.
+    A non-greedy ``\\{.*?\\}`` would truncate at the first ``}`` and lose
+    nested JSON. Unclosed runs are left for ``final=True`` cleanup.
     """
     n = len(text)
     out = []
@@ -287,24 +256,21 @@ def _strip_mistral_closed_calls(text: str) -> str:
             break
         out.append(text[cursor:idx])
         body_start = idx + len(_MISTRAL_TRIGGER)
-        # Skip whitespace + optional name + optional ``[ARGS]``.
         i = body_start
         while i < n and text[i] in " \t\n\r":
             i += 1
-        # Array shape: [TOOL_CALLS] [ ... ]
+        # Array shape: ``[TOOL_CALLS] [...]``.
         if i < n and text[i] == "[":
             end = _balanced_bracket_end(text, i)
             if end is None:
-                # Truncated mid-array; leave the trigger and everything
-                # after it in place so caller can buffer / final-strip.
+                # Truncated; let caller buffer / final-strip.
                 out.append(text[idx:])
                 break
             cursor = end + 1
-            # Optional trailing </s> (Mistral EOS).
             if text.startswith("</s>", cursor):
                 cursor += len("</s>")
             continue
-        # Named shape: [TOOL_CALLS] name [ARGS]? { json }
+        # Named shape: ``[TOOL_CALLS] name [ARGS]? { json }``.
         name_match = _MISTRAL_V11_NAME_RE.match(text, i)
         if not name_match:
             out.append(text[idx:body_start])
@@ -330,15 +296,9 @@ def _strip_mistral_closed_calls(text: str) -> str:
 
 
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    """Strip tool-call markup from streamed text.
-
-    ``final=False`` only removes closed pairs so in-progress markup
-    stays buffered. ``final=True`` also removes trailing unclosed runs
-    and trims the result.
-    """
-    # Mistral patterns need balanced brace/bracket scanning -- a
-    # non-greedy regex would truncate at the first ``}`` inside a
-    # nested JSON object and leak the rest into user-visible text.
+    """Strip tool-call markup. ``final=False`` keeps in-progress
+    markup buffered; ``final=True`` also drops trailing unclosed runs
+    and trims."""
     text = _strip_mistral_closed_calls(text)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
@@ -347,75 +307,65 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
 
 
 def has_tool_signal(text: str) -> bool:
-    """True if ``text`` contains any known tool-call signal."""
     return any(s in text for s in TOOL_XML_SIGNALS)
 
 
 def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
-    """Parse OpenAI-format ``tool_calls`` from model text.
-
-    Returns ``[{"id", "type", "function": {"name", "arguments"}}]``
-    where ``arguments`` is always a JSON string. Tries each known
-    emission format in turn; returns as soon as one yields calls so
-    we never double-count.
-    """
+    """Return OpenAI-format tool calls. Tries each format in turn and
+    returns as soon as one matches so we never double-count. New
+    families (DeepSeek / Kimi / GLM) are interleaved so their dispatch
+    order is explicit -- see comments per parser below."""
     # DeepSeek R1 / V3 / V3.1 ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
-    # Run early -- the full-width markers cannot collide with any
-    # other family, and R1's code-fence body would fail Qwen's
-    # JSON-start regex anyway.
+    # Run early -- full-width markers cannot collide with any other
+    # family, and R1's code-fence body would fail Qwen's JSON-start
+    # regex anyway.
     calls = _parse_deepseek_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Kimi K2 ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
-    # Markers cannot collide with any other family.
+    # Kimi K2 ``<|tool_calls_section_begin|>...``. Markers cannot
+    # collide with any other family.
     calls = _parse_kimi_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Qwen / Hermes <tool_call>{json}
+    # Qwen / Hermes ``<tool_call>{json}``.
     calls = _parse_tool_call_json(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # GLM 4.5 / 4.6 / 4.7 ``<tool_call>NAME\n<arg_key>K</arg_key>
-    # <arg_value>V</arg_value>...</tool_call>``. Marker collides with
-    # Qwen's ``<tool_call>``, but Qwen requires ``\s*{`` after the tag
-    # while GLM emits a bare name then ``\n``, so Qwen returns no calls
-    # before we get here. Running GLM AFTER Qwen also keeps Qwen
-    # behaviour unchanged on real Qwen emissions.
+    # GLM 4.x ``<tool_call>NAME\n<arg_key>...</tool_call>``. Marker
+    # collides with Qwen but Qwen requires ``\s*{`` after the tag while
+    # GLM has a bare name then ``\n``; running GLM AFTER Qwen keeps
+    # both paths' behaviour unchanged.
     calls = _parse_glm_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Qwen3.5 / Hermes <function=name><parameter=k>v
+    # Qwen3.5 / Hermes ``<function=name><parameter=k>v``.
     calls = _parse_function_xml(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Llama-3 <|python_tag|>...
+    # Llama-3 ``<|python_tag|>...``.
     calls = _parse_llama3_python_tag(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Mistral [TOOL_CALLS]...
+    # Mistral ``[TOOL_CALLS]...``.
     calls = _parse_mistral_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Gemma 4 <|tool_call>...<tool_call|>
+    # Gemma 4 ``<|tool_call>...<tool_call|>``.
     calls = _parse_gemma_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
-    # Llama-3.2 bare JSON ``{"name":..., "parameters":...}`` (no tag).
-    # Strict: only fires when stripped content STARTS with ``{`` and
-    # parses as ``{name: str, parameters|arguments: dict}``. Keeps
-    # plain assistant prose unaffected.
+    # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict: only
+    # fires on content that starts with ``{`` and parses as the right
+    # shape, so plain prose stays untouched.
     return _parse_llama3_bare_json(content, id_offset = id_offset)
-
-
-# ── Per-format parsers ──────────────────────────────────────────────
 
 
 def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
@@ -494,17 +444,15 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
-    """Llama-3 emission shapes:
-      <|python_tag|>NAME.call(arg="v", ...)               (built-in tools)
-      <|python_tag|>{"name":"NAME", "parameters":{...}}   (custom tools)
-      <|python_tag|>{"name":...}; {"name":...}            (multi-call, ``; `` sep)
-    Accepts both ``parameters`` and ``arguments`` keys per Llama 3.1/3.2.
+    """Parse the four Llama-3 emissions: ``<|python_tag|>NAME.call(...)``
+    (built-in), ``<|python_tag|>{"name":..., "parameters":...}`` (custom),
+    multi-call via ``; `` separators, ``parameters`` or ``arguments`` key.
     """
     out: list[dict] = []
     if _LLAMA3_PYTHON_TAG not in content:
         return out
 
-    # 1. NAME.call(...) built-in form.
+    # 1. ``NAME.call(...)`` built-in form.
     for m in _LLAMA3_PY_CALL_RE.finditer(content):
         name = m.group(1)
         i = m.end()
@@ -535,10 +483,10 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
         for kv in _LLAMA3_KV_RE.finditer(body):
             k = kv.group(1)
             if kv.group(2) is not None:
-                # json.loads on a wrapped JSON string handles
-                # \n / \t / \uXXXX escapes correctly while preserving
-                # literal UTF-8 bytes (emoji, CJK, etc.) that the older
-                # ``bytes.decode("unicode_escape")`` path mangled.
+                # ``json.loads`` on a quoted string handles \n/\t/\uXXXX
+                # escapes correctly AND keeps literal UTF-8 bytes (emoji
+                # / CJK) intact -- the older ``bytes.decode('unicode_escape')``
+                # path mangled non-ASCII.
                 try:
                     args[k] = json.loads('"' + kv.group(2) + '"')
                 except (json.JSONDecodeError, ValueError):
@@ -556,24 +504,19 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
             }
         )
 
-    # 2. <|python_tag|>{"name":..., "parameters":...} JSON form. Use a
-    #    streaming JSON decoder (raw_decode) so we can peel multiple
-    #    objects out of the same emission (separated by ``; `` per
-    #    Llama 3 template).
+    # 2. ``<|python_tag|>{"name":..., "parameters":...}``. ``raw_decode``
+    #    peels multiple ``; ``-separated objects from one emission.
     if not out:
         decoder = json.JSONDecoder()
         idx = content.find(_LLAMA3_PYTHON_TAG)
         while idx >= 0:
             search_from = idx + len(_LLAMA3_PYTHON_TAG)
-            # Scan all `{` from this trigger; raw_decode jumps the
-            # cursor past each parsed object, but if a `{` falls
-            # inside an already-decoded object we skip it.
             cursor = search_from
             while cursor < len(content):
                 brace = content.find("{", cursor)
                 if brace < 0:
                     break
-                # Stop if we've hit the next <|python_tag|>.
+                # Stop at the next ``<|python_tag|>``.
                 next_tag = content.find(_LLAMA3_PYTHON_TAG, search_from, brace)
                 if next_tag >= 0:
                     break
@@ -611,25 +554,13 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
-    """Llama-3.2 ``custom_tools`` shape -- bare JSON ``{"name":...,
-    "parameters":{...}}`` emitted directly, no ``<|python_tag|>``.
-
-    Strict to avoid firing on tool-message echoes:
-
-    * Content must start with ``{`` once whitespace and any leading
-      ``<|begin_of_text|>`` / ``<|eot_id|>`` etc. sentinels are stripped.
-    * Object must have ``name`` (non-empty str) plus a dict in
-      ``parameters`` or ``arguments``.
-    * Loops via ``raw_decode`` to peel multiple ``;``-separated calls.
-    """
+    """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}``
+    without ``<|python_tag|>``. Strict (must start with ``{`` after sentinel
+    strip; ``name`` non-empty; ``parameters`` or ``arguments`` is a dict) so
+    plain prose and tool-message echoes don't trigger."""
     out: list[dict] = []
     stripped = content.lstrip()
-    # Strip leading Llama-3 sentinel tokens that sometimes precede the
-    # JSON (``<|eot_id|>`` from the prior turn, ``<|start_header_id|>``,
-    # ``<|begin_of_text|>``). Loop until no sentinel matches: the
-    # tokens can appear in any order and chain, so a single pass would
-    # leave later sentinels behind once an earlier one consumed its
-    # prefix.
+    # Sentinels can chain in any order, so loop until none match.
     _sentinels = (
         "<|begin_of_text|>",
         "<|eot_id|>",
@@ -654,7 +585,7 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
     cursor = 0
     n = len(stripped)
     while cursor < n:
-        # Skip whitespace and Llama 3 inter-call separator ``;``.
+        # Skip whitespace and the Llama-3 ``;`` inter-call separator.
         while cursor < n and stripped[cursor] in " \t\n\r;":
             cursor += 1
         if cursor >= n or stripped[cursor] != "{":
@@ -692,20 +623,16 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """Mistral emissions covered:
-    Pre-v11 array:  ``[TOOL_CALLS] [{"name":..., "arguments":...}, ...]``
-    Pre-v11 single: ``[TOOL_CALLS]{"name":..., "arguments":...}``
-    v11+ single:    ``[TOOL_CALLS]name{json_args}``
-    v11+ parallel:  ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``
-    v11+ w/ [ARGS]: ``[TOOL_CALLS]name[ARGS]{json_args}`` (Ministral / Large 3)
-    """
+    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` /
+    ``[TOOL_CALLS]{...}`` and v11+ ``[TOOL_CALLS]name{json}`` /
+    ``[TOOL_CALLS]name[ARGS]{json}`` (parallel-friendly)."""
     out: list[dict] = []
     idx = content.find(_MISTRAL_TRIGGER)
     if idx < 0:
         return out
 
-    # Decide whether the FIRST occurrence is array / single-object
-    # (pre-v11) or v11+ bare-name. Skip whitespace, peek at next char.
+    # Disambiguate the first occurrence: array (pre-v11), single object
+    # (pre-v11), or bare-name (v11+).
     j = idx + len(_MISTRAL_TRIGGER)
     k = j
     while k < len(content) and content[k] in " \t\n\r":
@@ -717,10 +644,8 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         return _parse_mistral_array(content, k, id_offset)
 
     if content[k] == "{":
-        # Could be pre-v11 single object ``{"name": ...}`` or a JSON
-        # blob immediately following the trigger (rare). Try parsing
-        # as an object that exposes ``name``; if not, fall through to
-        # v11+ handling so we don't drop emission silently.
+        # Pre-v11 single ``{"name":...}``; fall through if it doesn't
+        # carry a ``name`` so v11+ handling still gets a chance.
         end = _balanced_brace_end(content, k)
         if end is not None:
             try:
@@ -731,8 +656,8 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-    # v11+ path: walk every ``[TOOL_CALLS]`` and parse ``name{json}``
-    # or ``name[ARGS]{json}`` after each trigger.
+    # v11+: walk every ``[TOOL_CALLS]``, parsing ``name{json}`` or
+    # ``name[ARGS]{json}`` after each trigger.
     pos = idx
     while pos >= 0:
         cur = pos + len(_MISTRAL_TRIGGER)
@@ -742,7 +667,6 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             continue
         name = nm.group(1)
         after_name = nm.end()
-        # Optional ``[ARGS]`` marker.
         if content.startswith(_MISTRAL_ARGS_MARKER, after_name):
             after_name += len(_MISTRAL_ARGS_MARKER)
         while after_name < len(content) and content[after_name] in " \t\n\r":
@@ -776,7 +700,7 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]:
-    """Parse pre-v11 ``[TOOL_CALLS] [{...}, ...]`` JSON array form."""
+    """Pre-v11 ``[TOOL_CALLS] [{...}, ...]`` array form."""
     out: list[dict] = []
     j = start
     depth = 0
@@ -813,7 +737,7 @@ def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # Healing path: walk objects manually for unclosed array.
+    # Healing path for unclosed arrays: walk objects by hand.
     for m in re.finditer(r"\{", body):
         end = _balanced_brace_end(body, m.start())
         if end is None:
@@ -848,7 +772,7 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
 
 
 def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """Gemma 4: <|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>."""
+    """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``."""
     out: list[dict] = []
     for m in _GEMMA_TC_RE.finditer(content):
         name = m.group(1)
@@ -873,12 +797,9 @@ def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     return out
 
 
-# ── Brace-balancing helpers ─────────────────────────────────────────
-
-
 def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
-    """Index of `}` matching `{` at ``brace_pos`` -- ignores `{` `}`
-    inside JSON strings. Returns None if unmatched."""
+    """Index of `}` matching `{` at ``brace_pos``; ignores braces inside
+    JSON strings. None if unmatched."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0
@@ -908,8 +829,8 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
-    """Same as ``_balanced_brace_end`` but respects Gemma ``<|"|>``
-    string runs and matches `{`/`[` symmetrically."""
+    """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and
+    matches `{`/`[` symmetrically."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0
@@ -933,8 +854,7 @@ def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int 
 
 
 def _gemma_parse_value(text: str, i: int):
-    """Parse one Gemma argument value starting at ``i``. Returns
-    ``(value, next_index)``."""
+    """Parse one Gemma arg value at ``i``; returns ``(value, next_index)``."""
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
@@ -973,7 +893,7 @@ def _gemma_parse_value(text: str, i: int):
             v, k = _gemma_parse_value(body, k)
             items.append(v)
         return items, j + 1
-    # Primitive: number, true/false/null, or bare identifier (rare).
+    # Primitive: number / true/false/null / bare identifier.
     end = i
     while (
         end < len(text)
@@ -1000,7 +920,7 @@ def _gemma_parse_value(text: str, i: int):
 
 
 def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
-    """Parse content between `{` and `}` for a Gemma argument mapping."""
+    """Parse a Gemma argument mapping (content between `{` and `}`)."""
     out: dict[str, Any] = {}
     i = 0
     n = len(body)
