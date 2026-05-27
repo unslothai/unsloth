@@ -34,6 +34,17 @@ set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
 GPUS="${UNSLOTH_GPUS:-all}"
+# Translate index selectors to Docker's `device=` form. The header docstring
+# advertises UNSLOTH_GPUS values like "0" and "0,1" but Docker reads a bare
+# integer for --gpus as a COUNT, not an INDEX, so `UNSLOTH_GPUS=0` would
+# expose zero GPUs and the entrypoint would refuse to start. `all` and
+# already-quoted `device=...` / `"device=..."` selectors pass through.
+case "$GPUS" in
+    all|"")                            ;;
+    \"device=*|device=*)               ;;
+    *[!0-9]*) GPUS="\"device=${GPUS}\"" ;;  # contains a non-digit (comma, UUID-prefix, etc.)
+    *)        GPUS="\"device=${GPUS}\"" ;;  # bare integer: treat as an INDEX, per docstring
+esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
