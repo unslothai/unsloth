@@ -101,6 +101,16 @@ const statusIconMap: Record<ToolStatus, ElementType> = {
   "requires-action": AlertCircleIcon,
 };
 
+const MCP_TOOL_PREFIX = "mcp__";
+
+function formatToolNameForDisplay(toolName: string): string {
+  if (!toolName.startsWith(MCP_TOOL_PREFIX)) return toolName;
+  const rest = toolName.slice(MCP_TOOL_PREFIX.length);
+  const sep = rest.indexOf("__");
+  if (sep <= 0) return toolName;
+  return `${rest.slice(0, sep)} · ${rest.slice(sep + 2)}`;
+}
+
 function ToolFallbackTrigger({
   toolName,
   status,
@@ -119,6 +129,7 @@ function ToolFallbackTrigger({
 
   const StatusIcon = statusIconMap[statusType];
   const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const displayName = formatToolNameForDisplay(toolName);
 
   return (
     <CollapsibleTrigger
@@ -134,42 +145,42 @@ function ToolFallbackTrigger({
           data-slot="tool-fallback-trigger-icon"
           className="aui-tool-fallback-trigger-icon size-4 shrink-0 animate-spin"
         />
+      ) : ToolIcon ? (
+        <ToolIcon
+          data-slot="tool-fallback-trigger-icon"
+          className={cn(
+            "aui-tool-fallback-trigger-icon size-4 shrink-0",
+            isCancelled && "text-muted-foreground",
+          )}
+        />
       ) : (
-        ToolIcon ? (
-          <ToolIcon
-            data-slot="tool-fallback-trigger-icon"
-            className={cn(
-              "aui-tool-fallback-trigger-icon size-4 shrink-0",
-              isCancelled && "text-muted-foreground",
-            )}
-          />
-        ) : (
-          <StatusIcon
-            data-slot="tool-fallback-trigger-icon"
-            className={cn(
-              "aui-tool-fallback-trigger-icon size-4 shrink-0",
-              isCancelled && "text-muted-foreground",
-            )}
-          />
-        )
+        <StatusIcon
+          data-slot="tool-fallback-trigger-icon"
+          className={cn(
+            "aui-tool-fallback-trigger-icon size-4 shrink-0",
+            isCancelled && "text-muted-foreground",
+          )}
+        />
       )}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-none text-muted-foreground",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 grow text-left leading-none text-muted-foreground",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span>
-          {label}: <span className="font-medium text-foreground/85">{toolName}</span>
+        <span className="block truncate">
+          {label}:{" "}
+          <span className="font-medium text-foreground/85">{displayName}</span>
         </span>
         {isRunning && (
           <span
             aria-hidden={true}
             data-slot="tool-fallback-trigger-shimmer"
-            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate motion-reduce:animate-none"
           >
-            {label}: <span className="font-medium text-foreground/85">{toolName}</span>
+            {label}:{" "}
+            <span className="font-medium text-foreground/85">{displayName}</span>
           </span>
         )}
       </span>
@@ -250,10 +261,7 @@ function ToolFallbackResult({
   return (
     <div
       data-slot="tool-fallback-result"
-      className={cn(
-        "aui-tool-fallback-result pt-2",
-        className,
-      )}
+      className={cn("aui-tool-fallback-result pt-2", className)}
       {...props}
     >
       <p className="aui-tool-fallback-result-header font-semibold">Result:</p>
@@ -315,9 +323,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   return (
-    <ToolFallbackRoot
-      className={cn(isCancelled && "bg-muted/30")}
-    >
+    <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
       <ToolFallbackTrigger toolName={toolName} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />

@@ -208,20 +208,6 @@ jobs:
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
           echo "Added Studio shim dir to PATH: $(cygpath -w "$SHIM_DIR")"
 
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # Belt-and-suspenders: install.ps1's --no-deps install of
-        # no-torch-runtime.txt drops typer's and pydantic's runtime
-        # deps unless explicitly pinned. Re-install the ones whose
-        # deps don't pull torch.
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
-
       - name: Install Playwright + Chromium
         # No --with-deps on Windows: that flag installs Linux apt
         # packages. windows-latest ships the system frameworks
