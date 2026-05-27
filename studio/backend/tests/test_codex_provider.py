@@ -34,6 +34,18 @@ from typing import Any
 import pytest
 
 
+@pytest.fixture(autouse = True)
+def _no_spoof_by_default(monkeypatch):
+    """Tests in this file assume the real-SDK gating path unless they
+    explicitly re-enable the spoof. The dev environment sometimes has
+    UNSLOTH_CODEX_SPOOF=1 exported for the live UI; clearing it here
+    keeps the existing availability + import tests deterministic.
+    Tests that exercise the spoof use ``monkeypatch.setenv(...)`` to
+    flip it back on inside their own scope.
+    """
+    monkeypatch.delenv("UNSLOTH_CODEX_SPOOF", raising = False)
+
+
 _backend = os.path.join(os.path.dirname(__file__), "..")
 if _backend not in sys.path:
     sys.path.insert(0, _backend)

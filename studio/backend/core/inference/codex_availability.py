@@ -146,7 +146,19 @@ def _sdk_importable() -> bool:
     Probes both ``openai_codex`` (the canonical upstream package name
     at ``openai/codex/sdk/python``) and ``codex_app_server`` (the Rust
     crate name, kept as a forward-compat alias).
+
+    When ``UNSLOTH_CODEX_SPOOF=1`` is set we report importable=True so
+    the frontend exposes the Codex provider in dev / CI without a real
+    SDK install. The spoof module gets swapped into ``sys.modules`` on
+    first ``_import_codex`` call, so any downstream consumer that
+    actually imports also succeeds.
     """
+    try:
+        from core.inference import codex_spoof
+        if codex_spoof.is_spoof_enabled():
+            return True
+    except Exception:
+        pass
     for name in _SDK_MODULE_NAMES:
         try:
             if importlib.util.find_spec(name) is not None:
@@ -338,17 +350,28 @@ async def probe_codex_availability() -> dict[str, Any]:
     cli_path = _which_codex()
     sdk_ok = _sdk_importable()
 
+    # Spoof mode also fakes the CLI half of the install signal so the
+    # frontend stops hiding the Codex provider in dev / CI. ``installed``
+    # gates on the spoof being explicitly opted in, so production hosts
+    # without the flag still see the real CLI / SDK gating intact.
+    spoof_active = False
+    try:
+        from core.inference import codex_spoof
+        spoof_active = codex_spoof.is_spoof_enabled()
+    except Exception:
+        pass
+
     payload: dict[str, Any] = {
         # Gate on BOTH because the login flow shells out to `codex`.
         # Round 5 briefly set this to `sdk_ok` alone, but round 6
         # caught that the login route would then fail with
         # `codex CLI not found on PATH` after the user clicked
         # Sign in, leaving them with an unusable provider row.
-        "installed": bool(cli_path) and sdk_ok,
-        "cli_path": cli_path,
+        "installed": (bool(cli_path) and sdk_ok) or spoof_active,
+        "cli_path": cli_path or ("<spoof>" if spoof_active else None),
         "sdk_importable": sdk_ok,
-        "logged_in": False,
-        "version": None,
+        "logged_in": spoof_active,
+        "version": "spoof" if spoof_active else None,
         "supported_models": list(_DEFAULT_SUPPORTED_MODELS),
     }
 
