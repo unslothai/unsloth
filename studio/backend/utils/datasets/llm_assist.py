@@ -18,7 +18,9 @@ import logging
 import os
 import re
 import textwrap
+import threading
 import time
+from collections import Counter
 from itertools import islice
 from typing import Any, Optional
 
@@ -30,6 +32,137 @@ DEFAULT_HELPER_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF"
 DEFAULT_HELPER_MODEL_VARIANT = "UD-Q4_K_XL"
 
 README_MAX_CHARS = 1500
+
+# Round 26 P1 #13 / #14: helper/advisor run on PRIVATE LlamaCppBackend
+# instances. Expose loading repo ids through thread-safe Counters so
+# DELETE /api/models/delete-cached can block while a helper or
+# advisor still owns the cache.
+#
+# Round 28 P1 #2: split into CACHE vs GPU refcounts. precache_helper_gguf
+# downloads files (cache ownership) without occupying VRAM (GPU
+# ownership), so collapsing them caused the public GPU handoffs to
+# 503 during a background precache that did not need the GPU.
+#   * CACHE: blocks delete-cache for any active downloader / loader
+#   * GPU  : blocks public chat / training / export / diffusion loads
+_HELPER_ADVISOR_CACHE_REFCOUNT: Counter[str] = Counter()
+_HELPER_ADVISOR_GPU_REFCOUNT: Counter[str] = Counter()
+# Round 30 P1 #7-#10: counter of public GPU workloads (chat /
+# diffusion / training / export) that have passed the helper-busy
+# snapshot but have not yet flipped their public ownership flags
+# (``llama.is_loaded`` / ``loading_model_identifier`` /
+# ``current_checkpoint`` / ``is_training_active``). Helper / advisor
+# starts consult this so they cannot win the start lock and race a
+# public load that already destroyed the previous owner.
+_PUBLIC_LOAD_PENDING_COUNT: Counter[str] = Counter()
+_HELPER_ADVISOR_LOCK = threading.Lock()
+# Round 28 P1 #7 / #8 / #10: serialize helper / advisor STARTS so two
+# concurrent invocations cannot both pass the busy precheck before
+# either registers. Held only across the precheck + register window,
+# not across the full helper run.
+# Round 30 P1 #7-#10: public GPU loads also enter under this lock to
+# publish their pending counter so a concurrent helper / advisor
+# start sees the pending public owner and refuses VRAM.
+_HELPER_ADVISOR_START_LOCK = threading.Lock()
+
+
+def helper_advisor_owns_repo(repo_id: str) -> bool:
+    """Return True if any helper/advisor activity (precache OR live
+    helper / advisor load) currently owns this HF repo id."""
+    if not repo_id:
+        return False
+    needle = repo_id.lower()
+    with _HELPER_ADVISOR_LOCK:
+        return _HELPER_ADVISOR_CACHE_REFCOUNT.get(needle, 0) > 0
+
+
+def helper_advisor_busy() -> bool:
+    """True if any helper/advisor load is currently OCCUPYING THE GPU.
+    Round 28 P1 #2: must not return True for a precache-only download
+    (it owns disk cache, not VRAM)."""
+    with _HELPER_ADVISOR_LOCK:
+        return sum(_HELPER_ADVISOR_GPU_REFCOUNT.values()) > 0
+
+
+def _register_helper_advisor_repo(repo_id: str, *, gpu_owner: bool = True) -> None:
+    """Register a helper/advisor activity. Set ``gpu_owner=False`` for
+    precache-only downloads that need cache-delete protection but do
+    not load weights into VRAM."""
+    if not repo_id:
+        return
+    needle = repo_id.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _HELPER_ADVISOR_CACHE_REFCOUNT[needle] += 1
+        if gpu_owner:
+            _HELPER_ADVISOR_GPU_REFCOUNT[needle] += 1
+
+
+def _unregister_helper_advisor_repo(repo_id: str, *, gpu_owner: bool = True) -> None:
+    if not repo_id:
+        return
+    needle = repo_id.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _HELPER_ADVISOR_CACHE_REFCOUNT[needle] -= 1
+        if _HELPER_ADVISOR_CACHE_REFCOUNT[needle] <= 0:
+            _HELPER_ADVISOR_CACHE_REFCOUNT.pop(needle, None)
+        if gpu_owner:
+            _HELPER_ADVISOR_GPU_REFCOUNT[needle] -= 1
+            if _HELPER_ADVISOR_GPU_REFCOUNT[needle] <= 0:
+                _HELPER_ADVISOR_GPU_REFCOUNT.pop(needle, None)
+
+
+def _publish_public_load_pending(workload: str) -> None:
+    """Mark a public GPU workload as mid-handoff. Must be called under
+    ``_HELPER_ADVISOR_START_LOCK`` immediately after the helper-busy
+    snapshot succeeded (round 30 P1 #7-#10)."""
+    if not workload:
+        return
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _PUBLIC_LOAD_PENDING_COUNT[needle] += 1
+
+
+def _release_public_load_pending(workload: str) -> None:
+    """Decrement the pending public-load counter once per matched
+    publish. Safe to call in finally even if the load failed."""
+    if not workload:
+        return
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        _PUBLIC_LOAD_PENDING_COUNT[needle] -= 1
+        if _PUBLIC_LOAD_PENDING_COUNT[needle] <= 0:
+            _PUBLIC_LOAD_PENDING_COUNT.pop(needle, None)
+
+
+def public_load_pending(*, excluding: str | None = None) -> bool:
+    """True if any public GPU workload has passed its helper-busy
+    snapshot but not yet flipped its public ownership flags. Helper /
+    advisor starts treat this as busy so they cannot race a public
+    load mid-handoff.
+
+    Round 38 P1: ``excluding`` lets a route-wrapped backend call
+    skip the marker its own route layer already published (e.g. the
+    diffusion route publishes ``diffusion`` before calling into
+    ``backend.load_model``, which publishes ``diffusion-backend`` --
+    the backend should ignore its own ``diffusion`` marker so the
+    parity check does not self-block) while still seeing every
+    OTHER in-flight public workload."""
+    ignored = excluding.lower() if excluding else None
+    with _HELPER_ADVISOR_LOCK:
+        return any(
+            count > 0 and workload != ignored
+            for workload, count in _PUBLIC_LOAD_PENDING_COUNT.items()
+        )
+
+
+def public_load_pending_for(workload: str) -> bool:
+    """True if a specific public GPU workload is mid-handoff. Used by
+    release helpers to refuse a destructive teardown while the matching
+    /export/* or /chat /load_* route is still in its publish window."""
+    if not workload:
+        return False
+    needle = workload.lower()
+    with _HELPER_ADVISOR_LOCK:
+        return _PUBLIC_LOAD_PENDING_COUNT.get(needle, 0) > 0
 
 
 def _strip_think_tags(text: str) -> str:
@@ -72,6 +205,12 @@ def precache_helper_gguf():
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
 
+    # Round 27 P1 #4: register the repo so DELETE /api/models/delete-cached
+    # cannot rmtree the cache directory while we are mid-download.
+    # Round 28 P1 #2: precache only downloads files; it does NOT occupy
+    # VRAM. Use gpu_owner=False so helper_advisor_busy() does not block
+    # public GPU workloads during a background pre-cache.
+    _register_helper_advisor_repo(repo, gpu_owner = False)
     try:
         from huggingface_hub import HfApi, hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
@@ -103,10 +242,141 @@ def precache_helper_gguf():
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
+        _unregister_helper_advisor_repo(repo, gpu_owner = False)
         try:
             enable_progress_bars()
         except Exception as e:
             pass
+
+
+def _diffusion_image_model_busy() -> bool:
+    """Round 22 P1 #2 / #3: helper / advisor GGUFs share VRAM with
+    the Images page diffusion pipeline. Public chat / training /
+    export routes call the strict ``_release_diffusion_for`` helper
+    before allocating, but these dataset-side helpers used to load
+    llama-server directly with no diffusion guard at all. Skip the
+    helper GGUF when ``DiffusionBackend.status()`` reports loaded /
+    loading so we do not double-own VRAM. Fail closed (treat as
+    busy) on any status() error to preserve the resident image
+    model rather than racing it for memory.
+    """
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+    except Exception:
+        return False
+    try:
+        status = get_diffusion_backend().status()
+    except Exception:
+        return True
+    return bool(status.get("is_loaded") or status.get("is_loading"))
+
+
+def _gpu_workload_busy_for_helper() -> bool:
+    """Round 23 P1 #3 / #4: the diffusion-only guard from round 22
+    let the helper / advisor GGUF run on top of a live training run
+    or a resident export checkpoint. Extend the busy check to those
+    workloads too so any GPU owner (Images, Training, Export)
+    blocks the helper instead of double-owning VRAM. Each step
+    fails closed: an unverifiable status counts as busy so the
+    user's primary workload is preserved over the optional helper.
+
+    Round 24 P1 #1: extended to also catch a Chat-backend GPU owner.
+    The helper GGUF used to run on top of a loaded GGUF chat model
+    (llama-server) or safetensors chat model and OOM their shared
+    GPU; mirror the diffusion check by inspecting llama
+    ``is_loaded`` / ``is_active`` / ``loading_model_identifier`` and
+    safetensors ``active_model_name`` / ``loading_models``.
+
+    Round 28 P1 #9: also catch another helper / advisor that already
+    owns a private LlamaCppBackend. Without this two concurrent
+    helpers could both pass the precheck and OOM each other.
+    """
+    if helper_advisor_busy():
+        logger.info(
+            "Skipping helper GGUF while another helper/advisor is using the GPU"
+        )
+        return True
+    # Round 30 P1 #7-#10: a public GPU load (chat / diffusion / training /
+    # export) that has passed its busy snapshot but not yet flipped its
+    # public ownership flags is still mid-handoff. Refuse so the helper
+    # does not race it for VRAM after the previous owner was torn down.
+    if public_load_pending():
+        logger.info("Skipping helper GGUF while a public GPU load is mid-handoff")
+        return True
+    if _diffusion_image_model_busy():
+        return True
+
+    try:
+        from routes.inference import get_llama_cpp_backend
+    except Exception:
+        pass
+    else:
+        try:
+            llama = get_llama_cpp_backend()
+            if (
+                getattr(llama, "is_loaded", False)
+                or getattr(llama, "is_active", False)
+                or getattr(llama, "loading_model_identifier", None)
+            ):
+                logger.info(
+                    "Skipping helper GGUF while a GGUF chat model is loaded/loading"
+                )
+                return True
+        except Exception:
+            logger.info(
+                "Skipping helper GGUF because llama-server status is unavailable"
+            )
+            return True
+
+    try:
+        from core.inference import get_inference_backend
+    except Exception:
+        pass
+    else:
+        try:
+            inf = get_inference_backend()
+            active = getattr(inf, "active_model_name", None)
+            loading = set(getattr(inf, "loading_models", set()) or set())
+            if active or loading:
+                logger.info(
+                    "Skipping helper GGUF while a safetensors chat model is loaded/loading"
+                )
+                return True
+        except Exception:
+            logger.info(
+                "Skipping helper GGUF because safetensors chat status is unavailable"
+            )
+            return True
+
+    try:
+        from core.training import get_training_backend
+    except Exception:
+        pass
+    else:
+        try:
+            if get_training_backend().is_training_active():
+                logger.info("Skipping helper GGUF while training is active")
+                return True
+        except Exception:
+            logger.info("Skipping helper GGUF because training status is unavailable")
+            return True
+
+    try:
+        from core.export import get_export_backend
+    except Exception:
+        return False
+
+    try:
+        exp = get_export_backend()
+        is_active = getattr(exp, "is_export_active", None)
+        if (is_active and is_active()) or getattr(exp, "current_checkpoint", None):
+            logger.info("Skipping helper GGUF while export owns the GPU")
+            return True
+    except Exception:
+        logger.info("Skipping helper GGUF because export status is unavailable")
+        return True
+
+    return False
 
 
 def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
@@ -118,13 +388,28 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
+    # Round 23 P1 #3: round 22 only guarded against a busy
+    # diffusion pipeline. Training / export own the same GPU too,
+    # so use the broader helper that gates on all three workloads.
+    # Round 28 P1 #7 / #10: serialize the busy check + register pair
+    # so two concurrent helper invocations cannot both pass the
+    # precheck before either registers and then OOM each other.
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get(
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
-
+    with _HELPER_ADVISOR_START_LOCK:
+        if _gpu_workload_busy_for_helper():
+            return None
+        _register_helper_advisor_repo(repo)
     backend = None
     try:
+        # Round 26 P1 #1 / #3 / #13 / #14: use a PRIVATE backend so the
+        # helper can never preempt or be preempted by the user's
+        # chat backend and cannot accidentally unload it in finally.
+        # The active repo is published via _register_helper_advisor_repo
+        # above so DELETE /api/models/delete-cached can still block the
+        # cache rmtree while the helper is downloading or mmap'ing.
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend()
@@ -176,6 +461,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
                 logger.info("Helper model unloaded")
             except Exception:
                 pass
+        _unregister_helper_advisor_repo(repo)
 
 
 # ─── Public API ───────────────────────────────────────────────────────
@@ -508,13 +794,26 @@ def _run_multi_pass_advisor(
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return None
 
+    # Round 23 P1 #4: extend the round 22 diffusion-only check to
+    # training + export so the advisor cannot race the user's
+    # active workload for GPU memory.
+    # Round 28 P1 #8 / #10: serialize the precheck + register pair so
+    # two concurrent advisor invocations cannot both pass before
+    # either registers and then OOM each other.
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get(
         "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
     )
-
+    with _HELPER_ADVISOR_START_LOCK:
+        if _gpu_workload_busy_for_helper():
+            return None
+        _register_helper_advisor_repo(repo)
     backend = None
     try:
+        # Round 26 P1 #2 / #4 / #13 / #14: mirror ``_run_with_helper``
+        # and use a PRIVATE backend. Round 25's global-backend swap
+        # introduced chat-evict races and finally-eviction bugs.
+        # The registry above keeps delete-cache safe.
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend()
@@ -849,6 +1148,7 @@ def _run_multi_pass_advisor(
                 logger.info("Advisor model unloaded")
             except Exception:
                 pass
+        _unregister_helper_advisor_repo(repo)
 
 
 def llm_conversion_advisor(

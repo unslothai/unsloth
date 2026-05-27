@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Round 23 P1 #5: identifier hardening reused from the chat models
+# so /api/data_recipe/publish rejects control characters and
+# URL-form ``hf_xxxxx`` tokens in ``repo_id`` before they reach
+# log lines or the HF API.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 
 class RecipePayload(BaseModel):
@@ -60,6 +66,16 @@ class PublishDatasetRequest(BaseModel):
         description = "Execution artifact path captured by the UI for completed runs",
     )
 
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id")
+    @classmethod
+    def _no_repo_id_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
 
 class PublishDatasetResponse(BaseModel):
     success: bool = True
@@ -73,6 +89,20 @@ class SeedInspectRequest(BaseModel):
     subset: str | None = None
     split: str | None = "train"
     preview_size: int = Field(default = 10, ge = 1, le = 50)
+
+    # Round 26 P1 #11: dataset_name reaches HF + log/echo paths, so
+    # mirror the hardening other dataset request models already do.
+    # Round 27 P1 #7: split and subset also flow into HF dataset
+    # APIs / errors and must be guarded the same way.
+    @field_validator("dataset_name", "subset", "split")
+    @classmethod
+    def _no_dataset_name_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("dataset_name", "subset", "split")
+    @classmethod
+    def _no_dataset_name_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class SeedInspectUploadRequest(BaseModel):
@@ -88,6 +118,37 @@ class SeedInspectUploadRequest(BaseModel):
     seed_source_type: str | None = None
     unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
     unstructured_chunk_overlap: int | None = Field(default = None, ge = 0, le = 20000)
+
+    # Round 30 P1 #6: filename / file_names are reflected as dataset
+    # names + error/log messages; harden them the same way the sibling
+    # SeedInspectRequest hardens dataset_name.
+    @field_validator("filename")
+    @classmethod
+    def _no_filename_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("filename")
+    @classmethod
+    def _no_filename_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("file_names")
+    @classmethod
+    def _no_file_names_control_chars(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _no_control_chars(entry, f"file_names[{i}]")
+        return v
+
+    @field_validator("file_names")
+    @classmethod
+    def _no_file_names_embedded_hf_tokens(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _reject_embedded_hf_token(entry, f"file_names[{i}]")
+        return v
 
     @model_validator(mode = "after")
     def _check_mutual_exclusivity(self) -> "SeedInspectUploadRequest":

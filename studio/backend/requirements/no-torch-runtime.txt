@@ -43,15 +43,44 @@ safetensors>=0.4.3
 datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0
 accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
+# Round 33 P1: reverted the round-26 hub>=1.3.0 floor to the
+# pre-PR >=0.34.0 floor. Studio's install_python_stack later
+# forces hub==0.36.2 via studio.txt (constrained by
+# transformers==4.57.6 in extras-no-deps.txt), so the 1.3.0
+# floor was internally inconsistent. extras-no-deps holds
+# transformers at 4.x, so the transformers-5.x is_offline_mode
+# concern that motivated the original bump never actually
+# triggers on the supported install path.
+# Round 34 P1: the line itself must stay because install.sh
+# --no-torch installs THIS file with --no-deps and does not run
+# studio.txt afterward; without the package line a no-torch
+# install ends with no huggingface_hub at all and the new
+# diffusion / chat GGUF paths fail with ModuleNotFoundError.
+# Verified live on B200: hub 0.36.2 + transformers 4.57.6 +
+# diffusers 0.37.1 imports Flux2KleinPipeline cleanly and runs
+# end-to-end image generation.
 huggingface_hub>=0.34.0
 hf_transfer
-diffusers
+# Floor 0.37.0 introduces Flux2KleinPipeline + Flux2Pipeline which the
+# Studio Images page imports for the default curated picker.
+diffusers>=0.37.0
+# Required by diffusers.GGUFQuantizationConfig (used by the Images page
+# to load FLUX.2 / FLUX.1 / Qwen-Image GGUFs from the Hub). Floor at
+# 0.10.0 to match the diffusers requirement; older gguf releases raise
+# at single-file load time.
+gguf>=0.10.0
 
 # Transitive deps required because this file is installed with --no-deps.
 # Without these, `from transformers import AutoConfig` fails at import time.
 regex
 typing_extensions
 filelock
+# `requests` and its urllib3/charset chain are required by huggingface_hub's
+# blob downloader; diffusers + GGUFQuantizationConfig 500 on first
+# /api/inference/images/load otherwise.
+requests
+urllib3
+charset_normalizer
 httpx
 httpcore
 certifi

@@ -68,9 +68,25 @@ if str(backend_path) not in sys.path:
 # Import dataset utilities
 from utils.datasets import check_dataset_format
 from auth.authentication import get_current_subject
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _validate_logged_identifier(value: str, field_name: str) -> str:
+    """Round 25 P1 #1: mirror the helper in routes/models.py so the
+    dataset ``/download-progress`` route never reaches logger/cache
+    paths with control characters or embedded HF tokens. Token-shaped
+    strings like ``owner/hf_abcdefghij0123456789`` would otherwise pass
+    the cheap ``_is_valid_repo_id`` regex and end up in warning logs.
+    """
+    try:
+        value = _no_control_chars(value, field_name)
+        value = _reject_embedded_hf_token(value, field_name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc)) from exc
+    return value
 
 
 from models.datasets import (
@@ -320,7 +336,20 @@ async def upload_dataset(
     file: UploadFile,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    filename = _sanitize_filename(file.filename or "dataset_upload")
+    # Validate the raw multipart filename BEFORE sanitization so smuggled
+    # control characters and embedded HF tokens are rejected at the same
+    # boundary as the JSON path; sanitizing first would silently strip
+    # control chars and let raw inputs pass the validator.
+    raw_filename = file.filename or "dataset_upload"
+    from models.inference import _no_control_chars, _reject_embedded_hf_token
+
+    try:
+        _no_control_chars(raw_filename, "filename")
+        _reject_embedded_hf_token(raw_filename, "filename")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    filename = _sanitize_filename(raw_filename)
     ext = Path(filename).suffix.lower()
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
@@ -370,6 +399,11 @@ async def get_dataset_download_progress(
     bytes are observable here. Returns ``cache_path`` so the UI can
     show users where the dataset blobs landed on disk.
     """
+    # Round 25 P1 #1: harden ``repo_id`` before it reaches the
+    # ``logger.warning`` line at the bottom (or any future log/cache
+    # path). Matches ``GET /api/models/download-progress`` which
+    # already validates the same parameter in round 24.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
     _empty = {
         "downloaded_bytes": 0,
         "expected_bytes": 0,

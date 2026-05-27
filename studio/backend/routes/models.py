@@ -134,9 +134,28 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _validate_logged_identifier(value: str, field_name: str) -> str:
+    """Round 23 P1 #7 / #8 / #9 / #10: path / query parameters that
+    flow into ``logger.info("... %s", value)`` lines were the last
+    unguarded entry points. Newline / tab / control characters let
+    a caller smuggle forged log entries; URL-form ``hf_xxxxx``
+    tokens would leak into structured-log sinks. Mirror the
+    request-body validators by running both checks here and
+    mapping the validator's ``ValueError`` to HTTP 422 so the
+    client sees the same shape as a Pydantic validation failure.
+    """
+    try:
+        value = _no_control_chars(value, field_name)
+        value = _reject_embedded_hf_token(value, field_name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc)) from exc
+    return value
 
 
 def derive_model_type(
@@ -1571,6 +1590,7 @@ async def get_model_config(
 
     This endpoint wraps the backend load_model_defaults function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         if not is_local_path(model_name):
             resolved = resolve_cached_repo_id_case(model_name)
@@ -1580,7 +1600,11 @@ async def get_model_config(
                     resolved,
                     model_name,
                 )
-            model_name = resolved
+            # Round 23 P1 #7: re-validate the cache-resolved value
+            # (case-only resolver should be a no-op for these
+            # checks, but defend in depth in case the resolver
+            # ever broadens its match heuristic).
+            model_name = _validate_logged_identifier(resolved, "model_name")
 
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type
@@ -1709,6 +1733,53 @@ def _is_path_under(path: Path, root: Path) -> bool:
         return False
 
 
+def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
+    """Return ``(owned_repo_or_path, owned_gguf_filename)`` pairs for
+    every diffusion target the backend currently holds.
+
+    Pairs the active / pending repo with the active / pending GGUF
+    filename (not the UI-facing collapsed ``gguf_filename``) so the
+    per-variant delete guards know which quant is actually owned by
+    each repo. Without this pairing, a swap in progress (active
+    ``Q4_K_S``, pending ``Q8_0``) collapsed both to the pending
+    variant and the active ``Q4_K_S`` GGUF could be deleted while
+    still mmap'd by the resident pipeline (round 13 P1 #3-5).
+
+    Base repos are paired with ``None`` for the GGUF: the base /
+    component repo is loaded whole via ``from_pretrained`` and has no
+    per-variant delete to take advantage of.
+    """
+    return [
+        (
+            diff_status.get("active_repo_id") or "",
+            diff_status.get("active_gguf_filename"),
+        ),
+        (diff_status.get("active_base_repo") or "", None),
+        (
+            diff_status.get("pending_repo_id") or "",
+            diff_status.get("pending_gguf_filename"),
+        ),
+        (diff_status.get("pending_base_repo") or "", None),
+    ]
+
+
+def _variant_delete_is_safe_for_owned_gguf(
+    requested_variant: str | None,
+    owned_gguf_filename: str | None,
+) -> bool:
+    """True iff a per-variant delete for ``requested_variant`` against
+    a repo that owns ``owned_gguf_filename`` cannot remove the owned
+    file.
+
+    Returns False (i.e. unsafe -> block the delete) when either
+    argument is missing so a NULL owned filename or a full-repo delete
+    (no variant) does not accidentally pass the guard."""
+    if not requested_variant or not owned_gguf_filename:
+        return False
+    loaded_label = (_extract_quant_label(owned_gguf_filename.lower()) or "").lower()
+    return bool(loaded_label and loaded_label != requested_variant.lower())
+
+
 def _is_path_under_lexically(path: Path, root: Path) -> bool:
     """Check containment without resolving the final path's symlink target."""
     try:
@@ -1724,7 +1795,15 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
     try:
         active = Path(active_model).expanduser().resolve()
         target = deleted_path.resolve()
-        return active == target or (target.is_dir() and active.is_relative_to(target))
+        # Round 27 P1 #8: match bidirectionally so deleting a child
+        # directory of a loaded local model (e.g. .../my-flux/text_encoder
+        # while .../my-flux is loaded) also trips the guard. Mirrors
+        # the diffusion delete-guard pattern.
+        return (
+            active == target
+            or (target.is_dir() and active.is_relative_to(target))
+            or (active.is_dir() and target.is_relative_to(active))
+        )
     except (OSError, RuntimeError, ValueError) as e:
         logger.debug(
             "Could not resolve loaded/deleted model paths; falling back to string comparison: %s",
@@ -1732,8 +1811,10 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
-        return active_lower == target_lower or active_lower.startswith(
-            f"{target_lower}{os.sep}"
+        return (
+            active_lower == target_lower
+            or active_lower.startswith(f"{target_lower}{os.sep}")
+            or target_lower.startswith(f"{active_lower}{os.sep}")
         )
 
 
@@ -1805,6 +1886,14 @@ async def delete_finetuned_model(
     Only paths under Studio's outputs/exports roots are accepted.  Exported
     GGUF entries can delete one quantization variant at a time.
     """
+    # Round 24 P1 #7 + P2 #13: harden both ``model_path`` and
+    # ``gguf_variant`` for control characters and embedded HF
+    # tokens, mirroring the chat / diffusion / training request
+    # validators. Both fields end up in logger.info(...) lines.
+    model_path = _validate_logged_identifier(model_path, "model_path")
+    if gguf_variant is not None:
+        gguf_variant = _validate_logged_identifier(gguf_variant, "gguf_variant")
+
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -1893,6 +1982,32 @@ async def delete_finetuned_model(
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
+        # Pending HF GGUF download targeting this path: round 14 P1 #3.
+        # ``loading_model_identifier`` is set before the download starts
+        # and cleared after the subprocess settles, so the user cannot
+        # rmtree the directory llama.cpp is writing into mid-flight.
+        # Round 15 P1 #2: compare against ``loading_hf_variant`` (the
+        # variant being downloaded) rather than ``hf_variant`` (the
+        # PREVIOUS loaded variant, which is stale until the new load
+        # completes its late-metadata update).
+        loading_identifier = getattr(llama_backend, "loading_model_identifier", None)
+        loading_variant = getattr(llama_backend, "loading_hf_variant", None)
+        if (
+            loading_identifier
+            and _loaded_model_matches_deleted_path(
+                loading_identifier,
+                target_path,
+            )
+            and (
+                not gguf_variant
+                or not loading_variant
+                or loading_variant.lower() == gguf_variant.lower()
+            )
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         if (
             llama_backend.is_active
             and not llama_backend.is_loaded
@@ -1966,6 +2081,77 @@ async def delete_finetuned_model(
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
+        ) from e
+
+    # Diffusion pipelines can also be loaded directly from a Studio
+    # outputs/exports path (e.g. user fine-tuned a FLUX LoRA, exported
+    # the merged repo locally, then loaded it via /images/load with a
+    # local path as repo_id). Without this guard /delete-finetuned
+    # could rmtree the directory the diffusion backend is reading from.
+    # is_loading is also blocked: status() exposes pending_repo_id /
+    # pending_base_repo during the load window so deletes during a
+    # mid-flight from_pretrained are refused. During a swap we still
+    # see the previous load's active_repo_id, so every owned path is
+    # checked rather than just the UI-facing one.
+    # Block both DIRECTIONS:
+    #   * loaded path is the same as target (or a parent), and
+    #   * loaded path is a child of target (so the user cannot rmtree
+    #     a parent directory that contains the pipeline's mmap'd file).
+    # Fail-CLOSED on exception (503) like the llama.cpp / safetensors
+    # guards above: an unverifiable diffusion state means we cannot
+    # confirm the target is safe to rmtree.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+
+        diff_backend = get_diffusion_backend()
+        # include_internal=True so we can iterate active_*/pending_*
+        # raw paths against ``target_path`` (round 16 P1 #5).
+        diff_status = diff_backend.status(include_internal = True)
+        if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+            target_str = str(target_path)
+            # Pair each owned repo / path with the GGUF variant it
+            # actually owns (round 13 P1 #5). For a swap in flight
+            # (active Q4_K_S, pending Q8_0) the active variant must
+            # NOT be deleted just because the pending variant uses
+            # a different quant.
+            for candidate, owned_gguf in _diffusion_owned_targets(diff_status):
+                if not candidate:
+                    continue
+                try:
+                    candidate_resolved = Path(candidate).expanduser().resolve()
+                except Exception:
+                    continue
+                # Relative paths (the user can do
+                # `/images/load repo_id=exports/my-flux`) are still
+                # legitimate path candidates; resolve against the
+                # backend cwd so they can be compared with the
+                # absolute ``target_path``. Round 8 review #11.
+                overlaps = (
+                    candidate_resolved == target_path
+                    or str(candidate_resolved) == target_str
+                    or _is_path_under(candidate_resolved, target_path)
+                    or _is_path_under(target_path, candidate_resolved)
+                )
+                if not overlaps:
+                    continue
+                if export_type == "gguf" and _variant_delete_is_safe_for_owned_gguf(
+                    gguf_variant,
+                    owned_gguf,
+                ):
+                    continue
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the diffusion image model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Could not check diffusion backend loaded model before delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify diffusion load status before deleting",
         ) from e
 
     try:
@@ -2043,6 +2229,9 @@ async def get_lora_base_model(
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    # Round 26 P1 #12: lora_path is echoed back in 404 detail and logs;
+    # harden it the same way other reflected identifiers are.
+    lora_path = _validate_logged_identifier(lora_path, "lora_path")
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -2076,6 +2265,7 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         logger.info(f"Checking if vision model: {model_name}")
         is_vision = is_vision_model(model_name)
@@ -2104,6 +2294,7 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    model_name = _validate_logged_identifier(model_name, "model_name")
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
@@ -2141,6 +2332,7 @@ async def get_gguf_variants(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
     try:
         from utils.models.model_config import is_local_path, list_local_gguf_variants
 
@@ -2248,6 +2440,13 @@ async def get_gguf_download_progress(
     Tracks completed shard downloads in snapshots and in-progress downloads
     in the blobs directory (incomplete files).
     """
+    # Round 28 P1 #14: mirror the hardening on the generic
+    # /download-progress route. Both repo_id and variant are echoed
+    # into the cache-scan path and can reach logs on the failure
+    # branch via the surrounding try/except.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
+    if variant:
+        variant = _validate_logged_identifier(variant, "variant")
     try:
         if not _is_valid_repo_id(repo_id):
             return {
@@ -2335,6 +2534,10 @@ async def get_download_progress(
         "progress": 0,
         "cache_path": None,
     }
+    # Round 24 P1 #9: ``repo_id`` flows into log lines deep in
+    # ``_get_repo_size_cached`` on lookup failure, so the same
+    # hardening the request-body models use applies here too.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
     try:
         if not _is_valid_repo_id(repo_id):
             return _empty
@@ -2598,39 +2801,283 @@ async def delete_cached_model(
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
     Refuses if the model is currently loaded for inference.
     """
+    # Round 24 P1 #8 + #10: harden both ``repo_id`` and ``variant``
+    # against control characters / embedded HF tokens before they
+    # reach logger.info(...) lines or the HF cache scan.
+    repo_id = _validate_logged_identifier(repo_id, "repo_id")
+    if variant is not None:
+        variant = _validate_logged_identifier(variant, "variant")
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
-    # Check if model is currently loaded
+    # Round 25 P1 #2 / #3: round 15 added a path-ownership check to
+    # the diffusion guard below, but the llama.cpp and safetensors
+    # guards still only compared logical ``owner/repo`` strings to
+    # the loaded/loading identifier. If a chat or safetensors model
+    # was loaded via a LOCAL HF snapshot path (e.g. through the
+    # ``/load-local-path`` flow), the loaded identifier is the
+    # absolute snapshot path -- ``owner/repo`` never appears there,
+    # the guards passed, and ``DELETE /api/models/delete-cached``
+    # could rmtree an actively mmap'd snapshot.
+    #
+    # Build the HF cache roots for ``repo_id`` ONCE up front and reuse
+    # them in all three guards (llama, safetensors, diffusion). Failure
+    # to scan the cache fails CLOSED on the assumption that we cannot
+    # verify ownership safely; mirrors the diffusion path-scan guard.
+    needle = repo_id.lower()
+    cache_repo_roots: list[Path] = []
+    try:
+        for hf_cache in _all_hf_cache_scans():
+            for repo_info in hf_cache.repos:
+                if (
+                    repo_info.repo_type == "model"
+                    and repo_info.repo_id.lower() == needle
+                ):
+                    try:
+                        cache_repo_roots.append(
+                            Path(repo_info.repo_path).expanduser().resolve()
+                        )
+                    except Exception:
+                        pass
+    except Exception as cache_scan_exc:
+        logger.warning(
+            "Could not scan HF cache during delete guard preflight: %s",
+            cache_scan_exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = ("Could not verify cache ownership before deleting. Try again."),
+        ) from cache_scan_exc
+
+    def _owned_cache_path_matches(value: Optional[str], roots: list[Path]) -> bool:
+        """Return True if ``value`` resolves to (or contains, or is a
+        child of) any of the HF cache repo roots for the target repo.
+        Used by the llama / safetensors guards to catch local snapshot
+        paths the same way the diffusion guard already does.
+        """
+        if not value or not roots:
+            return False
+        try:
+            owned = Path(value).expanduser().resolve()
+        except Exception:
+            return False
+        for root in roots:
+            try:
+                if (
+                    owned == root
+                    or _is_path_under(owned, root)
+                    or _is_path_under(root, owned)
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # Round 26 P1 #13 / #14: helper/advisor GGUF loads run on a
+    # PRIVATE LlamaCppBackend, so the global backend below cannot see
+    # them. utils/datasets/llm_assist.py publishes the active repo
+    # via helper_advisor_owns_repo() for exactly this guard. Fail
+    # closed on the variant question (block any variant of the repo)
+    # because helper/advisor flows do not pass a variant through.
+    try:
+        from utils.datasets.llm_assist import helper_advisor_owns_repo
+
+        if helper_advisor_owns_repo(repo_id):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while AI Assist is using it",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Could not check helper/advisor backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify AI Assist load status before deleting cache",
+        ) from e
+
+    # Check if model is currently loaded OR loading. is_active and
+    # not is_loaded means an llama-server download / startup is in
+    # flight; the cache delete would race the hf_hub_download / mmap.
+    # Fail CLOSED on exception (503) like the diffusion guard below:
+    # unverifiable load state means we cannot confirm the delete is
+    # safe.
     try:
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_id = llama_backend.model_identifier.lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+        loaded_id_raw = llama_backend.model_identifier or ""
+        loaded_id = loaded_id_raw.lower()
+        loading_id_raw = getattr(llama_backend, "loading_model_identifier", None) or ""
+        loading_id = loading_id_raw.lower()
+        loading_variant = (
+            getattr(llama_backend, "loading_hf_variant", None) or ""
+        ).lower()
+        # Also consult the pending-load identifier: a multi-GB HF
+        # download stays in ``loading_model_identifier`` until the
+        # download completes, before ``model_identifier`` is set
+        # (round 13 P1 #6). Without this check the cache directory
+        # the download was writing into could be rmtree'd mid-flight.
+        # Round 16 P1 #1: pair against ``loading_hf_variant`` so a
+        # delete of a DIFFERENT cached quant from the same repo
+        # (loading Q4_K_M, deleting cached Q8_0) is allowed; only
+        # block when the requested variant matches what is being
+        # downloaded. Mirrors the /delete-finetuned pairing.
+        requested_variant = (variant or "").lower()
+        # Round 25 P1 #2: also match by HF cache snapshot path so
+        # local-path GGUF chat loads block the cache delete that
+        # owns their snapshot.
+        loading_matches_repo = loading_id == needle or _owned_cache_path_matches(
+            loading_id_raw, cache_repo_roots
+        )
+        if loading_matches_repo:
+            same_loading_variant = (
+                not requested_variant
+                or not loading_variant
+                or requested_variant == loading_variant
+            )
+            if same_loading_variant:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
+        # Exact match only (case-insensitive). Prefix match would
+        # block deleting unrelated ``org/model`` while
+        # ``org/model-v2`` is loaded -- same surface the diffusion
+        # guard fixed in round 5. Per-variant deletes that target a
+        # DIFFERENT quant than the loaded one are allowed so the
+        # llama and diffusion paths stay symmetric (round 14 P1 #7).
+        loaded_matches_repo = loaded_id == needle or _owned_cache_path_matches(
+            loaded_id_raw, cache_repo_roots
+        )
+        if loaded_matches_repo and (
+            llama_backend.is_loaded or getattr(llama_backend, "is_active", False)
+        ):
+            loaded_variant = (getattr(llama_backend, "hf_variant", None) or "").lower()
+            same_variant = (
+                not requested_variant
+                or not loaded_variant
+                or requested_variant == loaded_variant
+            )
+            if same_variant:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Could not check llama.cpp backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify llama.cpp load status before deleting cache",
+        ) from e
 
     try:
         inference_backend = get_inference_backend()
-        if inference_backend.active_model_name:
-            active = inference_backend.active_model_name.lower()
-            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+        loading_models = getattr(inference_backend, "loading_models", set()) or set()
+        # Loading set holds model identifiers currently being
+        # downloaded / instantiated; treat them like active loads
+        # so a delete cannot race a partial mmap.
+        # Exact match only on the logical ``owner/repo`` side, but
+        # also match local snapshot paths (round 25 P1 #3) so a
+        # safetensors model loaded from a local HF snapshot path
+        # cannot have its cache rmtree'd out from under it.
+        for loading_model in loading_models:
+            ml_raw = loading_model or ""
+            ml = ml_raw.lower()
+            if ml == needle or _owned_cache_path_matches(ml_raw, cache_repo_roots):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
+        active_model_raw = inference_backend.active_model_name
+        if active_model_raw:
+            active = active_model_raw.lower()
+            if active == needle or _owned_cache_path_matches(
+                active_model_raw, cache_repo_roots
+            ):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Could not check safetensors backend status before cache delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify safetensors load status before deleting cache",
+        ) from e
+
+    # Also refuse to delete the cache underlying a loaded OR loading
+    # diffusion pipeline. The diffusion backend mmap's the GGUF + base
+    # repo weights and continues to read from the cache long after
+    # load; deleting them out from under it would corrupt generation.
+    # is_loading=True is also blocked because a mid-flight
+    # hf_hub_download / from_single_file would race the rmtree.
+    # Match exactly on repo_id (case-insensitive) instead of prefix to
+    # avoid blocking unrelated deletes like "org/model" while
+    # "org/model-v2" is loaded.
+    # During a swap (model A loaded, model B loading), status()
+    # exposes both via ``active_*`` and ``pending_*`` so we check
+    # every repo the backend currently owns.
+    # Fail-CLOSED on exception (return 503) like the neighboring
+    # llama.cpp / safetensors guards: we cannot verify whether the
+    # delete is safe, so refuse rather than risk corrupting the
+    # pipeline's mmap.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+
+        diff_backend = get_diffusion_backend()
+        # include_internal=True so we can pair owned raw paths against
+        # the HF cache snapshot root (round 16 P1 #5).
+        diff_status = diff_backend.status(include_internal = True)
+        if diff_status.get("is_loaded") or diff_status.get("is_loading"):
+            # ``needle`` and ``cache_repo_roots`` come from the
+            # preflight scan above; round 25 deduplicated the
+            # diffusion-specific rescan and now all three guards
+            # share the same fail-closed cache view.
+            #
+            # Pair each owned repo with the GGUF variant it actually
+            # owns (active or pending) so a swap in progress does not
+            # collapse both quants into the pending one (round 13
+            # P1 #4). Per-variant delete is still allowed if the
+            # requested variant differs from the variant that owns
+            # the matched repo.
+            for owned_id, owned_gguf in _diffusion_owned_targets(diff_status):
+                if not owned_id:
+                    continue
+                owned_matches_repo = owned_id.lower() == needle
+                if not owned_matches_repo and _owned_cache_path_matches(
+                    owned_id, cache_repo_roots
+                ):
+                    owned_matches_repo = True
+                if not owned_matches_repo:
+                    continue
+                if _variant_delete_is_safe_for_owned_gguf(variant, owned_gguf):
+                    continue
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the diffusion image model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Could not check diffusion backend status before cache delete: %s",
+            e,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify diffusion load status before deleting cache",
+        ) from e
 
     try:
         cache_scans = _all_hf_cache_scans()

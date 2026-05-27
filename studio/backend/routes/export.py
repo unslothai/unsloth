@@ -50,6 +50,109 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+import contextlib
+
+
+def _raise_if_training_active_for_export() -> None:
+    """409 if a training run is in flight; 503 if status check itself
+    raises. Mirrors the load_checkpoint guard so /export/* and /cleanup
+    never tear down or alter export state while training is using the
+    GPU. Missing core.training is treated as 'no tracker'."""
+    try:
+        from core.training import get_training_backend  # type: ignore
+    except Exception as e:
+        logger.debug("core.training not importable, skipping training guard: %s", e)
+        return
+    try:
+        trn = get_training_backend()
+        active = trn.is_training_active()
+    except Exception as e:
+        logger.warning("Could not verify training status before export op: %s", e)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Could not verify training status before the export "
+                "operation. Try again."
+            ),
+        ) from e
+    if active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "Training is currently active. Stop the training run "
+                "before starting an export operation."
+            ),
+        )
+
+
+def _raise_if_export_active_for_export() -> None:
+    """409 if another export job is already running; 503 if the status
+    check itself raises. Backends without is_export_active() are
+    treated as 'no tracker available' to stay compatible with mocked
+    backends in tests."""
+    backend = get_export_backend()
+    is_export_active_fn = getattr(backend, "is_export_active", None)
+    if is_export_active_fn is None:
+        return
+    try:
+        export_is_active = bool(is_export_active_fn())
+    except Exception as e:
+        logger.warning("Could not verify export status before export op: %s", e)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Could not verify export status before starting the "
+                "export operation. Try again."
+            ),
+        ) from e
+    if export_is_active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "An export job is currently active. Wait for it to "
+                "finish before starting another export operation."
+            ),
+        )
+
+
+@contextlib.asynccontextmanager
+async def _export_public_window():
+    """Publish the public-load window across an /export/* operation.
+
+    backend.export_*() runs in a worker thread and does not flip
+    ``_export_active = True`` until the worker actually starts; during
+    that gap window another workload that calls ``_release_export_for``
+    would see ``is_export_active() == False`` and tear down the export
+    subprocess. Mirror the load_checkpoint guard so the pending counter
+    is set for the whole export call, and the helper-busy preflight
+    refuses if AI Assist is mid-handoff.
+
+    Also refuses 409 if training or another export is already active so
+    a queued /export/{merged,base,gguf,lora} or /cleanup cannot
+    double-own the GPU with a running training / export job (round 41
+    consensus: load_checkpoint already runs these checks but /export/*
+    and /cleanup were skipping them).
+    """
+    from routes.inference import (
+        _clear_public_load_window,
+        _raise_if_helper_advisor_busy,
+    )
+
+    export_window_published = False
+    try:
+        _raise_if_training_active_for_export()
+        _raise_if_export_active_for_export()
+        _raise_if_helper_advisor_busy("export")
+        export_window_published = True
+        yield
+    finally:
+        if export_window_published:
+            try:
+                _clear_public_load_window("export")
+            except Exception:
+                pass
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -60,50 +163,123 @@ async def load_checkpoint(
 
     Wraps ExportBackend.load_checkpoint.
     """
+    # Round 30 P1 #8: track whether we published a public-load pending
+    # entry so the outer finally clears it on either success or
+    # failure path.
+    export_load_window_published = False
     try:
         # Version switching is handled automatically by the subprocess-based
         # export backend — no need for ensure_transformers_version() here.
 
-        # Free GPU memory: shut down any running inference/training subprocesses
-        # before loading the export checkpoint (they'd compete for VRAM).
+        # Symmetric lifecycle guard: refuse to load an export
+        # checkpoint while training is active so we do not silently
+        # terminate someone's long-running training job and possibly
+        # fail the export load on top of that. Mirrors the
+        # _raise_if_training_active checks in routes/inference.py for
+        # chat and /images/load.
+        # Run BEFORE the chat / inference / diffusion unload helpers
+        # below: otherwise a 409 from this guard would still leave
+        # the user's chat / inference / diffusion GPU owners freed
+        # for nothing, which is the asymmetry round 7 review #5
+        # flagged. Fail-CLOSED (503) when the training backend is
+        # importable but its status check raises.
         try:
-            from core.inference import get_inference_backend
-
-            inf = get_inference_backend()
-            if inf.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for export",
-                    inf.active_model_name,
+            from core.training import get_training_backend  # type: ignore
+        except Exception as e:
+            logger.debug(
+                "core.training not importable, skipping export training guard: %s",
+                e,
+            )
+        else:
+            try:
+                trn = get_training_backend()
+                active = trn.is_training_active()
+            except Exception as e:
+                logger.warning(
+                    "Could not verify training status before export load: %s", e
                 )
-                inf._shutdown_subprocess()
-                inf.active_model_name = None
-                inf.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
-
-        try:
-            from core.training import get_training_backend
-
-            trn = get_training_backend()
-            if trn.is_training_active():
-                logger.info("Stopping active training to free GPU memory for export")
-                trn.stop_training()
-                # Wait for training subprocess to actually exit before proceeding,
-                # otherwise it may still hold GPU memory when export tries to load.
-                for _ in range(60):  # up to 30s
-                    if not trn.is_training_active():
-                        break
-                    import time
-
-                    time.sleep(0.5)
-                else:
-                    logger.warning(
-                        "Training subprocess did not exit within 30s, proceeding anyway"
-                    )
-        except Exception as e:
-            logger.warning("Could not stop training: %s", e)
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "Could not verify training status before loading "
+                        "an export checkpoint. Try again."
+                    ),
+                ) from e
+            if active:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Training is currently active. Stop the training "
+                        "run before loading an export checkpoint."
+                    ),
+                )
 
         backend = get_export_backend()
+        # Refuse to reload the export checkpoint while an export job
+        # is still running. ``ExportBackend.load_checkpoint`` would
+        # terminate the running subprocess in order to spawn a new
+        # one, silently corrupting the partial output the user is
+        # waiting on (round 13 P1 #1). Runs BEFORE the chat /
+        # diffusion unloads below: a 409 from this guard must not
+        # leave the user's chat or diffusion GPU owners freed for
+        # nothing (round 14 P1 #1). ``is_export_active`` may be
+        # absent on older / mocked backends; treat missing as "no
+        # async-job tracker available" and skip rather than
+        # fail-closed.
+        is_export_active_fn = getattr(backend, "is_export_active", None)
+        if is_export_active_fn is not None:
+            try:
+                export_is_active = bool(is_export_active_fn())
+            except Exception as e:
+                logger.warning(
+                    "Could not verify export status before export load: %s", e
+                )
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "Could not verify export status before loading "
+                        "an export checkpoint. Try again."
+                    ),
+                ) from e
+            if export_is_active:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "An export job is currently active. Stop the "
+                        "export job before loading another checkpoint."
+                    ),
+                )
+
+        # Free GPU memory: shut down any chat backend before loading
+        # the export checkpoint. Routes the unload through the shared
+        # helper so we cover llama-server is_active=True and
+        # safetensors loading_models -- the asymmetries round 9
+        # reviews #1, #8, #9 flagged.
+        from routes.inference import (
+            _clear_public_load_window,
+            _raise_if_helper_advisor_busy,
+            _release_chat_for,
+            _release_diffusion_for,
+        )
+
+        # Round 28 P1 #6: refuse before any release fires so AI Assist
+        # busy does not first tear down idle diffusion.
+        # Round 30 P1 #8: also publishes a public-load pending entry so
+        # a concurrent helper / advisor start cannot win the start
+        # lock between our snapshot and load_checkpoint flipping
+        # current_checkpoint / is_export_active.
+        _raise_if_helper_advisor_busy("export")
+        export_load_window_published = True
+        # Round 24 P1 #3: release diffusion BEFORE chat so a failing
+        # diffusion unload does not leave the user with no chat
+        # model loaded. Same reasoning as the training-start flow
+        # (round 18 P1 #8 / round 24 P1 #2). Earlier rounds kept the
+        # chat release first because the helper was best-effort;
+        # now that ``_release_diffusion_for`` is strict it must run
+        # while chat is still resident so a failure preserves it.
+        await _release_diffusion_for("export load")
+        await _release_chat_for("export")
+
         # load_checkpoint spawns and waits on a subprocess and can take
         # minutes. Run it in a worker thread so the event loop stays
         # free to serve the live log SSE stream concurrently.
@@ -127,6 +303,18 @@ async def load_checkpoint(
             status_code = 500,
             detail = f"Failed to load checkpoint: {str(e)}",
         )
+    finally:
+        # Round 30 P1 #8: clear the public-load pending entry once the
+        # load attempt completes (success or failure). Skipped when
+        # the helper-busy check itself raised so the counter stays in
+        # sync with publishes.
+        if export_load_window_published:
+            try:
+                from routes.inference import _clear_public_load_window
+            except Exception:
+                pass
+            else:
+                _clear_public_load_window("export")
 
 
 @router.post("/cleanup", response_model = ExportOperationResponse)
@@ -140,7 +328,12 @@ async def cleanup_export_memory(
     """
     try:
         backend = get_export_backend()
-        success = await asyncio.to_thread(backend.cleanup_memory)
+        # Run the cleanup under the same public-load window /export/*
+        # uses so a queued export's handoff gap cannot race a cleanup
+        # call that tears down current_checkpoint. The window also
+        # refuses 409 if training or another export is in flight.
+        async with _export_public_window():
+            success = await asyncio.to_thread(backend.cleanup_memory)
 
         if not success:
             raise HTTPException(
@@ -211,15 +404,16 @@ async def export_merged_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_merged_model,
-            save_directory = request.save_directory,
-            format_type = request.format_type,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_merged_model,
+                save_directory = request.save_directory,
+                format_type = request.format_type,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -251,15 +445,16 @@ async def export_base_model(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_base_model,
-            save_directory = request.save_directory,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-            base_model_id = request.base_model_id,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_base_model,
+                save_directory = request.save_directory,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+                base_model_id = request.base_model_id,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -291,14 +486,15 @@ async def export_gguf(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_gguf,
-            save_directory = request.save_directory,
-            quantization_method = request.quantization_method,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_gguf,
+                save_directory = request.save_directory,
+                quantization_method = request.quantization_method,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
@@ -330,14 +526,15 @@ async def export_lora_adapter(
     """
     try:
         backend = get_export_backend()
-        success, message, output_path = await asyncio.to_thread(
-            backend.export_lora_adapter,
-            save_directory = request.save_directory,
-            push_to_hub = request.push_to_hub,
-            repo_id = request.repo_id,
-            hf_token = request.hf_token,
-            private = request.private,
-        )
+        async with _export_public_window():
+            success, message, output_path = await asyncio.to_thread(
+                backend.export_lora_adapter,
+                save_directory = request.save_directory,
+                push_to_hub = request.push_to_hub,
+                repo_id = request.repo_id,
+                hf_token = request.hf_token,
+                private = request.private,
+            )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)

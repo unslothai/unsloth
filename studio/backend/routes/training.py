@@ -127,6 +127,11 @@ async def start_training(
     This endpoint initiates training in the background and returns immediately.
     Use the /status endpoint to check training progress.
     """
+    # Round 30 P1 #7: track whether we published a public-load pending
+    # entry so the outer finally clears it on either success or
+    # failure (including any early HTTPException raised by the helper
+    # check itself).
+    training_load_window_published = False
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
@@ -266,37 +271,48 @@ async def start_training(
                 )
                 training_kwargs["trust_remote_code"] = True
 
-        # Free GPU memory: shut down any running inference/export subprocesses
-        # before training starts (they'd compete for VRAM otherwise)
-        try:
-            from core.inference import get_inference_backend
+        # Symmetric lifecycle guard: refuse to start training while
+        # an export job is in flight. Round 10 review #1 -- the
+        # previous code went straight to ``_release_export_for``,
+        # which would terminate the in-flight export and corrupt
+        # the user's output artifact. Now we 409 first; the user
+        # stops the export and re-submits.
+        from routes.inference import (
+            _clear_public_load_window,
+            _raise_if_export_active,
+            _raise_if_helper_advisor_busy,
+            _release_chat_for,
+            _release_diffusion_for,
+            _release_export_for,
+        )
 
-            inf_backend = get_inference_backend()
-            if inf_backend.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for training",
-                    inf_backend.active_model_name,
-                )
-                inf_backend._shutdown_subprocess()
-                inf_backend.active_model_name = None
-                inf_backend.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
+        _raise_if_export_active("training")
+        # Round 28 P1 #5: refuse before any release fires so AI Assist
+        # busy does not first tear down idle diffusion/export.
+        # Round 30 P1 #7: also publishes a public-load pending entry so
+        # a concurrent helper / advisor start cannot win the start
+        # lock between our snapshot and start_training flipping
+        # is_training_active. Paired clear lives in the outer
+        # ``finally`` below.
+        _raise_if_helper_advisor_busy("training")
+        training_load_window_published = True
+        # Round 18 P1 #8: release settled export FIRST so an export
+        # cleanup failure preserves the user's currently loaded chat
+        # model. The previous order (chat -> export) would drop chat
+        # and then refuse training when a wedged idle export raised,
+        # leaving the user with nothing loaded.
+        # Round 24 P1 #2: same reasoning extended to diffusion ->
+        # chat. A wedged diffusion unload used to fire AFTER the chat
+        # backend was already gone, so the user lost both chat and
+        # diffusion on a single failure mode. Order is now
+        # export -> diffusion -> chat, with chat as the last drop so
+        # earlier failures preserve it.
+        await _release_export_for("training")
+        await _release_diffusion_for("training")
+        await _release_chat_for("training")
 
-        try:
-            from core.export import get_export_backend
-
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info(
-                    "Shutting down export subprocess to free GPU memory for training"
-                )
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # (Diffusion release moved above chat in round 24 P1 #2;
+        # the old trailing call was removed to avoid double-unload.)
 
         # start_training now spawns a subprocess (non-blocking)
         success = backend.start_training(job_id = job_id, **training_kwargs)
@@ -320,12 +336,31 @@ async def start_training(
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
+    except HTTPException:
+        # Preserve the intended status code from
+        # _raise_if_training_active / _raise_if_export_active
+        # (409) and the gpu-id 400 raises above. Without this
+        # explicit re-raise the broad ``except Exception`` below
+        # converts a deliberate 409 into a 500.
+        raise
     except Exception as e:
         logger.error(f"Error starting training: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
             detail = f"Failed to start training: {str(e)}",
         )
+    finally:
+        # Round 30 P1 #7: clear the public-load pending entry once the
+        # start attempt has finished. Skipped when the helper-busy
+        # check itself raised (no publish to clear) so the counter
+        # stays in sync with publishes.
+        if training_load_window_published:
+            try:
+                from routes.inference import _clear_public_load_window
+            except Exception:
+                pass
+            else:
+                _clear_public_load_window("training")
 
 
 @router.post("/stop", response_model = TrainingStopResponse)

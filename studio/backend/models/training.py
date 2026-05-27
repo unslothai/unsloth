@@ -9,6 +9,13 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
+# Round 22 P1 #1: reuse the chat / diffusion identifier validators
+# so /api/training/start rejects newline / tab / control characters
+# and URL-form ``hf_xxxxx`` tokens in ``model_name``. Without these
+# a caller could log-line-smuggle through "Loading model %s" lines
+# and leak the bearer token into structured-log sinks.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
+
 
 # ASCII integer with an optional single sign. Used by _check_vision_image_size
 # to reject "++512", "--256", and Unicode-digit strings ("５１２", "٥١٢") that
@@ -59,6 +66,52 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+
+    # Identifier hardening: extended progressively across analogous
+    # request models. format_type is copied into training_kwargs and
+    # written into trainer log lines, so it shares the same boundary.
+    @field_validator(
+        "model_name",
+        "hf_dataset",
+        "subset",
+        "train_split",
+        "eval_split",
+        "format_type",
+    )
+    @classmethod
+    def _no_model_name_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator(
+        "model_name",
+        "hf_dataset",
+        "subset",
+        "train_split",
+        "eval_split",
+        "format_type",
+    )
+    @classmethod
+    def _no_model_name_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    # local_datasets / local_eval_datasets are user-controlled lists
+    # reflected back in /api/training/start error details when
+    # _validate_local_dataset_paths fails, so the same control-char +
+    # embedded-token guards apply per entry.
+    @field_validator("local_datasets", "local_eval_datasets")
+    @classmethod
+    def _no_local_dataset_control_chars(cls, v, info):
+        for i, entry in enumerate(v or []):
+            _no_control_chars(entry, f"{info.field_name}[{i}]")
+        return v
+
+    @field_validator("local_datasets", "local_eval_datasets")
+    @classmethod
+    def _no_local_dataset_embedded_hf_tokens(cls, v, info):
+        for i, entry in enumerate(v or []):
+            _reject_embedded_hf_token(entry, f"{info.field_name}[{i}]")
+        return v
+
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = (
         Field(
             ...,
