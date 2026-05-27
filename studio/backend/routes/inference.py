@@ -465,7 +465,12 @@ _TOOL_XML_RE = _re.compile(
             r"<\|tool_call>.*?<tool_call\|>",
             r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?",
             r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}",
-            r"<\|python_tag\|>[^\n<]*",
+            # Llama-3 ``<|python_tag|>`` runs until the next Llama-3
+            # sentinel (``<|...|>``). The ``(?:[^<]|<(?!\|))*`` form lets
+            # the strip survive multi-line code AND literal ``<`` in the
+            # body (e.g. ``code="if x < 10"``) while stopping cleanly at
+            # the next ``<|eom_id|>`` / ``<|eot_id|>`` / ``<|python_tag|>``.
+            r"<\|python_tag\|>(?:[^<]|<(?!\|))*",
             r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>",
             r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
         ]

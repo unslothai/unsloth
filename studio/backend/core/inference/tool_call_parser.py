@@ -47,9 +47,14 @@ TOOL_XML_SIGNALS = (
     "<｜tool▁calls▁begin｜>",
     "<｜tool▁call▁begin｜>",
     # Alternative DeepSeek openers llama.cpp also recognises -- some
-    # checkpoints emit ASCII underscores, others a short form.
+    # checkpoints emit ASCII underscores, others a short form, and
+    # llama.cpp keeps two more legacy variants (literal-space and
+    # backslash-escaped) that we mirror for streaming-gate parity with
+    # ``_DEEPSEEK_BEGIN_RE`` below.
     "<｜tool_calls_begin｜>",
     "<｜tool▁calls｜>",
+    "<｜tool calls begin｜>",
+    "<｜tool\\_calls\\_begin｜>",
     # Kimi K2 / Moonshot section start.
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
@@ -186,6 +191,17 @@ _GLM_ARG_PAIR_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
     re.DOTALL,
 )
+# Without tool-schema access at the parse site we use a structural
+# heuristic: only deserialize an ``<arg_value>`` body when it
+# unambiguously looks like a JSON literal. The template's rule is
+# ``{{ v | tojson(ensure_ascii=False) if v is not string else v }}``,
+# so a *string* arg arrives raw (``42``) and a *non-string* arg arrives
+# JSON-encoded (``"42"`` for an actual string, ``42`` for an int, etc.).
+# Bare ``42`` / ``true`` / ``null`` are therefore the model's choice of
+# representation for string args -- coercing them to int / bool / None
+# would silently mangle a ``search(query="42")`` call. Only the shapes
+# below can be safely decoded.
+_GLM_JSON_NUMERIC_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 
 # Kimi K2 / Moonshot markers (ASCII pipes, NOT full-width). The name
 # arrives as ``functions.NAME:IDX`` between ``<|tool_call_begin|>`` and
@@ -903,10 +919,13 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
       R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
       V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
 
-    Mirrors llama.cpp's common_chat_parse_deepseek_r1 / _v3_1 in
-    chat-parser.cpp lines 801-879 and vLLM's deepseekv3 /
-    deepseekv31 tool_parsers. Tolerates four outer-marker variants
-    that real checkpoints emit.
+    Mirrors llama.cpp's common_chat_parse_deepseek_r1 / _v3_1 (at
+    pre-autoparser-refactor commit ``51fa458a92d6``, where the logic
+    lived in ``common/chat-parser.cpp`` lines 801-879; the upstream has
+    since been split into ``common/chat.cpp`` + ``common/chat-peg-
+    parser.cpp`` by llama.cpp PR #18675) and vLLM's
+    ``vllm/tool_parsers/deepseekv31_tool_parser.py``. Tolerates the
+    five outer-marker variants llama.cpp keeps for real checkpoints.
     """
     out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
@@ -1007,8 +1026,10 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     template's ``{{ v | tojson(ensure_ascii=False) if v is not string
     else v }}`` rule. Multi-call is back-to-back ``<tool_call>...
     </tool_call>`` blocks with no outer envelope. Mirrors llama.cpp's
-    common_chat_parse_glm_4_5 (chat-parser.cpp:1040-1052) and vLLM's
-    glm4_moe_tool_parser.
+    ``common_chat_parse_glm_4_5`` (pre-autoparser-refactor commit
+    ``51fa458a92d6``, ``common/chat-parser.cpp`` lines 1040-1052; see
+    note in ``_parse_deepseek_tool_calls`` re: post-refactor paths)
+    and vLLM's ``vllm/tool_parsers/glm4_moe_tool_parser.py``.
     """
     out: list[dict] = []
     pos = 0
@@ -1026,18 +1047,22 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         for pair in _GLM_ARG_PAIR_RE.finditer(body):
             key = pair.group(1).strip()
             raw_val = pair.group(2).strip()
-            # JSON literal first, then ast-literal fallback, else raw string.
-            try:
-                args[key] = json.loads(raw_val)
-                continue
-            except (json.JSONDecodeError, ValueError):
-                pass
-            try:
-                import ast as _ast
-                args[key] = _ast.literal_eval(raw_val)
-                continue
-            except (ValueError, SyntaxError):
-                pass
+            # Only try to decode when the body unambiguously looks like a
+            # JSON literal. Prose, code, and arbitrary string values stay
+            # raw (the template emits string args verbatim). Numeric /
+            # boolean / null shapes are still ambiguous with strings that
+            # happen to look like primitives -- this is an inherent
+            # limitation of the template without per-arg schema access.
+            if (
+                raw_val[:1] in '{["'
+                or raw_val in ("true", "false", "null")
+                or _GLM_JSON_NUMERIC_RE.fullmatch(raw_val)
+            ):
+                try:
+                    args[key] = json.loads(raw_val)
+                    continue
+                except (json.JSONDecodeError, ValueError):
+                    pass
             args[key] = raw_val
 
         if name:
@@ -1067,7 +1092,10 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     prefix and ``:N`` suffix to recover the bare name. The full id
     string is preserved as ``tool_calls[i].id`` so the conversation
     replay round-trips the exact form the model emitted (vLLM and
-    SGLang both do this).
+    SGLang both do this). Mirrors llama.cpp's
+    ``common_chat_parse_kimi_k2`` (pre-autoparser-refactor commit
+    ``51fa458a92d6`` of ``common/chat-parser.cpp``) and vLLM's
+    ``vllm/tool_parsers/kimi_k2_tool_parser.py``.
     """
     out: list[dict] = []
     section_start = content.find(_KIMI_SECTION_BEGIN)
@@ -1093,6 +1121,23 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             name = m.group(1).split(".")[-1]
         else:
             name = full_id.split(":")[0].split(".")[-1]
+        # Drop bare-counter ids (e.g. ``3``) -- SGLang infers the function
+        # name from the tool schema in this case, but we don't have the
+        # schema at the parse site. Surfacing a tool literally named ``"3"``
+        # would only be rejected by the dispatcher, so we match vLLM and
+        # skip the call. Per the Kimi K2 tool-call guidance real models
+        # emit ``functions.NAME:IDX``, so this path is the exception.
+        if name.isdigit():
+            json_start = arg_begin + len(_KIMI_ARG_BEGIN)
+            brace_end = _balanced_brace_end(body, json_start) if (
+                json_start < len(body) and body[json_start] == "{"
+            ) else None
+            if brace_end is None:
+                pos = arg_begin + len(_KIMI_ARG_BEGIN)
+            else:
+                call_end = body.find(_KIMI_CALL_END, brace_end + 1)
+                pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
+            continue
         json_start = arg_begin + len(_KIMI_ARG_BEGIN)
         # Walk a balanced brace so streaming truncation that drops the
         # trailing ``<|tool_call_end|>`` still surfaces a call.
