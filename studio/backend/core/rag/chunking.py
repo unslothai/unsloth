@@ -3,10 +3,44 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable
 
 from .parsers import ParsedPage
+
+# Match "Figure 1:", "Figure 1.2:", "Fig. 3.", "Table 4:" etc. at line-start,
+# tolerating leading bold markers. Used to break chunks BEFORE such captions
+# so the caption ends up at the start of its own chunk — dense embeddings
+# pool over the whole chunk, so figure references buried at the end get
+# diluted by surrounding body text.
+_FIGURE_BOUNDARY_RE = re.compile(
+    # Number forms covered: "1", "12", "1.2", "B.1" (appendix-style),
+    # tolerating bold wrappers around either the label or the number.
+    r"^\**(?:Figure|Fig\.|Table|Tab\.)\s+[A-Z]?\.?\d+(?:\.\d+)?\**[\.:]",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _split_at_figure_boundaries(text: str) -> list[str]:
+    """Split markdown at the start of each figure / table caption.
+
+    Each segment starts with either the original text head or a "Figure N:" /
+    "Table N:" line, so the caption anchors the embedding of the chunk it
+    lands in. Returns the original text as a single-element list when no
+    captions are found.
+    """
+    matches = list(_FIGURE_BOUNDARY_RE.finditer(text))
+    if not matches:
+        return [text]
+    segments: list[str] = []
+    last = 0
+    for m in matches:
+        if m.start() > last:
+            segments.append(text[last : m.start()])
+        last = m.start()
+    segments.append(text[last:])
+    return [s for s in segments if s.strip()]
 
 
 @dataclass(frozen = True)
@@ -124,16 +158,17 @@ def chunk_pages(
     count = token_counter or _char_token_estimate
     out: list[Chunk] = []
     for page in pages:
-        atomic = _atomic_split(page.text, separators, max_tokens, count)
-        merged = _merge(atomic, max_tokens, overlap_tokens, count)
-        for piece in merged:
-            out.append(
-                Chunk(
-                    text = piece,
-                    token_count = count(piece),
-                    page_number = page.page_number,
+        for segment in _split_at_figure_boundaries(page.text):
+            atomic = _atomic_split(segment, separators, max_tokens, count)
+            merged = _merge(atomic, max_tokens, overlap_tokens, count)
+            for piece in merged:
+                out.append(
+                    Chunk(
+                        text = piece,
+                        token_count = count(piece),
+                        page_number = page.page_number,
+                    )
                 )
-            )
     return out
 
 
@@ -169,7 +204,9 @@ def chunk_pages_with_spans(
             cursor += len(_PAGE_SEPARATOR)
     full_doc = _PAGE_SEPARATOR.join(parts)
 
-    atomic = _atomic_split(full_doc, separators, max_tokens, count)
+    atomic: list[str] = []
+    for segment in _split_at_figure_boundaries(full_doc):
+        atomic.extend(_atomic_split(segment, separators, max_tokens, count))
     merged = _merge(atomic, max_tokens, overlap_tokens, count)
 
     chunks: list[Chunk] = []
