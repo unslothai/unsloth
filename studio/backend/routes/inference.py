@@ -260,16 +260,11 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # The safetensors / MLX loop parses these emission formats:
-    # Qwen ``<tool_call>{json}``, Qwen3.5 ``<function=name>...``,
-    # Llama-3 ``<|python_tag|>``, Llama-3.2 bare JSON ``{"name":...,
-    # "parameters":...}``, Mistral ``[TOOL_CALLS]`` (pre-v11 array +
-    # v11+ ``name{json}``), and Gemma 4 ``<|tool_call>...``. If the
-    # template advertises tools but does NOT use any of these markers,
-    # the parser cannot honour the emission - drop the pill. ``{"name":``
-    # catches Llama-3.2's ``custom_tools`` shape whose template instructs
-    # the model to "Respond in the format {\"name\": ..., \"parameters\":
-    # ...}" without a ``<|python_tag|>`` prefix.
+    # Markers the safetensors / MLX parser recognises. If the template
+    # advertises tools but uses none of them, drop the pill (parser
+    # can't honour the emission). The two ``{"name":`` variants cover
+    # Llama-3.2 ``custom_tools`` whose template prompts the bare-JSON
+    # form without a ``<|python_tag|>`` prefix.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -440,26 +435,12 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call markup from assistant messages /
-# stream. Covers every emission format the shared parser handles
-# (Qwen / Hermes ``<tool_call>``, Qwen3.5 ``<function=name>``, Llama-3
-# ``<|python_tag|>``, Mistral ``[TOOL_CALLS]`` pre-v11 array and v11+
-# ``name{json}``, Gemma 4 ``<|tool_call>...<tool_call|>``).
-#
-# Mistral ``[TOOL_CALLS]`` blocks need balanced brace/bracket scanning
-# -- a non-greedy ``\{.*?\}`` truncates at the first ``}`` of a nested
-# JSON arg, so those are handled by the parser module's
-# ``_strip_mistral_closed_calls`` helper invoked by ``_strip_tool_xml``
-# below.
-#
-# We also have to scrub four leak shapes the speculative buffer in
-# ``core/inference/llama_cpp.py`` can split across the visible/DRAIN
-# boundary:
-#   1. well-formed ``<tool_call>...</tool_call>`` / ``<function=...>...</function>``
-#   2. orphan opening to EOF (close was DRAINED) -- match to ``\Z``
-#   3. bare orphan close (open was DRAINED)
-#   4. tail-only ``</parameter>`` (outer close truncated by EOS); anchored
-#      to ``\Z`` so mid-text ``<parameter>`` in user code samples survives.
+# Strip leaked tool-call markup. Covers every shared-parser format AND
+# the four leak shapes the speculative buffer in ``llama_cpp.py`` splits
+# across the visible/DRAIN boundary (closed pair, orphan open to EOF,
+# bare orphan close, tail-only ``</parameter>``). Mistral ``[TOOL_CALLS]``
+# is delegated to the parser's balanced-brace helper -- a non-greedy
+# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
 _TOOL_XML_RE = _re.compile(
     "|".join(
         [
@@ -467,19 +448,14 @@ _TOOL_XML_RE = _re.compile(
             r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)",
             # Bare orphan close (open was DRAINED upstream).
             r"</(?:tool_call|function)>",
-            # Gemma 4 ``<|tool_call>...<tool_call|>``.
+            # Gemma 4.
             r"<\|tool_call>.*?<tool_call\|>",
-            # ``<|python_tag|>...`` runs until the next Llama-3 ``<|``
-            # sentinel (``<|eot_id|>``, ``<|eom_id|>``, etc.) or end of
-            # text. Earlier revisions used ``[^\n<]*`` (leaked tools
-            # whose args contained a literal ``<`` like
-            # ``code="if x < 10"``) and then ``[^\n]*`` (single-line
-            # only; multi-line ``python.call(code="line1\nline2")``
-            # leaked the second line). ``(?:[^<]|<(?!\|))*`` consumes
-            # any character that is not a sentinel start, so newlines,
-            # bare ``<``, and embedded JSON all stay inside the strip.
+            # Llama-3 ``<|python_tag|>...`` to the next ``<|`` sentinel
+            # or EOF. ``(?:[^<]|<(?!\|))*`` (not ``[^\n<]*`` or
+            # ``[^\n]*``) keeps literal ``<``, newlines, and embedded
+            # JSON inside the strip.
             r"<\|python_tag\|>(?:[^<]|<(?!\|))*",
-            # Tail-only ``</parameter>`` (truncated outer close, EOS).
+            # Tail-only ``</parameter>`` (anchored so mid-text survives).
             r"</parameter>\s*\Z",
         ]
     ),
@@ -488,11 +464,7 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Strip closed-pair tool-call markup with balanced brace scanning.
-
-    Combines the shared parser's Mistral helper (handles nested JSON
-    correctly) with ``_TOOL_XML_RE`` for the remaining flat patterns.
-    """
+    """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
     from studio.backend.core.inference.tool_call_parser import (
         _strip_mistral_closed_calls,
     )

@@ -43,21 +43,15 @@ logger = get_logger(__name__)
 # Buffer cap while waiting to disambiguate a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
-# Forward-looking intent signals that indicate the model is describing
-# what it *will* do rather than giving a final answer. Mirrors the GGUF
-# path so safetensors / MLX nudge the model to act when it stalls on
-# planning instead of calling a tool. Excludes "I can", "I should",
-# "I want to", "let's" which appear in direct answers / explanations.
+# Forward-looking intent ("I'll...", "First, ...", "Step 1:") that
+# means the model is planning rather than answering. Used to nudge it
+# to call a tool. Excludes "I can / I should / I want / let's" because
+# those also appear in direct answers and explanations. Mirrors GGUF.
 _INTENT_SIGNAL = re.compile(
     r"(?i)("
-    # Direct intent: "I'll", "I will", "Let me", "I am going to".
     r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
-    r"|"
-    # Step / plan framing: "First", "Step 1:", "Here's my plan".
-    r"\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
-    r"|"
-    # "Now I" / "Next I" patterns.
-    r"\b(?:now i|next i)\b"
+    r"|\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
+    r"|\b(?:now i|next i)\b"
     r")"
 )
 _MAX_REPROMPTS = 3
@@ -178,8 +172,7 @@ def run_safetensors_tool_loop(
     _state_streaming = 1
     _state_draining = 2
 
-    # Reserve extra iterations for re-prompts so they do not eat the
-    # caller's tool-call budget. Mirrors GGUF (_MAX_REPROMPTS slots).
+    # Reserve re-prompt slots so they don't eat the caller's tool budget.
     _extra_iters = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
@@ -271,11 +264,10 @@ def run_safetensors_tool_loop(
             if stripped and has_tool_signal(stripped):
                 detect_state = _state_draining
             else:
-                # Emit the buffered content, then fall through to the
-                # STREAMING block so the intent re-prompt + safety-net
-                # parser still get a chance. Without this, a short
-                # intent emission like "Let me search." that never
-                # exits BUFFERING would silently terminate the loop.
+                # Drain the buffer and fall through to STREAMING so the
+                # intent re-prompt + safety-net parser can still fire on
+                # short emissions like "Let me search." that never exit
+                # BUFFERING (would otherwise silently end the loop).
                 if content_buffer:
                     cumulative_display += content_buffer
                     cleaned = strip_tool_markup(cumulative_display, final = True)
@@ -293,11 +285,9 @@ def run_safetensors_tool_loop(
                     id_offset = next_call_id,
                 )
             if not safety_tc:
-                # Re-prompt on plan-without-action: if the model
-                # described what it intends to do but did not call a
-                # tool, nudge it to act. Mirrors the GGUF path. Only
-                # fires on responses that signal intent / planning --
-                # direct answers like "4" or "Hello!" don't trigger.
+                # Re-prompt only when the model planned without acting
+                # (intent signal present); direct answers like "4" or
+                # "Hello!" never trigger. Mirrors GGUF.
                 _stripped = content_accum.strip()
                 if (
                     tools
@@ -440,10 +430,8 @@ def run_safetensors_tool_loop(
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
-        # Budget tracked against the caller-requested cap, ignoring
-        # the re-prompt slots so a stalling model still gets a final
-        # answer attempt. Tool-call iterations executed = iteration -
-        # reprompt_count.
+        # Track against the caller-requested cap, excluding re-prompt
+        # slots so a stalling model still gets a final-answer attempt.
         _tool_iters_done = iteration + 1 - reprompt_count
         if _tool_iters_done >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
