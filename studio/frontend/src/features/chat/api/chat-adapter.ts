@@ -19,7 +19,6 @@ import {
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -133,6 +132,47 @@ function isServerSideBuiltinToolPart(
   return hasNativePart;
 }
 
+const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+
+type ThreadAutosaveHandle = {
+  registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
+  awaitFirstSave(threadId: string | undefined): Promise<void>;
+};
+
+const pendingFirstThreadSaves = new Map<string, Promise<void>>();
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
+  registerFirstSave(threadId, promise) {
+    const trackedPromise = promise.catch(() => {});
+    const cleanupPromise = trackedPromise.finally(() => {
+      if (pendingFirstThreadSaves.get(threadId) === cleanupPromise) {
+        pendingFirstThreadSaves.delete(threadId);
+      }
+    });
+    pendingFirstThreadSaves.set(threadId, cleanupPromise);
+    return cleanupPromise;
+  },
+
+  async awaitFirstSave(threadId) {
+    if (!threadId) {
+      return;
+    }
+    const pending = pendingFirstThreadSaves.get(threadId);
+    if (!pending) {
+      return;
+    }
+    await Promise.race([pending, wait(FIRST_THREAD_SAVE_TIMEOUT_MS)]);
+  },
+};
+
+export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
+  return ThreadAutosaveHandle;
+}
+
 /**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
@@ -166,10 +206,6 @@ export function isContextLimitError(message: string): boolean {
     // n_ctx mentions that carry an "exceed"/"full" signal.
     (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
   );
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function updateStoredChatThreadEventually(
@@ -2127,6 +2163,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               throw error;
             }
             clearSelectedImageEditReference();
+            await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
