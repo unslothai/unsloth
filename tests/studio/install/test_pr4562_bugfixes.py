@@ -727,16 +727,16 @@ class TestSourceCodePatterns:
         assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
 
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
-        """If Metal configure or build fails, setup should retry with CPU fallback."""
+        """If Metal/CUDA/ROCm configure or build fails, setup should retry with
+        CPU fallback. The PR4562 wording was Metal-specific; PR #5826
+        generalised the wording via $_FB_LABEL so the same branch covers
+        CUDA-13.3-on-old-driver and ROCm configure failures too. The check
+        below stays agnostic to that label so it does not have to be revised
+        every time a new GPU backend is wired in."""
         content = SETUP_SH.read_text()
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
-        assert (
-            'substep "Metal configure failed; retrying CPU build..." "$C_WARN"'
-            in content
-        )
-        assert (
-            'substep "Metal build failed; retrying CPU build..." "$C_WARN"' in content
-        )
+        assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
+        assert 'build failed; retrying CPU build..." "$C_WARN"' in content
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
         # _TRY_METAL_CPU_FALLBACK must be reset to false in both fallback branches
@@ -745,6 +745,10 @@ class TestSourceCodePatterns:
             "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
             "(init + configure fallback + build fallback)"
         )
+        # The fallback helper must exist and Metal must reach it via the
+        # _TRY_METAL_CPU_FALLBACK shortcut so the macOS path stays covered.
+        assert "_gpu_fallback_label()" in content
+        assert 'echo "Metal"' in content
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
         """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
