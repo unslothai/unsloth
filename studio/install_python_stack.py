@@ -509,35 +509,29 @@ def _install_bnb_windows_rocm() -> bool:
 
     The continuous-release wheel is intentionally mismatched: the filename
     encodes version 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the
-    wheel metadata reports 0.50.0.dev0.  uv rejects this by default; we set
-    UV_SKIP_WHEEL_FILENAME_CHECK=1 only for this install and restore the env
-    afterwards.
+    wheel metadata reports 0.50.0.dev0.  uv rejects this filename/metadata
+    mismatch; use pip directly (force_pip=True) to bypass that check.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
         return False
-    _prev = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
-    os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
-    _ok = False  # init so a raise inside pip_install_try does not produce UnboundLocalError
-    try:
-        _ok = pip_install_try(
-            "bitsandbytes (AMD Windows, pre-release main)",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "--no-deps",
-            _bnb_win_url,
-            constrain = False,
-        )
-    finally:
-        if _prev is None:
-            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-        else:
-            os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = _prev
+    _ok = pip_install_try(
+        "bitsandbytes (AMD Windows, pre-release main)",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "--no-deps",
+        _bnb_win_url,
+        constrain = False,
+        force_pip = True,
+    )
     if not _ok:
         return False
-    # After install: detect the actual ROCm DLL suffix from the wheel so any
-    # post-install BNB import in this process loads the correct DLL.
-    # The worker subprocess does the same detection independently (worker.py §1f).
+    # After install: detect the actual ROCm DLL suffix shipped in the wheel and
+    # set BNB_ROCM_VERSION so bitsandbytes loads the correct DLL regardless of
+    # what torch.version.hip reports.  The wheel may ship an older suffix (e.g.
+    # "72") while torch reports a newer HIP version (e.g. 7.13); the env var
+    # override ensures bitsandbytes does not fail looking for a non-existent DLL.
+    # The worker subprocess inherits this env var automatically.
     # Fall back to "72" if detection fails (e.g. install was a no-op / dry-run).
     if "BNB_ROCM_VERSION" not in os.environ:
         _ver = _detect_bnb_rocm_dll_ver() or "72"
