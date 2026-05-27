@@ -43,8 +43,8 @@ router = APIRouter()
 
 # Knobs (module-level so tests can monkeypatch).
 MAX_HTML_PREVIEW_BYTES = 1_000_000  # 1 MiB; snippets, not full SPAs.
-PREVIEW_TTL_SECONDS = 10 * 60       # 10 min interaction window.
-MAX_LIVE_PREVIEWS = 256             # Per-process cap; oldest evicted first.
+PREVIEW_TTL_SECONDS = 10 * 60  # 10 min interaction window.
+MAX_LIVE_PREVIEWS = 256  # Per-process cap; oldest evicted first.
 
 _PREVIEWS: dict[str, tuple[float, str]] = {}
 
