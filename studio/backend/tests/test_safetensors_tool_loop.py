@@ -260,6 +260,37 @@ class TestParserMultiFormat:
         text = '{"name":"x","parameters":42}'
         assert parse_tool_calls_from_text(text) == []
 
+    def test_llama3_2_bare_json_string_parameters_does_not_fire(self):
+        # Llama-3 spec: parameters must be a dict. Prose like
+        # ``{"name":"foo","parameters":"a sentence"}`` must NOT trigger.
+        text = '{"name":"foo","parameters":"this is a sentence"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_string_arguments_not_json_does_not_fire(self):
+        # OpenAI ``arguments`` may be a JSON-string of a dict, but a
+        # plain non-JSON string must not pass the guard.
+        text = '{"name":"foo","arguments":"not json"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_string_arguments_json_dict_fires(self):
+        # OpenAI shape: arguments is a JSON-encoded string of a dict.
+        text = '{"name":"foo","arguments":"{\\"q\\":\\"x\\"}"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "foo"
+        # arguments stays as the original JSON-string.
+        assert result[0]["function"]["arguments"] == '{"q":"x"}'
+
+    def test_llama3_2_bare_json_string_arguments_json_non_dict_does_not_fire(self):
+        # JSON-string that parses to a list / scalar / null must NOT fire.
+        for bad in (
+            '{"name":"foo","arguments":"[1,2,3]"}',
+            '{"name":"foo","arguments":"\\"plain\\""}',
+            '{"name":"foo","arguments":"null"}',
+            '{"name":"foo","arguments":"42"}',
+        ):
+            assert parse_tool_calls_from_text(bad) == [], bad
+
     # ── Mistral pre-v11 ───────────────────────────────────────────
 
     def test_mistral_pre_v11_array(self):
