@@ -1586,6 +1586,35 @@ class TestParserRobustness:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "f"
 
+    def test_function_xml_followed_by_prose(self):
+        # Models routinely follow a tool call with explanatory prose.
+        # Body must terminate at ``</function>`` even without a
+        # ``</tool_call>`` wrapper, else trailing prose leaks into the
+        # last parameter value.
+        import json
+
+        text = (
+            "<function=get_weather>"
+            "<parameter=city>Tokyo</parameter>"
+            "</function>\n\nHere is what I found."
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_attribute_xml_followed_by_prose(self):
+        # Same expectation for the MiniCPM-5 attribute form.
+        import json
+
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            "</function>\n\nLet me know if you need anything else."
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
