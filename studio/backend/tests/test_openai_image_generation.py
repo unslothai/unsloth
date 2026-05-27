@@ -210,6 +210,7 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
+        "openai_image_generation_call_id": "img_abc",
     }
     assert ends[0]["image_b64"] == "AAAA"
     assert ends[0]["image_mime"] == "image/png"
