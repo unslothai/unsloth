@@ -2325,9 +2325,7 @@ class TestCodexDoneSentinelExactMatch:
     """
 
     def test_route_uses_exact_done_match(self):
-        with open(
-            _backend_file("routes/inference.py"), "r", encoding = "utf-8"
-        ) as f:
+        with open(_backend_file("routes/inference.py"), "r", encoding = "utf-8") as f:
             src = f.read()
         # The Codex SSE wrapper is the only place we expect this
         # comparison style; allow either single or double quotes
@@ -2345,7 +2343,7 @@ class TestCodexDoneSentinelExactMatch:
         # inside comments (lines starting with `#` or inside string
         # literals describing the old behavior) by scanning for the
         # exact statement form.
-        codex_block_start = src.find('async def _codex_stream():')
+        codex_block_start = src.find("async def _codex_stream():")
         if codex_block_start != -1:
             window = src[codex_block_start : codex_block_start + 4000]
             for line in window.splitlines():
@@ -2353,6 +2351,5 @@ class TestCodexDoneSentinelExactMatch:
                 if stripped.startswith("#"):
                     continue
                 assert 'if "[DONE]" in line' not in stripped, (
-                    "Codex SSE wrapper still uses substring [DONE] check: "
-                    + stripped
+                    "Codex SSE wrapper still uses substring [DONE] check: " + stripped
                 )

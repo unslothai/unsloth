@@ -1262,9 +1262,7 @@ async def _stream_codex_parallel(
         # runtime failures stay swallowed (they're already surfaced as
         # codex_tab_error events) so a single bad model in the fan-out
         # does not kill the others.
-        setup_errors = [
-            r for r in results if isinstance(r, CodexUnavailableError)
-        ]
+        setup_errors = [r for r in results if isinstance(r, CodexUnavailableError)]
         if setup_errors and len(setup_errors) == len(results):
             raise setup_errors[0]
         for r in results:
