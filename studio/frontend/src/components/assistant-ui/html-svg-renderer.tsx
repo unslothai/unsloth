@@ -24,11 +24,9 @@ export type HtmlSvgLanguage = "html" | "svg";
 export type HtmlSvgRendererProps = {
   language: HtmlSvgLanguage;
   source: string;
-  // Pre-rendered syntax-highlighted code view. Optional; if omitted the
-  // renderer falls back to a plain <pre><code> block.
+  // Optional syntax-highlighted code view; falls back to plain <pre><code>.
   codeView?: ReactNode;
-  // When the markdown stream is still arriving the fence may be partial.
-  // In that case we force the Code tab and disable the toggle controls.
+  // Partial fence: lock to Code tab and disable toggle.
   isIncomplete?: boolean;
 };
 
@@ -36,32 +34,17 @@ const DEFAULT_PREVIEW_HEIGHT = 500;
 const POPOUT_HEIGHT_VH = 80;
 const COPY_RESET_MS = 2000;
 
-// Conservative regex covering the same vectors we previously stripped before
-// DOMPurify was wired in. DOMPurify itself does the heavy lifting; this is
-// belt-and-braces so a quick visual inspection of the source still catches the
-// usual XSS hot spots.
+// Belt-and-braces pre-screen; DOMPurify does the real work below.
 const HEURISTIC_UNSAFE_SVG_RE =
   /<script[\s>]|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
-// SVG previews used to live inside a `<img src="data:image/svg+xml,...">` tag
-// where the browser treats the SVG as an image and disables scripts and
-// external resource loads. Mounting sanitized SVG directly into the host
-// Studio document loses those guarantees, so we now (a) strip every node that
-// can leak into the host page (`<style>`, `<image>`, `<use>`, scripts, etc.)
-// and (b) render the surviving markup in a fully sandboxed iframe at
-// `SvgPreview` below for defence in depth. See:
-// https://developer.mozilla.org/en-US/docs/Web/SVG/Guides/SVG_as_an_image
+// SVG sanitizer config. Surviving markup is rendered in the sandboxed
+// SvgPreview iframe below as a second layer.
 const SVG_PURIFY_CONFIG = {
   USE_PROFILES: { svg: true, svgFilters: true },
-  // ``image`` / ``use`` -- carry ``href``/``xlink:href`` and would let an
-  //   assistant fetch attacker-controlled URLs from the user's browser.
-  // ``foreignObject`` -- can embed HTML inside the SVG and re-introduce XSS.
-  // ``script`` / ``link`` / ``meta`` / ``iframe`` / ``embed`` / ``object``
-  //   are unconditional XSS / network surfaces. ``<style>`` is kept --
-  //   the SVG preview iframe is fully sandboxed (``sandbox=""``) with a
-  //   ``default-src 'none'`` CSP, so class-based styling that real
-  //   diagram exporters emit cannot leak to the host page or fetch
-  //   external URLs (the CSP blocks ``@import`` and ``url(...)``).
+  // image/use carry href, foreignObject embeds HTML, script/link/meta/iframe/
+  // embed/object are XSS or network surfaces. <style> stays -- the iframe
+  // sandbox + default-src 'none' CSP cap its blast radius.
   FORBID_TAGS: [
     "script",
     "foreignObject",
@@ -73,25 +56,16 @@ const SVG_PURIFY_CONFIG = {
     "link",
     "meta",
   ],
-  // Drop attributes that fetch external resources or otherwise interpret an
-  // attacker-controlled URL even after the tag-level filter above:
-  //   ``filter`` / ``mask`` / ``clip-path`` -- accept ``url(https://...)``
-  //     and the CSS engine fetches that URL when the SVG renders.
-  //   ``style`` -- inline CSS ``@import`` / ``url(...)`` does the same.
-  // ``href`` / ``xlink:href`` are NOT forbidden here so safe same-document
-  // fragment references survive (``<textPath href="#labelPath">``, gradient
-  // ``href="#g1"``, etc.); external-scheme values are pruned in the hook
-  // below so a beacon ``href`` cannot make it through.
+  // filter / mask / clip-path accept url(...) which fetches at render time;
+  // style allows inline @import / url(...). href / xlink:href stay so safe
+  // same-doc fragments survive -- external schemes pruned in the hook below.
   FORBID_ATTR: ["style", "filter", "mask", "clip-path"],
   ALLOW_DATA_ATTR: false,
 };
 
-// Pin every URI-bearing attribute (href, xlink:href, the rare animate
-// attributeName, etc.) to same-document fragments. Done as a hook rather
-// than DOMPurify's ALLOWED_URI_REGEXP because the regex option also
-// filters non-URI presentation attributes (cx/cy/r/fill/width/height)
-// and ends up rendering circles with r=0. Hook is global so we install
-// it exactly once at module load.
+// Pin href / xlink:href to same-doc fragments. Done as a hook because
+// DOMPurify's ALLOWED_URI_REGEXP also rejects presentation attrs (cx, r, ...).
+// Installed once at module load.
 const FRAGMENT_HREF_HOOK_TAG = "__unsloth_svg_frag_href__";
 const URI_ATTRS = new Set(["href", "xlink:href"]);
 
@@ -107,12 +81,10 @@ if (!(DOMPurify as unknown as { [k: string]: unknown })[FRAGMENT_HREF_HOOK_TAG])
     true;
 }
 
-/** Strip every XML processing instruction and disallowed node from an SVG. */
+/** Strip XML PIs and disallowed nodes from an SVG. */
 export function sanitizeSvgSource(source: string): string {
-  // Drop XML declarations -- DOMPurify keeps them but some renderers choke.
+  // Drop XML declarations -- DOMPurify keeps them, some renderers choke.
   const stripped = source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
-  // First pass: regex screen. We do NOT bail out -- DOMPurify will still
-  // produce a safe string -- but logging here helps debugging.
   if (HEURISTIC_UNSAFE_SVG_RE.test(stripped)) {
     // eslint-disable-next-line no-console
     console.debug("SVG renderer: stripping unsafe nodes before sanitize");
@@ -209,10 +181,7 @@ function TabButton({
   );
 }
 
-// SVG preview goes inside a sandboxed iframe (no allow-scripts, no
-// allow-same-origin) plus a `default-src 'none'` CSP so the sanitizer is
-// not the only line of defence -- even if a future DOMPurify regression
-// leaks a URL-bearing attribute, the browser blocks the request.
+// Defence in depth on top of the sanitizer.
 const SVG_IFRAME_CSP =
   "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:;";
 
@@ -220,9 +189,7 @@ function buildSvgSrcDoc(safeSvg: string): string {
   return [
     "<!doctype html>",
     `<meta http-equiv="Content-Security-Policy" content="${SVG_IFRAME_CSP}">`,
-    // Fit the SVG within the iframe viewport in both dimensions so a square
-    // viewBox (e.g. 200x200) scaled to the container width does not overflow
-    // vertically and clip. width/height auto keeps aspect ratio intact.
+    // Cap both dimensions so a square viewBox does not clip vertically.
     "<style>html,body{margin:0;padding:0;height:100%;background:white;}",
     "body{display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;}",
     "svg{max-width:100%;max-height:100%;width:auto;height:auto;}</style>",
@@ -239,9 +206,7 @@ function SvgPreview({ source }: { source: string }) {
       data-testid="html-svg-renderer-svg-preview"
       title="SVG preview"
       srcDoc={srcDoc}
-      // SECURITY: sandbox="" forbids scripts AND blocks the iframe from
-      // inheriting the host origin, so even sanitized SVG cannot reach the
-      // Studio document or run network requests against host-cookied URLs.
+      // No scripts, no same-origin: SVG cannot touch host document or network.
       sandbox=""
       style={{
         width: "100%",
@@ -254,17 +219,14 @@ function SvgPreview({ source }: { source: string }) {
   );
 }
 
-// Tiny helper script that posts the document height back to the parent so
-// we can right-size the iframe. Communication is one-way and the iframe
-// cannot read parent.document because we never grant allow-same-origin.
+// Iframe posts its scrollHeight to the parent for auto-sizing. One-way:
+// no allow-same-origin, so iframe cannot read parent.document.
 const HTML_PREVIEW_HEIGHT_REPORTER =
   '<script>(()=>{const post=()=>parent.postMessage({htmlPreviewHeight:document.documentElement.scrollHeight},"*");window.addEventListener("load",post);new ResizeObserver(post).observe(document.documentElement);})();</script>';
 
-// Fallback for when the same-origin preview route is unreachable (offline,
-// 404, transport error). srcdoc inherits the host page's ``script-src
-// 'self'`` per HTML / CSP3, so this path is static-layout-only -- inline
-// ``<script>`` and ``onclick`` handlers will NOT execute. The interactive
-// surface is the /api/preview/html backend route below.
+// Fallback for when the preview route is unreachable. srcdoc inherits the
+// host script-src 'self' per CSP3 so inline scripts will NOT run on this
+// path -- it is layout-only. Interactive surface is the API route below.
 const HTML_IFRAME_CSP = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",
@@ -290,13 +252,11 @@ function buildHtmlSrcDoc(source: string): string {
   ].join("");
 }
 
-// Backend route that serves the HTML with a response-header CSP wide enough
-// to let ``<script>`` and ``onclick`` fire. Created on every source change
-// via POST; the returned random-token URL becomes the iframe ``src``.
+// Same-origin route whose response CSP permits inline scripts. POST source,
+// use returned random-token URL as iframe src.
 const HTML_PREVIEW_API = "/api/preview/html";
 
-// Read the bearer the same way the rest of the app does. Pulled lazily to
-// avoid any import cycle while keeping the auth-key contract in one place.
+// Same key as features/auth/session.ts:AUTH_TOKEN_KEY; inlined to avoid cycle.
 function getStoredAccessToken(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -321,11 +281,8 @@ function HtmlPreview({
   onHeightChange?: (h: number | null) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // POST the source to the backend preview route. The backend stores it for
-  // 10 minutes and returns a same-origin URL whose ``script-src`` permits
-  // inline execution -- the only way to escape the host CSP for srcdoc /
-  // data: / blob: iframes (which all inherit the embedder policy per
-  // HTML / CSP3).
+  // POST source -> token URL. srcdoc / data: / blob: inherit the host CSP
+  // per CSP3, so a same-origin route is the only way to unlock inline scripts.
   const [previewState, setPreviewState] = useState<PreviewState>({
     kind: "loading",
   });
@@ -392,8 +349,8 @@ function HtmlPreview({
     ? "100%"
     : Math.min(autoHeight ?? DEFAULT_PREVIEW_HEIGHT, DEFAULT_PREVIEW_HEIGHT);
 
-  // Error path: fall back to srcdoc so the preview still renders the layout
-  // (static-only -- scripts dead) instead of going blank.
+  // Backend unreachable: fall back to srcdoc (static layout, no scripts)
+  // instead of going blank.
   const errorSrcDoc = useMemo(
     () => (previewState.kind === "error" ? buildHtmlSrcDoc(source) : null),
     [previewState.kind, source],
@@ -407,20 +364,15 @@ function HtmlPreview({
       title="HTML preview"
       src={previewState.kind === "ready" ? previewState.url : "about:blank"}
       srcDoc={errorSrcDoc ?? undefined}
-      // SECURITY:
-      //   allow-scripts   -- inline <script> / on* handlers run in the
-      //                      backend-served preview, which carries
-      //                      ``script-src 'unsafe-inline'``
-      //   allow-modals    -- alert / confirm / prompt are not no-ops
-      //   allow-popups    -- ``<base target="_blank">`` links can open
-      //                      a new tab instead of silently dropping
-      // We do NOT grant:
+      // allow-scripts: inline JS runs (route CSP permits it).
+      // allow-modals: alert / confirm / prompt usable.
+      // allow-popups: <base target="_blank"> links open a tab.
+      // NOT granted:
       //   allow-same-origin / allow-top-navigation -- preview JS cannot
-      //     read parent.document or navigate the host page even though
-      //     the URL is same-origin
-      //   allow-popups-to-escape-sandbox -- popups INHERIT the sandbox
-      //     so an opened tab cannot use ``window.opener.top.location``
-      //     to tabnab the Studio tab
+      //   reach parent.document or navigate the host (URL is same-origin
+      //   but iframe is treated as opaque).
+      //   allow-popups-to-escape-sandbox -- opened tabs inherit sandbox so
+      //   window.opener.top.location.* tabnabbing is blocked.
       sandbox="allow-scripts allow-modals allow-popups"
       style={{
         width: "100%",
@@ -439,14 +391,11 @@ export function HtmlSvgRenderer({
   codeView,
   isIncomplete,
 }: HtmlSvgRendererProps) {
-  // Stream-in: while the fence is still being filled in we lock to the Code
-  // tab so users see the in-flight tokens rather than a flashing preview.
+  // Lock to Code while streaming so users see tokens, not a flashing preview.
   const lockedToCode = Boolean(isIncomplete);
   const [tab, setTab] = useState<TabKey>("preview");
   const [popped, setPopped] = useState(false);
-  // Live HTML iframe height, lifted out of HtmlPreview so the pop-out spacer
-  // (rendered here, not inside HtmlPreview) can match the current preview
-  // size and avoid a layout jump when entering pop-out mode.
+  // Lifted from HtmlPreview so the pop-out spacer can match current height.
   const [htmlHeight, setHtmlHeight] = useState<number | null>(null);
 
   const activeTab: TabKey = lockedToCode ? "code" : tab;
@@ -491,10 +440,8 @@ export function HtmlSvgRenderer({
     );
 
   const previewLabel = language === "svg" ? "SVG preview" : "HTML preview";
-  // Use the live HTML iframe height for the pop-out placeholder so swapping
-  // a short preview into pop-out mode does not leave a 500px hole in the
-  // chat bubble. Falls back to DEFAULT_PREVIEW_HEIGHT before the first
-  // height post arrives, and is always capped to DEFAULT_PREVIEW_HEIGHT.
+  // Match live iframe height so popping out a short preview does not leave
+  // a 500px hole. Falls back to DEFAULT before the first height post.
   const popoutSpacerHeight = Math.min(
     htmlHeight ?? DEFAULT_PREVIEW_HEIGHT,
     DEFAULT_PREVIEW_HEIGHT,
@@ -533,10 +480,9 @@ export function HtmlSvgRenderer({
         </div>
         <div className="flex items-center gap-1">
           {activeTab === "code" && !codeView ? (
-            // When a custom code view is supplied it typically renders its
-            // own copy/download chrome (see CodeBlockActions in
-            // markdown-text.tsx). We only surface the fallback Copy button
-            // when we are using the plain <pre> fallback below.
+            // Custom code views ship their own copy/download chrome
+            // (CodeBlockActions in markdown-text.tsx); only show Copy
+            // when we are using the plain <pre> fallback.
             <CopyButton source={source} />
           ) : null}
           {activeTab === "preview" && language === "html" ? (
@@ -631,10 +577,8 @@ export type CodeFenceInfo = {
 };
 
 const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
-// Open fence: opening backticks + lang + body but no closing fence yet. Used
-// while a fenced block is still streaming in -- without this the markdown
-// pipeline falls through to the generic code block until the closing fence
-// arrives, so HtmlSvgRenderer's isIncomplete (lock-Code) path is dead code.
+// Open fence: no closing ``` yet. Lets HtmlSvgRenderer mount mid-stream
+// (otherwise the markdown pipeline falls through until the close arrives).
 const OPEN_CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*)$/;
 
 export function parseCodeFence(blockContent: string): CodeFenceInfo | null {
@@ -652,8 +596,7 @@ export function parseIncompleteCodeFence(
 ): CodeFenceInfo | null {
   const match = blockContent.match(OPEN_CODE_FENCE_RE);
   if (!match) return null;
-  // Strip an in-flight trailing ``` line so a fence captured mid-close does
-  // not render a stray "```" in the preview.
+  // Strip a trailing partial ``` so mid-close captures do not leak it.
   const body = match[2].replace(/\r?\n?```\s*$/, "");
   return {
     language: match[1]?.trim() || null,

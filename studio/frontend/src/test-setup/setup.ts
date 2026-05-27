@@ -4,9 +4,7 @@
 import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 
-// jsdom does not implement ResizeObserver; the HTML preview iframe uses one
-// inside its srcDoc but the parent component also references it indirectly
-// through DOM listeners. A no-op shim is enough for tests.
+// jsdom shims: ResizeObserver + URL.createObjectURL.
 class ResizeObserverStub {
   observe(): void {}
   unobserve(): void {}
@@ -18,11 +16,6 @@ if (typeof globalThis.ResizeObserver === "undefined") {
     ResizeObserverStub as unknown as typeof ResizeObserver;
 }
 
-// jsdom's URL.createObjectURL is not implemented and throws by default.
-// HtmlPreview now loads its document through a blob: URL so the iframe gets
-// an opaque origin and escapes the host Studio CSP. The shim below is enough
-// for the renderer tests, which only assert the resulting src starts with
-// "blob:" and never actually fetch the URL.
 let __blobCounter = 0;
 if (typeof URL.createObjectURL !== "function") {
   URL.createObjectURL = ((_blob: Blob) =>

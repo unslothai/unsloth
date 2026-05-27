@@ -12,9 +12,8 @@ import {
   sanitizeSvgSource,
 } from "../html-svg-renderer";
 
-// HtmlPreview POSTs the source to /api/preview/html to obtain a same-origin
-// URL whose response CSP permits inline scripts. Tests fake this round-trip
-// so the iframe enters a deterministic post-load state.
+// Fake the /api/preview/html POST round-trip so the iframe reaches a
+// deterministic post-load state under jsdom.
 let _previewIdCounter = 0;
 function installFetchStub(): void {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -54,16 +53,9 @@ describe("HtmlSvgRenderer", () => {
       "html-svg-renderer-iframe",
     ) as HTMLIFrameElement;
     expect(iframe.tagName).toBe("IFRAME");
-    // SECURITY: allow-scripts + allow-modals let assistant inline scripts
-    // / alert / confirm run in the backend-served preview, which carries
-    // a response CSP wide enough to execute them. allow-popups lets
-    // ``<base target="_blank">`` links open without being silently
-    // dropped; popups INHERIT the sandbox (allow-popups-to-escape-sandbox
-    // is intentionally absent) so an opened tab cannot use
-    // window.opener.top.location.* to tabnab the Studio tab.
-    // allow-same-origin and allow-top-navigation are NEVER granted, so
-    // even though the URL is same-origin the iframe document is treated
-    // as a unique opaque origin and cannot reach window.parent.
+    // allow-scripts/allow-modals/allow-popups grant the runtime the
+    // route CSP unlocks; NOT granting allow-same-origin / allow-top-nav /
+    // allow-popups-to-escape-sandbox blocks parent access and tabnabbing.
     const sandbox = iframe.getAttribute("sandbox") ?? "";
     const sandboxTokens = sandbox.split(/\s+/);
     expect(sandboxTokens).toContain("allow-scripts");
@@ -73,12 +65,10 @@ describe("HtmlSvgRenderer", () => {
     expect(sandbox).not.toContain("allow-same-origin");
     expect(sandbox).not.toContain("allow-top-navigation");
 
-    // While the preview API call is in-flight the iframe holds
-    // about:blank rather than flashing the previous preview.
+    // In-flight: about:blank (no flash of previous preview).
     expect(["about:blank", null]).toContain(iframe.getAttribute("src"));
 
-    // After the POST resolves, the iframe src points at the same-origin
-    // preview URL the backend returned.
+    // After POST resolves: iframe src is the returned same-origin URL.
     await waitFor(() => {
       expect(iframe.getAttribute("data-preview-state")).toBe("ready");
     });
@@ -117,17 +107,14 @@ describe("HtmlSvgRenderer", () => {
       "html-svg-renderer-svg-preview",
     ) as HTMLIFrameElement;
     expect(iframe.tagName).toBe("IFRAME");
-    // SECURITY: SVG iframe must NEVER allow scripts or same-origin -- those
-    // would re-introduce the host-page-leak / XSS regressions the iframe
-    // boundary is here to prevent.
+    // SVG iframe must NEVER allow scripts or same-origin (XSS / host leak).
     expect(iframe.getAttribute("sandbox")).toBe("");
     const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toLowerCase();
     expect(srcdoc).toContain("<circle");
     expect(srcdoc).not.toContain("<script");
     expect(srcdoc).not.toContain("onclick");
     expect(srcdoc).not.toContain("alert");
-    // CSP is the second line of defence: block all network egress except
-    // data: images so a future sanitizer regression cannot beacon out.
+    // CSP backstop: data: images only so a sanitizer regression cannot beacon.
     expect(srcdoc).toContain("default-src 'none'");
   });
 
@@ -147,8 +134,7 @@ describe("HtmlSvgRenderer", () => {
     ) as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
     expect(screen.queryByTestId("custom-code-view")).toBeNull();
-    // Wait for the preview POST to settle so the act() warning that follows
-    // an async state update outside an act() block does not fire.
+    // Settle the preview POST so it does not raise an out-of-act() warning.
     await waitFor(() => {
       expect(iframe.getAttribute("data-preview-state")).toBe("ready");
     });
@@ -180,8 +166,7 @@ describe("HtmlSvgRenderer", () => {
     const root = screen.getByTestId("html-svg-renderer");
     expect(root.getAttribute("data-active-tab")).toBe("code");
 
-    // Preview tab is rendered but disabled while incomplete so the user can
-    // see the streaming tokens without flicker.
+    // Preview disabled while streaming so users see tokens, not flicker.
     const previewTab = screen.getByRole("tab", { name: /preview/i });
     expect(previewTab.hasAttribute("disabled")).toBe(true);
   });
@@ -195,7 +180,6 @@ describe("HtmlSvgRenderer", () => {
     await waitFor(() => {
       expect(iframe.getAttribute("data-preview-state")).toBe("ready");
     });
-    // The fetch stub installed in beforeEach captured exactly one call.
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string, RequestInit];
@@ -204,8 +188,7 @@ describe("HtmlSvgRenderer", () => {
     expect(init.credentials).toBe("same-origin");
     const parsedBody = JSON.parse(init.body as string) as { source: string };
     expect(parsedBody.source).toBe(html);
-    // After the API returns, the iframe src holds the returned same-origin
-    // path (no srcdoc); the backend response CSP is what unlocks scripts.
+    // iframe lands on the token URL; no srcdoc.
     const src = iframe.getAttribute("src") ?? "";
     expect(src.startsWith("/api/preview/html/")).toBe(true);
     expect(iframe.getAttribute("srcdoc")).toBeNull();
@@ -233,8 +216,7 @@ describe("HtmlSvgRenderer", () => {
       previewTab.getAttribute("id"),
     );
 
-    // Roving tabindex: active tab is reachable, inactive is taken out of the
-    // tab order per WAI-ARIA APG tab pattern.
+    // Roving tabindex per WAI-ARIA APG tab pattern.
     expect(previewTab.getAttribute("tabindex")).toBe("0");
     expect(codeTab.getAttribute("tabindex")).toBe("-1");
   });
@@ -248,8 +230,7 @@ describe("HtmlSvgRenderer", () => {
       "html-svg-renderer-svg-preview",
     ) as HTMLIFrameElement;
     const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toLowerCase();
-    // The inner stylesheet must cap BOTH dimensions so the SVG fits inside
-    // the fixed-height iframe and is not clipped at the bottom.
+    // Cap BOTH dimensions or a square viewBox clips vertically.
     expect(srcdoc).toContain("max-width:100%");
     expect(srcdoc).toContain("max-height:100%");
     expect(srcdoc).toContain("height:100%");
@@ -276,11 +257,8 @@ describe("parseIncompleteCodeFence", () => {
   });
 
   it("recovers a final-but-never-closed fence (small LLMs drop the closing ```)", () => {
-    // Regression: live probe against Qwen3-0.6B caught the model emitting a
-    // complete SVG body but no closing ```. parseCodeFence rejects (strict
-    // ``` ... ``` shape), so the StreamdownBlock fallback must still find the
-    // fence via parseIncompleteCodeFence even after streaming completes -- or
-    // HtmlSvgRenderer never mounts and the user sees a plain code block.
+    // Regression caught by live Qwen3-0.6B probe: complete body, no closing
+    // ```. Without this path HtmlSvgRenderer would not mount.
     const finalNoClose =
       "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">" +
       "<circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"orange\"/></svg>";
@@ -325,8 +303,7 @@ describe("Fence helpers", () => {
   });
 
   it("non-HTML / non-SVG fences are not handled by the renderer", () => {
-    // The markdown pipeline only invokes HtmlSvgRenderer when these helpers
-    // agree the fence is html/svg. A python fence must fall through.
+    // markdown-text.tsx invokes HtmlSvgRenderer only when these agree.
     const fence = parseCodeFence("```python\nprint('hi')\n```");
     expect(fence).not.toBeNull();
     if (!fence) return;
@@ -357,12 +334,8 @@ describe("sanitizeSvgSource", () => {
   });
 
   it("keeps inline <style> blocks so class-styled SVG exports still render", () => {
-    // The SVG preview iframe is fully sandboxed (sandbox="") and the
-    // inner CSP is default-src 'none', so the iframe's <style> cannot
-    // reach the host page selectors or fetch external URLs (CSP blocks
-    // @import / url(...)). Stripping <style> broke legitimate class-
-    // styled SVG exports from many diagram tools, which is the bigger
-    // real-world cost than the (already-mitigated) selector leak.
+    // Iframe sandbox="" + default-src 'none' contain <style> blast radius;
+    // diagram exporters relying on class styles outweigh the selector leak.
     const svg = `<svg xmlns="http://www.w3.org/2000/svg"><style>.fg{fill:red}</style><rect class="fg"/></svg>`;
     const clean = sanitizeSvgSource(svg).toLowerCase();
     expect(clean).toContain("<style");
@@ -408,7 +381,7 @@ describe("sanitizeSvgSource", () => {
       "<circle fill=\"url(#g1)\" r=\"10\"/>" +
       "</svg>";
     const clean = sanitizeSvgSource(svg).toLowerCase();
-    // Fragment hrefs must survive so textPath/gradient refs still resolve.
+    // Fragment hrefs must survive so textPath / gradient refs resolve.
     expect(clean).toContain("href=\"#labelpath\"");
   });
 

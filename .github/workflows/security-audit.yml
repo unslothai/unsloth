@@ -1103,13 +1103,9 @@ jobs:
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           git show "$BASE_SHA:studio/frontend/package-lock.json" \
             > /tmp/base-package-lock.json
-          # Pull the TRUSTED allowlist from the base ref so a PR cannot
-          # allowlist its own new postinstall dependency in the same diff
-          # the checker scans. If the file does NOT exist on base, REMOVE
-          # the temp file -- the checker treats a missing base allowlist
-          # as bootstrap mode (the PR that introduces the file is allowed
-          # to populate it; once it lands, subsequent PRs must respect
-          # the head-only rejection rule).
+          # Pull TRUSTED allowlist from base so a PR cannot self-approve
+          # a new postinstall in the same diff. Missing-on-base = bootstrap
+          # mode (gate accepts head allowlist for THAT PR only).
           if ! git show "$BASE_SHA:studio/frontend/.install-script-allowlist" \
               > /tmp/base-install-script-allowlist 2>/dev/null; then
             rm -f /tmp/base-install-script-allowlist

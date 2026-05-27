@@ -79,8 +79,7 @@ class TestMaxBodyMiddleware:
         assert r.json()["unprotected"] is True
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
-        # Regression: declared-Content-Length-only check could be bypassed
-        # by chunked transfer-encoding.
+        # Regression: Content-Length-only check missed chunked uploads.
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
 
@@ -156,7 +155,7 @@ class TestSecurityHeadersMiddleware:
         r = c.get("/plain")
         assert r.status_code == 200
         csp = r.headers["content-security-policy"]
-        # Parse per-directive so style-src unsafe-inline does not false-match.
+        # Parse per directive so style-src unsafe-inline does not false-match.
         directives = {
             chunk.strip().split(" ", 1)[0]: chunk.strip()
             for chunk in csp.split(";")
@@ -184,7 +183,7 @@ class TestSecurityHeadersMiddleware:
         r = c.get("/with-nonce")
         csp = r.headers["content-security-policy"]
         assert f"'nonce-{nonce}'" in csp
-        # Internal handoff header must not leak to clients.
+        # Internal handoff header must not leak.
         assert main_module._CSP_SCRIPT_NONCE_HEADER not in {
             k.lower() for k in r.headers.keys()
         }
@@ -197,12 +196,10 @@ class TestSecurityHeadersMiddleware:
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
     def test_frame_src_is_explicitly_self_only(self, main_module):
-        # The assistant HTML/SVG preview iframe uses srcdoc (no URL
-        # fetch). Allowing data: / blob: here would not unlock inline
-        # scripts anyway -- Chromium inherits the embedder CSP for
-        # srcdoc, data:, AND blob: iframes per HTML / CSP3. The
-        # explicit 'self' here leaves a visible directive any future
-        # change has to deliberately broaden.
+        # SVG preview uses srcdoc, HTML preview uses /api/preview/html
+        # (same-origin). srcdoc / data: / blob: all inherit this CSP per
+        # CSP3, so broadening here would not unlock scripts. Explicit
+        # 'self' leaves a visible directive future changes must broaden.
         csp = main_module._build_csp()
         frame_src = next(
             chunk.strip()
@@ -216,16 +213,16 @@ class TestSecurityHeadersMiddleware:
         assert "blob:" not in tokens
 
     def test_img_src_allows_google_favicons(self, main_module):
-        # sources.tsx fetches https://www.google.com/s2/favicons?... ; without
-        # this allowlist entry citation favicons fall back to gray initials.
+        # sources.tsx fetches https://www.google.com/s2/favicons?...;
+        # without this, citation favicons fall back to grey initials.
         csp = main_module._build_csp()
         img_directive = next(
             chunk.strip()
             for chunk in csp.split(";")
             if chunk.strip().startswith("img-src ")
         )
-        # Tokenise and compare with `==` so CodeQL's URL-substring rule does
-        # not read directive-string `in` membership as URL sanitisation.
+        # Tokenise + `==`: CodeQL's URL-substring rule would otherwise
+        # read `in` membership as URL sanitisation.
         img_sources = img_directive.split()
         assert any(src == "https://www.google.com" for src in img_sources)
         # Pre-existing favicon CDNs stay allowed.
@@ -269,9 +266,9 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    # Launcher / frontend bootstrap fields are available unauth so the Tauri
-    # watchdog can re-adopt a sibling backend and the SPA can detect chat-only
-    # mode before any token exists. Version / device_type still require a bearer.
+    # Bootstrap fields are unauth so the Tauri watchdog can re-adopt a
+    # sibling backend and SPA can detect chat-only before any token exists.
+    # Version / device_type still require a bearer.
     LAUNCHER_BITS = (
         "service",
         "studio_root_id",
@@ -298,7 +295,7 @@ class TestHealthAuthGate:
             assert forbidden not in body
 
     def test_invalid_bearer_returns_launcher_bits_only(self, health_app):
-        # Regression: calling the async dep without await made any Bearer header pass.
+        # Regression: missing await on the async dep let any Bearer pass.
         c = TestClient(health_app)
         r = c.get(
             "/api/health",

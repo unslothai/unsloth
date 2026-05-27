@@ -330,14 +330,9 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
-        # Restrict iframe sources to same-origin only. SVG previews still
-        # use a sandboxed ``srcdoc`` iframe (no URL fetch); interactive
-        # HTML previews go through the same-origin ``/api/preview/html/{id}``
-        # route in routes/html_preview.py, which serves the snippet with
-        # its own overriding ``script-src 'unsafe-inline'`` response CSP.
-        # Without the same-origin route, Chromium would inherit THIS
-        # ``script-src 'self'`` for srcdoc / data: / blob: iframes per
-        # HTML / CSP3 and inline scripts would be silently dead.
+        # Same-origin only. SVG uses srcdoc; interactive HTML goes through
+        # /api/preview/html/{id} which carries its own overriding response
+        # CSP (srcdoc / data: / blob: inherit THIS one per CSP3).
         "frame-src 'self'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "

@@ -1,17 +1,11 @@
-# Packages whose npm install-script (postinstall) we have eyeballed and
-# accepted. The new-install-script gate (scripts/check_new_install_scripts.py)
-# refuses any newly-added install-script dep by default; entries listed here
-# are explicitly skipped.
+# Reviewed install-script (postinstall) packages, exempt from
+# scripts/check_new_install_scripts.py. Pin each as "name@version" -- a
+# maintainer compromise shipping a new malicious version must NOT slip
+# through the same allowlist line.
 #
-# Pin EACH entry to an exact "name@version" so a maintainer compromise that
-# ships a new malicious version is not silently swept under the same line.
-# Lines starting with "#" are comments; blank lines are ignored.
-#
-# DO NOT add packages here without reading the actual install script body.
-# Allowlist entries MUST land on main first; the gate rejects head-only
-# additions so a PR cannot allowlist its own new postinstall dep.
+# Rules: read the install body before adding. Entries MUST land on main
+# first; the gate rejects head-only additions that self-approve a new dep.
 
-# evanw/esbuild downloads the platform-specific native binary
-# (esbuild-linux-x64, etc.) in its postinstall. Used transitively by
-# vitest for dev-only test transforms; no runtime exposure.
+# evanw/esbuild: postinstall downloads platform native binary. Pulled in
+# transitively by vitest for dev-only test transforms; no runtime exposure.
 esbuild@0.21.5

@@ -4,32 +4,21 @@
 
 """Diff two `package-lock.json` files and flag NEW install-script deps.
 
-A package with `"hasInstallScript": true` runs `preinstall` / `install` /
-`postinstall` lifecycle hooks every time `npm ci` lays it down. Every
-npm supply-chain compromise of the last 18 months (Shai-Hulud,
-TanStack, axios-style, ArmorCode hijacks) leveraged exactly this lever:
-the attacker publishes a new malicious version of a dep we already
-trust, and the post-install hook runs the next time CI installs.
+Packages with `hasInstallScript: true` run preinstall/install/postinstall
+on every `npm ci`. Every npm supply-chain compromise of the last 18 months
+(Shai-Hulud, TanStack, axios, ArmorCode) used this lever: malicious
+version of a trusted dep, hook runs on next install.
 
-This scanner refuses to allow a newly-introduced install-script dep to
-land without a maintainer eyeball on the lifecycle script body.
-Existing install-script deps are NOT re-flagged -- if `node-gyp` has
-been in the lockfile since day one, it's not part of this PR's threat
-model. Only new entries are surfaced.
+Existing install-script deps are NOT re-flagged; only NEW entries surface.
 
-Supports lockfileVersion 1 (`dependencies` key, recursive), 2 and 3
-(flat `packages` key with `node_modules/<a>/node_modules/<b>` nesting
-for transitive entries). For each NEW install-script package we
-attempt a stdlib-only fetch of
-`https://registry.npmjs.org/<name>/<version>` to recover the actual
-postinstall command body. If the network is blocked we still emit the
-finding -- the lifecycle command body is informational, not
-load-bearing.
+Supports lockfileVersion 1 (`dependencies`, recursive) and 2/3 (flat
+`packages` with `node_modules/<a>/node_modules/<b>` nesting). For each
+finding we try a stdlib fetch of `https://registry.npmjs.org/<name>/<version>`
+to recover the lifecycle body; network failure is non-fatal.
 
-Exit codes
-==========
+Exit codes:
   0  no newly-added install-script deps
-  1  one or more newly-added install-script deps; listed on stderr
+  1  newly-added install-script deps listed on stderr
   2  internal error (missing lockfile, malformed JSON, etc.)
 """
 
@@ -76,15 +65,11 @@ class Finding:
 
 
 def _strip_nm_prefix(key: str) -> str:
-    """Convert a v2/v3 `packages` key into a bare package name.
-
-    `node_modules/foo` -> `foo`; `node_modules/foo/node_modules/bar` ->
-    `bar`. The empty key (`""`) is the project root and returns "".
-    """
+    """v2/v3 `packages` key -> bare leaf name. ``""`` is the project root."""
     if not key:
         return ""
-    # Use the LAST `node_modules/` segment so transitives map to their
-    # leaf name, matching how npm install resolves a postinstall.
+    # Last `node_modules/` segment: transitives map to leaf name (matches
+    # how npm resolves the postinstall).
     marker = "node_modules/"
     idx = key.rfind(marker)
     if idx == -1:
@@ -97,10 +82,8 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
     every entry with `hasInstallScript: true` (v2/v3) OR a
     non-empty `scripts.preinstall|install|postinstall` (v1).
 
-    The same package may appear at multiple versions in a single
-    lockfile (de-duplicated copies under different parents); we key by
-    `name@version` so we don't lose either copy. Returns a dict keyed
-    by `name@version` -> the same string for convenience.
+    Keyed by `name@version` so duplicate copies at different versions
+    are not collapsed. Returns {`name@version`: name}.
     """
     seen: dict[str, str] = {}
     version = lock.get("lockfileVersion")
@@ -120,10 +103,8 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
         ver = entry.get("version") or "<unversioned>"
         seen[f"{name}@{ver}"] = name
 
-    # v1 also embeds a `dependencies` tree; v2/v3 carry both for
-    # backwards-compat but `packages` is canonical for them. For v1
-    # there is no `hasInstallScript` flag, so look for a non-empty
-    # `scripts.preinstall|install|postinstall` directly.
+    # v1 has no `hasInstallScript` flag -- detect via non-empty
+    # scripts.{preinstall,install,postinstall}.
     def _walk_v1(deps: dict, depth: int = 0) -> None:
         if depth > 64 or not isinstance(deps, dict):
             return
@@ -135,8 +116,6 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
                 isinstance(scripts, dict) and scripts.get(hook)
                 for hook in ("preinstall", "install", "postinstall")
             )
-            # v1 also sets `requires` only on the parent, no flag, so
-            # the lifecycle-script presence is the only signal.
             if lifecycle:
                 ver = entry.get("version") or "<unversioned>"
                 seen[f"{name}@{ver}"] = name
@@ -163,12 +142,9 @@ def _load_lockfile(path: Path) -> dict:
 
 
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
-    """Return {hook: command} for any of preinstall / install /
-    postinstall published in the registry metadata for this name@ver.
+    """Return {hook: command} from registry metadata, or None on any failure.
 
-    Returns None on any error (network blocked, 404, malformed JSON).
-    Never raises; the caller treats absence as "could not enrich, emit
-    finding anyway".
+    Never raises; absence means "emit finding without enrichment".
     """
     safe_name = urllib.parse.quote(name, safe = "@/")
     url = f"{REGISTRY_BASE}{safe_name}/{urllib.parse.quote(version)}"
@@ -203,9 +179,8 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
     findings: list[Finding] = []
     for key in sorted(head):
         if key in base:
-            continue  # pre-existing install-script dep; not in scope
+            continue  # pre-existing dep, out of scope
         name = head[key]
-        # key is "name@version"; rsplit("@", 1) handles scoped names.
         version = (
             key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
         )
@@ -215,8 +190,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
         else:
             detail = (
                 "newly added with hasInstallScript=true; registry "
-                "metadata unreachable -- inspect the package's "
-                "scripts.{preinstall,install,postinstall} manually"
+                "unreachable -- inspect scripts.{preinstall,install,postinstall}"
             )
         findings.append(
             Finding(
@@ -236,14 +210,12 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
 
 
 def _load_allowlist(path: Path) -> set[str]:
-    """Read a file of newline-separated ``name@version`` entries to skip.
+    """Newline-separated `name@version` entries to skip.
 
-    Each entry MUST be pinned to an exact version (``esbuild@0.21.5``,
-    ``@scope/pkg@1.2.3``). Bare names are rejected so allowlisting
-    ``esbuild`` cannot silently approve a later malicious
-    ``esbuild@99.0.0`` published by a compromised maintainer -- every
-    new version requires its own review. Lines starting with ``#`` are
-    comments; blank lines are ignored. Missing file = empty allowlist.
+    Each entry MUST be pinned to an exact version; bare names rejected so
+    a compromised maintainer cannot ship a malicious later version under
+    an existing allowlist line. `#` comments and blank lines ignored.
+    Missing file = empty set.
     """
     if not path.exists():
         return set()
@@ -301,9 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         default = None,
         help = (
             "Path to the TRUSTED BASE allowlist. Defaults to "
-            "'<base dir>/.install-script-allowlist'. Entries that exist "
-            "only on HEAD fail the gate so a PR cannot allowlist its "
-            "own new postinstall dependency."
+            "'<base dir>/.install-script-allowlist'. Head-only entries that "
+            "self-approve a new postinstall fail the gate."
         ),
     )
     args = parser.parse_args(argv)
@@ -335,13 +306,9 @@ def main(argv: list[str] | None = None) -> int:
     raw_findings = diff_new_install_scripts(base_lock, head_lock)
     raw_findings_keys = {_finding_allowlist_key(f) for f in raw_findings}
 
-    # Bootstrap: if the BASE ref has no allowlist file at all, this is
-    # the PR that creates it. There is no prior allowlist to diff
-    # against, and refusing every head entry here would make the gate
-    # unlandable. The workflow signals "missing on base" by NOT writing
-    # the temp file (rm -f after a failed ``git show``), which is what
-    # we detect here. Once the file exists on base, future PRs must
-    # respect the head-only / deletion rules below.
+    # Bootstrap: PR that creates the file. Workflow signals "missing on base"
+    # by `rm -f` after a failed `git show`. After landing, head-only / delete
+    # rules below kick in.
     if not base_allowlist_path.exists():
         print(
             f"[install-script-diff] bootstrap: {base_allowlist_path} "
@@ -357,13 +324,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         added_head_only = head_allowlist - base_allowlist
-        # Refuse the bypass shape where a PR introduces a new postinstall
-        # dep AND allowlists it in the same diff -- head-only allowlist
-        # entries that match install-script findings in the same PR are
-        # rejected. Entries that match no current finding are allowed:
-        # they prepare the trust list for a follow-up PR that actually
-        # adds the dependency, and the human-review path still sees the
-        # allowlist diff before that follow-up can land.
+        # Refuse "introduce a new postinstall AND allowlist it in the same
+        # diff". Head-only entries that match no current finding are fine
+        # (prepare trust for a follow-up PR; reviewer still sees the diff).
         self_approving = sorted(added_head_only & raw_findings_keys)
         if self_approving:
             print(
@@ -380,16 +343,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
 
-        # Refuse a PR that DROPS trusted base entries. Without this,
-        # an attacker could land a two-step bypass:
-        #   1. PR A removes ``.install-script-allowlist`` from base
-        #      (no new lockfile findings -> passes today).
-        #   2. PR B then hits the bootstrap path (base allowlist
-        #      missing) and self-allowlists a newly introduced
-        #      install-script dependency.
-        # Allowlist deletions are rare; doing them via an
-        # admin-override / branch-protection bypass keeps the
-        # bootstrap path closed for the everyday gate.
+        # Refuse PRs that DROP trusted base entries; otherwise a two-step
+        # bypass works (PR A removes file -> PR B hits bootstrap and
+        # self-allowlists). Deletions go via admin override.
         removed_from_head = sorted(base_allowlist - head_allowlist)
         if removed_from_head:
             print(
@@ -406,10 +362,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
 
-        # Only the trusted base allowlist participates in the skip set.
-        # Head-only entries that survived the self-approval check above
-        # are deliberately NOT honored here -- they wait for the next
-        # PR (running against this PR's merged base) to take effect.
+        # Only base allowlist applies. Head-only entries that survived
+        # the self-approval check wait for the next PR to take effect.
         allowlist = base_allowlist
 
     findings = raw_findings
@@ -439,10 +393,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(f), file = sys.stderr)
         print(file = sys.stderr)
     print(
-        "[install-script-diff] Refusing to proceed. Every new "
-        "install-script dep is a postinstall lifecycle hook that "
-        "would run on the next `npm ci`. Review each finding above, "
-        "confirm the maintainer + version, and re-run.",
+        "[install-script-diff] Refusing to proceed. Each new install-script "
+        "dep ships a postinstall hook that runs on next `npm ci`. Review, "
+        "confirm maintainer + version, and re-run.",
         file = sys.stderr,
     )
     return 1

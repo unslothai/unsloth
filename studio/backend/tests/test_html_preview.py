@@ -19,7 +19,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture
 def preview_app(tmp_path, monkeypatch):
-    """Standalone app mounting only the html-preview router on a clean store."""
+    """Standalone app with only the html-preview router and a clean store."""
     from auth import storage
     from auth.authentication import create_access_token
 
@@ -39,8 +39,7 @@ def preview_app(tmp_path, monkeypatch):
     from routes.html_preview import router as html_preview_router
     from routes import html_preview as html_preview_module
 
-    # Each test starts with an empty in-memory store.
-    html_preview_module._PREVIEWS.clear()
+    html_preview_module._PREVIEWS.clear()  # fresh store per test
 
     app = FastAPI()
     app.include_router(
@@ -80,14 +79,13 @@ class TestPostHtmlPreview:
             json = {"source": too_big},
             headers = {"Authorization": f"Bearer {token}"},
         )
-        # Pydantic enforces the max_length so this is a 422 (validation),
-        # NOT a 413 -- but either is acceptable as long as it does not get
-        # stored. We assert non-2xx and an empty store.
+        # Pydantic's max_length surfaces as 422; we accept any non-2xx
+        # as long as nothing is stored.
         assert r.status_code >= 400
         assert mod._PREVIEWS == {}
 
     def test_post_returns_unguessable_tokens(self, preview_app):
-        # Two POSTs of the same source must produce two distinct tokens.
+        # Identical source -> distinct tokens.
         app, token, _mod = preview_app
         c = TestClient(app)
         urls = set()
@@ -119,34 +117,29 @@ class TestGetHtmlPreview:
         r = c.get(url)
         assert r.status_code == 200
         body = r.text
-        # The doctype + base + body are present.
         assert "<!doctype html>" in body.lower()
         assert '<base target="_blank">' in body
         assert "<button onclick=\"alert('x')\">go</button>" in body
-        # The overriding CSP must permit inline script execution.
         csp = r.headers["content-security-policy"]
         directives = {
             chunk.strip().split(" ", 1)[0]: chunk.strip()
             for chunk in csp.split(";")
             if chunk.strip()
         }
-        assert "default-src" in directives
+        # Inline scripts allowed, network egress closed.
         assert "'none'" in directives["default-src"]
         assert "'unsafe-inline'" in directives["script-src"]
-        # Beacon paths are still closed.
         assert "'none'" in directives["connect-src"]
         assert "'none'" in directives["frame-src"]
-        # Only same-origin embedders may iframe the preview.
-        assert "frame-ancestors" in directives
+        # Same-origin embedders only.
         assert "'self'" in directives["frame-ancestors"]
-        # X-Frame-Options is SAMEORIGIN so the host page can iframe us.
+        # Override the global DENY so host chat can iframe us.
         assert r.headers["x-frame-options"].upper() == "SAMEORIGIN"
-        # No caching of preview bodies.
         assert "no-store" in r.headers["cache-control"]
 
     def test_get_is_not_auth_gated(self, preview_app):
-        # Browsers do not attach Authorization to iframe subresource loads.
-        # The unguessable URL token IS the authorisation.
+        # Iframe subresource loads do not carry Authorization; the URL
+        # token is the authorisation.
         app, token, _mod = preview_app
         url = self._create(app, token, "<p>nope</p>")
         c = TestClient(app)
@@ -162,14 +155,14 @@ class TestGetHtmlPreview:
     def test_get_expired_token_is_404(self, preview_app):
         app, token, mod = preview_app
         url = self._create(app, token, "<p>aging</p>")
-        # Force-age the stored entry past the TTL by rewinding monotonic.
+        # Rewind monotonic past the TTL.
         token_id = url.rsplit("/", 1)[-1]
         created, src = mod._PREVIEWS[token_id]
         mod._PREVIEWS[token_id] = (created - (mod.PREVIEW_TTL_SECONDS + 5), src)
         c = TestClient(app)
         r = c.get(url)
         assert r.status_code == 404
-        # And the entry is swept on access.
+        # Swept on access.
         assert token_id not in mod._PREVIEWS
 
 
@@ -177,8 +170,7 @@ class TestEviction:
     def test_overflow_evicts_oldest_entries(self, preview_app):
         app, token, mod = preview_app
         c = TestClient(app)
-        # Pin the cap low so the test is cheap.
-        mod.MAX_LIVE_PREVIEWS = 4
+        mod.MAX_LIVE_PREVIEWS = 4  # cheap test
         urls = []
         for i in range(6):
             r = c.post(
@@ -187,14 +179,13 @@ class TestEviction:
                 headers = {"Authorization": f"Bearer {token}"},
             )
             urls.append(r.json()["url"])
-            # Force monotonic progression so eviction order is deterministic.
-            time.sleep(0.001)
+            time.sleep(0.001)  # deterministic monotonic order
         assert len(mod._PREVIEWS) == mod.MAX_LIVE_PREVIEWS
-        # The two oldest tokens (urls[0], urls[1]) must have been evicted.
+        # Oldest two evicted.
         for old in urls[:2]:
             token_id = old.rsplit("/", 1)[-1]
             assert token_id not in mod._PREVIEWS
-        # Newer tokens are still present.
+        # Newest survive.
         for fresh in urls[-mod.MAX_LIVE_PREVIEWS :]:
             token_id = fresh.rsplit("/", 1)[-1]
             assert token_id in mod._PREVIEWS

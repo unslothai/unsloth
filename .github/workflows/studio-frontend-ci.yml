@@ -110,10 +110,8 @@ jobs:
         run: npm run typecheck
 
       - name: Frontend unit tests (vitest)
-        # New vitest suite covers the HtmlSvgRenderer iframe sandbox /
-        # CSP / sanitizer contract. Run it before the build so a
-        # sanitizer regression fails the gate even if the bundle still
-        # builds clean.
+        # Covers HtmlSvgRenderer sandbox / CSP / sanitizer. Runs before
+        # build so a regression fails the gate even if the bundle is clean.
         run: npm run test
 
       - name: Build
