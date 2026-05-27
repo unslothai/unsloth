@@ -620,6 +620,7 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
         assert mock_pip_try.call_count >= 1
         assert "bitsandbytes" in str(mock_pip_try.call_args_list[0])
+        assert mock_pip_try.call_args.kwargs["force_pip"] is True
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
@@ -704,6 +705,7 @@ class TestEnsureRocmTorch:
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
         assert mock_pip_try.call_count >= 1
+        assert mock_pip_try.call_args.kwargs["force_pip"] is True
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)

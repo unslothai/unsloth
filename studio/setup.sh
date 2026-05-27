@@ -793,6 +793,22 @@ else
     fi
 fi
 
+# Source-built llama.cpp installs do not have the prebuilt metadata used above
+# for exact release matching. Reuse a complete local source build unless the
+# caller explicitly requested a rebuild or a PR-specific llama.cpp checkout.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
+   [ "$_LLAMA_FORCE_COMPILE" != "1" ] && \
+   [ -z "$_LLAMA_PR" ] && \
+   [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ] && \
+   [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
+    step "llama.cpp" "existing source build found; skipping rebuild"
+    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    fi
+    _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
