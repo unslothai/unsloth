@@ -1433,7 +1433,9 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int]]:
+    def _get_gpu_free_memory_vulkan(
+        binary: Optional[str] = None,
+    ) -> list[tuple[int, int]]:
         """Query free VRAM per device via the bundled ggml Vulkan backend.
 
         Loads ``libggml-vulkan`` in a short-lived subprocess and calls
@@ -3367,7 +3369,8 @@ class LlamaCppBackend:
                                 env["ROCR_VISIBLE_DEVICES"] = pinned
                         except Exception as e:
                             logger.debug(
-                                "Failed to set ROCm visibility env vars for child: %s", e
+                                "Failed to set ROCm visibility env vars for child: %s",
+                                e,
                             )
 
                 # Defensive kill: if a concurrent load slipped past Phase 1

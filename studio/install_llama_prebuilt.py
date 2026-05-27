@@ -3393,7 +3393,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
             vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             if vulkan_name in upstream_assets:
-                log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
+                log(
+                    f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -3402,7 +3404,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "linux-vulkan",
                 )
-            log("Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU")
+            log(
+                "Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
@@ -3446,7 +3450,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
-                log(f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}")
+                log(
+                    f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -3455,7 +3461,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-vulkan",
                 )
-            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
+            log(
+                "Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
