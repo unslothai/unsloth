@@ -10,15 +10,28 @@ doesn't quietly regress when new managed flags are added.
 
 from __future__ import annotations
 
+import importlib.util
 import re
+from pathlib import Path
 
 import pytest
 
-from core.inference.llama_server_args import (
-    is_managed_flag,
-    strip_shadowing_flags,
-    validate_extra_args,
+# Load llama_server_args.py directly so this test doesn't drag in the
+# full backend chain (fastapi / structlog / loggers / utils.hardware)
+# via core/inference/__init__.py. The validator is intentionally
+# dependency-free and unit-tests should reflect that.
+_LSA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "core"
+    / "inference"
+    / "llama_server_args.py"
 )
+_spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
+_lsa = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_lsa)
+is_managed_flag = _lsa.is_managed_flag
+strip_shadowing_flags = _lsa.strip_shadowing_flags
+validate_extra_args = _lsa.validate_extra_args
 
 
 # ── Pass-through (allowed) ───────────────────────────────────────────
