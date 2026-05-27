@@ -946,6 +946,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
         function = function.replace(_save_search, _save_replace)
 
+    if re.search(r"\btool_mask\b", function) and 'output["tool_mask"]' not in function:
+        function = function.replace(
+            "        return output",
+            "        if tool_mask is not None:\n"
+            '            output["tool_mask"] = tool_mask\n'
+            "        return output",
+        )
+
     return function
 
 
@@ -1523,6 +1531,7 @@ def grpo_trainer_compute_loss(function_name, function):
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
+        tool_mask = inputs.get("tool_mask", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
         num_processes = self.accelerator.num_processes
 
@@ -1598,6 +1607,16 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
+            loss_mask = completion_mask
+            if tool_mask is not None:
+                if tool_mask.shape != completion_mask.shape:
+                    raise ValueError(
+                        "tool_mask/env_mask must have the same shape as completion_mask"
+                    )
+                loss_mask = completion_mask * tool_mask.to(
+                    device = completion_mask.device,
+                    dtype = completion_mask.dtype,
+                )
             (
                 loss,
                 completion_length,
@@ -1612,7 +1631,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 old_logps,
                 sampling_per_token_logps,
                 input_ids,
-                completion_mask,
+                loss_mask,
                 self.beta,
                 advantages,
                 pixel_values = pixel_values,
@@ -1662,6 +1681,28 @@ def grpo_trainer_compute_loss(function_name, function):
                         "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
                     )
                 self._unsloth_grpo_zoo_checked = True
+            if tool_mask is not None and not getattr(
+                self, "_unsloth_grpo_tool_mask_zoo_checked", False
+            ):
+                _supports_tool_mask = (
+                    "tool_mask" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_tool_mask:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_tool_mask = "tool_mask" in _zoo_src
+                if not _supports_tool_mask:
+                    raise RuntimeError(
+                        "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles tool_mask. Please upgrade "
+                        "unsloth_zoo."
+                    )
+                self._unsloth_grpo_tool_mask_zoo_checked = True
+            _grpo_accumulated_loss_kwargs = {}
+            if tool_mask is not None:
+                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1703,6 +1744,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     sampling_per_token_logps = sampling_per_token_logps,
                     token_type_ids = token_type_ids,
                     mm_token_type_ids = mm_token_type_ids,
+                    **_grpo_accumulated_loss_kwargs,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -1728,6 +1770,7 @@ def grpo_trainer_compute_loss(function_name, function):
                         attention_mask = attention_mask,
                         token_type_ids = token_type_ids,
                         mm_token_type_ids = mm_token_type_ids,
+                        **_grpo_accumulated_loss_kwargs,
                     )
                 )
         if "train" in self._metrics:

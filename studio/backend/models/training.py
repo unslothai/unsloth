@@ -5,8 +5,15 @@
 Pydantic schemas for Training API
 """
 
+import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
+
+
+# ASCII integer with an optional single sign. Used by _check_vision_image_size
+# to reject "++512", "--256", and Unicode-digit strings ("５１２", "٥١٢") that
+# would otherwise slip through str.isdigit() + int().
+_INT_RE = re.compile(r"[+-]?[0-9]+")
 
 
 _MAX_BATCH_SIZE = 4096
@@ -18,6 +25,9 @@ _MAX_SEQ_LENGTH = 2_000_000
 _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
+_MIN_VISION_IMAGE_SIZE = 256
+# 2048 was the most I could get most llms to work at without getting unstable
+_MAX_VISION_IMAGE_SIZE = 2048
 
 
 def _parse_lr(v: Any) -> float:
@@ -58,6 +68,10 @@ class TrainingStartRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description = "Maximum sequence length")
+    vision_image_size: Optional[int] = Field(
+        None,
+        description = "Optional maximum image side length for VLM training. Null uses model default.",
+    )
     trust_remote_code: bool = Field(
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
@@ -158,6 +172,40 @@ class TrainingStartRequest(BaseModel):
                 f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})"
             )
         return v
+
+    @field_validator("vision_image_size", mode = "before")
+    @classmethod
+    def _check_vision_image_size(cls, v: Any) -> Optional[int]:
+        # mode="before" sees True/False as bool (not 1/0) for a precise error.
+        if v is None:
+            return v
+        if isinstance(v, bool):
+            raise ValueError("vision_image_size must be an integer or null")
+        if isinstance(v, int):
+            coerced = v
+        elif isinstance(v, str) and _INT_RE.fullmatch(v.strip()):
+            coerced = int(v.strip())
+        elif isinstance(v, float) and v.is_integer():
+            coerced = int(v)
+        else:
+            # numpy ints / Integral subclasses, without a hard numpy import.
+            try:
+                import numbers
+
+                if isinstance(v, numbers.Integral):
+                    coerced = int(v)
+                elif isinstance(v, numbers.Real) and float(v).is_integer():
+                    coerced = int(v)
+                else:
+                    raise TypeError
+            except Exception:
+                raise ValueError("vision_image_size must be an integer or null")
+        if coerced < _MIN_VISION_IMAGE_SIZE or coerced > _MAX_VISION_IMAGE_SIZE:
+            raise ValueError(
+                f"vision_image_size must be in [{_MIN_VISION_IMAGE_SIZE}, "
+                f"{_MAX_VISION_IMAGE_SIZE}] (got {coerced!r})"
+            )
+        return coerced
 
     @field_validator("warmup_steps")
     @classmethod
