@@ -163,7 +163,7 @@ export function LiveEvalView() {
                     <TableHead className="w-12">Idx</TableHead>
                     <TableHead className="w-20">Score</TableHead>
                     <TableHead>Input</TableHead>
-                    <TableHead>Output</TableHead>
+                    <TableHead>Prediction</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

@@ -448,7 +448,7 @@ export function EvalDatasetFields({
           {/* Reference column */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs font-medium text-muted-foreground">
-              Reference column
+              Output column
             </Label>
             {detectedColumns.length > 0 ? (
               <Select

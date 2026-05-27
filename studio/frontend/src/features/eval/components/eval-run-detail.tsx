@@ -78,7 +78,7 @@ function ExpandedDetail({ row }: { row: EvalResultRow }) {
           </div>
           <div>
             <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Reference
+              Output
             </p>
             <pre className="whitespace-pre-wrap break-words font-mono text-xs">
               {row.reference_text ?? ""}
@@ -215,7 +215,7 @@ export function EvalRunDetail({ runId }: { runId: string }) {
                 </TableHead>
                 <TableHead>Input</TableHead>
                 <TableHead>Prediction</TableHead>
-                <TableHead>Reference</TableHead>
+                <TableHead>Output</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

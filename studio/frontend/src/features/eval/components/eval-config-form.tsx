@@ -88,7 +88,7 @@ export function EvalConfigForm({
     if (!modelIdentifier.trim()) throw new Error("Model identifier is required.");
     if (!dsRef.trim()) throw new Error("Dataset name or path is required.");
     if (!dataset.inputColumn.trim()) throw new Error("Input column is required.");
-    if (!dataset.referenceColumn.trim()) throw new Error("Reference column is required.");
+    if (!dataset.referenceColumn.trim()) throw new Error("Output column is required.");
     if (!metricName) throw new Error("Metric is required.");
 
     // Parse json-typed fields
@@ -168,7 +168,7 @@ export function EvalConfigForm({
         <SectionCard
           icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
           title="Dataset"
-          description="Pick a dataset and map input / reference columns"
+          description="Pick a dataset and map input / output columns"
           accent="indigo"
         >
           <EvalDatasetFields hfToken={hfToken} value={dataset} onChange={setDataset} />
