@@ -8,10 +8,12 @@ Most registry providers expose OpenAI-compatible /v1/chat/completions endpoints;
 Anthropic uses native Messages API with translation in this client.
 """
 
+import base64
 import json as _json
+import mimetypes
 import re
 import time
-from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -67,6 +69,50 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+
+
+def _openai_image_replay_requires_reasoning(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("gpt-5") or normalized.startswith("o")
+
+
+def _sanitize_openai_reasoning_replay_item(
+    item: Any,
+) -> Optional[dict[str, Any]]:
+    """Return a Responses input-safe reasoning item, if ``item`` is one.
+
+    OpenAI's image-generation docs allow follow-up edits by sending the
+    previous ``image_generation_call`` id. Reasoning models can additionally
+    require the paired ``reasoning`` output item in manually managed context,
+    so keep the public replay fields only and drop everything else.
+    """
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    item_id = item.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    summary_parts: list[dict[str, str]] = []
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        for part in summary:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "summary_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                summary_parts.append({"type": "summary_text", "text": text})
+    replay_item: dict[str, Any] = {
+        "type": "reasoning",
+        "id": item_id,
+        "summary": summary_parts,
+    }
+    status = item.get("status")
+    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
+        replay_item["status"] = status
+    return replay_item
+
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
 # using private-use codepoints (see
@@ -462,6 +508,250 @@ def _apply_mistral_reasoning_controls(
 _http_client = httpx.AsyncClient()
 
 
+# Cap per-image fetch well below Gemini's ~20 MB total request budget.
+_GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+
+
+def _safe_fetch_image_for_gemini_sync(
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+) -> Optional[tuple[str, str]]:
+    """Synchronous IP-pinned HTTPS image fetch with SSRF guards.
+
+    Uses the same pinned-IP + SNI pattern as `tools._fetch_page_text` so
+    DNS rebinding between validation and the actual connection cannot
+    redirect us to a private/metadata address. Follows up to 4 hops,
+    re-validating each redirect target. Returns (mime, base64) or None.
+
+    `max_bytes` is clamped to the per-image cap and additionally lets
+    the caller pass the remaining per-request budget so an over-budget
+    URL is rejected via Content-Length (or read short-circuit) instead
+    of being fully downloaded then discarded after the fact.
+    """
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urljoin, urlunparse
+
+    # Refuse upfront if the per-request budget is already spent.
+    _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
+    if _byte_limit <= 0:
+        return None
+
+    # Share tools.py's pinned-IP hardening: validate-once-then-pin.
+    from .tools import (
+        _NoRedirect,
+        _SNIHTTPSHandler,
+        _validate_and_resolve_host,
+    )
+
+    def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
+        """Validate https + hostname + port. Returns (parsed, host, port) or
+        None. Handles malformed-port and malformed-bracketed-IPv6 URLs that
+        would otherwise raise ValueError mid-build.
+        """
+        try:
+            parsed_url = urlparse(raw_url)
+            host_value = parsed_url.hostname
+            port_value = parsed_url.port or 443
+        except (ValueError, UnicodeError) as _err:
+            logger.info(
+                "Gemini image fetch: refusing malformed url err=%s",
+                type(_err).__name__,
+            )
+            return None
+        scheme_value = (parsed_url.scheme or "").lower()
+        if scheme_value != "https":
+            logger.info(
+                "Gemini image fetch: refusing non-https scheme=%s",
+                scheme_value,
+            )
+            return None
+        if not host_value:
+            logger.info("Gemini image fetch: refusing url with no hostname")
+            return None
+        return parsed_url, host_value, port_value
+
+    parsed_info = _safe_parse_https(url)
+    if parsed_info is None:
+        return None
+    parsed, current_host, current_port = parsed_info
+    current_url = url
+    ok, reason, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+    if not ok:
+        logger.warning(
+            "Gemini image fetch: refusing host=%s reason=%s",
+            current_host,
+            reason,
+        )
+        return None
+
+    for _hop in range(4):
+        # Pin to validated IP; SNI + cert still use hostname via _SNIHTTPSHandler.
+        cp_info = _safe_parse_https(current_url)
+        if cp_info is None:
+            return None
+        cp, _cp_host, _cp_port = cp_info
+        ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+        ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
+        pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+
+        opener = urllib.request.build_opener(
+            _NoRedirect,
+            _SNIHTTPSHandler(current_host),
+        )
+        req = urllib.request.Request(
+            pinned_url,
+            headers = {"Host": current_host},
+            method = "GET",
+        )
+
+        try:
+            resp = opener.open(req, timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308):
+                logger.info(
+                    "Gemini image fetch: status=%d host=%s",
+                    e.code,
+                    current_host,
+                )
+                return None
+            location = e.headers.get("Location")
+            if not location:
+                return None
+            try:
+                current_url = urljoin(current_url, location)
+            except (ValueError, UnicodeError) as _err:
+                logger.info(
+                    "Gemini image fetch: refusing malformed redirect err=%s",
+                    type(_err).__name__,
+                )
+                return None
+            rp_info = _safe_parse_https(current_url)
+            if rp_info is None:
+                return None
+            _rp, current_host, current_port = rp_info
+            ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                current_host, current_port
+            )
+            if not ok2:
+                logger.warning(
+                    "Gemini image fetch: refusing redirect host=%s reason=%s",
+                    current_host,
+                    reason2,
+                )
+                return None
+            continue
+        except (urllib.error.URLError, OSError) as _err:
+            logger.warning(
+                "Gemini image fetch failed host=%s err=%s",
+                current_host,
+                type(_err).__name__,
+            )
+            return None
+
+        with resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            if status != 200:
+                logger.info(
+                    "Gemini image fetch: status=%s host=%s", status, current_host
+                )
+                return None
+            _hdr_mime = (
+                (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            )
+            # Declared non-image MIME is a refusal; missing MIME falls back to caller's.
+            if _hdr_mime and not _hdr_mime.startswith("image/"):
+                logger.info(
+                    "Gemini image fetch: non-image content-type=%s host=%s",
+                    _hdr_mime,
+                    current_host,
+                )
+                return None
+            _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
+            if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith(
+                "image/"
+            ):
+                logger.info(
+                    "Gemini image fetch: missing content-type and no image fallback host=%s",
+                    current_host,
+                )
+                return None
+            _hdr_len = resp.headers.get("content-length")
+            if _hdr_len and _hdr_len.isdigit() and int(_hdr_len) > _byte_limit:
+                logger.info(
+                    "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
+                    _hdr_len,
+                    _byte_limit,
+                    current_host,
+                )
+                return None
+            # Read cap+1 to detect oversize without buffering unbounded data.
+            raw = resp.read(_byte_limit + 1)
+            if len(raw) > _byte_limit:
+                logger.info(
+                    "Gemini image fetch: streamed bytes exceed cap=%s host=%s",
+                    _byte_limit,
+                    current_host,
+                )
+                return None
+            return _final_mime_pre, base64.b64encode(raw).decode("ascii")
+
+    logger.info("Gemini image fetch: too many redirects host=%s", current_host)
+    return None
+
+
+async def _safe_fetch_image_for_gemini(
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+) -> Optional[tuple[str, str]]:
+    """Async wrapper running the IP-pinned fetch on a worker thread.
+
+    SSRF guards (https only, pinned IP, per-hop redirect re-check, size
+    cap, image/* content-type) live in the sync helper. `max_bytes`
+    carries the remaining per-request budget so over-budget URLs are
+    rejected up front.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        _safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes
+    )
+
+
+# Synthetic-tool names stamped onto outbound _toolEvent.arguments so the
+# frontend can distinguish provider-side cards from real user-declared
+# tools of the same name. Mirrored on the TS side.
+_SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
+    {"web_search", "web_fetch", "code_execution", "image_generation"}
+)
+
+
+def _stamp_server_tool_marker(payload: dict[str, Any]) -> None:
+    """Tag synthetic provider-side tool events so the frontend can
+    distinguish them from real user-declared / local function tools of
+    the same name. The marker rides on `arguments._server_tool` and is
+    only added for known server-side builtin names; user-supplied
+    tool calls echoed back through these helpers (e.g. Kimi
+    `$web_search`) keep their existing shape because we keep this scoped
+    to the canonical builtin names.
+    """
+    if not isinstance(payload, dict):
+        return
+    if payload.get("type") != "tool_start":
+        return
+    name = payload.get("tool_name")
+    if not isinstance(name, str) or name not in _SERVER_SIDE_BUILTIN_TOOL_NAMES:
+        return
+    args = payload.get("arguments")
+    if not isinstance(args, dict):
+        args = {}
+        payload["arguments"] = args
+    args["_server_tool"] = True
+
+
 def _build_kimi_tool_end(
     synthetic_chunk_fn: Any,
     tool_call_id: str,
@@ -502,16 +792,23 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.base_url = base_url.rstrip("/")
+        # Strip a legacy `/openai` suffix from Google-hosted bases so
+        # configs saved before the native switch still route correctly.
+        # Custom proxy paths ending in `/openai` are left untouched.
+        if self.provider_type == "gemini":
+            _parsed_base = urlparse(self.base_url)
+            if (
+                (_parsed_base.hostname or "").lower()
+                == "generativelanguage.googleapis.com"
+                and _parsed_base.path.rstrip("/") == "/v1beta/openai"
+            ):
+                self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
-        # Separate timeout for SSE streams: reasoning-heavy providers
-        # (Anthropic Opus 4.7 with adaptive thinking, OpenAI gpt-5.x via
-        # /v1/responses) can pause for tens of seconds between bytes
-        # while the model is internally thinking. httpx's read timeout is
-        # the *gap* between successive reads, not a wall clock — so
-        # disabling it lets long thinks complete without cutting the
-        # stream prematurely. connect/write/pool keep the 10s / 120s
-        # bounds so genuine network failures still surface.
+        # Disable read timeout on SSE streams: reasoning-heavy models
+        # pause tens of seconds between bytes while thinking, and httpx's
+        # read timeout is the per-byte gap, not wall clock. connect/write
+        # bounds still surface real network failures.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = None)
 
     def _auth_headers(self) -> dict[str, str]:
@@ -521,6 +818,14 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
+
+        # Non-Google Gemini bases (LiteLLM, custom gateways) use OAI-compat
+        # Bearer auth, not Google's x-goog-api-key. Override the registry default.
+        if self.provider_type == "gemini":
+            _host = (urlparse(self.base_url).hostname or "").lower()
+            if _host != "generativelanguage.googleapis.com":
+                auth_header = "Authorization"
+                auth_prefix = "Bearer "
 
         headers = {"Content-Type": "application/json"}
         # Skip auth header when api_key is empty (optional for local providers);
@@ -536,6 +841,12 @@ class ExternalProviderClient:
         from core.inference.providers import get_provider_info
 
         info = get_provider_info(self.provider_type) or {}
+        # Google-hosted Gemini uses the native translator; non-Google
+        # bases stay on OAI-compat so LiteLLM / custom proxies still work.
+        if self.provider_type == "gemini":
+            _host = (urlparse(self.base_url).hostname or "").lower()
+            if _host != "generativelanguage.googleapis.com":
+                return True
         return info.get("openai_compatible", True)
 
     async def stream_chat_completion(
@@ -550,11 +861,13 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
-        enable_prompt_caching: Optional[bool] = None,
+        enable_prompt_caching: Optional[Union[bool, str]] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
@@ -572,7 +885,35 @@ class ExternalProviderClient:
         ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
         """
+        # tool_choice="none" hard-disables hosted/builtin tools across
+        # every provider so enabled_tools cannot accidentally bill or leak.
+        tool_choice_disabled = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+
         if not self._is_openai_compatible():
+            # Gemini speaks its own native REST shape (contents/parts);
+            # `_stream_gemini` translates request/response into the OpenAI
+            # Chat Completions chunk format the rest of Studio expects.
+            # API reference: https://ai.google.dev/gemini-api/docs
+            if self.provider_type == "gemini":
+                async for line in self._stream_gemini(
+                    messages,
+                    model,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    top_k,
+                    presence_penalty,
+                    enabled_tools,
+                    enable_prompt_caching,
+                    enable_thinking,
+                    reasoning_effort,
+                    tools,
+                    tool_choice,
+                ):
+                    yield line
+                return
             async for line in self._stream_anthropic(
                 messages,
                 model,
@@ -587,6 +928,7 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                tool_choice,
                 fast_mode = fast_mode,
             ):
                 yield line
@@ -610,20 +952,25 @@ class ExternalProviderClient:
                 enable_prompt_caching,
                 openai_code_exec_container_id,
                 compaction_threshold,
+                tools,
+                tool_choice,
             ):
                 yield line
             return
 
-        # Kimi's $web_search is a builtin_function that requires a client
-        # round-trip: the first call returns a tool_calls envelope with
-        # function.arguments populated; the caller echoes those arguments
-        # back as a role=tool message; the second call streams the final
-        # answer with the search incorporated. The doc also mandates
-        # disabling thinking while $web_search is active. Route to a
-        # dedicated helper so the default OAI-compat path stays single-pass.
-        #   https://platform.kimi.ai/docs/guide/use-web-search
+        # Kimi $web_search needs a 2-call round-trip + thinking off; route
+        # to a helper. Forced-function tool_choice suppresses it.
+        # https://platform.kimi.ai/docs/guide/use-web-search
+        _kimi_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
         if (
             self.provider_type == "kimi"
+            and not tool_choice_disabled
+            and not _kimi_tool_choice_forced_function
             and enabled_tools
             and "web_search" in enabled_tools
         ):
@@ -650,28 +997,18 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        # Strip body fields a provider's registry entry declares unusable —
-        # reasoning-class models that lock these to fixed defaults (e.g.
-        # Kimi k2.5/k2.6 only accept temperature=1, top_p=1) 400 otherwise.
-        # The frontend capability map already hides the matching sliders;
-        # this is the matching guard for the pydantic default that the
-        # route layer would otherwise still fill in.
+        # Drop fields the registry flags as unusable so reasoning-class
+        # models with fixed defaults (Kimi k2.6 etc) don't 400 on pydantic
+        # default values that the route layer still fills in.
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
-        # Kimi (kimi-k2.6, kimi-k2-thinking) accepts a boolean thinking toggle
-        # via a top-level `thinking` field (the docs show it nested under
-        # extra_body, but that is an OpenAI Python SDK convention; on the
-        # wire it merges into the request body).
-        #   - kimi-k2.6 defaults to thinking enabled; clients can pass
-        #     {"type": "disabled"} to suppress it.
-        #   - kimi-k2-thinking is always on; we never send disabled there.
-        # `keep: all` retains every thinking chunk through the stream, which
-        # is what we need so our frontend can wrap reasoning_content into
-        # the chat reasoning panel.
+        # Kimi thinking is a top-level body field. kimi-k2-thinking is
+        # always on (ignore the toggle); kimi-k2.6 defaults on, can be
+        # disabled. `keep: all` preserves every chunk for the UI panel.
         if self.provider_type == "kimi" and enable_thinking is not None:
             if model == "kimi-k2-thinking":
                 # Always on; ignore client toggle to avoid an API-level reject.
@@ -692,17 +1029,9 @@ class ExternalProviderClient:
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
 
-        # OpenRouter exposes a unified `reasoning` parameter on every
-        # chat-completion request — the gateway routes it to whichever
-        # underlying model actually supports reasoning, and silently
-        # no-ops for ones that don't. Documented at
-        #   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
-        # Shape: `reasoning: {enabled?: bool, effort?: low|medium|high,
-        # max_tokens?: N, exclude?: bool}` with effort and max_tokens
-        # mutually exclusive. We forward either an effort level (when
-        # the user picked one) or a bare {enabled: true}. A small set of
-        # known routes rejects explicit disable with 400 ("Reasoning is
-        # mandatory for this endpoint ..."), so only those omit "off".
+        # OpenRouter's unified `reasoning` field gates per-model thinking.
+        # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
+        # https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
             if reasoning_effort in ("low", "medium", "high"):
@@ -715,17 +1044,22 @@ class ExternalProviderClient:
                 else:
                     body["reasoning"] = {"enabled": False}
 
-            # OpenRouter web-search plugin — universal shape that works
-            # for every model id, including the `openrouter/free` and
-            # `openrouter/auto` meta-routers. Documented at
-            #   https://openrouter.ai/docs/guides/features/plugins/web-search
-            # The `:online` model-suffix shortcut is "exactly equivalent
-            # to" this plugin per the same doc, but only works on
-            # concrete model ids — meta-routers reject the suffix.
-            # `plugins: [{id: "web"}]` works everywhere, no model id
-            # rewrite needed, and idempotent if some future call site
-            # adds the entry first.
-            if enabled_tools and "web_search" in enabled_tools:
+            # OpenRouter web plugin works on every model id including
+            # meta-routers (unlike the `:online` suffix). Forced-function
+            # tool_choice suppresses it, matching Gemini/Anthropic.
+            # https://openrouter.ai/docs/guides/features/plugins/web-search
+            _or_tool_choice_forced_function = (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") == "function"
+                and isinstance(tool_choice.get("function"), dict)
+                and bool(tool_choice["function"].get("name"))
+            )
+            if (
+                not tool_choice_disabled
+                and not _or_tool_choice_forced_function
+                and enabled_tools
+                and "web_search" in enabled_tools
+            ):
                 plugins = list(body.get("plugins") or [])
                 if not any(
                     isinstance(p, dict) and p.get("id") == "web" for p in plugins
@@ -733,10 +1067,18 @@ class ExternalProviderClient:
                     plugins.append({"id": "web"})
                 body["plugins"] = plugins
                 logger.info(
-                    "OpenRouter web_search: attached plugins=[{id: 'web'}] "
-                    "(model=%s)",
+                    "OpenRouter web_search: attached plugins=[{id: 'web'}] (model=%s)",
                     body.get("model"),
                 )
+
+        # Forward OpenAI-style function tools / tool_choice on every
+        # OAI-compat route (incl. custom Gemini OpenAI proxies like
+        # LiteLLM). Without this, callers that wire user-defined tools
+        # silently lose function-calling on non-native providers.
+        if tools:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -773,30 +1115,22 @@ class ExternalProviderClient:
                     )
                     return
 
-                # NOTE: manual __anext__ loop instead of `async for` is intentional.
-                # On Python 3.13 + httpcore 1.0.x, `async for` auto-calls aclose() on
-                # early exit (break/return/GeneratorExit) BEFORE our finally block runs.
-                # That propagates GeneratorExit into PoolByteStream.__aiter__() while it
-                # calls `await self.aclose()` inside `with AsyncShieldCancellation()`,
-                # triggering "RuntimeError: async generator ignored GeneratorExit".
-                # Fix: call response.aclose() FIRST (sets PoolByteStream._closed=True),
-                # then lines_gen.aclose() is a no-op and GeneratorExit re-raises cleanly.
+                # Manual __anext__ (not `async for`) so we can close
+                # the response BEFORE lines_gen, avoiding the httpcore
+                # 1.0 GeneratorExit -> RuntimeError path on Python 3.13.
                 lines_gen = response.aiter_lines().__aiter__()
-                # Best-effort diagnostics for the default OAI-compat path. Without
-                # this, OpenRouter mid-stream errors (200 OK + error event in the
-                # SSE body) and OpenRouter-router model selection were invisible
-                # in the backend logs — the user only saw "Provider returned
-                # error" in the UI with no trail on the server side.
+                # Diagnostic counters for the OAI-compat path; surfaces
+                # OpenRouter mid-stream errors that would otherwise be
+                # invisible server-side.
                 event_counts: dict[str, int] = {}
                 chosen_model: Optional[str] = None
-                # Web-search tool-card synthesis for OpenRouter. The gateway
-                # doesn't emit structured web_search_call events — citations
-                # come back as `annotations` of type=url_citation on delta /
-                # message objects. Mirror the OpenAI/Anthropic UX by yielding
-                # a synthetic tool_start at stream open and tool_end at
-                # stream close with the collected citation list.
+                # OpenRouter has no web_search_call events — citations
+                # arrive as url_citation annotations. Synthesise a
+                # tool_start/tool_end pair to match the OpenAI/Anthropic UX.
                 web_search_active = (
                     self.provider_type == "openrouter"
+                    and not tool_choice_disabled
+                    and not _or_tool_choice_forced_function
                     and bool(enabled_tools)
                     and "web_search" in (enabled_tools or [])
                 )
@@ -806,6 +1140,7 @@ class ExternalProviderClient:
                 web_search_tool_ended = False
 
                 def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
+                    _stamp_server_tool_marker(payload)
                     chunk = {
                         "id": f"chatcmpl-{self.provider_type}-synthetic",
                         "object": "chat.completion.chunk",
@@ -1061,6 +1396,7 @@ class ExternalProviderClient:
         synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
 
         def _synthetic_chunk(payload: dict[str, Any]) -> str:
+            _stamp_server_tool_marker(payload)
             chunk = {
                 "id": synthetic_id,
                 "object": "chat.completion.chunk",
@@ -1398,6 +1734,7 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tool_choice: Optional[Any] = None,
         *,
         fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
@@ -1428,6 +1765,42 @@ class ExternalProviderClient:
                 continue
 
             content = msg.get("content")
+            # OpenAI role="tool" with list content -> Anthropic native
+            # tool_result block on a user message. Translating in the
+            # string-content branch only (below) leaves the list-content
+            # form forwarded as an invalid `role:"tool"` message that
+            # Anthropic rejects. Handle both upfront.
+            if msg.get("role") == "tool":
+                _tr_id = msg.get("tool_call_id") or ""
+                if isinstance(content, list):
+                    _flat_parts: list[str] = []
+                    for part in content:
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "text"
+                            and part.get("text")
+                        ):
+                            _flat_parts.append(str(part["text"]))
+                    _flat_result = "".join(_flat_parts)
+                elif content is None:
+                    _flat_result = ""
+                elif isinstance(content, str):
+                    _flat_result = content
+                else:
+                    _flat_result = _json.dumps(content)
+                filtered.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": _tr_id,
+                                "content": _flat_result,
+                            }
+                        ],
+                    }
+                )
+                continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
@@ -1540,6 +1913,37 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
+                # Assistant tool_calls -> Anthropic tool_use blocks
+                # appended to the same message. Anthropic native
+                # Messages API does not accept OpenAI's top-level
+                # `tool_calls` field; the call lives inside a content
+                # block with `{type:"tool_use", id, name, input}`.
+                if msg.get("role") == "assistant" and isinstance(
+                    msg.get("tool_calls"), list
+                ):
+                    for _tc in msg["tool_calls"]:
+                        if not isinstance(_tc, dict):
+                            continue
+                        _fn = _tc.get("function") or {}
+                        if not isinstance(_fn, dict) or not _fn.get("name"):
+                            continue
+                        _raw = _fn.get("arguments") or "{}"
+                        try:
+                            _input = (
+                                _json.loads(_raw) if isinstance(_raw, str) else _raw
+                            )
+                        except Exception:
+                            _input = {"_raw": _raw}
+                        if not isinstance(_input, dict):
+                            _input = {"value": _input}
+                        anthropic_parts.append(
+                            {
+                                "type": "tool_use",
+                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
+                                "name": _fn["name"],
+                                "input": _input,
+                            }
+                        )
                 # Skip whole-message append when nothing usable survived.
                 # An empty content array (e.g. user dropped only an unparseable
                 # `input_document`) would 400 the Anthropic API with
@@ -1547,6 +1951,72 @@ class ExternalProviderClient:
                 if anthropic_parts:
                     filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
+                # role="tool" follow-up -> Anthropic native tool_result
+                # block on a `user` message. The OpenAI shape
+                # (role=tool, content=string, tool_call_id) is not a
+                # valid Anthropic role.
+                if msg.get("role") == "tool":
+                    _tr_id = msg.get("tool_call_id") or ""
+                    _tr_content = msg.get("content")
+                    if _tr_content is None:
+                        _tr_content = ""
+                    filtered.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": _tr_id,
+                                    "content": (
+                                        _tr_content
+                                        if isinstance(_tr_content, str)
+                                        else _json.dumps(_tr_content)
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                # Assistant turn whose content is a plain string but
+                # also carries OpenAI `tool_calls`: convert into a
+                # content-array message with a text block + tool_use
+                # blocks. Without this, the top-level tool_calls leaks
+                # through unchanged.
+                if (
+                    msg.get("role") == "assistant"
+                    and isinstance(msg.get("tool_calls"), list)
+                    and msg["tool_calls"]
+                ):
+                    _text_content = msg.get("content")
+                    _blocks: list[dict[str, Any]] = []
+                    if isinstance(_text_content, str) and _text_content:
+                        _blocks.append({"type": "text", "text": _text_content})
+                    for _tc in msg["tool_calls"]:
+                        if not isinstance(_tc, dict):
+                            continue
+                        _fn = _tc.get("function") or {}
+                        if not isinstance(_fn, dict) or not _fn.get("name"):
+                            continue
+                        _raw = _fn.get("arguments") or "{}"
+                        try:
+                            _input = (
+                                _json.loads(_raw) if isinstance(_raw, str) else _raw
+                            )
+                        except Exception:
+                            _input = {"_raw": _raw}
+                        if not isinstance(_input, dict):
+                            _input = {"value": _input}
+                        _blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
+                                "name": _fn["name"],
+                                "input": _input,
+                            }
+                        )
+                    if _blocks:
+                        filtered.append({"role": "assistant", "content": _blocks})
+                    continue
                 filtered.append(msg)
 
         # Claude 4.7 family removed temperature / top_p / top_k entirely.
@@ -1573,34 +2043,16 @@ class ExternalProviderClient:
         # same as True here (callers that don't set the flag still get
         # caching). Pass False explicitly to opt out.
         prompt_caching_enabled = enable_prompt_caching is not False
-        # Anthropic accepts an optional `ttl` on each cache_control marker
-        # (default is the 5m ephemeral pool; set "1h" to land in the 1h
-        # pool instead). Per the prompt-caching docs, 1h cache writes are
-        # billed at 2x base input vs 1.25x for 5m, but reads are 0.1x for
-        # both. The 1h pool is the right pick when conversations span
-        # multiple short bursts more than 5 minutes apart -- the read
-        # discount makes up for the 1.6x write premium after a single
-        # additional hit. Anything other than the known TTL strings is
-        # dropped to avoid sending a malformed marker.
-        #
-        # The `extended-cache-ttl-2025-04-11` beta header that originally
-        # gated 1h TTL has been promoted to GA: as of 2026-05 the live
-        # API accepts `ttl: "1h"` without any beta opt-in. Verified
-        # against api.anthropic.com on claude-opus-4-7 (status 200 +
-        # `ephemeral_1h_input_tokens` populated). The test below pins
-        # the contract by asserting the header is NOT on the wire so a
-        # future regression that reintroduces the gate would surface
-        # before users see a 400.
+        # Optional 1h cache TTL is GA as of 2026-05 (no beta header). 1h
+        # writes are 2x vs 5m's 1.25x but reads are 0.1x for both, so 1h
+        # wins after a single extra hit. Unknown TTL strings drop.
         cache_marker: dict[str, Any] = {"type": "ephemeral"}
         if prompt_cache_ttl in ("5m", "1h"):
             cache_marker["ttl"] = prompt_cache_ttl
 
         if system:
             if prompt_caching_enabled:
-                # System block is the most stable prefix across turns, so
-                # it gets its own breakpoint. Skipped when system is
-                # empty — there's nothing to cache, and an empty marker
-                # is a no-op.
+                # System is the most stable cross-turn prefix; own breakpoint.
                 body["system"] = [
                     {
                         "type": "text",
@@ -1706,19 +2158,29 @@ class ExternalProviderClient:
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
-        # Anthropic server-side web_search — see
-        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
-        # The tool type is date-pinned per model family. Newer Opus /
-        # Sonnet 4.6 + 4.7 accept `web_search_20260209` with dynamic
-        # filtering (Claude writes code to filter results before they
-        # reach context); everything else uses `web_search_20250305`.
-        # `_anthropic_web_search_version` picks the right one. Anthropic
-        # dispatches search calls server-side, returning server_tool_use
-        # + web_search_tool_result blocks in the SSE stream, plus
-        # url-citation annotations on text deltas. We translate all of
-        # that into our local _toolEvent shape so the chat UI renders
-        # web_search exactly like OpenAI's path.
-        if enabled_tools and "web_search" in enabled_tools:
+        # tool_choice="none" or pinned-function suppresses hosted tools
+        # so a stale UI toggle can't fire server-side search/code-exec.
+        _anthropic_tool_choice_disabled = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _anthropic_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _anthropic_hosted_builtins_allowed = (
+            not _anthropic_tool_choice_disabled
+            and not _anthropic_tool_choice_forced_function
+        )
+
+        # Anthropic web_search (date-pinned per model family).
+        # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+        if (
+            _anthropic_hosted_builtins_allowed
+            and enabled_tools
+            and "web_search" in enabled_tools
+        ):
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
@@ -1729,14 +2191,13 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
-        # Anthropic server-side web_fetch reads a single URL (text/PDF)
-        # and returns a `web_fetch_tool_result` document block. Opt in
-        # via `enabled_tools=["web_fetch"]`; no beta header required.
-        # `_anthropic_web_fetch_version` picks `web_fetch_20260209`
-        # (dynamic filtering) for Opus 4.6/4.7 + Sonnet 4.6, falling
-        # back to `web_fetch_20250910` elsewhere; mismatched variants
-        # return 400 so the per-model picker is required.
-        web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
+        # Anthropic web_fetch: only URLs already in conversation. Date-pinned.
+        # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
+        web_fetch_enabled = bool(
+            _anthropic_hosted_builtins_allowed
+            and enabled_tools
+            and "web_fetch" in enabled_tools
+        )
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
@@ -1749,24 +2210,13 @@ class ExternalProviderClient:
             body["tools"] = anthropic_tools
 
         # Anthropic server-side code execution — see
-        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
-        # The tool type is date-pinned per model family.
-        # `_anthropic_code_execution_version` picks `code_execution_20260120`
-        # for Opus 4.5+ / Sonnet 4.5+ / Opus 4.7 / Sonnet 4.6 (adds REPL
-        # state persistence + programmatic tool calling) and falls back
-        # to `code_execution_20250825` everywhere else. Both versions
-        # run Python + bash + str_replace file edits inside a 5 GB
-        # sandboxed container per request, with no internet access, and
-        # both are unlocked by the same `code-execution-2025-08-25`
-        # `anthropic-beta` header set further down. On the SSE stream
-        # Anthropic emits two sub-tool names -- `bash_code_execution`
-        # and `text_editor_code_execution` -- wrapped in the standard
-        # server_tool_use / *_tool_result block shape.
-        # v1 wires the tool only; file uploads (container_upload
-        # content blocks and generated-file retrieval via the Files
-        # API) are a deliberate follow-up.
+        # https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
+        # Date-pinned tool type per model; both unlock via the same
+        # `code-execution-2025-08-25` beta header set below.
         code_execution_enabled = bool(
-            enabled_tools and "code_execution" in enabled_tools
+            _anthropic_hosted_builtins_allowed
+            and enabled_tools
+            and "code_execution" in enabled_tools
         )
         if code_execution_enabled:
             anthropic_tools = list(body.get("tools") or [])
@@ -1777,38 +2227,20 @@ class ExternalProviderClient:
                 }
             )
             body["tools"] = anthropic_tools
-            # Reuse the prior turn's container so filesystem state
-            # (files written, packages installed, variables set)
-            # persists across turns of the same thread. Anthropic
-            # exposes the container id on the Message object's
-            # top-level `container.id`; on the SSE stream we latch it
-            # off `message_start.message.container.id` further down
-            # and emit a `container_ready` _toolEvent so the chat
-            # adapter persists it on the thread record. A stale id
-            # (container expired / not found) surfaces as a 4xx
-            # below, where we emit `container_invalidated` and let
-            # the next turn fall back to auto-create.
+            # Reuse the thread's prior container so filesystem state
+            # persists. Stale ids 4xx and clear via container_invalidated.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
 
-        # Server-side context compaction — see
-        #   https://platform.claude.com/docs/en/build-with-claude/compaction
-        # Beta as of `compact-2026-01-12`. When `compaction_threshold` is
-        # provided AND the model accepts compaction (Opus 4.6+ / 4.7,
-        # Sonnet 4.6, Mythos preview), attach
-        # `context_management.edits[{type:"compact_20260112", trigger:
-        # {type:"input_tokens", value:N}}]` to the body. Anthropic runs
-        # the compaction step server-side once the rendered prompt
-        # crosses the threshold and replies with a top-level
-        # `context_management` block plus `usage.iterations[]` so we can
-        # account per-iteration. Below-min thresholds get clamped up to
-        # 50K so the request doesn't 400.
+        # Server-side compaction (beta `compact-2026-01-12`). Clamps
+        # below-min thresholds to 50K so the request doesn't 400.
+        # https://platform.claude.com/docs/en/build-with-claude/compaction
         compaction_active = (
             compaction_threshold is not None
             and compaction_threshold > 0
             and _anthropic_supports_compaction(model)
         )
-        if compaction_active:
+        if compaction_active and compaction_threshold is not None:
             trigger_value = max(
                 int(compaction_threshold),
                 _ANTHROPIC_COMPACTION_MIN,
@@ -1835,10 +2267,8 @@ class ExternalProviderClient:
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
-        # Log the outgoing config keys (not the messages themselves) so we
-        # can prove which thinking/effort fields actually reached the wire.
-        # If Anthropic skips reasoning despite a configured effort, this
-        # tells us whether we sent the field or dropped it on the floor.
+        # Log outgoing config keys (not messages) to prove which thinking /
+        # effort fields actually reached the wire.
         logger.info(
             "Anthropic request shape (model=%s, has_thinking=%s, thinking=%s, "
             "output_config=%s, temperature=%s, has_top_p=%s, has_top_k=%s, "
@@ -1853,16 +2283,10 @@ class ExternalProviderClient:
             body.get("max_tokens"),
         )
 
-        # Translate Anthropic stop reasons onto the OpenAI chat-completions
-        # `finish_reason` vocabulary. `pause_turn` maps to None so the
-        # adapter does NOT emit a finish_reason chunk: pause_turn means
-        # Claude paused a long server-tool turn (web_search / web_fetch)
-        # and will continue once the user (or our retry) sends back the
-        # partial assistant message. Forwarding it as "stop" makes the
-        # OpenAI client think the answer is done and truncates the
-        # rendered message. `refusal` maps to "content_filter" as the
-        # nearest semantic match. See
-        #   https://platform.claude.com/docs/en/api/messages#response-stop-reason
+        # Anthropic stop_reason -> OpenAI finish_reason. `pause_turn`
+        # maps to None so the UI doesn't treat a paused server-tool turn
+        # as final. `refusal` -> "content_filter" (closest match).
+        # https://platform.claude.com/docs/en/api/messages#response-stop-reason
         _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
             "max_tokens": "length",
@@ -1875,11 +2299,7 @@ class ExternalProviderClient:
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         request_headers = self._auth_headers()
-        # Anthropic accepts comma-separated beta features in a single
-        # `anthropic-beta` header. Merge our flags onto whatever the
-        # registry's extra_headers contributed (currently nothing on
-        # the beta axis, just anthropic-version) so future betas
-        # added at the registry level keep working.
+        # Merge new beta flags onto whatever the registry contributed.
         existing_beta = request_headers.get("anthropic-beta", "").strip()
         beta_parts = (
             [p.strip() for p in existing_beta.split(",") if p.strip()]
@@ -1945,27 +2365,14 @@ class ExternalProviderClient:
                 # "no thinking content" — distinguishes "Anthropic never sent
                 # thinking_delta" from "frontend didn't render the chunks".
                 event_counts: dict[str, int] = {}
-                # web_search state. Anthropic emits the query inside an
-                # `input_json_delta` stream on a `server_tool_use` content
-                # block, then a separate `web_search_tool_result` block
-                # with the URL list. Unlike OpenAI we get per-call results
-                # directly, so each tool card carries its own citations.
-                # `current_server_tool_use`: {id, name, partial_json_buffer}
-                # `current_result_block`: {tool_use_id, results}
-                # Both go to None when the matching content_block_stop fires.
+                # web_search state. Query streams via input_json_delta
+                # on a server_tool_use block; results land in a separate
+                # web_search_tool_result block. Per-call citations.
                 current_server_tool_use: Optional[dict[str, Any]] = None
                 current_result_block: Optional[dict[str, Any]] = None
                 web_search_calls: dict[str, dict[str, Any]] = {}
-                # code_execution state. Anthropic's
-                # `code_execution_20250825` tool emits the same
-                # server_tool_use → *_tool_result block shape as
-                # web_search, but the server_tool_use carries one of
-                # two sub-tool names (`bash_code_execution` or
-                # `text_editor_code_execution`) and the result block
-                # type matches (`bash_code_execution_tool_result` /
-                # `text_editor_code_execution_tool_result`). Kept
-                # parallel to web_search state so the two paths don't
-                # collide when both pills are on in the same turn.
+                # code_execution state (bash / text_editor sub-tools);
+                # kept parallel to web_search so concurrent pills don't collide.
                 current_code_exec_use: Optional[dict[str, Any]] = None
                 current_code_exec_result: Optional[dict[str, Any]] = None
                 code_execution_calls: dict[str, dict[str, Any]] = {}
@@ -2035,6 +2442,7 @@ class ExternalProviderClient:
                     return f"data: {_json.dumps(chunk)}"
 
                 def _emit_tool_event(payload: dict[str, Any]) -> str:
+                    _stamp_server_tool_marker(payload)
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
@@ -2292,18 +2700,8 @@ class ExternalProviderClient:
                                     "inner": inner if isinstance(inner, dict) else {},
                                 }
                             elif block_type == "compaction":
-                                # Server-side compaction emits a `compaction`
-                                # content block on the assistant message.
-                                # Anthropic may include the summary text on
-                                # this start event AND/OR stream it via
-                                # text_delta events on the same block. See
-                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
-                                # Capture either form; finalize and emit
-                                # on content_block_stop. The chat-adapter
-                                # persists the block onto the assistant
-                                # message so the next turn's request
-                                # carries it back -- Anthropic then skips
-                                # re-compaction from scratch.
+                                # Summary may arrive on start AND/OR via
+                                # text_delta. Capture both; emit on stop.
                                 seed = content_block.get("content") or ""
                                 current_compaction = {
                                     "content": seed if isinstance(seed, str) else "",
@@ -2313,12 +2711,7 @@ class ExternalProviderClient:
                             delta = event.get("delta", {})
                             delta_type = delta.get("type")
                             if delta_type == "thinking_delta":
-                                # Anthropic streams extended-thinking content as
-                                # thinking_delta events on a separate content
-                                # block. Wrap as inline <think>...</think> so
-                                # the frontend's parseAssistantContent lifts it
-                                # into the reasoning panel — same pattern as
-                                # the OpenAI Responses path.
+                                # Wrap as <think>...</think> for parseAssistantContent.
                                 thinking_text = delta.get("thinking", "")
                                 if thinking_text:
                                     if not thinking_open:
@@ -2588,19 +2981,9 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
-                                # When a fresh compaction has run, Anthropic
-                                # publishes per-iteration token counts in
-                                # `usage.iterations[]`. The top-level
-                                # input_tokens / output_tokens only cover the
-                                # `message` iteration, NOT the compaction
-                                # passes — billing has to sum the whole
-                                # array. See
-                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
-                                # Fold the compaction iterations into
-                                # `compaction_input_tokens` / `compaction_output_tokens`
-                                # so the cost surface can add them without
-                                # re-walking the array (and so the closing
-                                # log line names the figures).
+                                # Compaction iterations aren't in top-level
+                                # input/output_tokens; fold them into
+                                # compaction_{input,output}_tokens for billing.
                                 iterations = delta_usage.get("iterations")
                                 if isinstance(iterations, list):
                                     c_in = 0
@@ -2837,6 +3220,1722 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _stream_gemini(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+        top_k: Optional[int] = None,
+        presence_penalty: float = 0.0,
+        enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[Any] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Call Google's native Gemini API and translate its streaming
+        ``streamGenerateContent`` response into OpenAI Chat Completions
+        chunk format.
+
+        Gemini does NOT speak the OpenAI Chat Completions contract on
+        its primary endpoint. The wire shape is:
+
+          POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+          {
+            "contents": [{"role": "user|model", "parts": [{"text": "..."}]}],
+            "systemInstruction": {"parts": [{"text": "..."}]},
+            "generationConfig": {"temperature": 0.7, "topP": 0.95, "topK": 40,
+                                  "maxOutputTokens": 1024},
+            "tools": [{"googleSearch": {}}, {"codeExecution": {}}],
+            "cachedContent": "<cache name>"  // optional, see caching docs
+          }
+
+        Streamed responses are SSE frames carrying partial
+        ``GenerateContentResponse`` objects:
+
+          {"candidates": [{"content": {"parts": [{"text": "Hello"}]},
+                            "finishReason": "STOP"}],
+           "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}}
+
+        Image generation uses the same endpoint with model
+        ``gemini-2.5-flash-image`` (also called Nano Banana); the
+        response carries an ``inlineData`` part with the base64 PNG
+        bytes and a ``mimeType``. We surface that through the same
+        ``tool_start`` / ``tool_end`` ``image_b64`` envelope the OpenAI
+        image_generation path uses, so the chat UI renders the image
+        inline with no extra plumbing.
+
+        References:
+          - https://ai.google.dev/gemini-api/docs/text-generation
+          - https://ai.google.dev/gemini-api/docs/function-calling
+          - https://ai.google.dev/gemini-api/docs/grounding
+          - https://ai.google.dev/gemini-api/docs/caching
+          - https://ai.google.dev/gemini-api/docs/image-generation
+        """
+        import json as _json
+
+        # Validate the user-controlled model id BEFORE any message
+        # translation. A model like `../cachedContents/x` is path-
+        # traversal that lands in `/v1beta/cachedContents/...`; rejecting
+        # it here also avoids triggering user-controlled outbound fetches
+        # (remote image_url inlining) on a request we'll error out
+        # anyway. Documented catalog ids match `[A-Za-z0-9._-]+`.
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+            yield _error_sse_line(
+                400,
+                f"Invalid Gemini model id: {model!r}",
+                self.provider_type,
+            )
+            return
+
+        # Translate OpenAI messages -> Gemini contents. system role
+        # promotes to top-level systemInstruction.
+        system_text_parts: list[str] = []
+        contents: list[dict[str, Any]] = []
+        # OpenAI may drop `name` from role="tool" follow-ups. Remember
+        # prior function names so functionResponse isn't sent name-less
+        # (Gemini 400s on empty names).
+        tool_call_names: dict[str, str] = {}
+        # tool_call_ids whose assistant card was dropped (synthetic
+        # builtin) or already replayed as native parts. Their role="tool"
+        # follow-up must be skipped to avoid orphan/duplicate responses.
+        _gemini_skip_tool_result_ids: set[str] = set()
+        # Per-request image caps. The byte cap counts DECODED bytes; we
+        # set it to ~14 MB because base64 expansion + prompt overhead
+        # must fit Gemini's ~20 MB request limit.
+        _GEMINI_REMOTE_IMAGE_MAX_COUNT = 8
+        _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 14 * 1024 * 1024
+        _remote_image_count = 0
+        _remote_image_total_bytes = 0
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                if isinstance(content, str):
+                    if content:
+                        system_text_parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "text"
+                            and part.get("text")
+                        ):
+                            system_text_parts.append(part["text"])
+                continue
+            # Map OpenAI roles to Gemini's two-role contract.
+            gemini_role = "model" if role == "assistant" else "user"
+            parts: list[dict[str, Any]] = []
+            if isinstance(content, str):
+                if content:
+                    parts.append({"text": content})
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype == "text":
+                        text = part.get("text", "")
+                        if text:
+                            parts.append({"text": text})
+                    elif ptype == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            header, _, b64data = url.partition(",")
+                            media_type = (
+                                header.split(";")[0]
+                                .replace("data:", "")
+                                .strip()
+                                .lower()
+                                or "image/jpeg"
+                            )
+                            # Symmetry with the fetched remote image
+                            # path, which already rejects non-image
+                            # Content-Type. A `data:text/html;base64,...`
+                            # URL otherwise lands as Gemini inlineData
+                            # with mimeType="text/html" and 400s the
+                            # whole request.
+                            if not media_type.startswith("image/"):
+                                logger.info(
+                                    "Gemini inlineData: refusing non-image data URL media_type=%s",
+                                    media_type,
+                                )
+                            elif b64data:
+                                # data: URLs share the same caps as fetched
+                                # URLs so inline payloads don't bypass them.
+                                _data_approx_bytes = (len(b64data) * 3) // 4
+                                if (
+                                    _remote_image_count
+                                    >= _GEMINI_REMOTE_IMAGE_MAX_COUNT
+                                ):
+                                    logger.info(
+                                        "Gemini inlineData: per-request count cap %d reached, dropping image",
+                                        _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                                    )
+                                elif (
+                                    _remote_image_total_bytes + _data_approx_bytes
+                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                ):
+                                    logger.info(
+                                        "Gemini inlineData: per-request byte cap reached, dropping image",
+                                    )
+                                else:
+                                    _remote_image_count += 1
+                                    _remote_image_total_bytes += _data_approx_bytes
+                                    parts.append(
+                                        {
+                                            "inlineData": {
+                                                "mimeType": media_type,
+                                                "data": b64data,
+                                            }
+                                        }
+                                    )
+                        elif url:
+                            # fileData.fileUri only accepts Files-API URIs
+                            # and YouTube; everything else must be downloaded
+                            # and inlined. Parse fields explicitly so
+                            # attacker URLs like https://evil.com/youtube.com/x
+                            # aren't misclassified as YouTube.
+                            try:
+                                _parsed_image_url = urlparse(url)
+                            except (ValueError, UnicodeError):
+                                _parsed_image_url = None
+                            if _parsed_image_url is None:
+                                _img_scheme = ""
+                                _img_host = ""
+                                _img_path = ""
+                            else:
+                                _img_scheme = (_parsed_image_url.scheme or "").lower()
+                                _img_host = (_parsed_image_url.hostname or "").lower()
+                                _img_path = _parsed_image_url.path or ""
+                            _is_native_uri = (
+                                _img_scheme == "https"
+                                and _img_host == "generativelanguage.googleapis.com"
+                                and _img_path.startswith("/v1beta/files/")
+                            )
+                            _is_youtube = _img_scheme == "https" and (
+                                _img_host == "youtu.be"
+                                or _img_host == "youtube.com"
+                                or _img_host.endswith(".youtube.com")
+                            )
+                            _guessed, _ = mimetypes.guess_type(_img_path)
+                            _media_type = (
+                                _guessed
+                                if isinstance(_guessed, str)
+                                and _guessed.startswith("image/")
+                                else "image/jpeg"
+                            )
+                            if _is_youtube:
+                                # YouTube URIs must use video/mp4; the
+                                # default image/jpeg yields a 400.
+                                parts.append(
+                                    {
+                                        "fileData": {
+                                            "fileUri": url,
+                                            "mimeType": "video/mp4",
+                                        }
+                                    }
+                                )
+                            elif _is_native_uri:
+                                parts.append(
+                                    {
+                                        "fileData": {
+                                            "fileUri": url,
+                                            "mimeType": _media_type,
+                                        }
+                                    }
+                                )
+                            elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                                logger.info(
+                                    "Gemini image fetch: per-request count cap %d reached, dropping image",
+                                    _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                                )
+                            else:
+                                # Refuse pre-fetch when the per-request
+                                # byte budget is spent; pass the remainder
+                                # so over-budget URLs reject on Content-Length.
+                                _remaining_bytes = (
+                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                    - _remote_image_total_bytes
+                                )
+                                if _remaining_bytes <= 0:
+                                    logger.info(
+                                        "Gemini image fetch: per-request byte cap already reached, dropping image",
+                                    )
+                                else:
+                                    # Count attempts before awaiting so
+                                    # slow URLs don't each burn the timeout.
+                                    _remote_image_count += 1
+                                    _fetched = await _safe_fetch_image_for_gemini(
+                                        url,
+                                        _media_type,
+                                        max_bytes = _remaining_bytes,
+                                    )
+                                    if _fetched is not None:
+                                        _final_mime, _b64 = _fetched
+                                        # base64 expands ~4/3 — recover bytes from len(_b64).
+                                        _approx_bytes = (len(_b64) * 3) // 4
+                                        if (
+                                            _remote_image_total_bytes + _approx_bytes
+                                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                        ):
+                                            logger.info(
+                                                "Gemini image fetch: per-request byte cap reached, dropping image",
+                                            )
+                                        else:
+                                            _remote_image_total_bytes += _approx_bytes
+                                            parts.append(
+                                                {
+                                                    "inlineData": {
+                                                        "mimeType": _final_mime,
+                                                        "data": _b64,
+                                                    }
+                                                }
+                                            )
+            # Gemini 3 strict function-calling requires text-part
+            # thoughtSignatures to be replayed on history; the frontend
+            # stows the latest one as
+            # extra_content.google.thought_signature on the assistant
+            # message and we pin it onto the last text part here.
+            if role == "assistant" and parts:
+                _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                if isinstance(_msg_extra, dict):
+                    _msg_g = _msg_extra.get("google") or {}
+                    if isinstance(_msg_g, dict):
+                        _msg_sig = _msg_g.get("thought_signature") or _msg_g.get(
+                            "thoughtSignature"
+                        )
+                        if isinstance(_msg_sig, str) and _msg_sig:
+                            for _idx in range(len(parts) - 1, -1, -1):
+                                if "text" in parts[_idx]:
+                                    parts[_idx] = {
+                                        **parts[_idx],
+                                        "thoughtSignature": _msg_sig,
+                                    }
+                                    break
+            # Translate OpenAI tool_calls into Gemini functionCall parts.
+            # code_execution / image_generation replay their native parts
+            # (executableCode / codeExecutionResult / inlineData) stowed
+            # on extra_content.google.native_part.
+            tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    if not isinstance(fn, dict):
+                        continue
+                    args_raw = fn.get("arguments") or "{}"
+                    if isinstance(args_raw, str):
+                        try:
+                            args = _json.loads(args_raw)
+                        except Exception:
+                            args = {"_raw": args_raw}
+                    elif isinstance(args_raw, dict):
+                        args = args_raw
+                    else:
+                        args = {}
+                    fn_name = fn.get("name", "")
+                    tc_id = tc.get("id")
+                    if fn_name and isinstance(tc_id, str) and tc_id:
+                        tool_call_names[tc_id] = fn_name
+
+                    # Replay native Gemini code_execution / image_generation parts
+                    # from extra_content.google.native_part, with fallback to
+                    # args.google.native_part for OAI-compat round-trips.
+                    _extra = tc.get("extra_content")
+                    _native_part = None
+                    _google_extra: dict[str, Any] = {}
+                    if isinstance(_extra, dict):
+                        _ge = _extra.get("google") or {}
+                        if isinstance(_ge, dict):
+                            _google_extra = _ge
+                            _native_part = _ge.get("native_part")
+                    if _native_part is None and isinstance(args, dict):
+                        _args_google = args.get("google")
+                        if isinstance(_args_google, dict):
+                            _args_np = _args_google.get("native_part")
+                            if isinstance(_args_np, dict):
+                                _native_part = _args_np
+                                if not _google_extra:
+                                    _google_extra = _args_google
+
+                    # Synthetic builtin cards (web_search/web_fetch) must
+                    # not become fake functionCalls; drop them. Native
+                    # code_execution / image_generation replay below.
+                    _name_lc = fn_name.lower() if isinstance(fn_name, str) else ""
+                    _is_synthetic_server_builtin = (
+                        _name_lc
+                        in (
+                            "web_search",
+                            "web_fetch",
+                            "code_execution",
+                            "image_generation",
+                        )
+                        and isinstance(args, dict)
+                        and (
+                            args.get("_server_tool") is True
+                            or isinstance(
+                                (args.get("google") or {}).get("native_part"), dict
+                            )
+                        )
+                    )
+                    if _is_synthetic_server_builtin and not (
+                        _name_lc in ("code_execution", "image_generation")
+                        and isinstance(_native_part, dict)
+                    ):
+                        # No replayable Gemini native part -- skip
+                        # entirely rather than send a fake functionCall.
+                        # Also remember this tool_call_id so a matching
+                        # role="tool" follow-up does not become an
+                        # orphan functionResponse below.
+                        if isinstance(tc_id, str) and tc_id:
+                            _gemini_skip_tool_result_ids.add(tc_id)
+                            tool_call_names.pop(tc_id, None)
+                        continue
+                    if fn_name in ("code_execution", "image_generation") and isinstance(
+                        _native_part, dict
+                    ):
+                        # code_execution/image_generation history is
+                        # replayed as native parts; the matching
+                        # role="tool" must be skipped or Gemini sees a
+                        # functionResponse with no declared function
+                        # name and 400s the turn.
+                        if isinstance(tc_id, str) and tc_id:
+                            _gemini_skip_tool_result_ids.add(tc_id)
+                        # New shape: `native_part.parts` is an ordered list
+                        # of full part wrappers, each carrying its own
+                        # `thoughtSignature`. This preserves Gemini 3's
+                        # strict per-part replay requirement when the
+                        # frontend has merged executableCode +
+                        # codeExecutionResult + inlineData into the same
+                        # tool-call card.
+                        _native_parts_list = _native_part.get("parts")
+                        if isinstance(_native_parts_list, list):
+                            for _entry in _native_parts_list:
+                                if isinstance(_entry, dict):
+                                    parts.append(_entry)
+                            continue
+                        # Legacy single-object native_part: fan the shared
+                        # thoughtSignature only when one subpart exists;
+                        # for code+result, prefer executableCode and drop
+                        # the signature elsewhere.
+                        _legacy_sig = _native_part.get(
+                            "thoughtSignature"
+                        ) or _native_part.get("thought_signature")
+                        _legacy_subparts = [
+                            _k
+                            for _k in (
+                                "executableCode",
+                                "codeExecutionResult",
+                                "inlineData",
+                            )
+                            if isinstance(_native_part.get(_k), dict)
+                        ]
+                        for _native_key in (
+                            "executableCode",
+                            "codeExecutionResult",
+                            "inlineData",
+                        ):
+                            _sub = _native_part.get(_native_key)
+                            if not isinstance(_sub, dict):
+                                continue
+                            _replay_part: dict[str, Any] = {_native_key: _sub}
+                            if isinstance(_legacy_sig, str) and _legacy_sig:
+                                if len(_legacy_subparts) == 1:
+                                    _replay_part["thoughtSignature"] = _legacy_sig
+                                elif _native_key == "executableCode":
+                                    _replay_part["thoughtSignature"] = _legacy_sig
+                            parts.append(_replay_part)
+                        continue
+
+                    # Forward the OpenAI tool_call id into Gemini's
+                    # functionCall.id so a follow-up turn that issues
+                    # multiple calls to the same function (different
+                    # args, same name) can be disambiguated on the
+                    # response side. Gemini accepts the field per
+                    # https://ai.google.dev/gemini-api/docs/function-calling.
+                    function_call_part: dict[str, Any] = {
+                        "name": fn_name,
+                        "args": args,
+                    }
+                    if isinstance(tc_id, str) and tc_id:
+                        function_call_part["id"] = tc_id
+                    # Gemini 3 function-calling requires the prior
+                    # thoughtSignature to be echoed back as a sibling
+                    # of the functionCall part. The translator stows
+                    # it on the assistant tool_call via
+                    # `extra_content.google.thought_signature` (see
+                    # the inbound emit below).
+                    fc_part: dict[str, Any] = {"functionCall": function_call_part}
+                    sig = _google_extra.get("thought_signature") or _google_extra.get(
+                        "thoughtSignature"
+                    )
+                    if isinstance(sig, str) and sig:
+                        fc_part["thoughtSignature"] = sig
+                    parts.append(fc_part)
+            if role == "tool":
+                # If the matching assistant-side tool_call was either
+                # dropped (synthetic server-tool with no native part)
+                # or already replayed as Gemini-native parts
+                # (code_execution/image_generation native_part), drop
+                # the follow-up too. Emitting it as a functionResponse
+                # would be orphaned or duplicate the native result.
+                _tc_id_for_skip = msg.get("tool_call_id")
+                if (
+                    isinstance(_tc_id_for_skip, str)
+                    and _tc_id_for_skip in _gemini_skip_tool_result_ids
+                ):
+                    continue
+                # OpenAI's role="tool" follow-up carries the function
+                # result. Gemini's matching shape is a role="user" turn
+                # with a functionResponse part. When the caller dropped
+                # ``name``, recover it from the matching assistant
+                # tool_call so Gemini doesn't 400 on an empty name.
+                tool_name = msg.get("name") or msg.get("tool_name") or ""
+                if not tool_name:
+                    tc_id = msg.get("tool_call_id")
+                    if isinstance(tc_id, str) and tc_id in tool_call_names:
+                        tool_name = tool_call_names[tc_id]
+                response_payload: Any
+                if isinstance(content, list):
+                    # OpenAI tool messages may carry list-form content
+                    # (`[{"type":"text","text":"..."}]`). Forwarding the
+                    # content-part objects verbatim into Gemini's
+                    # `functionResponse.response.result` yields
+                    # `result:[{"type":"text","text":"..."}]` instead of
+                    # the actual tool output text; flatten text parts so
+                    # the result mirrors the string-content path.
+                    _flat_parts: list[str] = []
+                    for _cpart in content:
+                        if (
+                            isinstance(_cpart, dict)
+                            and _cpart.get("type") == "text"
+                            and isinstance(_cpart.get("text"), str)
+                        ):
+                            _flat_parts.append(_cpart["text"])
+                    _flat_text = "".join(_flat_parts)
+                    try:
+                        response_payload = _json.loads(_flat_text)
+                    except Exception:
+                        response_payload = {"result": _flat_text}
+                elif isinstance(content, str):
+                    try:
+                        response_payload = _json.loads(content)
+                    except Exception:
+                        response_payload = {"result": content}
+                else:
+                    response_payload = content or {}
+                function_response_part: dict[str, Any] = {
+                    "name": tool_name,
+                    "response": (
+                        response_payload
+                        if isinstance(response_payload, dict)
+                        else {"result": response_payload}
+                    ),
+                }
+                # Mirror tool_call_id onto functionResponse.id so
+                # Gemini can match the result to the originating
+                # functionCall when multiple parallel calls were made.
+                tc_id = msg.get("tool_call_id")
+                if isinstance(tc_id, str) and tc_id:
+                    function_response_part["id"] = tc_id
+                parts = [{"functionResponse": function_response_part}]
+                gemini_role = "user"
+            if parts:
+                # Gemini expects parallel functionResponses (multiple
+                # OpenAI role="tool" messages in a row) to ride on a
+                # single user content with multiple functionResponse
+                # parts -- the docs show parallel responses grouped
+                # together in the next turn. Merge consecutive
+                # functionResponse-only user blocks so realistic
+                # parallel tool loops round-trip correctly.
+                if (
+                    role == "tool"
+                    and contents
+                    and contents[-1].get("role") == "user"
+                    and all(
+                        isinstance(p, dict) and "functionResponse" in p
+                        for p in (contents[-1].get("parts") or [])
+                    )
+                ):
+                    contents[-1]["parts"].extend(parts)
+                else:
+                    contents.append({"role": gemini_role, "parts": parts})
+
+        body: dict[str, Any] = {"contents": contents}
+        if system_text_parts:
+            body["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(system_text_parts)}]
+            }
+
+        # Generation config -- temperature / topP / topK / maxOutputTokens
+        # map straight across. The frontend capability matrix restricts
+        # the sliders the UI exposes for Gemini to this set.
+        gen_config: dict[str, Any] = {}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
+        if top_p is not None:
+            gen_config["topP"] = top_p
+        if top_k is not None and top_k > 0:
+            gen_config["topK"] = top_k
+        # Gemini accepts ``presencePenalty`` on generationConfig with the
+        # same sign convention as the OpenAI knob (positive discourages
+        # repetition). Forward when the caller bothers to set it.
+        if presence_penalty:
+            gen_config["presencePenalty"] = presence_penalty
+        if max_tokens is not None:
+            gen_config["maxOutputTokens"] = max_tokens
+
+        # Nano Banana image generation. Gemini only accepts
+        # `responseModalities: ["TEXT","IMAGE"]` on the image-capable
+        # model family (id contains `-image` or `nano-banana`). Text-
+        # only models such as `gemini-2.5-flash` 400 on the same body,
+        # so only force image mode when the selected model actually
+        # supports it -- a stale `enabled_tools=["image_generation"]`
+        # on a text model is silently treated as a regular turn.
+        # https://ai.google.dev/gemini-api/docs/image-generation
+        model_lc = model.lower()
+        is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
+        # tool_choice="none" / forced-function tool_choice must also
+        # suppress the implicit image-generation hosted tool. Otherwise
+        # an explicit OpenAI-style opt-out (or an explicit user-function
+        # pin) still flips `responseModalities=["TEXT","IMAGE"]` on
+        # image-tier models and bills for image output.
+        _tool_choice_disabled = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _hosted_builtins_allowed = (
+            not _tool_choice_disabled and not _tool_choice_forced_function
+        )
+        # Image-tier model IDs reject text-only tools (code_execution,
+        # user functions) and thinkingConfig regardless of whether the
+        # Images pill is on -- those are model-level constraints
+        # documented by Google. The pill only controls whether we ask
+        # Gemini to actually emit image output via
+        # `responseModalities: ["TEXT","IMAGE"]`. Decoupling the two
+        # avoids the case where Images is off + Code/Search is on
+        # forwards `tools: [{codeExecution: {}}]` plus
+        # `thinkingConfig` to an image model and 400s.
+        image_tool_requested = bool(
+            _hosted_builtins_allowed
+            and enabled_tools
+            and "image_generation" in enabled_tools
+        )
+        # Strict tool / thinking strip uses the model-id check.
+        is_image_model_strict = is_image_picker_model
+        # The actual modality flip only happens when the user opted in.
+        is_image_model = is_image_picker_model and image_tool_requested
+        if is_image_model:
+            gen_config["responseModalities"] = ["TEXT", "IMAGE"]
+        elif is_image_picker_model:
+            # Force TEXT-only so an image-capable model with Images OFF
+            # doesn't still bill for image output.
+            gen_config["responseModalities"] = ["TEXT"]
+
+        # Thinking control. Gemini 3 uses thinkingLevel (str), 2.5 uses
+        # thinkingBudget (int). Gemini 3 has no full-off; minimum is
+        # "minimal" on Flash, "low" on Pro.
+        # https://ai.google.dev/gemini-api/docs/thinking
+        _GEMINI3_THINKING_PREFIXES = (
+            "gemini-3.5-",
+            "gemini-3.1-",
+            "gemini-3-",
+            "gemini-pro-latest",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+        )
+        _GEMINI3_PRO_PREFIXES = (
+            "gemini-3.5-pro",
+            "gemini-3.1-pro",
+            "gemini-3-pro",
+            "gemini-pro-latest",
+        )
+        _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
+        is_gemini3_thinking = any(
+            model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES
+        )
+        is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
+        _is_pro_thinking_only = any(
+            model_lc == p or model_lc.startswith(p + "-")
+            for p in _PRO_THINKING_PREFIXES
+        )
+        effort_lc = (reasoning_effort or "").strip().lower()
+        if not is_image_model_strict and is_gemini3_thinking:
+            # Gemini 3.x thinkingLevel matrix:
+            #   3.1+ Pro:    low/medium/high
+            #   3 Pro:       low/high (deprecated 2026-03-09)
+            #   3.x Flash*:  minimal/low/medium/high
+            # Coerce minimal->low on Pro; medium->high on legacy 3-Pro.
+            _G3_LEVELS = {"minimal", "low", "medium", "high"}
+            level: Optional[str] = None
+            if effort_lc in ("none", "off"):
+                level = "low" if is_gemini3_pro else "minimal"
+            elif effort_lc == "max":
+                level = "high"
+            elif effort_lc in _G3_LEVELS:
+                # Coerce legacy 3-Pro (low/high only) inputs.
+                _is_legacy_gemini3_pro = model_lc.startswith(
+                    ("gemini-3-pro-preview", "gemini-3-pro")
+                ) and not model_lc.startswith(("gemini-3.1-pro", "gemini-3.5-pro"))
+                if is_gemini3_pro and effort_lc == "minimal":
+                    level = "low"
+                elif _is_legacy_gemini3_pro and effort_lc == "medium":
+                    level = "high"
+                else:
+                    level = effort_lc
+            elif enable_thinking is True:
+                level = "high"
+            elif enable_thinking is False:
+                level = "low" if is_gemini3_pro else "minimal"
+            if level is not None:
+                gen_config["thinkingConfig"] = {"thinkingLevel": level}
+        elif not is_image_model_strict:
+            # Gemini 2.5 / older: thinkingBudget int. Effort -> budget
+            # mirrors the OpenAI minimal/low/medium/high ladder so the
+            # existing frontend picker maps cleanly.
+            # NOTE: gemini-2.5-flash-lite rejects positive budgets below
+            # 512 with HTTP 400, so minimal=512 sits at that floor.
+            _EFFORT_TO_BUDGET: dict[str, int] = {
+                "minimal": 512,
+                "low": 2048,
+                "medium": 8192,
+                "high": 24576,
+                "xhigh": -1,
+                "max": -1,
+            }
+            thinking_budget: Optional[int] = None
+            if effort_lc == "none" or enable_thinking is False:
+                # Pro-tier 2.5 rejects budget=0 (400 "only works in
+                # thinking mode"), so coerce to a small positive value.
+                thinking_budget = 128 if _is_pro_thinking_only else 0
+            elif effort_lc in _EFFORT_TO_BUDGET:
+                thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
+            elif enable_thinking is True:
+                thinking_budget = -1
+            if thinking_budget is not None:
+                gen_config["thinkingConfig"] = {
+                    "thinkingBudget": thinking_budget,
+                }
+
+        if gen_config:
+            body["generationConfig"] = gen_config
+
+        # Hosted tools: googleSearch (grounding) and codeExecution.
+        # Image-mode rejects codeExecution; only Gemini 3 image models
+        # accept googleSearch.
+        # https://ai.google.dev/gemini-api/docs/grounding
+        # https://ai.google.dev/gemini-api/docs/code-execution
+        def _gemini_image_model_allows_google_search(_m: str) -> bool:
+            return (
+                _m.startswith("gemini-3-pro-image")
+                or _m.startswith("gemini-3.1-flash-image")
+                or _m.startswith("nano-banana-pro")
+                or _m.startswith("nano-banana-2")
+            )
+
+        google_search_allowed = (
+            not is_image_model_strict
+            or _gemini_image_model_allows_google_search(model_lc)
+        )
+        code_execution_allowed = not is_image_model_strict
+        text_tools_allowed = not is_image_model_strict
+        # tool_choice="none" / forced-function suppresses hosted builtins
+        # too, matching the Anthropic / OpenRouter gates.
+        tools_array: list[dict[str, Any]] = []
+        if (
+            _hosted_builtins_allowed
+            and enabled_tools
+            and "web_search" in enabled_tools
+            and google_search_allowed
+        ):
+            tools_array.append({"googleSearch": {}})
+        if (
+            _hosted_builtins_allowed
+            and enabled_tools
+            and "code_execution" in enabled_tools
+            and code_execution_allowed
+        ):
+            tools_array.append({"codeExecution": {}})
+        # OpenAI-style function declarations -> Gemini functionDeclarations.
+        # https://ai.google.dev/gemini-api/docs/function-calling#step_1
+        # Gemini's Schema accepts only the OpenAPI 3.0 subset documented
+        # at https://ai.google.dev/api/caching#Schema; OpenAI's strict
+        # tool definitions routinely include `additionalProperties`,
+        # `$schema`, `$defs`, `strict`, `examples`, and similar keys
+        # which 400 the request as INVALID_ARGUMENT. Strip them
+        # recursively before forwarding.
+        _GEMINI_ALLOWED_SCHEMA_KEYS = frozenset(
+            {
+                "type",
+                "format",
+                "title",
+                "description",
+                "nullable",
+                "enum",
+                "maxItems",
+                "minItems",
+                "properties",
+                "required",
+                "minProperties",
+                "maxProperties",
+                "items",
+                "minimum",
+                "maximum",
+                "minLength",
+                "maxLength",
+                "pattern",
+                "default",
+                "anyOf",
+                "propertyOrdering",
+            }
+        )
+
+        def _resolve_local_schema_ref(
+            root: Optional[dict[str, Any]], ref: str
+        ) -> Optional[Any]:
+            # Walk a `#/foo/bar` JSON pointer against the schema root.
+            # Returns None if the pointer doesn't resolve to a dict, so
+            # the caller can fall back to the unresolved node.
+            if not isinstance(root, dict) or not isinstance(ref, str):
+                return None
+            if not ref.startswith("#/"):
+                return None
+            node: Any = root
+            for raw_part in ref[2:].split("/"):
+                if not raw_part:
+                    continue
+                part = raw_part.replace("~1", "/").replace("~0", "~")
+                if not isinstance(node, dict) or part not in node:
+                    return None
+                node = node[part]
+            return node
+
+        def _sanitize_gemini_schema(
+            node: Any,
+            root: Optional[dict[str, Any]] = None,
+            _seen_refs: Optional[frozenset[str]] = None,
+        ) -> Any:
+            # Recursively filter to Gemini's OpenAPI 3.0 subset. At a
+            # Schema-keyword dict layer we drop keys not in the
+            # allowlist; under `properties` the keys are user-defined
+            # field names and the values are themselves Schemas; under
+            # `items` / `anyOf` the values are also Schemas.
+            # OpenAI strict tools commonly use JSON Schema's
+            # `"type": ["string", "null"]` form for nullable fields;
+            # Gemini's OpenAPI Schema uses `"type": "string"` plus
+            # `"nullable": true`. Translate that here.
+            if root is None and isinstance(node, dict):
+                root = node
+            if _seen_refs is None:
+                _seen_refs = frozenset()
+            if isinstance(node, dict):
+                # Pydantic / OpenAI strict tools commonly hoist nested
+                # object schemas into `$defs` and reference them via
+                # `{"$ref": "#/$defs/Address"}`. Gemini's OpenAPI subset
+                # has no $ref and drops anything not in the allowlist,
+                # so the referenced shape would vanish if we didn't
+                # inline it here. Recurse into the resolved target with
+                # local siblings overriding the reference (normal JSON
+                # Schema composition), guarding against ref cycles.
+                _ref = node.get("$ref")
+                if isinstance(_ref, str):
+                    if _ref in _seen_refs:
+                        return {}
+                    _target = _resolve_local_schema_ref(root, _ref)
+                    if isinstance(_target, dict):
+                        _merged = {
+                            **_target,
+                            **{k: v for k, v in node.items() if k != "$ref"},
+                        }
+                        return _sanitize_gemini_schema(
+                            _merged, root, _seen_refs | {_ref}
+                        )
+                cleaned: dict[str, Any] = {}
+                _nullable_from_union = False
+                _flattened_type: Optional[str] = None
+                _union_any_of: Optional[list[dict[str, Any]]] = None
+                _raw_type = node.get("type")
+                if isinstance(_raw_type, list):
+                    _non_null = [t for t in _raw_type if t != "null"]
+                    if len(_non_null) < len(_raw_type):
+                        _nullable_from_union = True
+                    if len(_non_null) == 1:
+                        _flattened_type = _non_null[0]
+                    elif len(_non_null) > 1:
+                        # Preserve multi-type unions as anyOf; flattening
+                        # to the first non-null type silently drops the
+                        # other branches and changes the tool contract.
+                        _union_any_of = [
+                            {"type": _t} for _t in _non_null if isinstance(_t, str)
+                        ]
+                for _k, _v in node.items():
+                    if _k == "type" and isinstance(_v, list):
+                        # Handled below via _flattened_type.
+                        continue
+                    if _k not in _GEMINI_ALLOWED_SCHEMA_KEYS:
+                        continue
+                    if _k == "properties" and isinstance(_v, dict):
+                        cleaned[_k] = {
+                            _name: _sanitize_gemini_schema(_subschema, root, _seen_refs)
+                            for _name, _subschema in _v.items()
+                        }
+                    elif _k == "items":
+                        cleaned[_k] = _sanitize_gemini_schema(_v, root, _seen_refs)
+                    elif _k == "anyOf" and isinstance(_v, list):
+                        # Optional[X] / Union[A, B, None]: Pydantic emits
+                        # `anyOf: [..., {"type":"null"}]`. Gemini's
+                        # OpenAPI subset rejects `"type": "null"` inside
+                        # anyOf, so drop the null variant and surface it
+                        # via `nullable: true`. If exactly one non-null
+                        # branch remains, collapse it inline; otherwise
+                        # keep the slim anyOf and mark the field
+                        # nullable.
+                        _saw_null = any(
+                            isinstance(_entry, dict) and _entry.get("type") == "null"
+                            for _entry in _v
+                        )
+                        _non_null_entries = [
+                            _entry
+                            for _entry in _v
+                            if not (
+                                isinstance(_entry, dict)
+                                and _entry.get("type") == "null"
+                            )
+                        ]
+                        if len(_non_null_entries) == 1 and _saw_null:
+                            _inner = _sanitize_gemini_schema(
+                                _non_null_entries[0], root, _seen_refs
+                            )
+                            if isinstance(_inner, dict):
+                                for _ik, _iv in _inner.items():
+                                    cleaned.setdefault(_ik, _iv)
+                                cleaned.setdefault("nullable", True)
+                        else:
+                            cleaned[_k] = [
+                                _sanitize_gemini_schema(_entry, root, _seen_refs)
+                                for _entry in _non_null_entries
+                            ]
+                            if _saw_null:
+                                cleaned.setdefault("nullable", True)
+                    elif _k in ("required", "enum", "propertyOrdering"):
+                        # Lists of plain strings; copy verbatim.
+                        cleaned[_k] = _v
+                    else:
+                        cleaned[_k] = _v
+                if _union_any_of is not None and "anyOf" not in cleaned:
+                    cleaned["anyOf"] = [
+                        _sanitize_gemini_schema(_s, root, _seen_refs)
+                        for _s in _union_any_of
+                    ]
+                elif _flattened_type is not None:
+                    cleaned["type"] = _flattened_type
+                if _nullable_from_union and "nullable" not in cleaned:
+                    cleaned["nullable"] = True
+                return cleaned
+            return node
+
+        function_declarations: list[dict[str, Any]] = []
+        if tools and text_tools_allowed and not _tool_choice_disabled:
+            for _tool in tools:
+                if not isinstance(_tool, dict) or _tool.get("type") != "function":
+                    continue
+                _fn = _tool.get("function")
+                if not isinstance(_fn, dict) or not _fn.get("name"):
+                    continue
+                _decl: dict[str, Any] = {
+                    "name": _fn["name"],
+                    "description": _fn.get("description") or "",
+                }
+                _params = _fn.get("parameters")
+                if isinstance(_params, dict):
+                    _decl["parameters"] = _sanitize_gemini_schema(_params)
+                function_declarations.append(_decl)
+        if function_declarations:
+            tools_array.append({"functionDeclarations": function_declarations})
+        if tools_array:
+            body["tools"] = tools_array
+        # Tool-choice mapping: OpenAI "auto"/"none"/"required"/{name=...}
+        # -> Gemini toolConfig.functionCallingConfig.mode + allowedFunctionNames.
+        if tool_choice is not None and function_declarations and text_tools_allowed:
+            _mode: Optional[str] = None
+            _allowed: Optional[list[str]] = None
+            if isinstance(tool_choice, str):
+                _tc_lc = tool_choice.strip().lower()
+                if _tc_lc == "auto":
+                    _mode = "AUTO"
+                elif _tc_lc == "none":
+                    _mode = "NONE"
+                elif _tc_lc in ("required", "any"):
+                    _mode = "ANY"
+            elif (
+                isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
+            ):
+                _fn_pick = tool_choice.get("function") or {}
+                _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
+                if isinstance(_name, str) and _name:
+                    _mode = "ANY"
+                    _allowed = [_name]
+            if _mode is not None:
+                _fcc: dict[str, Any] = {"mode": _mode}
+                if _allowed:
+                    _fcc["allowedFunctionNames"] = _allowed
+                body["toolConfig"] = {"functionCallingConfig": _fcc}
+
+        # Prompt caching. The Gemini caching contract is "create a
+        # CachedContent resource, then pass its name on
+        # `cachedContent`". The cache itself is created out of band by
+        # the caller via POST /cachedContents; here we forward an
+        # explicit cache id when the dispatcher hands us one (a string
+        # value on enable_prompt_caching means "use this cache name").
+        # https://ai.google.dev/gemini-api/docs/caching
+        if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
+            body["cachedContent"] = enable_prompt_caching
+
+        # Model id is already validated at the top of _stream_gemini so
+        # we never reach a path-traversed URL segment here.
+        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
+
+        logger.info(
+            "Proxying Gemini streamGenerateContent to %s (model=%s, "
+            "tools=%s, image=%s)",
+            url,
+            model,
+            [list(t.keys())[0] for t in tools_array] if tools_array else [],
+            is_image_model,
+        )
+
+        def _emit_tool_event(payload: dict[str, Any]) -> str:
+            _stamp_server_tool_marker(payload)
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": None,
+                    }
+                ],
+                "_toolEvent": payload,
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        def _text_chunk(
+            text: str, extra_content: Optional[dict[str, Any]] = None
+        ) -> str:
+            delta: dict[str, Any] = {"content": text}
+            if extra_content:
+                delta["extra_content"] = extra_content
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
+            """Return ``{"google": {"thought_signature": ...}}`` when the
+            Gemini stream part carries a `thoughtSignature` we need to
+            replay on a follow-up turn (Gemini 3 image editing + tool
+            contexts both require an exact signature echo)."""
+            sig = part.get("thoughtSignature") or part.get("thought_signature")
+            if isinstance(sig, str) and sig:
+                return {"google": {"thought_signature": sig}}
+            return None
+
+        # Gemini finish reasons -> OpenAI vocabulary. Reference:
+        # https://ai.google.dev/api/rest/v1beta/Candidate#FinishReason
+        _finish_reason_map: dict[str, Optional[str]] = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "content_filter",
+            "RECITATION": "content_filter",
+            "PROHIBITED_CONTENT": "content_filter",
+            "BLOCKLIST": "content_filter",
+            "MALFORMED_FUNCTION_CALL": "stop",
+            "OTHER": "stop",
+            "FINISH_REASON_UNSPECIFIED": None,
+        }
+
+        last_usage: Optional[dict[str, Any]] = None
+        emitted_function_call_ids: set[str] = set()
+        # True once any Gemini functionCall part has been emitted so the
+        # final finish_reason swaps STOP -> tool_calls (matches the
+        # OpenAI Chat Completions contract; an OAI client that sees a
+        # tool_calls delta followed by finish_reason="stop" never
+        # executes the tool).
+        emitted_any_function_call = False
+        # web_search_active drives the tool_start / tool_end envelope.
+        # Track on whether `googleSearch` was actually forwarded above,
+        # not the raw caller intent -- image-mode requests filter the
+        # tool out, and emitting a phantom "search complete" card on a
+        # turn where Gemini was never told to search confuses the UI.
+        web_search_active = any("googleSearch" in t for t in tools_array)
+        web_search_tool_id = "gemini_web_search"
+        web_search_tool_started = False
+        web_search_tool_ended = False
+        web_search_citations: list[dict[str, str]] = []
+        # Tracks the tool_call_id minted on the most recent
+        # executableCode part so the matching codeExecutionResult can
+        # close out the same envelope. None between rounds.
+        gemini_code_exec_pending_id: Optional[str] = None
+        # The most recently emitted code_execution id + result text. Kept
+        # *after* the tool_end so a following inline image (matplotlib
+        # plot rendered by codeExecution) can attach to the same card
+        # via a `__IMAGES__:` marker instead of spawning a separate
+        # image_generation event.
+        last_code_exec_tool_id: Optional[str] = None
+        last_code_exec_result_text: str = ""
+
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Gemini returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                if web_search_active:
+                    yield _emit_tool_event(
+                        {
+                            "type": "tool_start",
+                            "tool_name": "web_search",
+                            "tool_call_id": web_search_tool_id,
+                            "arguments": {},
+                        }
+                    )
+                    web_search_tool_started = True
+
+                # NOTE: same manual __anext__ loop pattern as the other
+                # streaming helpers (see stream_chat_completion for the
+                # Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
+                lines_gen = response.aiter_lines().__aiter__()
+                final_finish_reason: Optional[str] = None
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip():
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:") :].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            event = _json.loads(data_str)
+                        except Exception:
+                            logger.warning(
+                                "Gemini: failed to parse SSE chunk: %s",
+                                data_str[:200],
+                            )
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+
+                        # Latch usageMetadata across deltas -- the final
+                        # fragment carries the complete totals.
+                        usage_meta = event.get("usageMetadata")
+                        if isinstance(usage_meta, dict):
+                            last_usage = usage_meta
+
+                        # Prompt-level safety block: Gemini ships zero
+                        # candidates plus a `promptFeedback.blockReason`
+                        # (e.g. SAFETY). The downstream OAI client would
+                        # otherwise see an empty successful assistant
+                        # response. Surface as a content_filter error
+                        # event so the UI can render the block reason.
+                        prompt_feedback = event.get("promptFeedback")
+                        if isinstance(prompt_feedback, dict) and prompt_feedback.get(
+                            "blockReason"
+                        ):
+                            block_reason = str(prompt_feedback.get("blockReason"))
+                            # Close out the synthetic web_search start so
+                            # the UI does not show a spinner stuck on
+                            # "searching..." after the error toast lands.
+                            if (
+                                web_search_active
+                                and web_search_tool_started
+                                and not web_search_tool_ended
+                            ):
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": web_search_tool_id,
+                                        "result": (
+                                            "(search aborted: Gemini blocked "
+                                            f"prompt: {block_reason})"
+                                        ),
+                                    }
+                                )
+                                web_search_tool_ended = True
+                            yield _error_sse_line(
+                                400,
+                                f"Gemini blocked prompt: {block_reason}",
+                                self.provider_type,
+                            )
+                            return
+
+                        candidates = event.get("candidates") or []
+                        if not isinstance(candidates, list):
+                            continue
+                        for cand in candidates:
+                            if not isinstance(cand, dict):
+                                continue
+                            # Citations / grounding metadata.
+                            # `groundingMetadata.groundingChunks[].web`
+                            # carries `uri` + `title`. Collect for the
+                            # tool_end emission at stream close.
+                            gm = cand.get("groundingMetadata")
+                            if isinstance(gm, dict) and web_search_active:
+                                chunks_list = gm.get("groundingChunks") or []
+                                if isinstance(chunks_list, list):
+                                    for ch in chunks_list:
+                                        if not isinstance(ch, dict):
+                                            continue
+                                        web = ch.get("web") or {}
+                                        if not isinstance(web, dict):
+                                            continue
+                                        u = web.get("uri") or ""
+                                        if not u or not isinstance(u, str):
+                                            continue
+                                        if any(
+                                            c["url"] == u for c in web_search_citations
+                                        ):
+                                            continue
+                                        web_search_citations.append(
+                                            {
+                                                "url": u,
+                                                "title": (web.get("title") or u),
+                                                "snippet": "",
+                                            }
+                                        )
+
+                            content_obj = cand.get("content") or {}
+                            parts = (
+                                content_obj.get("parts")
+                                if isinstance(content_obj, dict)
+                                else None
+                            )
+                            if isinstance(parts, list):
+                                for part in parts:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    # Text delta. Stow part-level
+                                    # `thoughtSignature` on the delta so
+                                    # Gemini 3 turns that need an exact
+                                    # signature echo round-trip cleanly.
+                                    text = part.get("text")
+                                    _part_extra = _gemini_part_extra(part)
+                                    if isinstance(text, str) and text:
+                                        yield _text_chunk(
+                                            text,
+                                            extra_content = _part_extra,
+                                        )
+                                    elif _part_extra is not None and not any(
+                                        k in part
+                                        for k in (
+                                            "functionCall",
+                                            "executableCode",
+                                            "codeExecutionResult",
+                                            "inlineData",
+                                        )
+                                    ):
+                                        # Empty-content part carrying a
+                                        # thoughtSignature: emit an empty delta
+                                        # so the signature is preserved.
+                                        yield _text_chunk(
+                                            "",
+                                            extra_content = _part_extra,
+                                        )
+                                    # functionCall -> OpenAI tool_calls
+                                    # delta envelope.
+                                    fc = part.get("functionCall")
+                                    if isinstance(fc, dict):
+                                        fc_name = fc.get("name") or ""
+                                        fc_args = fc.get("args") or {}
+                                        fc_id = (
+                                            fc.get("id")
+                                            or f"call_{fc_name}_{time.time_ns()}"
+                                        )
+                                        if fc_id in emitted_function_call_ids:
+                                            continue
+                                        emitted_function_call_ids.add(fc_id)
+                                        # Each distinct functionCall in an
+                                        # assistant turn needs its own
+                                        # tool_calls[*].index. Consumers
+                                        # that reassemble tool_calls by
+                                        # index collapse all calls onto
+                                        # the same slot when this is
+                                        # hardcoded to 0, breaking
+                                        # parallel/multi-tool turns.
+                                        tc_index = len(emitted_function_call_ids) - 1
+                                        tool_call_delta: dict[str, Any] = {
+                                            "index": tc_index,
+                                            "id": fc_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": fc_name,
+                                                "arguments": _json.dumps(fc_args),
+                                            },
+                                        }
+                                        # Gemini 3 function-calling: the
+                                        # part-level `thoughtSignature`
+                                        # must be echoed back on the
+                                        # next turn or the model rejects
+                                        # the tool-result envelope. Stow
+                                        # it on `extra_content.google`
+                                        # so the frontend can persist it
+                                        # and our outbound translator
+                                        # (below) can replay it.
+                                        thought_sig = part.get(
+                                            "thoughtSignature"
+                                        ) or part.get("thought_signature")
+                                        if isinstance(thought_sig, str) and thought_sig:
+                                            tool_call_delta["extra_content"] = {
+                                                "google": {
+                                                    "thought_signature": thought_sig,
+                                                }
+                                            }
+                                        emitted_any_function_call = True
+                                        tool_chunk = {
+                                            "id": completion_id,
+                                            "object": "chat.completion.chunk",
+                                            "choices": [
+                                                {
+                                                    "index": 0,
+                                                    "delta": {
+                                                        "tool_calls": [tool_call_delta]
+                                                    },
+                                                    "finish_reason": None,
+                                                }
+                                            ],
+                                        }
+                                        yield f"data: {_json.dumps(tool_chunk)}"
+                                    # executableCode + codeExecutionResult
+                                    # parts surface as the standard
+                                    # code_execution tool_start/tool_end
+                                    # envelope (same shape OpenAI and
+                                    # Anthropic emit) so the chat
+                                    # adapter can render Gemini sandbox
+                                    # output through CodeExecutionToolUI.
+                                    # https://ai.google.dev/gemini-api/docs/code-execution
+                                    exec_code = part.get("executableCode")
+                                    if isinstance(exec_code, dict):
+                                        code_str = exec_code.get("code") or ""
+                                        if code_str:
+                                            code_tool_id = (
+                                                exec_code.get("id")
+                                                or f"gemini_code_exec_{time.time_ns()}"
+                                            )
+                                            gemini_code_exec_pending_id = code_tool_id
+                                            # Stow the raw Gemini part so
+                                            # follow-up turns can replay
+                                            # the native `executableCode`
+                                            # (Gemini rejects a generic
+                                            # functionCall echo for code
+                                            # execution history).
+                                            _exec_thought_sig = part.get(
+                                                "thoughtSignature"
+                                            ) or part.get("thought_signature")
+                                            # Per-part thoughtSignature stays
+                                            # bound to its own part (Gemini 3
+                                            # rejects shared signatures).
+                                            _exec_part_entry: dict[str, Any] = {
+                                                "executableCode": exec_code,
+                                            }
+                                            if (
+                                                isinstance(_exec_thought_sig, str)
+                                                and _exec_thought_sig
+                                            ):
+                                                _exec_part_entry["thoughtSignature"] = (
+                                                    _exec_thought_sig
+                                                )
+                                            _exec_native: dict[str, Any] = {
+                                                "parts": [_exec_part_entry],
+                                            }
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_start",
+                                                    "tool_name": "code_execution",
+                                                    "tool_call_id": code_tool_id,
+                                                    "arguments": {
+                                                        "kind": "code_execution",
+                                                        "language": (
+                                                            (
+                                                                exec_code.get(
+                                                                    "language"
+                                                                )
+                                                                or "PYTHON"
+                                                            ).lower()
+                                                        ),
+                                                        "code": code_str,
+                                                        "google": {
+                                                            "native_part": _exec_native,
+                                                        },
+                                                    },
+                                                }
+                                            )
+                                    exec_result = part.get("codeExecutionResult")
+                                    if isinstance(exec_result, dict):
+                                        outcome = exec_result.get("outcome") or ""
+                                        output = exec_result.get("output") or ""
+                                        # Gemini returns
+                                        # OUTCOME_OK / OUTCOME_FAILED /
+                                        # OUTCOME_DEADLINE_EXCEEDED. Treat
+                                        # non-OK outcomes as stderr so the
+                                        # UI surfaces the error.
+                                        if outcome and outcome != "OUTCOME_OK":
+                                            result_text = (
+                                                f"[{outcome}]\n{output}".rstrip()
+                                            )
+                                        else:
+                                            result_text = output
+                                        # Pair tool_end with the most recent
+                                        # executableCode tool_start; fall back
+                                        # to exec_result.id then a fresh id.
+                                        pair_id = (
+                                            gemini_code_exec_pending_id
+                                            or exec_result.get("id")
+                                            or f"gemini_code_exec_{time.time_ns()}"
+                                        )
+                                        if gemini_code_exec_pending_id is None:
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_start",
+                                                    "tool_name": "code_execution",
+                                                    "tool_call_id": pair_id,
+                                                    "arguments": {
+                                                        "kind": "code_execution",
+                                                        "code": "",
+                                                    },
+                                                }
+                                            )
+                                        _result_thought_sig = part.get(
+                                            "thoughtSignature"
+                                        ) or part.get("thought_signature")
+                                        _result_part_entry: dict[str, Any] = {
+                                            "codeExecutionResult": exec_result,
+                                        }
+                                        if (
+                                            isinstance(_result_thought_sig, str)
+                                            and _result_thought_sig
+                                        ):
+                                            _result_part_entry["thoughtSignature"] = (
+                                                _result_thought_sig
+                                            )
+                                        _result_native: dict[str, Any] = {
+                                            "parts": [_result_part_entry],
+                                        }
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_end",
+                                                "tool_call_id": pair_id,
+                                                "result": result_text,
+                                                "google": {
+                                                    "native_part": _result_native,
+                                                },
+                                            }
+                                        )
+                                        last_code_exec_tool_id = pair_id
+                                        last_code_exec_result_text = result_text
+                                        gemini_code_exec_pending_id = None
+                                    # inlineData: either a Nano Banana
+                                    # generation (own card) or a sandbox
+                                    # plot attached to the code_execution
+                                    # card via the __IMAGES__: marker.
+                                    inline = part.get("inlineData")
+                                    if isinstance(inline, dict):
+                                        b64 = inline.get("data") or ""
+                                        mime = inline.get("mimeType") or "image/png"
+                                        if b64:
+                                            image_uri = f"data:{mime};base64,{b64}"
+                                            attached_to_code_exec = (
+                                                not is_image_model
+                                                and last_code_exec_tool_id is not None
+                                                and bool(enabled_tools)
+                                                and "code_execution"
+                                                in (enabled_tools or [])
+                                            )
+                                            if attached_to_code_exec:
+                                                updated_result = (
+                                                    last_code_exec_result_text
+                                                    + "\n__IMAGES__:"
+                                                    + _json.dumps([image_uri])
+                                                )
+                                                # Stow inlineData so a follow-up
+                                                # turn can replay the plot with
+                                                # its per-part thoughtSignature.
+                                                _plot_thought_sig = part.get(
+                                                    "thoughtSignature"
+                                                ) or part.get("thought_signature")
+                                                _plot_part_entry: dict[str, Any] = {
+                                                    "inlineData": {
+                                                        "mimeType": mime,
+                                                        "data": b64,
+                                                    },
+                                                }
+                                                if (
+                                                    isinstance(_plot_thought_sig, str)
+                                                    and _plot_thought_sig
+                                                ):
+                                                    _plot_part_entry[
+                                                        "thoughtSignature"
+                                                    ] = _plot_thought_sig
+                                                yield _emit_tool_event(
+                                                    {
+                                                        "type": "tool_end",
+                                                        "tool_call_id": (
+                                                            last_code_exec_tool_id
+                                                        ),
+                                                        "result": updated_result,
+                                                        "google": {
+                                                            "native_part": {
+                                                                "parts": [
+                                                                    _plot_part_entry
+                                                                ],
+                                                            },
+                                                        },
+                                                    }
+                                                )
+                                                last_code_exec_result_text = (
+                                                    updated_result
+                                                )
+                                            else:
+                                                img_id = f"img_{time.time_ns()}"
+                                                yield _emit_tool_event(
+                                                    {
+                                                        "type": "tool_start",
+                                                        "tool_name": "image_generation",
+                                                        "tool_call_id": img_id,
+                                                        "arguments": {
+                                                            "kind": "image",
+                                                            "prompt": "",
+                                                        },
+                                                    }
+                                                )
+                                                # Gemini 3 image edit needs
+                                                # the prior thoughtSignature
+                                                # echoed on the inline image part.
+                                                _img_thought_sig = part.get(
+                                                    "thoughtSignature"
+                                                ) or part.get("thought_signature")
+                                                _img_tool_end: dict[str, Any] = {
+                                                    "type": "tool_end",
+                                                    "tool_call_id": img_id,
+                                                    "result": "",
+                                                    "image_b64": b64,
+                                                    "image_mime": mime,
+                                                }
+                                                # Stow inlineData so multi-turn
+                                                # edits replay the original
+                                                # image as native history.
+                                                _img_part_entry: dict[str, Any] = {
+                                                    "inlineData": {
+                                                        "mimeType": mime,
+                                                        "data": b64,
+                                                    },
+                                                }
+                                                if (
+                                                    isinstance(_img_thought_sig, str)
+                                                    and _img_thought_sig
+                                                ):
+                                                    _img_part_entry[
+                                                        "thoughtSignature"
+                                                    ] = _img_thought_sig
+                                                _img_native: dict[str, Any] = {
+                                                    "parts": [_img_part_entry],
+                                                }
+                                                _img_google: dict[str, Any] = {
+                                                    "native_part": _img_native,
+                                                }
+                                                if (
+                                                    isinstance(_img_thought_sig, str)
+                                                    and _img_thought_sig
+                                                ):
+                                                    _img_google["thought_signature"] = (
+                                                        _img_thought_sig
+                                                    )
+                                                _img_tool_end["google"] = _img_google
+                                                yield _emit_tool_event(_img_tool_end)
+                            finish_reason = cand.get("finishReason")
+                            if isinstance(finish_reason, str):
+                                mapped = _finish_reason_map.get(finish_reason, "stop")
+                                if mapped is not None:
+                                    final_finish_reason = mapped
+
+                    # End-of-stream emission order: web_search tool_end
+                    # (with citations) -> finish_reason chunk -> usage
+                    # chunk -> [DONE]. Matches the Anthropic / OpenAI
+                    # helpers' contract so the frontend handler does
+                    # not need provider-specific ordering knowledge.
+                    if (
+                        web_search_active
+                        and web_search_tool_started
+                        and not web_search_tool_ended
+                    ):
+                        blocks: list[str] = []
+                        for cit in web_search_citations:
+                            line_out = f"Title: {cit['title']}\nURL: {cit['url']}"
+                            if cit.get("snippet"):
+                                line_out += f"\nSnippet: {cit['snippet']}"
+                            blocks.append(line_out)
+                        yield _emit_tool_event(
+                            {
+                                "type": "tool_end",
+                                "tool_call_id": web_search_tool_id,
+                                "result": (
+                                    "\n---\n".join(blocks)
+                                    if blocks
+                                    else "(search complete)"
+                                ),
+                            }
+                        )
+                        web_search_tool_ended = True
+
+                    if final_finish_reason:
+                        # OpenAI clients trigger tool execution when
+                        # finish_reason="tool_calls". Gemini emits
+                        # "STOP" even when the turn was a pure
+                        # functionCall request, so override after the
+                        # fact to match the OAI contract.
+                        if emitted_any_function_call and final_finish_reason == "stop":
+                            final_finish_reason = "tool_calls"
+                        finish_chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": final_finish_reason,
+                                }
+                            ],
+                        }
+                        yield f"data: {_json.dumps(finish_chunk)}"
+
+                    # Map Gemini usageMetadata onto OpenAI include_usage.
+                    # thoughtsTokenCount is billed output too — fold it in
+                    # so cost calculators don't undercount.
+                    if isinstance(last_usage, dict):
+                        thought_tokens = last_usage.get("thoughtsTokenCount") or 0
+                        candidate_tokens = last_usage.get("candidatesTokenCount") or 0
+                        prompt_tokens = last_usage.get("promptTokenCount") or 0
+                        # Gemini bills tool-call prompt slices separately
+                        # via `toolUsePromptTokenCount`. Fold into input
+                        # so total_tokens does not undercount tool turns.
+                        tool_use_prompt_tokens = (
+                            last_usage.get("toolUsePromptTokenCount") or 0
+                        )
+                        translated_usage = {
+                            "input_tokens": prompt_tokens + tool_use_prompt_tokens,
+                            "output_tokens": candidate_tokens + thought_tokens,
+                            "input_tokens_details": {
+                                "cached_tokens": (
+                                    last_usage.get("cachedContentTokenCount") or 0
+                                ),
+                                "tool_use_prompt_tokens": tool_use_prompt_tokens,
+                            },
+                            "output_tokens_details": {
+                                "reasoning_tokens": thought_tokens,
+                            },
+                        }
+                        usage_line = _build_usage_chunk(
+                            completion_id, "openai", translated_usage
+                        )
+                        if usage_line:
+                            yield usage_line
+
+                    yield "data: [DONE]"
+                finally:
+                    # Close response first so lines_gen.aclose() becomes
+                    # a no-op (avoids the httpcore 1.0 GeneratorExit
+                    # path and the aclose-never-awaited RuntimeWarning).
+                    await response.aclose()
+                    await lines_gen.aclose()
+
+        except httpx.ConnectError as exc:
+            logger.error("Connection error to %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": f"(search aborted: connection error: {exc})",
+                    }
+                )
+                web_search_tool_ended = True
+            yield _error_sse_line(
+                502,
+                f"Failed to connect to {self.provider_type}: {exc}",
+                self.provider_type,
+            )
+        except httpx.ReadTimeout as exc:
+            logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": "(search aborted: read timeout)",
+                    }
+                )
+                web_search_tool_ended = True
+            yield _error_sse_line(
+                504,
+                f"Timeout waiting for {self.provider_type} response",
+                self.provider_type,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            if web_search_tool_started and not web_search_tool_ended:
+                yield _emit_tool_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": web_search_tool_id,
+                        "result": f"(search aborted: transport error: {exc})",
+                    }
+                )
+                web_search_tool_ended = True
+            yield _error_sse_line(
+                502,
+                f"Error communicating with {self.provider_type}: {exc}",
+                self.provider_type,
+            )
+
     async def _stream_openai_responses(
         self,
         messages: list[dict[str, Any]],
@@ -2850,6 +4949,8 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2864,10 +4965,23 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        image_generation_requested = bool(
+            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+        )
+
         # Split system messages out into a single `instructions` string and
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
+        # When we drop a server-side builtin `function_call` here, the
+        # matching `role="tool"` follow-up must also be dropped --
+        # otherwise the outbound body contains an orphan
+        # `function_call_output` with no matching `function_call`, which
+        # OpenAI Responses can reject or mis-associate.
+        skipped_server_builtin_call_ids: set[str] = set()
+        openai_replay_items: list[dict[str, Any]] = []
+        previous_response_id: Optional[str] = None
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2882,12 +4996,133 @@ class ExternalProviderClient:
                             instructions_parts.append(part["text"])
                 continue
 
+            # OpenAI Responses uses item-shape history for function
+            # calling: assistant turns that invoked user tools must
+            # serialize each call as a `function_call` input item, and
+            # each role="tool" follow-up as a `function_call_output`
+            # item keyed by the matching `call_id`. Without this the
+            # second turn after a function call sends Chat Completions
+            # shape and Responses 400s the request.
+            if role == "tool":
+                _call_id = msg.get("tool_call_id") or ""
+                # If the matching assistant `function_call` was a
+                # server-side builtin we already dropped, drop the
+                # follow-up too to avoid emitting an orphan
+                # `function_call_output`.
+                if _call_id and _call_id in skipped_server_builtin_call_ids:
+                    continue
+                if isinstance(content, list):
+                    _flat_parts: list[str] = []
+                    for part in content:
+                        if part.get("type") == "text" and part.get("text"):
+                            _flat_parts.append(part["text"])
+                    _output_text = "".join(_flat_parts)
+                else:
+                    _output_text = content if isinstance(content, str) else ""
+                if _call_id:
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": _call_id,
+                            "output": _output_text,
+                        }
+                    )
+                continue
+
+            # Assistant turns that returned tool_calls translate each
+            # call as a `function_call` item (carrying name + JSON
+            # arguments + call_id). Skip builtin server-side cards
+            # (canonical builtin name + `args._server_tool` marker)
+            # which never round-trip as user functions. We require both
+            # checks so a user function literally named `_server_tool`
+            # in its argument schema is not dropped.
+            _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+            if role == "assistant" and isinstance(_tool_calls, list):
+                # Preserve the prior `response.output` ordering: the
+                # model's text precedes its function_call items, and
+                # the matching role=tool follow-up arrives AFTER the
+                # call. Without this guard, history replay puts
+                # function_call -> assistant text -> function_call_output,
+                # which can put the tool output after an unrelated
+                # assistant message and confuse multi-turn function
+                # calling.
+                if isinstance(content, str) and content:
+                    input_items.append({"role": "assistant", "content": content})
+                elif isinstance(content, list):
+                    _asst_parts: list[dict[str, Any]] = []
+                    for _part in content:
+                        if not isinstance(_part, dict):
+                            continue
+                        _pt = _part.get("type")
+                        if _pt == "text" and _part.get("text"):
+                            _asst_parts.append(
+                                {
+                                    "type": "input_text",
+                                    "text": _part.get("text", ""),
+                                }
+                            )
+                        elif _pt == "image_url":
+                            _u = _part.get("image_url", {}).get("url", "")
+                            if _u:
+                                _asst_parts.append(
+                                    {"type": "input_image", "image_url": _u}
+                                )
+                    if _asst_parts:
+                        input_items.append(
+                            {"role": "assistant", "content": _asst_parts}
+                        )
+
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _fn = _tc.get("function") or {}
+                    if not isinstance(_fn, dict) or not _fn.get("name"):
+                        continue
+                    _args_raw = _fn.get("arguments") or ""
+                    if not isinstance(_args_raw, str):
+                        try:
+                            _args_raw = _json.dumps(_args_raw)
+                        except Exception:
+                            _args_raw = ""
+                    _fn_name_lc = (_fn.get("name") or "").lower()
+                    _is_server_builtin = False
+                    if _fn_name_lc in _SERVER_SIDE_BUILTIN_TOOL_NAMES:
+                        try:
+                            _args_obj = _json.loads(_args_raw) if _args_raw else {}
+                        except Exception:
+                            _args_obj = None
+                        if isinstance(_args_obj, dict):
+                            if _args_obj.get("_server_tool") is True:
+                                _is_server_builtin = True
+                            else:
+                                _g = _args_obj.get("google")
+                                if isinstance(_g, dict) and isinstance(
+                                    _g.get("native_part"), dict
+                                ):
+                                    _is_server_builtin = True
+                    _call_id_out = _tc.get("id") or f"call_{time.time_ns()}"
+                    if _is_server_builtin:
+                        skipped_server_builtin_call_ids.add(_call_id_out)
+                        continue
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": _call_id_out,
+                            "name": _fn["name"],
+                            "arguments": _args_raw,
+                        }
+                    )
+                # Assistant text already emitted above (in order) so we
+                # don't fall through to the generic content branches.
+                continue
+
             if isinstance(content, str):
                 input_items.append({"role": role, "content": content})
                 continue
 
             if isinstance(content, list):
                 translated_parts: list[dict[str, Any]] = []
+                used_previous_response_id = False
                 for part in content:
                     part_type = part.get("type")
                     if part_type == "text":
@@ -2901,6 +5136,36 @@ class ExternalProviderClient:
                             # https:// URLs and data: URLs are accepted).
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
+                            )
+                    elif (
+                        part_type == "reasoning"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
+                        replay_item = _sanitize_openai_reasoning_replay_item(part)
+                        if replay_item:
+                            openai_replay_items.append(replay_item)
+                    elif (
+                        part_type == "image_generation_call"
+                        and role == "assistant"
+                        and image_generation_requested
+                    ):
+                        response_id = (
+                            part.get("response_id")
+                            or part.get("openai_response_id")
+                            or part.get("previous_response_id")
+                        )
+                        call_id = part.get("id") or part.get("image_generation_call_id")
+                        if isinstance(call_id, str) and call_id:
+                            if isinstance(response_id, str) and response_id:
+                                previous_response_id = response_id
+                                input_items = []
+                                translated_parts = []
+                                used_previous_response_id = True
+                            else:
+                                previous_response_id = None
+                            openai_replay_items.append(
+                                {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
                         # OpenAI Responses accepts PDFs / docs as
@@ -2939,8 +5204,58 @@ class ExternalProviderClient:
                         if filename:
                             block["filename"] = filename
                         translated_parts.append(block)
-                if translated_parts:
+                if translated_parts and not used_previous_response_id:
                     input_items.append({"role": role, "content": translated_parts})
+
+        if previous_response_id:
+            # OpenAI's documented multi-turn image generation path can use
+            # `previous_response_id` to carry the prior generated image and
+            # paired reasoning state. Prefer that over manual item replay when
+            # we captured the response id; keep replay below as a fallback for
+            # older stored turns that only have an image_generation_call id.
+            openai_replay_items = []
+        elif (
+            _openai_image_replay_requires_reasoning(model)
+            and reasoning_effort != "none"
+            and enable_thinking is not False
+        ):
+            filtered_replay_items: list[dict[str, Any]] = []
+            has_reasoning_replay = False
+            dropped_image_replay_without_reasoning = False
+            for item in openai_replay_items:
+                if item.get("type") == "reasoning":
+                    has_reasoning_replay = True
+                    filtered_replay_items.append(item)
+                elif item.get("type") == "image_generation_call":
+                    if has_reasoning_replay:
+                        filtered_replay_items.append(item)
+                    else:
+                        dropped_image_replay_without_reasoning = True
+                else:
+                    filtered_replay_items.append(item)
+            openai_replay_items = filtered_replay_items
+            if dropped_image_replay_without_reasoning:
+                yield _error_sse_line(
+                    400,
+                    "OpenAI image edit reference is missing paired reasoning state. "
+                    "Regenerate the image, then retry the edit.",
+                    self.provider_type,
+                )
+                return
+        image_generation_has_reference = bool(
+            previous_response_id
+            or any(
+                isinstance(item, dict) and item.get("type") == "image_generation_call"
+                for item in openai_replay_items
+            )
+        )
+        if openai_replay_items:
+            insert_at = len(input_items)
+            for index in range(len(input_items) - 1, -1, -1):
+                if input_items[index].get("role") == "user":
+                    insert_at = index
+                    break
+            input_items[insert_at:insert_at] = openai_replay_items
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
         # temperature and top_p with `Unsupported parameter` 400s on
@@ -2957,6 +5272,8 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        if previous_response_id:
+            body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning
         # summary events — without it OpenAI returns no thinking text on
         # most reasoning models, the SSE handler has no <think>…</think>
@@ -2988,45 +5305,15 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
 
-        # Prompt caching on /v1/responses is automatic and free, but the
-        # default in-memory policy only survives ~5-10 min of inactivity
-        # (up to ~1 hr). Opt into the 24-hour retention policy so a chat
-        # left idle overnight still hits the cache on the next turn.
-        # Pricing is identical to in_memory per OpenAI's docs.
-        #
-        # Gated on the base URL because ollama / llama.cpp / "custom"
-        # presets all collapse to provider_type="openai" in
-        # toExternalBackendProviderType, so they also land in this
-        # helper. Those servers expose /v1/responses-shaped routes in
-        # some configurations but don't implement
-        # prompt_cache_retention — sending the field unconditionally
-        # would 400 them. Match the public OpenAI host strictly so the
-        # field only goes to OpenAI cloud. Studio's openai model picker
-        # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
-        # accept this parameter (gpt-5.5+ already defaults to "24h" and
-        # rejects "in_memory", so it's a safe no-op there).
-        # OpenAI-family cloud: api.openai.com OR Azure OpenAI Foundry
-        # (*.openai.azure.com). Both expose the same Responses-API
-        # extensions used below -- prompt_cache_retention,
-        # context_management compaction, container shell tool -- so
-        # treat them uniformly. Non-cloud OpenAI-compatible servers
-        # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
-        # without these extensions and would 400 on the unknown body
-        # fields, so they intentionally fall outside this gate.
-        is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        # Opt into 24h prompt-cache retention (free, vs the default
+        # ~5-10 min). Gated on the OpenAI cloud host because ollama /
+        # llama.cpp / "custom" presets reach this code path too and
+        # would 400 on the unknown field.
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 
-        # OpenAI server-side context compaction — see
-        #   https://developers.openai.com/api/docs/guides/compaction
-        # When `compaction_threshold` is provided on a cloud OpenAI
-        # request, attach `context_management: [{type:"compaction",
-        # compact_threshold:N}]` so the API runs server-side
-        # compaction when the rendered prompt crosses the threshold.
-        # No beta header is required; no dated version pin. The field
-        # is silently dropped for non-cloud backends because ollama /
-        # llama.cpp / "custom" presets land in this helper and would
-        # 400 on an unknown body field.
+        # Server-side context compaction (OpenAI cloud only).
+        # https://developers.openai.com/api/docs/guides/compaction
         if (
             is_openai_cloud
             and compaction_threshold is not None
@@ -3039,46 +5326,92 @@ class ExternalProviderClient:
                 }
             ]
 
-        # OpenAI server-side tools — see
-        #   https://developers.openai.com/api/docs/guides/tools
-        #   https://developers.openai.com/api/docs/guides/tools-shell
-        # The frontend's Search/Code buttons map to the unified
-        # enabled_tools shorthand; translate that into the Responses-API
-        # tool schema. Other built-in tools (file_search,
-        # code_interpreter, image_generation, computer_use_preview) can
-        # be added with the same pattern when we surface their toggles.
+        # Map enabled_tools onto Responses-API server tools (cloud only;
+        # local OAI-compat backends 400 on these).
+        # https://developers.openai.com/api/docs/guides/tools
         code_execution_enabled_openai = bool(
             enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
         )
-        # OpenAI's image_generation tool is a Responses-API server tool.
-        # See https://developers.openai.com/api/docs/guides/tools-image-generation
-        # The model picks size / quality / background server-side and
-        # delegates rendering to a gpt-image-* family model; the result
-        # comes back inline as an `image_generation_call` output item
-        # with a base64 image. Available on every gpt-5.x family member
-        # plus gpt-4.1 / gpt-4o / o3 per the docs; restrict to cloud
-        # OpenAI because the local llama.cpp / ollama backends don't
-        # implement it and would 400.
         image_generation_enabled_openai = bool(
             enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
         )
-        if enabled_tools:
-            tools_array: list[dict[str, Any]] = []
-            if "web_search" in enabled_tools:
+
+        def _openai_image_generation_tool() -> dict[str, Any]:
+            tool: dict[str, Any] = {"type": "image_generation"}
+            if image_generation_has_reference:
+                # Force edit mode so the prior call id is used as context.
+                tool["action"] = "edit"
+            return tool
+
+        # Translate Chat-Completions function tools into the Responses
+        # function-tool shape (flattened name/description/parameters).
+        responses_user_function_tools: list[dict[str, Any]] = []
+        if tools:
+            for _tool in tools:
+                if not isinstance(_tool, dict) or _tool.get("type") != "function":
+                    continue
+                _fn = _tool.get("function")
+                if not isinstance(_fn, dict) or not _fn.get("name"):
+                    continue
+                _entry: dict[str, Any] = {
+                    "type": "function",
+                    "name": _fn["name"],
+                }
+                if _fn.get("description"):
+                    _entry["description"] = _fn["description"]
+                if isinstance(_fn.get("parameters"), dict):
+                    _entry["parameters"] = _fn["parameters"]
+                responses_user_function_tools.append(_entry)
+
+        # Translate tool_choice into the Responses shape.
+        _responses_tc_string: Optional[str] = None
+        if isinstance(tool_choice, str):
+            _tc_lc = tool_choice.strip().lower()
+            if _tc_lc in ("auto", "none", "required"):
+                _responses_tc_string = _tc_lc
+        responses_tool_choice: Optional[Any] = None
+        _has_responses_tools = bool(enabled_tools or responses_user_function_tools)
+        if _responses_tc_string is not None and _has_responses_tools:
+            responses_tool_choice = _responses_tc_string
+        elif (
+            tool_choice is not None
+            and responses_user_function_tools
+            and isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+        ):
+            _fn_pick = tool_choice.get("function") or {}
+            _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
+            if isinstance(_name, str) and _name:
+                responses_tool_choice = {"type": "function", "name": _name}
+
+        _responses_tool_choice_none = _responses_tc_string == "none"
+        # A pinned user function suppresses hosted builtins (privacy +
+        # billing), matching the Gemini / Anthropic / OpenRouter gates.
+        _responses_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _responses_hosted_builtins_allowed = (
+            not _responses_tool_choice_none
+            and not _responses_tool_choice_forced_function
+        )
+
+        if (
+            enabled_tools or responses_user_function_tools
+        ) and not _responses_tool_choice_none:
+            tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
+            if (
+                _responses_hosted_builtins_allowed
+                and enabled_tools
+                and "web_search" in enabled_tools
+            ):
                 tools_array.append({"type": "web_search"})
-            if code_execution_enabled_openai:
-                # `container_auto` lets OpenAI auto-create a fresh
-                # container per request; we capture the resulting
-                # container_id off the SSE stream and the chat-adapter
-                # persists it onto the thread record. Subsequent turns
-                # in the same thread pass it back as
-                # `openai_code_exec_container_id`, which we translate to
-                # `container_reference` here so the model sees
-                # filesystem state from prior turns. Container expires
-                # after ~20 min of inactivity per OpenAI's default
-                # policy — a stale id 400s, the chat-adapter clears it
-                # via container_invalidated, and the next turn falls
-                # back to auto-create.
+            if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
+                # Reuse the thread's container so filesystem state
+                # persists; auto-create when there isn't one yet. Stale
+                # ids 400 and are cleared via container_invalidated.
                 shell_env: dict[str, Any]
                 if openai_code_exec_container_id:
                     shell_env = {
@@ -3088,10 +5421,12 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
-            if image_generation_enabled_openai:
-                tools_array.append({"type": "image_generation"})
+            if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+                tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
+        if responses_tool_choice is not None:
+            body["tool_choice"] = responses_tool_choice
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
@@ -3105,11 +5440,19 @@ class ExternalProviderClient:
             first attempt.
             """
             attempt_body = dict(body)
-            if enabled_tools:
-                tools_array_attempt: list[dict[str, Any]] = []
-                if "web_search" in enabled_tools:
+            if (
+                enabled_tools or responses_user_function_tools
+            ) and not _responses_tool_choice_none:
+                tools_array_attempt: list[dict[str, Any]] = list(
+                    responses_user_function_tools
+                )
+                if (
+                    _responses_hosted_builtins_allowed
+                    and enabled_tools
+                    and "web_search" in enabled_tools
+                ):
                     tools_array_attempt.append({"type": "web_search"})
-                if code_execution_enabled_openai:
+                if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
                     if container_id_for_this_attempt:
                         env_attempt: dict[str, Any] = {
                             "type": "container_reference",
@@ -3120,12 +5463,17 @@ class ExternalProviderClient:
                     tools_array_attempt.append(
                         {"type": "shell", "environment": env_attempt}
                     )
-                if image_generation_enabled_openai:
-                    tools_array_attempt.append({"type": "image_generation"})
+                if (
+                    _responses_hosted_builtins_allowed
+                    and image_generation_enabled_openai
+                ):
+                    tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
+            if responses_tool_choice is not None:
+                attempt_body["tool_choice"] = responses_tool_choice
             return attempt_body
 
         def _is_openai_container_expired_error(error_text: str) -> bool:
@@ -3187,54 +5535,32 @@ class ExternalProviderClient:
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
-                    # Latched from response.completed / response.incomplete so
-                    # the final log can surface input_tokens_details.cached_tokens —
-                    # the field that proves prompt_cache_retention="24h" is
-                    # actually hitting OpenAI's cache instead of recomputing
-                    # the prefix every turn.
+                    # Per-call function-tool indexing; distinct slots so
+                    # parallel calls don't collide on delta.tool_calls[].index.
+                    saw_function_call = False
+                    function_call_index = 0
+                    # Latched from response.completed/incomplete; surfaces
+                    # input_tokens_details.cached_tokens to prove cache hits.
                     last_usage: Optional[dict[str, Any]] = None
-                    # Per-call state for OpenAI's server-side web_search tool. Mapped
-                    # back into our local _toolEvent shape so the existing chat-UI
-                    # renderer surfaces web_search the same way it does for local
-                    # tool calls: a "Searching…" tool-call card, then a `tool_end`
-                    # carrying citations formatted as
-                    #   Title: …\nURL: …\nSnippet: …\n---\n…
-                    # blocks (which the frontend's parseSourcesFromResult lifts
-                    # into source content parts at end of stream).
-                    # web_search_calls preserves insertion order so we can apply
-                    # the aggregated citation list onto the *last* call's
-                    # tool_end — that's the one the frontend's source-pill
-                    # extraction reads (parseSourcesFromResult flatMaps every
-                    # web_search result, so a single non-empty result is enough
-                    # to surface all sources at message tail).
-                    # OpenAI emits url_citation annotations on text deltas, not
-                    # per call — there's no wire field linking a citation back
-                    # to a specific search invocation. Hence the shared list.
-                    # web_search_calls: { item_id -> {query} }
+                    # web_search state. Citations are emitted on text deltas
+                    # (not per call), so the aggregate list is shared and
+                    # applied to the LAST web_search tool_end (parseSourcesFromResult
+                    # flatmaps every call, one non-empty is enough).
                     web_search_calls: dict[str, dict[str, Any]] = {}
-                    all_url_citations: list[dict[str, str]] = []
-                    # Shell-tool (code execution) state. OpenAI emits
-                    # `shell_call` items (model requesting a command list)
-                    # paired with `shell_call_output` items (execution
-                    # results). We mirror the Anthropic code-execution UX
-                    # by emitting one `_toolEvent` tool_start per
-                    # shell_call and one tool_end per shell_call_output;
-                    # they're linked via `shell_call_output.call_id`
-                    # matching `shell_call.id`. Items are independent of
-                    # web_search (different keyed map).
-                    # shell_calls: { call_id -> {commands, output} }
+                    all_url_citations: list[dict[str, Any]] = []
+                    # shell_calls (code execution): { call_id -> {commands, output} }.
+                    # shell_call <-> shell_call_output match by call_id; emit
+                    # tool_start/tool_end like the Anthropic UX.
                     shell_calls: dict[str, dict[str, Any]] = {}
-                    # Container id captured from the response stream. When
-                    # it differs from the inbound id, emit a synthetic
-                    # `container_ready` _toolEvent so the frontend can
-                    # persist it onto the thread record for the next turn.
-                    # Where OpenAI surfaces it is documented loosely; we
-                    # probe two known fields (response.container_id on
-                    # response.completed, item.environment.container_id on
-                    # shell_call output items) and latch the first one we
-                    # see.
+                    # Container id latched from response.container_id or
+                    # item.environment.container_id; emit container_ready
+                    # when it differs from the inbound id.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
+                    current_openai_response_id: Optional[str] = None
+                    last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
+                    openai_reasoning_replay_items: dict[str, dict[str, Any]] = {}
+                    image_generation_calls_started: set[str] = set()
                     # Buffer for a citation marker straddling two delta events;
                     # prepended onto the next delta. See _split_pending_citation_tail.
                     pending_marker_tail: str = ""
@@ -3244,6 +5570,18 @@ class ExternalProviderClient:
                     # annotation events and force-flushed at end-of-stream
                     # with leftover private-use codepoints stripped.
                     pending_citation_segments: list[str] = []
+
+                    def _record_openai_response_id(payload: dict[str, Any]) -> None:
+                        nonlocal current_openai_response_id
+                        response_obj = payload.get("response")
+                        candidates: list[Any] = []
+                        if isinstance(response_obj, dict):
+                            candidates.append(response_obj.get("id"))
+                        candidates.append(payload.get("response_id"))
+                        for candidate in candidates:
+                            if isinstance(candidate, str) and candidate:
+                                current_openai_response_id = candidate
+                                return
 
                     def _drain_pending_segments(force: bool) -> str:
                         """Re-attempt resolution on buffered segments in order.
@@ -3296,6 +5634,7 @@ class ExternalProviderClient:
                         return rendered
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
+                        _stamp_server_tool_marker(payload)
                         chunk = {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
@@ -3392,6 +5731,80 @@ class ExternalProviderClient:
                             }
                         )
 
+                    def _record_openai_reasoning_replay_item(
+                        payload: Any,
+                    ) -> Optional[dict[str, Any]]:
+                        if not isinstance(payload, dict):
+                            return None
+                        item_id = payload.get("id") or payload.get("item_id")
+                        if not isinstance(item_id, str) or not item_id:
+                            return None
+                        existing = openai_reasoning_replay_items.setdefault(
+                            item_id,
+                            {
+                                "type": "reasoning",
+                                "id": item_id,
+                                "summary": [],
+                                "status": "completed",
+                            },
+                        )
+                        if payload.get("type") == "reasoning":
+                            sanitized = _sanitize_openai_reasoning_replay_item(payload)
+                            if sanitized:
+                                existing.update(sanitized)
+                                return existing
+                        summary_text = ""
+                        part = payload.get("part")
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "summary_text"
+                        ):
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        elif (
+                            payload.get("type")
+                            == "response.reasoning_summary_text.done"
+                        ):
+                            text = payload.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        if summary_text:
+                            summary_index = payload.get("summary_index")
+                            summary = existing.setdefault("summary", [])
+                            if isinstance(summary, list):
+                                summary_part = {
+                                    "type": "summary_text",
+                                    "text": summary_text,
+                                }
+                                if (
+                                    isinstance(summary_index, int)
+                                    and summary_index >= 0
+                                ):
+                                    while len(summary) <= summary_index:
+                                        summary.append(
+                                            {"type": "summary_text", "text": ""}
+                                        )
+                                    summary[summary_index] = summary_part
+                                else:
+                                    summary.append(summary_part)
+                        return existing
+
+                    def _image_generation_arguments(
+                        prompt: str,
+                        raw_item_id: Any,
+                    ) -> dict[str, Any]:
+                        arguments: dict[str, Any] = {"kind": "image", "prompt": prompt}
+                        if isinstance(raw_item_id, str) and raw_item_id:
+                            arguments["openai_image_generation_call_id"] = raw_item_id
+                        if current_openai_response_id:
+                            arguments["openai_response_id"] = current_openai_response_id
+                        if last_openai_reasoning_replay_item:
+                            arguments["openai_reasoning_item"] = (
+                                last_openai_reasoning_replay_item
+                            )
+                        return arguments
+
                     def _extract_reasoning_text(payload: Any) -> str:
                         if payload is None:
                             return ""
@@ -3478,6 +5891,7 @@ class ExternalProviderClient:
                                 continue
 
                             event_type = event.get("type")
+                            _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
@@ -3534,11 +5948,6 @@ class ExternalProviderClient:
                                     yield _chunk_with_text(flushed)
 
                             elif event_type == "response.output_item.added":
-                                # Track the call early but do NOT emit tool_start
-                                # yet — action.query is not reliably populated on
-                                # added across OpenAI API versions, and the
-                                # frontend's tool_start is a one-shot push (no
-                                # update mechanism). Wait for output_item.done.
                                 item = event.get("item", {})
                                 if (
                                     isinstance(item, dict)
@@ -3548,17 +5957,9 @@ class ExternalProviderClient:
                                         f"ws_{len(web_search_calls)}"
                                     )
                                     web_search_calls.setdefault(item_id, {"query": ""})
-                                # Shell-tool: register the call eagerly so
-                                # the matching shell_call_output can link
-                                # back even if `done` arrives out of order.
-                                # Also probe for container_id on the
-                                # environment field — when container_auto
-                                # auto-creates one, this is the first place
-                                # the new id might surface (OpenAI doesn't
-                                # promise this in docs, but the field is
-                                # cheap to scan and lets us emit
-                                # container_ready earlier than
-                                # response.completed).
+                                # Register shell_call eagerly so out-of-order
+                                # output links back. Probe env.container_id
+                                # to emit container_ready before response.completed.
                                 if (
                                     isinstance(item, dict)
                                     and item.get("type") == "shell_call"
@@ -3579,12 +5980,34 @@ class ExternalProviderClient:
                                             and latched_container_id is None
                                         ):
                                             latched_container_id = probe
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "image_generation_call"
+                                ):
+                                    raw_item_id = item.get("id")
+                                    if isinstance(raw_item_id, str) and raw_item_id:
+                                        arguments = _image_generation_arguments(
+                                            "",
+                                            raw_item_id,
+                                        )
+                                        image_generation_calls_started.add(raw_item_id)
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_start",
+                                                "tool_name": "image_generation",
+                                                "tool_call_id": raw_item_id,
+                                                "arguments": arguments,
+                                            }
+                                        )
 
                             elif event_type == "response.output_item.done":
                                 item = event.get("item", {})
                                 if not isinstance(item, dict):
                                     continue
                                 if item.get("type") == "reasoning":
+                                    last_openai_reasoning_replay_item = (
+                                        _record_openai_reasoning_replay_item(item)
+                                    )
                                     summary_text = _extract_reasoning_text(
                                         item.get("summary")
                                     )
@@ -3624,14 +6047,16 @@ class ExternalProviderClient:
                                             ),
                                         }
                                     )
+                                    # Per-card text; last call gets overwritten
+                                    # with citations at response.completed.
+                                    per_call_result = (
+                                        f"Searching: {query}" if query else ""
+                                    )
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            # Empty result — the last call gets
-                                            # overwritten with citations at
-                                            # response.completed.
-                                            "result": "",
+                                            "result": per_call_result,
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
@@ -3659,7 +6084,11 @@ class ExternalProviderClient:
                                     )
                                     shell_calls.setdefault(
                                         item_id,
-                                        {"commands": [], "output": None},
+                                        {
+                                            "commands": [],
+                                            "output": None,
+                                            "tool_end_emitted": False,
+                                        },
                                     )
                                     shell_calls[item_id]["commands"] = (
                                         list(commands)
@@ -3677,6 +6106,24 @@ class ExternalProviderClient:
                                             },
                                         }
                                     )
+                                    # Fallback: output may be bundled on the
+                                    # shell_call done event itself.
+                                    embedded_output = item.get("output")
+                                    if (
+                                        isinstance(embedded_output, list)
+                                        and embedded_output
+                                    ):
+                                        shell_calls[item_id]["output"] = embedded_output
+                                        shell_calls[item_id]["tool_end_emitted"] = True
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_end",
+                                                "tool_call_id": item_id,
+                                                "result": _format_shell_output(
+                                                    embedded_output
+                                                ),
+                                            }
+                                        )
                                 elif item.get("type") == "shell_call_output":
                                     # `call_id` links back to the shell_call's
                                     # `id`, which is what we used as the
@@ -3687,8 +6134,15 @@ class ExternalProviderClient:
                                         item.get("call_id") or item.get("id") or ""
                                     )
                                     output = item.get("output") or []
+                                    # Skip if bundled-output path already
+                                    # finalised this card.
+                                    if shell_calls.get(call_id, {}).get(
+                                        "tool_end_emitted"
+                                    ):
+                                        continue
                                     if call_id in shell_calls:
                                         shell_calls[call_id]["output"] = output
+                                        shell_calls[call_id]["tool_end_emitted"] = True
                                     result_text = _format_shell_output(output)
                                     yield _emit_tool_event(
                                         {
@@ -3698,43 +6152,29 @@ class ExternalProviderClient:
                                         }
                                     )
                                 elif item.get("type") == "image_generation_call":
-                                    # OpenAI's image_generation tool returns
-                                    # a single output item with the base64
-                                    # PNG/WebP/JPEG on `result` (sometimes
-                                    # `b64_json` depending on output_format).
-                                    # `revised_prompt` is what the gpt-image
-                                    # backbone actually used after refinement
-                                    # of the assistant's request. Emit
-                                    # tool_start + tool_end so the chat card
-                                    # renders the prompt + the generated
-                                    # image inline. The frontend chat-adapter
-                                    # decides how to render the base64 blob
-                                    # (likely an <img src="data:image/...">)
-                                    # based on the `kind: "image"` hint we
-                                    # set on tool_start arguments.
-                                    # `time_ns()` (nanoseconds) instead of
-                                    # millisecond resolution so synthesised
-                                    # ids stay unique even when two image
-                                    # generations resolve in the same ms.
-                                    item_id = item.get("id", "") or (
-                                        f"img_{time.time_ns()}"
-                                    )
+                                    # Base64 image on `result` (or `b64_json`),
+                                    # `revised_prompt` for the rewritten prompt.
+                                    # ns-resolution id so concurrent gens stay unique.
+                                    raw_item_id = item.get("id")
+                                    item_id = raw_item_id or f"img_{time.time_ns()}"
                                     prompt_in = (
                                         item.get("revised_prompt")
                                         or item.get("prompt")
                                         or ""
                                     )
-                                    yield _emit_tool_event(
-                                        {
-                                            "type": "tool_start",
-                                            "tool_name": "image_generation",
-                                            "tool_call_id": item_id,
-                                            "arguments": {
-                                                "kind": "image",
-                                                "prompt": prompt_in,
-                                            },
-                                        }
+                                    done_arguments = _image_generation_arguments(
+                                        prompt_in,
+                                        raw_item_id,
                                     )
+                                    if item_id not in image_generation_calls_started:
+                                        yield _emit_tool_event(
+                                            {
+                                                "type": "tool_start",
+                                                "tool_name": "image_generation",
+                                                "tool_call_id": item_id,
+                                                "arguments": done_arguments,
+                                            }
+                                        )
                                     b64 = (
                                         item.get("result") or item.get("b64_json") or ""
                                     )
@@ -3744,18 +6184,75 @@ class ExternalProviderClient:
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
                                             "result": "",
+                                            "arguments": done_arguments,
                                             "image_b64": b64,
                                             "image_mime": (f"image/{output_format}"),
                                             "size": item.get("size"),
                                             "quality": item.get("quality"),
                                             "background": item.get("background"),
+                                            "prompt": prompt_in,
                                         }
                                     )
+                                elif item.get("type") == "function_call":
+                                    # Translate to Chat-Completions delta.tool_calls.
+                                    # https://platform.openai.com/docs/guides/function-calling?api-mode=responses
+                                    fn_call_id = (
+                                        item.get("call_id")
+                                        or item.get("id")
+                                        or f"call_{time.time_ns()}"
+                                    )
+                                    fn_name = item.get("name") or ""
+                                    fn_args = item.get("arguments") or ""
+                                    if not isinstance(fn_args, str):
+                                        try:
+                                            fn_args = _json.dumps(fn_args)
+                                        except Exception:
+                                            fn_args = ""
+                                    _tc_index = function_call_index
+                                    function_call_index += 1
+                                    yield (
+                                        "data: "
+                                        + _json.dumps(
+                                            {
+                                                "id": completion_id,
+                                                "object": "chat.completion.chunk",
+                                                "choices": [
+                                                    {
+                                                        "index": 0,
+                                                        "delta": {
+                                                            "tool_calls": [
+                                                                {
+                                                                    "index": _tc_index,
+                                                                    "id": fn_call_id,
+                                                                    "type": "function",
+                                                                    "function": {
+                                                                        "name": fn_name,
+                                                                        "arguments": (
+                                                                            fn_args
+                                                                        ),
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        "finish_reason": None,
+                                                    }
+                                                ],
+                                            }
+                                        )
+                                    )
+                                    saw_function_call = True
 
                             elif (
                                 isinstance(event_type, str)
                                 and "reasoning" in event_type
                             ):
+                                recorded_reasoning = (
+                                    _record_openai_reasoning_replay_item(event)
+                                )
+                                if recorded_reasoning:
+                                    last_openai_reasoning_replay_item = (
+                                        recorded_reasoning
+                                    )
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:
@@ -3834,22 +6331,16 @@ class ExternalProviderClient:
                                         }
                                     )
                                     container_id_emitted = True
-                                # Apply the aggregated citation list onto the
-                                # *last* web_search call by overwriting its
-                                # tool_end result. The frontend's
-                                # parseSourcesFromResult flatMaps every
-                                # web_search tool-call result, so a single
-                                # non-empty result is enough to surface the
-                                # whole source-pill set at the message tail —
-                                # no need to fan out across every card (which
-                                # would just duplicate the same pills).
+                                # Overwrite the last web_search call with the
+                                # citation list; the source-pill extractor
+                                # flatMaps across cards. Earlier cards keep
+                                # their per-call "Searching:" text.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks: list[str] = []
                                     for cit in all_url_citations:
                                         line = (
-                                            f"Title: {cit['title']}\n"
-                                            f"URL: {cit['url']}"
+                                            f"Title: {cit['title']}\nURL: {cit['url']}"
                                         )
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"
@@ -3861,6 +6352,21 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Final flush: finalise any orphan shell_call
+                                # so the card stops spinning.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -3868,7 +6374,11 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {},
-                                            "finish_reason": "stop",
+                                            "finish_reason": (
+                                                "tool_calls"
+                                                if saw_function_call
+                                                else "stop"
+                                            ),
                                         }
                                     ],
                                 }
@@ -3927,8 +6437,7 @@ class ExternalProviderClient:
                                     blocks = []
                                     for cit in all_url_citations:
                                         line = (
-                                            f"Title: {cit['title']}\n"
-                                            f"URL: {cit['url']}"
+                                            f"Title: {cit['title']}\nURL: {cit['url']}"
                                         )
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"
@@ -3940,6 +6449,22 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Mirror the response.completed flush so
+                                # truncated streams also finalise orphan
+                                # shell_calls.
+                                for sc_id, sc_state in shell_calls.items():
+                                    if sc_state.get("tool_end_emitted"):
+                                        continue
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": sc_id,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
+                                            ),
+                                        }
+                                    )
+                                    sc_state["tool_end_emitted"] = True
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -4134,10 +6659,69 @@ class ExternalProviderClient:
                     models = [model for model in raw_models if isinstance(model, dict)]
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
+            # Gemini's native /v1beta/models returns
+            # {"models": [{"name": "models/gemini-2.5-flash", ...}]}
+            # -- repackage into the OpenAI-compatible shape the rest
+            # of Studio expects so dynamic model discovery works.
+            if not models and self.provider_type == "gemini":
+                models = self._parse_gemini_models(data)
             return models
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    @staticmethod
+    def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
+        """Translate Gemini's native /v1beta/models payload to OpenAI shape.
+
+        Native response:
+          {"models": [{"name": "models/gemini-2.5-flash",
+                       "baseModelId": "gemini-2.5-flash",
+                       "displayName": "Gemini 2.5 Flash",
+                       "supportedGenerationMethods": [...]}]}
+
+        We only keep entries that advertise
+        ``generateContent`` / ``streamGenerateContent`` so the picker
+        does not surface embedding-only models the chat path can't
+        drive.
+        """
+        if not isinstance(payload, dict):
+            return []
+        entries = payload.get("models") or []
+        if not isinstance(entries, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            methods = entry.get("supportedGenerationMethods") or []
+            if (
+                isinstance(methods, list)
+                and methods
+                and not any(
+                    m in methods for m in ("generateContent", "streamGenerateContent")
+                )
+            ):
+                continue
+            base_id = entry.get("baseModelId")
+            name = entry.get("name") or ""
+            # ``name`` arrives as ``"models/gemini-2.5-flash"``; the
+            # chat path uses the bare id.
+            short_id = (
+                base_id
+                if isinstance(base_id, str) and base_id
+                else (name.split("/", 1)[1] if "/" in name else name)
+            )
+            if not short_id:
+                continue
+            out.append(
+                {
+                    "id": short_id,
+                    "owned_by": "google",
+                    "display_name": entry.get("displayName") or short_id,
+                }
+            )
+        return out
 
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
         """Fallback when Ollama's /v1/models returns an empty or null catalog."""
@@ -4443,6 +7027,17 @@ def _build_usage_chunk(
             "total_tokens": prompt_tokens + completion_tokens,
             "prompt_tokens_details": {"cached_tokens": cached},
         }
+        # Surface OpenAI Responses / Gemini reasoning-token detail. The
+        # caller pre-populates last_usage["output_tokens_details"] with
+        # at least {"reasoning_tokens": ...}; mirror it into the OAI
+        # `completion_tokens_details` shape so SDKs can render the
+        # hidden-thoughts slice.
+        out_details = last_usage.get("output_tokens_details")
+        if isinstance(out_details, dict) and out_details:
+            usage_block["completion_tokens_details"] = {
+                "reasoning_tokens": out_details.get("reasoning_tokens") or 0,
+            }
+            usage_block["output_tokens_details"] = out_details
 
     chunk = {
         "id": completion_id,

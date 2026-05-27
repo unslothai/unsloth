@@ -18,6 +18,17 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# `uvicorn main:app` bypasses run.py; seed thread caps here too.
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    _raw = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
+    ) from None
+
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
@@ -122,6 +133,7 @@ from routes import (
     export_router,
     inference_router,
     inference_studio_router,
+    mcp_servers_router,
     models_router,
     providers_router,
     training_history_router,
@@ -524,6 +536,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

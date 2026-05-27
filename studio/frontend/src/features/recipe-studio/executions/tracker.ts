@@ -40,6 +40,11 @@ type TrackRecipeExecutionParams = {
   onPreviewSuccess?: () => void;
 };
 
+export type TrackRecipeExecutionResult = {
+  success: boolean;
+  terminal: boolean;
+};
+
 function isTerminalStatus(status: RecipeExecutionStatus): boolean {
   return status === "completed" || status === "error" || status === "cancelled";
 }
@@ -53,7 +58,8 @@ function normalizeCompletedProgress(input: {
 } {
   const { latestExecution, rows } = input;
   const progressTotal =
-    typeof latestExecution.progress?.total === "number" && latestExecution.progress.total > 0
+    typeof latestExecution.progress?.total === "number" &&
+    latestExecution.progress.total > 0
       ? latestExecution.progress.total
       : latestExecution.rows > 0
         ? latestExecution.rows
@@ -92,7 +98,7 @@ export async function trackRecipeExecution({
   onUpsert,
   onSetPreviewErrors,
   onPreviewSuccess,
-}: TrackRecipeExecutionParams): Promise<boolean> {
+}: TrackRecipeExecutionParams): Promise<TrackRecipeExecutionResult> {
   let done = false;
   let lastStatus: RecipeExecutionStatus = initialExecution.status;
   let completedEventPayload: Record<string, unknown> | null = null;
@@ -124,7 +130,9 @@ export async function trackRecipeExecution({
       }
 
       const eventType =
-        typeof event.payload.type === "string" ? event.payload.type : event.event;
+        typeof event.payload.type === "string"
+          ? event.payload.type
+          : event.event;
 
       if (eventType === "job.started") {
         latestExecution = {
@@ -163,7 +171,7 @@ export async function trackRecipeExecution({
           error:
             typeof event.payload.error === "string"
               ? event.payload.error
-              : latestExecution.error ?? `${label} failed.`,
+              : (latestExecution.error ?? `${label} failed.`),
         };
         onUpsert(latestExecution);
         return;
@@ -173,6 +181,19 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "cancelling",
+        };
+        onUpsert(latestExecution);
+        return;
+      }
+
+      if (eventType === "job.cancelled") {
+        lastStatus = "cancelled";
+        done = true;
+        latestExecution = {
+          ...latestExecution,
+          status: "cancelled",
+          finishedAt: Date.now(),
+          error: latestExecution.error ?? "Run cancelled.",
         };
         onUpsert(latestExecution);
         return;
@@ -189,6 +210,9 @@ export async function trackRecipeExecution({
   try {
     while (!done) {
       const status = await getRecipeJobStatus(jobId);
+      if (done && isTerminalStatus(lastStatus)) {
+        break;
+      }
       const mappedStatus = mapJobStatus(status.status);
       lastStatus = mappedStatus;
       latestExecution = applyExecutionStatusSnapshot(latestExecution, status);
@@ -200,18 +224,19 @@ export async function trackRecipeExecution({
       }
     }
   } catch (error) {
-    const message = toErrorMessage(error, `${label} failed.`);
-    latestExecution = {
-      ...latestExecution,
-      status: "error",
-      error: message,
-      finishedAt: Date.now(),
-    };
-    onUpsert(latestExecution);
-    if (notify) {
-      toastError(`${label} failed`, message);
+    const terminal = isTerminalStatus(lastStatus);
+    if (!terminal) {
+      const message = toErrorMessage(error, `${label} failed.`);
+      latestExecution = {
+        ...latestExecution,
+        error: message,
+      };
+      onUpsert(latestExecution);
+      if (notify) {
+        toastError(`${label} failed`, message);
+      }
+      return { success: false, terminal: false };
     }
-    return false;
   } finally {
     eventsAbortController.abort();
   }
@@ -220,7 +245,10 @@ export async function trackRecipeExecution({
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const finalStatus = await getRecipeJobStatus(jobId);
-        latestExecution = applyExecutionStatusSnapshot(latestExecution, finalStatus);
+        latestExecution = applyExecutionStatusSnapshot(
+          latestExecution,
+          finalStatus,
+        );
       } catch {
         break;
       }
@@ -229,19 +257,20 @@ export async function trackRecipeExecution({
       }
     }
 
-    const eventAnalysis = completedEventPayload
-      ? completedEventPayload["analysis"]
-      : null;
-    const eventDataset = completedEventPayload
-      ? completedEventPayload["dataset"]
-      : null;
+    const completedPayload = completedEventPayload as Record<
+      string,
+      unknown
+    > | null;
+    const eventAnalysis = completedPayload ? completedPayload.analysis : null;
+    const eventDataset = completedPayload ? completedPayload.dataset : null;
     const eventProcessorArtifacts =
-      completedEventPayload &&
-      typeof completedEventPayload["processor_artifacts"] === "object" &&
-      completedEventPayload["processor_artifacts"] !== null
-        ? (completedEventPayload["processor_artifacts"] as Record<string, unknown>)
+      completedPayload &&
+      typeof completedPayload.processor_artifacts === "object" &&
+      completedPayload.processor_artifacts !== null
+        ? (completedPayload.processor_artifacts as Record<string, unknown>)
         : null;
-    const shouldFetchPreviewDataset = kind === "preview" && !Array.isArray(eventDataset);
+    const shouldFetchPreviewDataset =
+      kind === "preview" && !Array.isArray(eventDataset);
     const shouldFetchAnalysis =
       !completedEventPayload ||
       typeof eventAnalysis !== "object" ||
@@ -262,9 +291,7 @@ export async function trackRecipeExecution({
         ? normalizeAnalysis(analysisResult.value)
         : latestExecution.analysis;
     const datasetResponse =
-      datasetResult.status === "fulfilled"
-        ? datasetResult.value
-        : null;
+      datasetResult.status === "fulfilled" ? datasetResult.value : null;
     const dataset = datasetResponse
       ? normalizeDatasetRows(datasetResponse.dataset)
       : latestExecution.dataset;
@@ -272,7 +299,10 @@ export async function trackRecipeExecution({
       datasetResponse && typeof datasetResponse.total === "number"
         ? datasetResponse.total
         : latestExecution.datasetTotal;
-    const completedProgress = normalizeCompletedProgress({ latestExecution, rows });
+    const completedProgress = normalizeCompletedProgress({
+      latestExecution,
+      rows,
+    });
 
     latestExecution = {
       ...latestExecution,
@@ -285,7 +315,8 @@ export async function trackRecipeExecution({
       datasetPage: 1,
       datasetPageSize: DATASET_PAGE_SIZE,
       error: null,
-      processor_artifacts: eventProcessorArtifacts ?? latestExecution.processor_artifacts,
+      processor_artifacts:
+        eventProcessorArtifacts ?? latestExecution.processor_artifacts,
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);
@@ -299,7 +330,7 @@ export async function trackRecipeExecution({
         toastSuccess("Full run completed.");
       }
     }
-    return true;
+    return { success: true, terminal: true };
   }
 
   if (lastStatus === "cancelled") {
@@ -313,7 +344,7 @@ export async function trackRecipeExecution({
     if (notify) {
       toastError(`${label} cancelled`, "The execution was cancelled.");
     }
-    return false;
+    return { success: false, terminal: true };
   }
 
   latestExecution = {
@@ -326,5 +357,5 @@ export async function trackRecipeExecution({
   if (notify) {
     toastError(`${label} failed`, latestExecution.error ?? "Execution failed.");
   }
-  return false;
+  return { success: false, terminal: true };
 }

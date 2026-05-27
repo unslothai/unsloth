@@ -14,7 +14,9 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId } from "../external-providers";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -25,6 +27,7 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 
@@ -64,6 +67,12 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+export type PendingImageEditReference = {
+  threadId: string | null;
+  openaiImageGenerationCallId: string;
+  openaiResponseId?: string;
+  openaiReasoningItem?: unknown;
+};
 export type ReasoningEffort =
   | "none"
   | "minimal"
@@ -274,6 +283,7 @@ type ChatRuntimeStore = {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  mcpEnabledForChat: boolean;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -300,6 +310,7 @@ type ChatRuntimeStore = {
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: {
     promptTokens: number;
     completionTokens: number;
@@ -340,6 +351,7 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -353,6 +365,10 @@ type ChatRuntimeStore = {
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
+  setPendingImageEditReference: (
+    reference: PendingImageEditReference | null,
+  ) => void;
+  clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
@@ -586,6 +602,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
@@ -607,6 +624,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  pendingImageEditReference: null,
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
@@ -735,10 +753,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // external-provider render gate would otherwise show old counters
       // until the next completion overwrites them.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      // Clamp maxTokens to the new model's cap on switch into an
+      // external model so a value carried over from a prior local
+      // session does not render above the slider's max.
+      let nextMaxTokens = state.params.maxTokens;
+      if (checkpointChanged && isExternalModelId(modelId)) {
+        const parsed = parseExternalModelId(modelId);
+        const provider = parsed
+          ? useExternalProvidersStore
+              .getState()
+              .providers.find((p) => p.id === parsed.providerId)
+          : null;
+        const cap = getExternalMaxOutputTokens(
+          provider?.providerType,
+          parsed?.modelId,
+        );
+        if (nextMaxTokens > cap) {
+          nextMaxTokens = cap;
+        }
+      }
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
+          maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
@@ -793,6 +831,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
+      pendingImageEditReference: null,
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
@@ -840,6 +879,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
     }),
+  setMcpEnabledForChat: (mcpEnabledForChat) =>
+    set(() => {
+      saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
+      return { mcpEnabledForChat };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
@@ -884,5 +928,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
     set({ pendingAudioBase64: null, pendingAudioName: null }),
+  setPendingImageEditReference: (pendingImageEditReference) =>
+    set({ pendingImageEditReference }),
+  clearPendingImageEditReference: () =>
+    set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
