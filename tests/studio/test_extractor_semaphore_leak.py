@@ -75,6 +75,7 @@ def _force_failure(mod, monkeypatch, where: str) -> None:
     if where == "get_context":
         monkeypatch.setattr(mod.multiprocessing, "get_context", boom)
     elif where == "queue":
+
         class _Ctx:
             def Queue(self, *_a, **_kw):
                 raise OSError("simulated Queue allocation failure")
@@ -82,8 +83,11 @@ def _force_failure(mod, monkeypatch, where: str) -> None:
             def Process(self, *_a, **_kw):  # pragma: no cover - never reached
                 return None
 
-        monkeypatch.setattr(mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx())
+        monkeypatch.setattr(
+            mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx()
+        )
     elif where == "process":
+
         class _Q:
             def close(self):
                 pass
@@ -98,7 +102,9 @@ def _force_failure(mod, monkeypatch, where: str) -> None:
             def Process(self, *_a, **_kw):
                 raise OSError("simulated Process construction failure")
 
-        monkeypatch.setattr(mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx())
+        monkeypatch.setattr(
+            mod.multiprocessing, "get_context", lambda *_a, **_kw: _Ctx()
+        )
     else:  # pragma: no cover
         raise ValueError(where)
 
@@ -114,7 +120,7 @@ def test_semaphore_released_when_mp_setup_fails(extractor, monkeypatch, where):
             "test.txt",
             {},
             "text/plain",
-            timeout_seconds=5,
+            timeout_seconds = 5,
         )
 
     assert _semaphore_value(extractor) == initial, (
@@ -134,7 +140,11 @@ def test_repeated_failure_does_not_drain_pool(extractor, monkeypatch):
     for _ in range(5):
         with pytest.raises((OSError, RuntimeError)):
             extractor._run_extract_process_sync(
-                b"x", "x.txt", {}, "text/plain", timeout_seconds=2,
+                b"x",
+                "x.txt",
+                {},
+                "text/plain",
+                timeout_seconds = 2,
             )
 
     assert _semaphore_value(extractor) == initial

@@ -47,10 +47,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-_HEADER = (
-    "import sys, importlib\n"
-    f"sys.path.insert(0, {str(_BACKEND)!r})\n"
-)
+_HEADER = "import sys, importlib\n" f"sys.path.insert(0, {str(_BACKEND)!r})\n"
 
 
 def _run_subprocess(body: str) -> subprocess.CompletedProcess:
@@ -59,9 +56,9 @@ def _run_subprocess(body: str) -> subprocess.CompletedProcess:
     caller to assert against ``stdout`` / ``returncode``."""
     return subprocess.run(
         [sys.executable, "-c", _HEADER + body],
-        capture_output=True,
-        text=True,
-        timeout=60,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
 
 
@@ -79,12 +76,12 @@ def test_importing_core_inference_does_not_eager_load_orchestrator():
     proc = _run_subprocess(body)
     assert proc.returncode == 0, proc.stderr
     loaded = set(proc.stdout.strip().split(","))
-    assert "core.inference.orchestrator" not in loaded, (
-        f"core.inference eagerly imported .orchestrator -- loaded={loaded}"
-    )
-    assert "core.inference.llama_cpp" not in loaded, (
-        f"core.inference eagerly imported .llama_cpp -- loaded={loaded}"
-    )
+    assert (
+        "core.inference.orchestrator" not in loaded
+    ), f"core.inference eagerly imported .orchestrator -- loaded={loaded}"
+    assert (
+        "core.inference.llama_cpp" not in loaded
+    ), f"core.inference eagerly imported .llama_cpp -- loaded={loaded}"
 
 
 def test_html_extraction_strips_scripts_when_inference_is_broken():
@@ -97,9 +94,9 @@ def test_html_extraction_strips_scripts_when_inference_is_broken():
         "sys.modules['core.inference.orchestrator'] = None\n"
         "sys.modules['core.inference.llama_cpp'] = None\n"
         "from core.chat import document_extractor as mod\n"
-        "dirty = (b\"<html><head><style>body{display:none}</style>\"\n"
+        'dirty = (b"<html><head><style>body{display:none}</style>"\n'
         "         b\"<script>alert('xss')</script></head>\"\n"
-        "         b\"<body><h1>hello</h1></body></html>\")\n"
+        '         b"<body><h1>hello</h1></body></html>")\n'
         "out, *_rest = mod._extract_html(dirty)\n"
         "import json\n"
         "print(json.dumps({'out': out}))\n"
@@ -113,9 +110,9 @@ def test_html_extraction_strips_scripts_when_inference_is_broken():
     out = parsed["out"]
     # Pre-fix this returns the raw HTML because the fallback branch
     # in _extract_html swallows the ImportError.
-    assert "alert" not in out, (
-        f"<script>alert(...)</script> survived into the prompt; raw output:\n{out}"
-    )
+    assert (
+        "alert" not in out
+    ), f"<script>alert(...)</script> survived into the prompt; raw output:\n{out}"
     assert "<script" not in out.lower()
     assert "<style" not in out.lower()
     assert "hello" in out

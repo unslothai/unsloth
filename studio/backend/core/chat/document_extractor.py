@@ -853,6 +853,7 @@ def _run_extract_process_sync(
         # PyMuPDF/CoreFoundation/Quartz) crash under fork. Windows has
         # never supported fork.
         import sys as _sys
+
         if os.name == "nt" or _sys.platform == "darwin":
             mp_method = "spawn"
         else:

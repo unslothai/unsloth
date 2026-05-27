@@ -83,9 +83,10 @@ def test_vlm_probe_sees_route_loaded_gguf(monkeypatch):
     # Pretend the route just finished loading a GGUF VLM by mutating
     # the underlying private fields the @property accessors expose.
     backend = routes_acc()
-    monkeypatch.setattr(backend, "_model_identifier",
-                        "unsloth/Qwen2-VL-2B-Instruct-GGUF", raising=False)
-    monkeypatch.setattr(backend, "_is_vision", True, raising=False)
+    monkeypatch.setattr(
+        backend, "_model_identifier", "unsloth/Qwen2-VL-2B-Instruct-GGUF", raising = False
+    )
+    monkeypatch.setattr(backend, "_is_vision", True, raising = False)
     # is_loaded is a property derived from internal state; we override
     # the property at the class level just for this test instance.
     cls = type(backend)

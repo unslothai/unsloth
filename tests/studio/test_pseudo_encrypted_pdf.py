@@ -39,12 +39,12 @@ def _make_pseudo_encrypted_pdf() -> bytes:
     page.insert_text(
         (72, 100),
         "pseudo-encrypted PDF: null user password, opens without prompt",
-        fontsize=12,
+        fontsize = 12,
     )
     out = doc.tobytes(
-        encryption=pymupdf.PDF_ENCRYPT_AES_256,
-        owner_pw="owner-pw",
-        user_pw="",
+        encryption = pymupdf.PDF_ENCRYPT_AES_256,
+        owner_pw = "owner-pw",
+        user_pw = "",
     )
     doc.close()
     return out
@@ -61,9 +61,9 @@ def test_extract_pdf_accepts_null_password(monkeypatch):
 
     md, figures, page_count, truncated, seen = mod._extract_pdf(
         file_bytes,
-        max_figures=0,
-        use_vlm_ocr=False,
-        max_visual_payloads=0,
+        max_figures = 0,
+        use_vlm_ocr = False,
+        max_visual_payloads = 0,
     )
 
     assert page_count == 1
@@ -80,8 +80,8 @@ def test_preflight_pdf_page_count_accepts_null_password():
     file_bytes = _make_pseudo_encrypted_pdf()
     n = _preflight_pdf_page_count(
         file_bytes,
-        filename="pseudo_encrypted.pdf",
-        content_type="application/pdf",
+        filename = "pseudo_encrypted.pdf",
+        content_type = "application/pdf",
     )
     assert n == 1
 
@@ -93,11 +93,11 @@ def test_extract_pdf_still_rejects_password_required(monkeypatch):
     pymupdf = pytest.importorskip("pymupdf")
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 100), "this one needs a password", fontsize=12)
+    page.insert_text((72, 100), "this one needs a password", fontsize = 12)
     encrypted = doc.tobytes(
-        encryption=pymupdf.PDF_ENCRYPT_AES_256,
-        owner_pw="owner",
-        user_pw="real-password",
+        encryption = pymupdf.PDF_ENCRYPT_AES_256,
+        owner_pw = "owner",
+        user_pw = "real-password",
     )
     doc.close()
 
@@ -106,7 +106,7 @@ def test_extract_pdf_still_rejects_password_required(monkeypatch):
     with pytest.raises(mod.DocumentExtractionEncrypted):
         mod._extract_pdf(
             encrypted,
-            max_figures=0,
-            use_vlm_ocr=False,
-            max_visual_payloads=0,
+            max_figures = 0,
+            use_vlm_ocr = False,
+            max_visual_payloads = 0,
         )

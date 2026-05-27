@@ -6665,9 +6665,7 @@ async def extract_document_endpoint(
                         extract_wait = asyncio.ensure_future(
                             asyncio.shield(extraction_task)
                         )
-                        extract_wait.add_done_callback(
-                            _drain_doc_future_exception
-                        )
+                        extract_wait.add_done_callback(_drain_doc_future_exception)
 
                 if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
                     yield (
