@@ -230,10 +230,17 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI
-  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
-  { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
-  { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
+  // OpenAI per-model output caps from developers.openai.com per-model
+  // pages (cross-checked against the Azure Foundry reasoning table).
+  // Order matters: list the 16k chat-latest variants first so the
+  // broader gpt-5 / gpt-4 entries don't shadow them.
+  //   gpt-5.3-chat-latest / gpt-5.1-chat = 16384 (chat-class)
+  //   gpt-5.5* / gpt-5.4* / gpt-5.3-codex / gpt-5.2 / gpt-5.1 / gpt-5
+  //     / gpt-5-codex / gpt-5-pro = 128000
+  //   o1 / o3 / o3-pro / o4-mini / codex-mini = 100000
+  { providerType: "openai", prefixes: ["gpt-5.3-chat-latest", "gpt-5.1-chat"], cap: 16384 },
+  { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["o1", "o3", "o4", "codex-mini"], cap: 100000 },
   // Anthropic — overview table at
   // platform.claude.com/docs/en/about-claude/models/overview. Opus 4.7
   // and Opus 4.6 BOTH ship 128k Max output (the legacy-table row for
@@ -581,15 +588,11 @@ const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   topA: false,
 };
 
-// vLLM and Ollama's OpenAI-compat endpoints accept the OpenAI subset
-// plus top_k / min_p / repetition_penalty / seed, but neither forwards
-// the llama.cpp-only extended samplers (typical_p, top_n_sigma,
-// repeat_last_n, dynatemp_*, mirostat*). vLLM's SamplingParams has no
-// fields for them (vllm/sampling_params.py) and Ollama's OAI
-// translator (ollama/openai/openai.go FromChatRequest) only copies the
-// OpenAI subset. Surfacing the eight extra sliders here would be the
-// silent-drop UX the file header warns against, so we hide them.
-const VLLM_OLLAMA_CAPABILITIES: ProviderCapabilities = {
+// vLLM's OpenAI-compat endpoint accepts the OpenAI subset plus top_k /
+// min_p / repetition_penalty / seed, but not the 8 llama.cpp-only
+// extended samplers (vLLM's SamplingParams has no fields for them —
+// vllm/sampling_params.py).
+const VLLM_CAPABILITIES: ProviderCapabilities = {
   ...LLAMA_CPP_CAPABILITIES,
   typicalP: false,
   topNSigma: false,
@@ -599,6 +602,20 @@ const VLLM_OLLAMA_CAPABILITIES: ProviderCapabilities = {
   mirostat: false,
   mirostatTau: false,
   mirostatEta: false,
+};
+
+// Ollama is stricter than vLLM. Studio reaches Ollama via the OpenAI-
+// compat /v1/chat/completions transport, and Ollama's translator
+// (ollama/openai/openai.go FromChatRequest) only copies the documented
+// OpenAI subset — top_k / min_p / repetition_penalty are silently
+// DROPPED on that path even though native /api/chat would forward them
+// through the `options` bag. Hide them so users don't move a slider
+// the wire never carries.
+const OLLAMA_CAPABILITIES: ProviderCapabilities = {
+  ...VLLM_CAPABILITIES,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
 };
 
 // OpenRouter is a router-of-routers: the gateway accepts a wider set
@@ -861,13 +878,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   openrouter: OPENROUTER_CAPABILITIES,
   // `llama_cpp` and the permissive `custom` preset terminate at the
   // first-party llama-server runtime, so the full sampler chain is
-  // available. vLLM and Ollama only surface the OpenAI subset
-  // (+ top_k/min_p/rep_penalty/seed) — the 8 extended llama.cpp
-  // samplers are hidden to avoid the silent-drop UX.
+  // available. vLLM surfaces the OpenAI subset + top_k/min_p/
+  // repetition_penalty/seed (no extended llama.cpp samplers). Ollama
+  // is stricter: its OAI translator drops top_k/min_p/repetition_penalty
+  // too on the /v1 path.
   custom: LLAMA_CPP_CAPABILITIES,
   llama_cpp: LLAMA_CPP_CAPABILITIES,
-  vllm: VLLM_OLLAMA_CAPABILITIES,
-  ollama: VLLM_OLLAMA_CAPABILITIES,
+  vllm: VLLM_CAPABILITIES,
+  ollama: OLLAMA_CAPABILITIES,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
@@ -1008,9 +1026,12 @@ const OPENAI_REASONING_MODELS = [
     levels: ["medium"],
   },
   {
+    // gpt-5.3-codex per dev page lists ONLY low/medium/high/xhigh
+    // (https://developers.openai.com/api/docs/models/gpt-5.3-codex);
+    // `none` is not in the codex enum so supportsOff stays false.
     prefixes: ["gpt-5.3-codex"],
-    supportsOff: true,
-    levels: ["none", "low", "medium", "high", "xhigh"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh"],
   },
   {
     // Original gpt-5: minimal is supported, but per Azure footnote ^7^
@@ -1027,7 +1048,13 @@ const OPENAI_REASONING_MODELS = [
     levels: ["minimal", "low", "medium", "high"],
   },
   {
-    prefixes: ["o3"],
+    // o-series reasoning models: o1, o3, o3-mini, o3-pro, o4-mini,
+    // codex-mini all expose low/medium/high reasoning_effort per
+    // developers.openai.com/api/docs/models/o3 and the Azure Foundry
+    // o-series table. Without this entry o1/o4/codex-mini fell into
+    // NO_REASONING_CAPS and the panel hid the effort slider — a real
+    // UX regression for users on those ids.
+    prefixes: ["o1", "o3", "o4", "codex-mini"],
     supportsOff: false,
     levels: DEFAULT_EFFORT_LEVELS,
   },

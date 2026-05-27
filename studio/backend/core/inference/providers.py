@@ -97,7 +97,13 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "deepseek": {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
+        # Legacy aliases (deepseek-chat / deepseek-reasoner) retire
+        # 2026-07-24 per https://api-docs.deepseek.com/updates. Surface
+        # the new canonical ids (deepseek-v4-flash / deepseek-v4-pro)
+        # alongside so the picker keeps working on cutover.
         "default_models": [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
             "deepseek-chat",
             "deepseek-reasoner",
         ],
@@ -106,7 +112,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
+        "notes": "OpenAI-compatible API. deepseek-v4-pro / deepseek-v4-flash are the new canonical ids; deepseek-chat / deepseek-reasoner remain as legacy aliases until 2026-07-24.",
     },
     "mistral": {
         "display_name": "Mistral AI",
