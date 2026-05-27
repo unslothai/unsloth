@@ -97,9 +97,7 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
         / "inference"
         / "llama_server_args.py"
     )
-    spec = importlib.util.spec_from_file_location(
-        "_lsa_for_subset_test", lsa_path
-    )
+    spec = importlib.util.spec_from_file_location("_lsa_for_subset_test", lsa_path)
     lsa = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(lsa)
     _DENYLIST_GROUPS = lsa._DENYLIST_GROUPS
