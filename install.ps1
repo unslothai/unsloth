@@ -1300,15 +1300,11 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
-                # Install pydantic WITH deps so pip pins pydantic-core to
-                # the exact version pydantic's metadata requires. The
-                # --no-deps install of no-torch-runtime.txt below would
-                # otherwise pick the latest of each independently and
-                # trip pydantic's _ensure_pydantic_core_version check.
-                # pydantic's deps (annotated-types, pydantic-core,
-                # typing-extensions, typing-inspection) are torch-free.
+                # Resolve pydantic WITH deps so pip pins pydantic-core
+                # to the matching version (no-torch-runtime.txt below
+                # is --no-deps). All transitive deps are torch-free.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
@@ -1318,7 +1314,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1356,10 +1352,9 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
-                # Install pydantic WITH deps so pip pins pydantic-core to
-                # the matching version (see migrated branch above).
+                # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
@@ -1369,7 +1364,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.8" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -1397,7 +1392,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.6" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.8" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -1630,6 +1625,33 @@ shell.Run cmd, 0, False
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -UnslothExePath $UnslothExe
+
+    # Warn if another 'unsloth' wins on PATH (different venv, system pip).
+    # Mirrors install.sh; absolute path is still the most reliable launch.
+    # Uses content-hash equality (Get-FileHash) so hardlinks, symlinks, and
+    # identical copies of the installer's shim don't false-trigger. CommandType
+    # Application restricts the probe to real executables (skips aliases,
+    # functions, scripts).
+    try {
+        $_pathCmd = Get-Command unsloth -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($_pathCmd) {
+            $_pathExe = $_pathCmd.Source
+            $_installedHash = (Get-FileHash -LiteralPath $UnslothExe -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            $_pathHash      = (Get-FileHash -LiteralPath $_pathExe   -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            if ($_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
+                Write-Host ""
+                step "warning" "another 'unsloth' wins on PATH:" "Yellow"
+                substep $_pathExe
+                substep "this installer's binary is at:"
+                substep $UnslothExe
+                substep "to use this install, call the absolute path above,"
+                substep "or put its dir earlier on PATH."
+                Write-Host ""
+            }
+        }
+    } catch {
+        # Diagnostic only; never block install on a probe failure.
+    }
 
     # In interactive terminals, ask the user before starting Studio.
     # In non-interactive environments (CI, Docker) just print instructions.
