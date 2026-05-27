@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
+    "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
   },
