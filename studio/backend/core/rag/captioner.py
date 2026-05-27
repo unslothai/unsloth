@@ -37,7 +37,7 @@ _PROMPT = (
     "(axes, labels, captions, visible text, main objects). "
     "Do not speculate beyond what is visible."
 )
-_MAX_NEW_TOKENS = 120
+_MAX_NEW_TOKENS = 200
 # Downscale large images so the base64 payload stays manageable; the chat
 # model's prefill cost scales with image-tile count, not pixel count, but
 # very large inputs still bloat the JSON body. 1600 px on the long side
@@ -122,6 +122,11 @@ def _post_one(client: Any, endpoint: str, model: str, blob: bytes) -> str:
         ],
         "max_tokens": _MAX_NEW_TOKENS,
         "temperature": 0.0,
+        # Reasoning models (gemma-4, qwen3-thinking, etc.) burn the whole
+        # token budget on <thinking> output and emit empty visible content
+        # — useless for a short image caption. Disable thinking for this
+        # request only; the user's chat sessions stay unaffected.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     response = client.post(endpoint, json = payload)
     response.raise_for_status()
