@@ -352,7 +352,10 @@ function Get-PytorchCudaTag {
         # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
         # ErrorRecord objects leak into $output and break the -match.
         $output = & $smiExe 2>&1 | Out-String
-        if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+        # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+        # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+        # Accept both spellings so we don't fall through to the cu126 default.
+        if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
@@ -842,7 +845,9 @@ if ($HasNvidiaSmi) {
 $DriverMaxCuda = $null
 try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
-    if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
+    # Newer NVIDIA drivers (e.g. 610.x) report the driver max CUDA as
+    # "CUDA UMD Version: X.Y" rather than "CUDA Version: X.Y"; accept both.
+    if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         substep "driver supports up to CUDA $DriverMaxCuda"
     }

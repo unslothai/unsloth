@@ -60,7 +60,9 @@ _INTENT_SIGNAL = re.compile(
     # Handles both straight and curly apostrophes.
     # Excludes "I can", "I should", "I want to", "let's" which
     # appear frequently in direct answers / explanations.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    # Negative lookahead drops negated forms ("I will not", "I'll never")
+    # so a refusal doesn't trigger a re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -5074,13 +5076,30 @@ class LlamaCppBackend:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
                         )
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                        )
+                        # Guard against the model emitting a tool not in the
+                        # per-request advertised set: filtered MCP names, a
+                        # built-in the caller opted out of, or a stale name
+                        # from a prior turn. Mirrors the safetensors loop's
+                        # allowed_tool_names check.
+                        _allowed = {
+                            (t.get("function") or {}).get("name")
+                            for t in (tools or [])
+                            if (t.get("function") or {}).get("name")
+                        }
+                        if _allowed and tool_name not in _allowed:
+                            result = (
+                                f"Error: tool '{tool_name}' is not enabled "
+                                "for this request. Use one of the enabled "
+                                "tools or provide a final answer."
+                            )
+                        else:
+                            result = execute_tool(
+                                tool_name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                            )
 
                     yield {
                         "type": "tool_end",
