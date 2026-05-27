@@ -9,7 +9,17 @@ import sys
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from core.training import worker
+
+
+@pytest.fixture(autouse = True)
+def _default_runtime_install_gpu_gates(monkeypatch):
+    # Default gates so subprocess.run mocks don't trip the has_*_gpu probes
+    # that share subprocess.run. Tests exercising the gates override these.
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: True)
 
 
 def _missing_flash_attn_import():
