@@ -172,10 +172,15 @@ _DEEPSEEK_V3_FUNC_RE = re.compile(
     + re.escape(_DEEPSEEK_SEP),
 )
 
-# GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME\n<arg_key>K</arg_key>\n
-# <arg_value>V</arg_value>...`` per chat_template.jinja. Strings come
-# through raw; non-strings are JSON-encoded.
-_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*)\n")
+# GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>[\n]
+# <arg_value>V</arg_value>...</tool_call>`` per chat_template.jinja.
+# GLM 4.5 / 4.6 emit a ``\n`` between the name and the first
+# ``<arg_key>``; GLM 4.7's template strips trailing whitespace from
+# the name line so the marker follows the name directly. The lookahead
+# below terminates the name on EITHER ``\n`` or the next ``<arg_key>``.
+# First-char ``[^\n<{]`` keeps Qwen's ``<tool_call>{json}`` form from
+# matching here. Strings come through raw; non-strings JSON-encoded.
+_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>)")
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_PAIR_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
@@ -1147,14 +1152,33 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     ``vllm/tool_parsers/kimi_k2_tool_parser.py``.
     """
     out: list[dict] = []
-    section_start = content.find(_KIMI_SECTION_BEGIN)
-    if section_start < 0:
-        return out
-    scan_start = section_start + len(_KIMI_SECTION_BEGIN)
-    section_end = content.find(_KIMI_SECTION_END, scan_start)
-    scan_end = section_end if section_end >= 0 else len(content)
-    body = content[scan_start:scan_end]
+    outer_pos = 0
+    while True:
+        section_start = content.find(_KIMI_SECTION_BEGIN, outer_pos)
+        if section_start < 0:
+            return out
+        scan_start = section_start + len(_KIMI_SECTION_BEGIN)
+        section_end = content.find(_KIMI_SECTION_END, scan_start)
+        scan_end = section_end if section_end >= 0 else len(content)
+        body = content[scan_start:scan_end]
+        # Advance past this section for the next outer iteration. If
+        # the section is unterminated (truncated stream) we exit after
+        # this iteration since there is no further content to scan.
+        if section_end < 0:
+            outer_pos = len(content)
+        else:
+            outer_pos = section_end + len(_KIMI_SECTION_END)
 
+        out.extend(_parse_kimi_section_body(body, id_offset = id_offset + len(out)))
+
+        if section_end < 0:
+            return out
+
+
+def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
+    """Parse the inner content of a single Kimi K2
+    ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>`` block."""
+    out: list[dict] = []
     pos = 0
     while pos < len(body):
         call_start = body.find(_KIMI_CALL_BEGIN, pos)

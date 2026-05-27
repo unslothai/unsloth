@@ -125,6 +125,55 @@ def test_glm_arg_value_with_literal_less_than():
 
 
 # ────────────────────────────────────────────────────────────────────
+# GLM 4.7 no-newline emission shape
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_glm_4_7_no_newlines_between_name_and_arg_key():
+    """GLM 4.7's ``chat_template.jinja`` line 65 uses
+    ``{{- '<tool_call>' + tc.name -}}`` which strips trailing whitespace,
+    so the literal ``<arg_key>`` follows the name directly with no
+    ``\\n``. The 4.5 / 4.6 templates emit ``<tool_call>NAME\\n<arg_key>...``
+    with a newline. The parser must handle both shapes -- the lookahead
+    in ``_GLM_TC_OPEN_RE`` terminates the name on ``\\n`` OR ``<arg_key>``.
+    """
+    text = (
+        "<tool_call>get_weather"
+        "<arg_key>city</arg_key><arg_value>London</arg_value>"
+        "<arg_key>units</arg_key><arg_value>celsius</arg_value>"
+        "</tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_weather"
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args == {"city": "London", "units": "celsius"}
+
+
+def test_glm_4_7_no_newlines_multi_call():
+    """Back-to-back GLM 4.7 calls without intervening newlines."""
+    text = (
+        "<tool_call>a<arg_key>x</arg_key><arg_value>1</arg_value></tool_call>"
+        "<tool_call>b<arg_key>y</arg_key><arg_value>2</arg_value></tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 2
+    assert calls[0]["function"]["name"] == "a"
+    assert calls[1]["function"]["name"] == "b"
+
+
+def test_glm_4_7_does_not_break_qwen_path():
+    """Confirm Qwen ``<tool_call>{json}`` still dispatches to Qwen even
+    after the GLM regex was relaxed -- the first-char restriction
+    ``[^\\n<{]`` excludes ``{`` so GLM's regex still cannot match a Qwen
+    body."""
+    text = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>'
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "web_search"
+
+
+# ────────────────────────────────────────────────────────────────────
 # Kimi K2 dotted name + bare counter (finding C in plan)
 # ────────────────────────────────────────────────────────────────────
 
@@ -141,6 +190,33 @@ def test_kimi_dotted_namespace_resolves_to_last_segment():
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "tool"
     assert calls[0]["id"] == "functions.my.tool:0"
+
+
+def test_kimi_two_sections_in_one_stream_both_parse():
+    """vLLM and SGLang use ``re.findall`` and so collect every section in
+    a single stream. The PR's original implementation stopped at the
+    first ``<|tool_calls_section_end|>``; the outer-loop refactor walks
+    every section. Kimi K2 doesn't emit multi-section in practice, but
+    parity with vLLM / SGLang is cheap to maintain."""
+    text = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.a:0"
+        "<|tool_call_argument_begin|>{\"x\":1}"
+        "<|tool_call_end|>"
+        "<|tool_calls_section_end|>"
+        " some prose between sections "
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.b:0"
+        "<|tool_call_argument_begin|>{\"y\":2}"
+        "<|tool_call_end|>"
+        "<|tool_calls_section_end|>"
+    )
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 2
+    assert calls[0]["function"]["name"] == "a"
+    assert calls[1]["function"]["name"] == "b"
+    assert calls[0]["id"] == "functions.a:0"
+    assert calls[1]["id"] == "functions.b:0"
 
 
 def test_kimi_bare_counter_id_is_dropped():
