@@ -92,14 +92,24 @@ class _BGEVLAdapter:
         for start in range(0, len(inputs), batch_size):
             batch = list(inputs[start : start + batch_size])
             if is_image:
-                pil_batch = [
-                    Image.open(io.BytesIO(b)).convert("RGB")
-                    if isinstance(b, (bytes, bytearray))
-                    else b
-                    for b in batch
-                ]
+                # BGE-VL's internal data_process re-opens each item with
+                # Image.open(...), which needs a file-like (has .read())
+                # or a path — NOT a pre-opened PIL Image. Pass BytesIO so
+                # the model's own opener works. PIL Images get rebuffered
+                # via an in-memory PNG round-trip.
+                file_likes: list[Any] = []
+                for b in batch:
+                    if isinstance(b, (bytes, bytearray)):
+                        file_likes.append(io.BytesIO(b))
+                    elif isinstance(b, Image.Image):
+                        buf = io.BytesIO()
+                        b.save(buf, format = "PNG")
+                        buf.seek(0)
+                        file_likes.append(buf)
+                    else:
+                        file_likes.append(b)
                 with torch.no_grad():
-                    vecs = self._model.encode(images = pil_batch)
+                    vecs = self._model.encode(images = file_likes)
             else:
                 vecs = self._encode_text_truncated([str(t) for t in batch])
             if normalize_embeddings:
