@@ -191,9 +191,7 @@ async def refresh_mcp_server_tools(
         tools = await list_tools_async(
             url = server["url"],
             headers = parse_server_headers(server),
-            timeout = OAUTH_PROBE_TIMEOUT_SECONDS
-            if use_oauth
-            else PROBE_TIMEOUT_SECONDS,
+            timeout = OAUTH_PROBE_TIMEOUT_SECONDS if use_oauth else PROBE_TIMEOUT_SECONDS,
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI

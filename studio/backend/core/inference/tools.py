@@ -610,8 +610,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                 continue
             fresh = current.get(server["id"])
             if fresh is None or any(
-                fresh.get(k) != server.get(k)
-                for k in TOOL_CACHE_INVALIDATING_FIELDS
+                fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
             ):
                 continue
             cache_tools(server["id"], payload)
