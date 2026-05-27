@@ -1,0 +1,8 @@
+This is a test document for RAG preview fixtures.
+
+Section 1: Introduction
+The operating margin rose to 18.2% in Q3, driven by improved efficiency.
+
+Section 2: Details
+Additional supporting evidence and analysis is contained here.
+Page 1 of 1.

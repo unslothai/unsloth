@@ -3,14 +3,15 @@
 
 "use client";
 
+import { authFetch } from "@/features/auth";
+import { usePreviewStore } from "@/features/rag/stores/preview-store";
+import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { authFetch } from "@/features/auth";
 import { FileTextIcon, ImageIcon, LoaderIcon } from "lucide-react";
-import { memo, useEffect, useState } from "react";
-import { cn } from "@/lib/utils";
+import { memo, useCallback, useEffect, useState } from "react";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -18,14 +19,29 @@ import {
 } from "./tool-fallback";
 
 export interface ParsedChunk {
+  /** Visible citation id the model uses inside `[N]` references. Display
+   *  only; never sent to the backend as a chunk_id. */
   id: string;
   source: string;
   page?: string;
   chunkIndex?: string;
   tokens?: string;
+  sourcePageIndex?: string;
+  pageCharStart?: string;
+  pageCharEnd?: string;
+  lineStart?: string;
+  lineEnd?: string;
   kind?: string;
   imageUrl?: string;
   text: string;
+  /** Durable `rag_documents.id`. Carries through when the tool XML
+   *  includes `document_id="..."`. Absent on legacy tool output. */
+  documentId?: string;
+  /** Durable `rag_chunks.id`. Carries through when the tool XML
+   *  includes `chunk_id="..."`. Absent on legacy tool output. The
+   *  preview routing value sent as `?chunk_id=` to `/preview-target`;
+   *  never the same as the visible `id`. */
+  backendChunkId?: string;
 }
 
 const ATTR_RE = /(\w+)="([^"]*)"/g;
@@ -59,9 +75,17 @@ export function parseChunks(raw: string): ParsedChunk[] {
         page: attrs.page,
         chunkIndex: attrs.chunk_index,
         tokens: attrs.tokens,
+        sourcePageIndex: attrs.source_page_index,
+        pageCharStart: attrs.page_char_start,
+        pageCharEnd: attrs.page_char_end,
+        lineStart: attrs.line_start,
+        lineEnd: attrs.line_end,
         kind: attrs.kind,
         imageUrl: attrs.image_url,
         text,
+        // Durable backend ids (legacy XML omits both → preview gated off).
+        ...(attrs.document_id ? { documentId: attrs.document_id } : {}),
+        ...(attrs.chunk_id ? { backendChunkId: attrs.chunk_id } : {}),
       });
     }
     match = CHUNK_RE.exec(raw);
@@ -82,9 +106,11 @@ function useAuthedImageUrl(path: string | undefined): string | undefined {
     }
     let cancelled = false;
     let objectUrl: string | undefined;
-    void authFetch(path)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`image fetch ${response.status}`);
+    authFetch(path)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`image fetch ${response.status}`);
+        }
         return response.blob();
       })
       .then((blob) => {
@@ -123,11 +149,43 @@ function ChunkImage({ url, alt }: { url: string; alt: string }) {
 }
 
 function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
+  const openPreview = usePreviewStore((s) => s.open);
   const meta: string[] = [];
   if (chunk.page) meta.push(`page ${chunk.page}`);
   if (chunk.tokens) meta.push(`${chunk.tokens} tok`);
   if (chunk.chunkIndex) meta.push(`#${chunk.chunkIndex}`);
   if (chunk.kind && chunk.kind !== "text") meta.push(chunk.kind);
+
+  const documentId = chunk.documentId;
+  const backendChunkId = chunk.backendChunkId;
+  const isPreviewable = Boolean(documentId && backendChunkId);
+  const handleOpenPreview = useCallback(() => {
+    if (!(documentId && backendChunkId)) {
+      return;
+    }
+    Promise.resolve(
+      openPreview({
+        documentId,
+        backendChunkId,
+      }),
+    ).catch(() => undefined);
+  }, [backendChunkId, documentId, openPreview]);
+
+  const sourceLabel = (
+    <>
+      <span className="rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+        [{chunk.id}]
+      </span>
+      {chunk.kind === "image" ? (
+        <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
+      ) : (
+        <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
+      )}
+      <span className="truncate font-medium" title={chunk.source}>
+        {chunk.source}
+      </span>
+    </>
+  );
 
   return (
     <div
@@ -135,19 +193,22 @@ function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
       className="rounded-md border border-foreground/10 bg-muted/40 p-2.5 text-xs"
     >
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold">
-            [{chunk.id}]
-          </span>
-          {chunk.kind === "image" ? (
-            <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
-          ) : (
-            <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
-          )}
-          <span className="truncate font-medium" title={chunk.source}>
-            {chunk.source}
-          </span>
-        </div>
+        {isPreviewable ? (
+          <button
+            type="button"
+            className={cn(
+              "flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-left outline-none transition-colors",
+              "hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/50",
+            )}
+            onClick={handleOpenPreview}
+            aria-label={`Open preview of ${chunk.source}`}
+            title="Open preview"
+          >
+            {sourceLabel}
+          </button>
+        ) : (
+          <div className="flex min-w-0 items-center gap-1.5">{sourceLabel}</div>
+        )}
         {meta.length > 0 ? (
           <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
             {meta.join(" · ")}

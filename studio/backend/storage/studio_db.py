@@ -275,6 +275,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             kind TEXT NOT NULL DEFAULT 'text',
             image_path TEXT,
             linked_chunk_id TEXT,
+            source_page_index INTEGER,
+            page_char_start INTEGER,
+            page_char_end INTEGER,
+            line_start INTEGER,
+            line_end INTEGER,
+            pdf_regions_json TEXT,
             UNIQUE(document_id, chunk_index)
         )
         """
@@ -290,8 +296,37 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE rag_chunks ADD COLUMN image_path TEXT")
     if "linked_chunk_id" not in chunk_cols:
         conn.execute("ALTER TABLE rag_chunks ADD COLUMN linked_chunk_id TEXT")
+    for column in (
+        "source_page_index",
+        "page_char_start",
+        "page_char_end",
+        "line_start",
+        "line_end",
+    ):
+        if column not in chunk_cols:
+            conn.execute(f"ALTER TABLE rag_chunks ADD COLUMN {column} INTEGER")
+    if "pdf_regions_json" not in chunk_cols:
+        conn.execute("ALTER TABLE rag_chunks ADD COLUMN pdf_regions_json TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_document_id ON rag_chunks(document_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_document_pages (
+            document_id TEXT NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+            page_index INTEGER NOT NULL,
+            page_number INTEGER,
+            text TEXT NOT NULL,
+            char_count INTEGER NOT NULL DEFAULT 0,
+            line_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(document_id, page_index)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_document_pages_document_id "
+        "ON rag_document_pages(document_id)"
     )
     conn.execute(
         """

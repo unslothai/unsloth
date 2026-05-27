@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type ParsedChunk,
+  parseChunks,
+} from "@/components/assistant-ui/tool-ui-search-knowledge-base";
 import { getAuthToken } from "@/features/auth/session";
+import {
+  type SearchHit,
+  type SearchRequest,
+  listKBDocuments,
+  listThreadDocuments,
+  search as ragSearch,
+} from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -37,12 +48,12 @@ import type {
   OpenAIMessageContent,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -56,17 +67,6 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
-import {
-  type SearchHit,
-  type SearchRequest,
-  listKBDocuments,
-  listThreadDocuments,
-  search as ragSearch,
-} from "@/features/rag/api/rag-api";
-import {
-  type ParsedChunk,
-  parseChunks,
-} from "@/components/assistant-ui/tool-ui-search-knowledge-base";
 import type { RagMode, RagSource } from "./chat-settings-api";
 import {
   createOpenAIContainer,
@@ -123,8 +123,7 @@ function buildRagRequest(
 function formatRagContext(hits: SearchHit[]): string {
   const parts = hits.map((h) => {
     const name = h.filename ?? `chunk ${h.chunk_index}`;
-    const pageAttr =
-      h.page_number != null ? ` page="${h.page_number}"` : "";
+    const pageAttr = h.page_number != null ? ` page="${h.page_number}"` : "";
     return `<source filename="${name}"${pageAttr}>\n${h.text}\n</source>`;
   });
   return `<context>\nThe following documents may help answer the user's question:\n${parts.join("\n")}\n</context>`;
@@ -251,9 +250,27 @@ interface DocumentSourcePart {
   type: "source";
   sourceType: "document";
   id: string;
+  /** Display alias of `citationId`. Kept so the existing sources.tsx
+   *  renderer keeps working; new code SHOULD use `citationId`. NEVER
+   *  sent to backend as the durable chunk_id. */
   chunkId: string;
+  /** Visible model-citation id (the `[N]` reference). Display only. */
+  citationId: string;
+  /** Durable `rag_documents.id` from tool XML `document_id=`. Null
+   *  when the source came from legacy XML lacking the attribute;
+   *  preview routing is gated off in that case. */
+  documentId: string | null;
+  /** Durable `rag_chunks.id` from tool XML `chunk_id=`. Null on
+   *  legacy XML. Sent as `?chunk_id=` to `/preview-target`. */
+  backendChunkId: string | null;
   filename: string;
   page?: string;
+  sourcePageIndex?: string;
+  pageCharStart?: string;
+  pageCharEnd?: string;
+  lineStart?: string;
+  lineEnd?: string;
+  score?: string;
   text: string;
 }
 
@@ -273,32 +290,93 @@ function extractCitedIds(text: string): Set<string> {
   return ids;
 }
 
-/** Build doc-shaped source parts for chunks the model actually cited.
+function indexChunksByCitationId(
+  allChunks: ParsedChunk[],
+): Map<string, ParsedChunk> {
+  const byId = new Map<string, ParsedChunk>();
+  for (const chunk of allChunks) {
+    if (!byId.has(chunk.id)) {
+      byId.set(chunk.id, chunk);
+    }
+  }
+  return byId;
+}
+
+function documentSourceIds(
+  allChunks: ParsedChunk[],
+  citedIds: Set<string>,
+): string[] {
+  if (citedIds.size > 0) {
+    return Array.from(citedIds);
+  }
+  return allChunks.map((chunk) => chunk.id);
+}
+
+function toDocumentSourcePart(
+  id: string,
+  chunk: ParsedChunk,
+): DocumentSourcePart {
+  const part: DocumentSourcePart = {
+    type: "source",
+    sourceType: "document",
+    id: `rag-${id}`,
+    chunkId: id,
+    citationId: id,
+    documentId: chunk.documentId ?? null,
+    backendChunkId: chunk.backendChunkId ?? null,
+    filename: chunk.source,
+    text: chunk.text,
+  };
+
+  if (chunk.page) {
+    part.page = chunk.page;
+  }
+  if (chunk.sourcePageIndex) {
+    part.sourcePageIndex = chunk.sourcePageIndex;
+  }
+  if (chunk.pageCharStart) {
+    part.pageCharStart = chunk.pageCharStart;
+  }
+  if (chunk.pageCharEnd) {
+    part.pageCharEnd = chunk.pageCharEnd;
+  }
+  if (chunk.lineStart) {
+    part.lineStart = chunk.lineStart;
+  }
+  if (chunk.lineEnd) {
+    part.lineEnd = chunk.lineEnd;
+  }
+  if (chunk.score) {
+    part.score = chunk.score;
+  }
+
+  return part;
+}
+
+/** Build doc-shaped source parts for chunks the model cited.
  *  `allChunks` is the flat union of every search_knowledge_base tool
- *  result in this turn (deduped by id). Returns one part per unique
- *  cited id that maps to a real chunk; hallucinated `[99]` refs without
- *  a matching chunk are silently dropped. */
+ *  result in this turn (deduped by id). If the model forgets literal
+ *  `[N]` ids, fall back to retrieved chunks so source chips remain
+ *  visible and previewable. Hallucinated `[99]` refs without a matching
+ *  chunk are silently dropped. */
 function buildDocumentSourceParts(
   allChunks: ParsedChunk[],
   citedIds: Set<string>,
 ): DocumentSourcePart[] {
-  const byId = new Map<string, ParsedChunk>();
-  for (const chunk of allChunks) {
-    if (!byId.has(chunk.id)) byId.set(chunk.id, chunk);
-  }
+  const byId = indexChunksByCitationId(allChunks);
+  const idsToShow = documentSourceIds(allChunks, citedIds);
   const out: DocumentSourcePart[] = [];
-  for (const id of citedIds) {
+  const emittedIds = new Set<string>();
+  for (const id of idsToShow) {
+    if (emittedIds.has(id)) {
+      continue;
+    }
     const chunk = byId.get(id);
-    if (!chunk) continue;
-    out.push({
-      type: "source",
-      sourceType: "document",
-      id: `rag-${id}`,
-      chunkId: id,
-      filename: chunk.source,
-      ...(chunk.page ? { page: chunk.page } : {}),
-      text: chunk.text,
-    });
+    if (!chunk) {
+      continue;
+    }
+    emittedIds.add(id);
+    out.push(toDocumentSourcePart(id, chunk));
   }
   return out;
 }
@@ -954,7 +1032,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -993,33 +1076,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
-      const webSearchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
-        );
-      const codeExecEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            externalSelection &&
-            codeToolsEnabled &&
-            providerSupportsBuiltinCodeExecution(
-              externalProvider.providerType,
-              externalSelection.modelId,
-              externalProvider.baseUrl,
-            ),
-        );
+      const webSearchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebSearch(externalProvider.providerType),
+      );
+      const codeExecEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          codeToolsEnabled &&
+          providerSupportsBuiltinCodeExecution(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
       // web_fetch shares the Search pill with web_search (no separate
       // UI toggle), so it follows toolsEnabled. Anthropic is the only
       // provider that ships it today; on others providerSupportsBuiltinWebFetch
       // returns false and this stays inert.
-      const webFetchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebFetch(externalProvider.providerType),
-        );
+      const webFetchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
       const providerShipsWebFetch = Boolean(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
@@ -1049,7 +1129,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // entirely so retrieval only happens via the LLM-invoked
       // search_knowledge_base tool. Flip back to true to restore the
       // always-on grounding for external providers / non-tool models.
-      const RAG_PREFETCH_ENABLED = false;
+      const ragPrefetchEnabled = false;
 
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
@@ -1115,13 +1195,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
 
-      if (RAG_PREFETCH_ENABLED && ragToolEnabled && ragSource.kind !== "off") {
+      if (ragPrefetchEnabled && ragToolEnabled && ragSource.kind !== "off") {
         const lastUser = [...outboundMessages]
           .reverse()
           .find((m) => m.role === "user");
-        const queryText = lastUser
-          ? extractMessageText(lastUser.content)
-          : "";
+        const queryText = lastUser ? extractMessageText(lastUser.content) : "";
         if (queryText.trim()) {
           const ragReq = buildRagRequest(
             ragSource,
@@ -1145,8 +1223,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   outboundMessages[0]?.role === "system" &&
                   typeof outboundMessages[0].content === "string"
                 ) {
-                  outboundMessages[0].content =
-                    `${block}\n\n${outboundMessages[0].content}`;
+                  outboundMessages[0].content = `${block}\n\n${outboundMessages[0].content}`;
                 } else {
                   outboundMessages.unshift({ role: "system", content: block });
                 }
@@ -1454,7 +1531,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? reasoningEffort
             : "low";
         const externalReasoningEnabled =
-          !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
+          externalReasoningCaps.supportsReasoningOff ? reasoningEnabled : true;
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
@@ -1540,8 +1617,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ) {
                       void updateStoredChatThreadEventually(t.id, {
                         openaiCodeExecContainerId: null,
-                      })
-                        .catch(() => {});
+                      }).catch(() => {});
                       continue;
                     }
                     openaiCodeExecContainerId = t.openaiCodeExecContainerId;
@@ -1585,8 +1661,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = created.id;
                   void updateStoredChatThreadEventually(resolvedThreadId, {
                     openaiCodeExecContainerId: created.id,
-                  })
-                    .catch(() => {});
+                  }).catch(() => {});
                 } catch {
                   // Fall back to backend's container_auto path on
                   // failure — keeps the chat moving; the next turn
@@ -1699,7 +1774,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // attaches `cache_control.ttl` when the value is one of
               // "5m" / "1h" (see external_provider.py near line 1375),
               // so unknown values are a no-op end-to-end.
-              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              ...(supportsProviderPromptCacheTtl(
+                externalProvider.providerType,
+              ) &&
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
@@ -1744,8 +1821,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools
-              && (toolsEnabled || codeToolsEnabled || ragToolPathTaken)
+            ...(supportsTools &&
+            (toolsEnabled || codeToolsEnabled || ragToolPathTaken)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -1760,9 +1837,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ? {
                         rag_scope: {
                           kb_id:
-                            ragSource.kind === "kb"
-                              ? ragSource.kbId
-                              : null,
+                            ragSource.kind === "kb" ? ragSource.kbId : null,
                           thread_id:
                             ragSource.kind === "thread"
                               ? (resolvedThreadId ?? null)
@@ -1840,8 +1915,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         : "openaiCodeExecContainerId";
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: null,
-                    })
-                      .catch(() => {});
+                    }).catch(() => {});
                   }
                   continue;
                 }
@@ -2026,11 +2100,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               if (reasoning) {
-                if (!reasoningContentOpen) {
+                if (reasoningContentOpen) {
+                  cumulativeText += reasoning;
+                } else {
                   cumulativeText += `<think>${reasoning}`;
                   reasoningContentOpen = true;
-                } else {
-                  cumulativeText += reasoning;
                 }
               }
               if (delta) {
@@ -2125,8 +2199,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
 
         // RAG: flatten chunks across every search_knowledge_base call this
-        // turn, then emit doc-source parts only for ids the model actually
-        // cited as [N] in its final reply.
+        // turn, then emit previewable doc-source chips for cited chunks.
+        // If the model omits literal [N] ids, show the retrieved chunks so
+        // the answer still has a visible citation/preview affordance.
         const ragChunks = toolCallParts.flatMap((tc) => {
           if (tc.toolName !== "search_knowledge_base" || !tc.result) {
             return [];

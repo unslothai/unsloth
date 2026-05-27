@@ -38,7 +38,7 @@
   },
   "overrides": [
     {
-      "include": ["vite.config.ts", "eslint.config.js"],
+      "include": ["vite.config.ts", "vitest.config.ts", "eslint.config.js"],
       "linter": {
         "rules": {
           "correctness": { "noNodejsModules": "off" },

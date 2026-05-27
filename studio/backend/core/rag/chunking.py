@@ -48,6 +48,11 @@ class Chunk:
     text: str
     token_count: int
     page_number: int | None = None
+    source_page_index: int | None = None
+    page_char_start: int | None = None
+    page_char_end: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
 
 
 TokenCounter = Callable[[str], int]
@@ -132,6 +137,28 @@ def _merge(
     return [c.strip() for c in chunks if c.strip()]
 
 
+def _line_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    """Return 1-based inclusive line numbers for a page-local span."""
+    line_start = text.count("\n", 0, start) + 1
+    line_end = text.count("\n", 0, max(start, end - 1)) + 1
+    return line_start, line_end
+
+
+def _locate_piece(
+    page_text: str,
+    piece: str,
+    search_cursor: int,
+) -> tuple[int | None, int | None, int | None, int | None, int]:
+    idx = page_text.find(piece, search_cursor)
+    if idx < 0:
+        idx = page_text.find(piece)
+    if idx < 0:
+        return None, None, None, None, search_cursor
+    end = idx + len(piece)
+    line_start, line_end = _line_bounds(page_text, idx, end)
+    return idx, end, line_start, line_end, idx + 1
+
+
 # Markdown headings first so layout-aware parser output splits at sections.
 DEFAULT_SEPARATORS: tuple[str, ...] = (
     "\n# ",
@@ -157,16 +184,27 @@ def chunk_pages(
     """Split pages independently so page_number stays attached to chunks."""
     count = token_counter or _char_token_estimate
     out: list[Chunk] = []
-    for page in pages:
+    for page_index, page in enumerate(pages):
+        search_cursor = 0
         for segment in _split_at_figure_boundaries(page.text):
             atomic = _atomic_split(segment, separators, max_tokens, count)
             merged = _merge(atomic, max_tokens, overlap_tokens, count)
             for piece in merged:
+                start, end, line_start, line_end, search_cursor = _locate_piece(
+                    page.text,
+                    piece,
+                    search_cursor,
+                )
                 out.append(
                     Chunk(
                         text = piece,
                         token_count = count(piece),
                         page_number = page.page_number,
+                        source_page_index = page_index,
+                        page_char_start = start,
+                        page_char_end = end,
+                        line_start = line_start,
+                        line_end = line_end,
                     )
                 )
     return out
@@ -192,13 +230,13 @@ def chunk_pages_with_spans(
     count = token_counter or _char_token_estimate
 
     parts: list[str] = []
-    page_ranges: list[tuple[int, int, int | None]] = []
+    page_ranges: list[tuple[int, int, int, int | None]] = []
     cursor = 0
     for index, page in enumerate(pages):
         parts.append(page.text)
         start = cursor
         end = cursor + len(page.text)
-        page_ranges.append((start, end, page.page_number))
+        page_ranges.append((start, end, index, page.page_number))
         cursor = end
         if index < len(pages) - 1:
             cursor += len(_PAGE_SEPARATOR)
@@ -223,12 +261,34 @@ def chunk_pages_with_spans(
         if idx < 0:
             continue
         end_idx = idx + len(text)
-        page_number = _page_for_span(idx, end_idx, page_ranges)
+        page_locator = _page_for_span(idx, end_idx, page_ranges)
+        source_page_index: int | None = None
+        page_number: int | None = None
+        page_char_start: int | None = None
+        page_char_end: int | None = None
+        line_start: int | None = None
+        line_end: int | None = None
+        if page_locator is not None:
+            page_start, page_end, page_idx, page_no = page_locator
+            source_page_index = page_idx
+            page_number = page_no
+            page_char_start = max(0, idx - page_start)
+            page_char_end = min(page_end, end_idx) - page_start
+            line_start, line_end = _line_bounds(
+                pages[page_idx].text,
+                page_char_start,
+                page_char_end,
+            )
         chunks.append(
             Chunk(
                 text = text,
                 token_count = count(text),
                 page_number = page_number,
+                source_page_index = source_page_index,
+                page_char_start = page_char_start,
+                page_char_end = page_char_end,
+                line_start = line_start,
+                line_end = line_end,
             )
         )
         char_spans.append((idx, end_idx))
@@ -241,9 +301,9 @@ def chunk_pages_with_spans(
 def _page_for_span(
     start: int,
     end: int,
-    page_ranges: list[tuple[int, int, int | None]],
-) -> int | None:
-    for ps, pe, pn in page_ranges:
+    page_ranges: list[tuple[int, int, int, int | None]],
+) -> tuple[int, int, int, int | None] | None:
+    for ps, pe, page_index, page_number in page_ranges:
         if start < pe and end > ps:
-            return pn
+            return ps, pe, page_index, page_number
     return None

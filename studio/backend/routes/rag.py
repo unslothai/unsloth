@@ -10,10 +10,13 @@ import json
 import os
 import queue as queue_module
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
+from urllib.parse import quote
 from uuid import uuid4
 
+import jwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -23,10 +26,11 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject, get_current_subject_sse
+from auth.storage import get_jwt_secret
 
 
 async def _sse_auth(
@@ -37,6 +41,8 @@ async def _sse_auth(
 
 
 from core.rag import embeddings, ingestion, reranker, retrieval, vector_store
+from core.rag.authorization import document_for_subject_or_404
+from core.rag.locators import backfill_document_locators
 from core.rag.vector_store import kb_scope, thread_scope
 from loggers import get_logger
 from storage.studio_db import (
@@ -44,7 +50,7 @@ from storage.studio_db import (
     list_chat_settings,
     upsert_chat_settings_merge,
 )
-from utils.paths.storage_roots import ensure_dir, rag_uploads_root
+from utils.paths.storage_roots import ensure_dir, rag_uploads_root, resolve_under_root
 from utils.rag.config import (
     RAG_MAX_UPLOAD_MB,
     RAG_RERANK_CANDIDATE_K,
@@ -139,6 +145,11 @@ class SearchHit(BaseModel):
     filename: str | None = None
     kind: str = "text"
     image_url: str | None = None
+    source_page_index: int | None = None
+    page_char_start: int | None = None
+    page_char_end: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
 
 
 class SearchResponse(BaseModel):
@@ -872,6 +883,7 @@ def get_rag_image(
     current_subject: str = Depends(get_current_subject),
 ) -> FileResponse:
     """Serve an extracted image; realpath-check against the uploads root."""
+    document_for_subject_or_404(document_id, current_subject)
     if "/" in filename or "\\" in filename or filename.startswith("."):
         raise HTTPException(status_code = 400, detail = "Invalid filename")
     root = Path(os.path.realpath(rag_uploads_root() / "images"))
@@ -1016,6 +1028,538 @@ async def _replay_terminal_state(row: Any):
 # --- Search ---
 
 
+# --- Document preview (file + preview-target) ---
+
+
+PreviewMediaKind = Literal["pdf", "text", "docx", "html", "image", "unknown"]
+PreviewChunkKind = Literal["text", "image", "caption"]
+
+
+class PreviewPdfRegion(BaseModel):
+    pageIndex: int
+    pageNumber: int | None = None
+    x: float
+    y: float
+    width: float
+    height: float
+    confidence: Literal["exact"]
+    source: str
+
+
+class PreviewTargetResponse(BaseModel):
+    """Per contracts.md §1.2 / §1.3 — single shape covering both
+    cited-chunk and document-row preview modes. The §1.3 metadata-only
+    mode returns ``None`` for ``chunkId``/``chunkIndex``/``targetPage``/
+    ``snippet``/``kind``/``imageUrl`` (Q2: no first-chunk guessing).
+    """
+
+    documentId: str
+    filename: str
+    contentType: str | None
+    mediaKind: PreviewMediaKind
+    byteSize: int
+    status: str
+    kbId: str | None
+    threadId: str | None
+    chunkId: str | None
+    chunkIndex: int | None
+    targetPage: int | None
+    snippet: str | None
+    kind: PreviewChunkKind | None
+    imageUrl: str | None
+    sourcePageIndex: int | None
+    pageCharStart: int | None
+    pageCharEnd: int | None
+    lineStart: int | None
+    lineEnd: int | None
+    pdfRegions: list[PreviewPdfRegion] = Field(default_factory = list)
+
+
+class PreviewFileUrlResponse(BaseModel):
+    url: str
+    expiresAt: int
+
+
+class LocatorBackfillResponse(BaseModel):
+    documentId: str
+    totalChunks: int
+    matched: int
+    alreadyLocated: int
+    ambiguous: int
+    missing: int
+    skipped: int
+    regionsMatched: int
+    pagesRefreshed: int
+
+
+# Extension allowlist for inline rendering / disposition. Anything not in
+# this map collapses to ("application/octet-stream", attachment, "unknown").
+# .html / .htm intentionally serve as text/plain attachment (decisions Q7 +
+# Risk #3) so an uploaded HTML cannot execute in the app origin.
+_PREVIEW_EXT_MAP: dict[str, tuple[str, str, PreviewMediaKind]] = {
+    ".pdf": ("application/pdf", "inline", "pdf"),
+    ".txt": ("text/plain; charset=utf-8", "inline", "text"),
+    ".md": ("text/markdown; charset=utf-8", "inline", "text"),
+    ".markdown": ("text/markdown; charset=utf-8", "inline", "text"),
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "attachment",
+        "docx",
+    ),
+    ".html": ("text/plain; charset=utf-8", "attachment", "html"),
+    ".htm": ("text/plain; charset=utf-8", "attachment", "html"),
+    ".png": ("image/png", "inline", "image"),
+    ".jpg": ("image/jpeg", "inline", "image"),
+    ".jpeg": ("image/jpeg", "inline", "image"),
+    ".gif": ("image/gif", "inline", "image"),
+    ".webp": ("image/webp", "inline", "image"),
+}
+
+
+def _ascii_only(value: str) -> bool:
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _content_disposition_header(filename: str, disposition: str) -> str:
+    """Build a Content-Disposition header. Non-ASCII filenames use RFC 5987
+    ``filename*=UTF-8''…`` alongside an ASCII-only ``filename=`` fallback so
+    older clients still get something readable.
+    """
+    from urllib.parse import quote as _urlquote
+
+    safe = filename.replace('"', "").replace("\r", "").replace("\n", "")
+    if _ascii_only(safe):
+        return f'{disposition}; filename="{safe}"'
+    ascii_fallback = safe.encode("ascii", "replace").decode("ascii")
+    encoded = _urlquote(safe, safe = "")
+    return (
+        f'{disposition}; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
+
+
+def _preview_file_metadata(filename: str) -> tuple[str, str, PreviewMediaKind]:
+    """Map a stored filename to (content_type, disposition, mediaKind).
+
+    Unknown extensions always force ``application/octet-stream`` +
+    ``attachment`` + ``unknown`` so the browser cannot sniff a sensitive
+    type and inline it (Risk #3).
+    """
+    ext = Path(filename).suffix.lower()
+    return _PREVIEW_EXT_MAP.get(
+        ext, ("application/octet-stream", "attachment", "unknown")
+    )
+
+
+_PREVIEW_FILE_AUDIENCE = "rag-preview-file"
+_PREVIEW_FILE_TTL_SECONDS = 5 * 60
+_JWT_ALGORITHM = "HS256"
+
+
+def _parse_pdf_regions(value: str | None) -> list[PreviewPdfRegion]:
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[PreviewPdfRegion] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            region = PreviewPdfRegion(**item)
+        except Exception:
+            continue
+        if (
+            0 <= region.x <= 1
+            and 0 <= region.y <= 1
+            and region.width > 0
+            and region.height > 0
+        ):
+            out.append(region)
+    return out
+
+
+def _preview_file_token(
+    *,
+    subject: str,
+    document_id: str,
+) -> tuple[str, int]:
+    secret = get_jwt_secret(subject)
+    if secret is None:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token")
+    expires = datetime.now(timezone.utc) + timedelta(seconds = _PREVIEW_FILE_TTL_SECONDS)
+    payload = {
+        "sub": subject,
+        "aud": _PREVIEW_FILE_AUDIENCE,
+        "document_id": document_id,
+        "exp": expires,
+    }
+    token = jwt.encode(payload, secret, algorithm = _JWT_ALGORITHM)
+    return token, int(expires.timestamp())
+
+
+def _subject_from_preview_file_token(document_id: str, token: str) -> str:
+    try:
+        unverified = jwt.decode(
+            token,
+            options = {
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code = 401, detail = "Invalid preview token") from exc
+    subject = unverified.get("sub")
+    if not isinstance(subject, str) or not subject:
+        raise HTTPException(status_code = 401, detail = "Invalid preview token")
+    secret = get_jwt_secret(subject)
+    if secret is None:
+        raise HTTPException(status_code = 401, detail = "Invalid preview token")
+    try:
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms = [_JWT_ALGORITHM],
+            audience = _PREVIEW_FILE_AUDIENCE,
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code = 401, detail = "Invalid preview token") from exc
+    if payload.get("document_id") != document_id:
+        raise HTTPException(status_code = 401, detail = "Invalid preview token")
+    return subject
+
+
+def _resolve_document_file_or_404(doc_row: Any, document_id: str) -> Path:
+    try:
+        resolved = resolve_under_root(
+            doc_row["stored_path"],
+            root = rag_uploads_root(),
+        )
+    except ValueError as exc:
+        # Symlink escape / ``..`` / absolute outside root — collapse to
+        # "file not found" (the auth row exists, the bytes do not).
+        logger.warning(
+            "RAG preview: stored_path escaped uploads root for doc %s: %s",
+            document_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 404,
+            detail = "Document file not found",
+        ) from exc
+
+    if not resolved.is_file():
+        raise HTTPException(
+            status_code = 404,
+            detail = "Document file not found",
+        )
+    return resolved
+
+
+def _parse_range_header(range_header: str | None, size: int) -> tuple[int, int] | None:
+    if not range_header:
+        return None
+    if not range_header.startswith("bytes="):
+        raise ValueError("unsupported range unit")
+    spec = range_header[len("bytes=") :].strip()
+    if "," in spec or "-" not in spec:
+        raise ValueError("multiple or malformed ranges are not supported")
+    start_s, end_s = spec.split("-", 1)
+    if not start_s and not end_s:
+        raise ValueError("empty range")
+    if not start_s:
+        suffix = int(end_s)
+        if suffix <= 0:
+            raise ValueError("invalid suffix range")
+        start = max(0, size - suffix)
+        end = size - 1
+    else:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    if start < 0 or end < start or start >= size:
+        raise ValueError("range outside file")
+    return start, min(end, size - 1)
+
+
+def _iter_file_range(path: Path, start: int, end: int):
+    with path.open("rb") as fh:
+        fh.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = fh.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+def _serve_document_file_row(
+    doc_row: Any,
+    document_id: str,
+    range_header: str | None,
+) -> FileResponse | Response | StreamingResponse:
+    resolved = _resolve_document_file_or_404(doc_row, document_id)
+    content_type, disposition, _media_kind = _preview_file_metadata(
+        doc_row["filename"]
+    )
+    safe_name = _sanitize_filename(doc_row["filename"])
+    headers = {
+        "Content-Disposition": _content_disposition_header(safe_name, disposition),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=0, must-revalidate",
+        "Accept-Ranges": "bytes",
+    }
+    size = resolved.stat().st_size
+
+    try:
+        byte_range = _parse_range_header(range_header, size)
+    except (TypeError, ValueError):
+        range_headers = dict(headers)
+        range_headers["Content-Range"] = f"bytes */{size}"
+        return Response(status_code = 416, headers = range_headers)
+
+    if byte_range is not None:
+        start, end = byte_range
+        range_headers = dict(headers)
+        range_headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        range_headers["Content-Length"] = str(end - start + 1)
+        return StreamingResponse(
+            _iter_file_range(resolved, start, end),
+            status_code = 206,
+            media_type = content_type,
+            headers = range_headers,
+        )
+
+    # Starlette's FileResponse handles ordinary downloads efficiently. We
+    # still advertise Accept-Ranges so PDF.js can switch to explicit range
+    # requests via the signed URL path.
+    return FileResponse(
+        path = str(resolved),
+        media_type = content_type,
+        headers = headers,
+    )
+
+
+@router.get(
+    "/documents/{document_id}/preview-target",
+    response_model = PreviewTargetResponse,
+)
+def get_document_preview_target(
+    document_id: str,
+    chunk_id: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewTargetResponse:
+    """Resolve preview metadata for a document, optionally focused on a chunk.
+
+    See contracts.md §1 for the response shape. ``chunk_id`` is the durable
+    ``rag_chunks.id`` carried as ``backendChunkId`` on the frontend; when
+    supplied it MUST belong to ``document_id`` or we collapse to 404 (so a
+    probe cannot enumerate cross-document chunk ids).
+    """
+    doc_row = document_for_subject_or_404(document_id, current_subject)
+    _ct, _disposition, media_kind = _preview_file_metadata(doc_row["filename"])
+
+    base = {
+        "documentId": doc_row["id"],
+        "filename": doc_row["filename"],
+        "contentType": doc_row["content_type"],
+        "mediaKind": media_kind,
+        "byteSize": int(doc_row["byte_size"]),
+        "status": doc_row["status"],
+        "kbId": doc_row["kb_id"],
+        "threadId": doc_row["thread_id"],
+    }
+
+    if not chunk_id:
+        # Q2: document-row preview returns metadata only — frontend MUST
+        # NOT fall back to "first chunk".
+        return PreviewTargetResponse(
+            **base,
+            chunkId = None,
+            chunkIndex = None,
+            targetPage = None,
+            snippet = None,
+            kind = None,
+            imageUrl = None,
+            sourcePageIndex = None,
+            pageCharStart = None,
+            pageCharEnd = None,
+            lineStart = None,
+            lineEnd = None,
+            pdfRegions = [],
+        )
+
+    # Single connection enforces membership AND fetches the row in one
+    # query. Splitting this into a separate `chunk_belongs_to_document`
+    # call would open a second SQLite connection and create a TOCTOU
+    # window — if the chunk is deleted between the two calls, the data
+    # fetch returns None and the route 500s on the next attribute access
+    # (devils-advocate D1.1). The cross-document case still collapses to
+    # the same 404 the auth helper emits — never 400 (would leak doc
+    # existence).
+    with get_connection() as conn:
+        chunk_row = conn.execute(
+            """
+            SELECT id, chunk_index, page_number, text, kind, image_path,
+                   source_page_index, page_char_start, page_char_end,
+                   line_start, line_end, pdf_regions_json
+            FROM rag_chunks WHERE id = ? AND document_id = ?
+            """,
+            (chunk_id, document_id),
+        ).fetchone()
+
+    if chunk_row is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = "Document not found",
+        )
+
+    chunk_kind: PreviewChunkKind = (chunk_row["kind"] or "text")  # type: ignore[assignment]
+    image_url: str | None = None
+    if chunk_kind == "image" and chunk_row["image_path"]:
+        image_url = (
+            f"/api/rag/images/{doc_row['id']}/"
+            f"{Path(chunk_row['image_path']).name}"
+        )
+
+    return PreviewTargetResponse(
+        **base,
+        chunkId = chunk_row["id"],
+        chunkIndex = int(chunk_row["chunk_index"]),
+        targetPage = (
+            int(chunk_row["page_number"])
+            if chunk_row["page_number"] is not None
+            else None
+        ),
+        snippet = chunk_row["text"] or "",
+        kind = chunk_kind,
+        imageUrl = image_url,
+        sourcePageIndex = chunk_row["source_page_index"],
+        pageCharStart = chunk_row["page_char_start"],
+        pageCharEnd = chunk_row["page_char_end"],
+        lineStart = chunk_row["line_start"],
+        lineEnd = chunk_row["line_end"],
+        pdfRegions = _parse_pdf_regions(chunk_row["pdf_regions_json"]),
+    )
+
+
+@router.post(
+    "/documents/{document_id}/locators/backfill",
+    response_model = LocatorBackfillResponse,
+)
+def backfill_document_locators_route(
+    document_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> LocatorBackfillResponse:
+    """In-place locator backfill for existing citations.
+
+    This preserves ``document_id`` and ``chunk_id``. Chunks are updated only
+    when their text has one unambiguous match in the parsed document text;
+    duplicate or missing matches remain null.
+    """
+    doc_row = document_for_subject_or_404(document_id, current_subject)
+    resolved = _resolve_document_file_or_404(doc_row, document_id)
+    try:
+        result = backfill_document_locators(document_id, resolved)
+    except Exception as exc:
+        logger.warning(
+            "RAG locator backfill failed",
+            document_id = document_id,
+            error = str(exc),
+        )
+        raise HTTPException(
+            status_code = 400,
+            detail = "Document locators could not be backfilled",
+        ) from exc
+    return LocatorBackfillResponse(
+        documentId = result.document_id,
+        totalChunks = result.total_chunks,
+        matched = result.matched,
+        alreadyLocated = result.already_located,
+        ambiguous = result.ambiguous,
+        missing = result.missing,
+        skipped = result.skipped,
+        regionsMatched = result.regions_matched,
+        pagesRefreshed = result.pages_refreshed,
+    )
+
+
+@router.get(
+    "/documents/{document_id}/file-url",
+    response_model = PreviewFileUrlResponse,
+)
+def get_document_file_url(
+    document_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewFileUrlResponse:
+    """Mint a short-lived signed URL for PDF.js range requests.
+
+    The normal bearer-protected `/file` route stays available for blob
+    fallback; this route keeps bearer access tokens out of query strings.
+    """
+    document_for_subject_or_404(document_id, current_subject)
+    token, expires_at = _preview_file_token(
+        subject = current_subject,
+        document_id = document_id,
+    )
+    url = (
+        f"/api/rag/documents/{quote(document_id, safe = '')}/file-signed"
+        f"?token={quote(token, safe = '')}"
+    )
+    return PreviewFileUrlResponse(url = url, expiresAt = expires_at)
+
+
+@router.get("/documents/{document_id}/file-signed", response_model = None)
+def get_signed_document_file(
+    document_id: str,
+    request: Request,
+    token: str = Query(...),
+) -> FileResponse | Response | StreamingResponse:
+    subject = _subject_from_preview_file_token(document_id, token)
+    doc_row = document_for_subject_or_404(document_id, subject)
+    return _serve_document_file_row(
+        doc_row,
+        document_id,
+        request.headers.get("range"),
+    )
+
+
+@router.get("/documents/{document_id}/file", response_model = None)
+def get_document_file(
+    document_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> FileResponse | Response | StreamingResponse:
+    """Serve the original uploaded bytes for ``document_id``.
+
+    Path resolution per contracts.md §2.1: the route NEVER accepts a
+    client-supplied filename. ``stored_path`` is DB-issued and we run it
+    through ``resolve_under_root`` which delegates to ``_assert_contained``
+    (realpath + symlink/junction-safe). Any escape (symlink, junction,
+    ``..``, absolute outside root) collapses to the second 404.
+
+    Content-Type and disposition come from the extension allowlist
+    (``_preview_file_metadata``). HTML/DOCX/unknown serve as
+    ``attachment`` with safe content-type so an uploaded ``.html`` can
+    never execute in the app origin (Risk #3 / decisions Q7).
+    """
+    doc_row = document_for_subject_or_404(document_id, current_subject)
+    return _serve_document_file_row(
+        doc_row,
+        document_id,
+        request.headers.get("range"),
+    )
+
+
 @router.post("/search", response_model = SearchResponse)
 def search(
     payload: SearchRequest,
@@ -1092,6 +1636,8 @@ def search(
                 f"""
                 SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.text,
                        c.page_number, c.kind, c.image_path, c.linked_chunk_id,
+                       c.source_page_index, c.page_char_start, c.page_char_end,
+                       c.line_start, c.line_end,
                        d.filename
                 FROM rag_chunks c
                 JOIN rag_documents d ON d.id = c.document_id
@@ -1139,6 +1685,11 @@ def search(
                 filename = meta.get("filename"),
                 kind = kind,
                 image_url = image_url,
+                source_page_index = meta.get("source_page_index"),
+                page_char_start = meta.get("page_char_start"),
+                page_char_end = meta.get("page_char_end"),
+                line_start = meta.get("line_start"),
+                line_end = meta.get("line_end"),
             )
         )
     logger.info("RAG search: returning %d hits", len(out))

@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { useState } from "react";
 import type { KnowledgeBase } from "../api/rag-api";
 import { useKBDocuments } from "../hooks/use-kb-documents";
+import { usePreviewStore } from "../stores/preview-store";
 import { DocumentRow } from "./document-row";
 import { DocumentUploadDropzone } from "./document-upload-dropzone";
 import { IngestionProgress } from "./ingestion-progress";
@@ -14,10 +15,11 @@ import { KBReconfigureDialog } from "./kb-reconfigure-dialog";
 
 export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
   const { documents, loading, error, upload, remove } = useKBDocuments(kb.id);
-  const [activeJobsByDoc, setActiveJobsByDoc] = useState<Record<string, string>>(
-    {},
-  );
+  const [activeJobsByDoc, setActiveJobsByDoc] = useState<
+    Record<string, string>
+  >({});
   const [reconfigureOpen, setReconfigureOpen] = useState(false);
+  const openPreview = usePreviewStore((s) => s.open);
 
   const handleFiles = async (files: File[]) => {
     for (const file of files) {
@@ -70,9 +72,7 @@ export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
         </span>
       </div>
 
-      {error ? (
-        <div className="text-xs text-destructive">{error}</div>
-      ) : null}
+      {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
       <ScrollArea className="flex-1">
         <div className="flex flex-col gap-2 pr-2">
@@ -92,6 +92,16 @@ export function KBDetailPanel({ kb }: { kb: KnowledgeBase }) {
                 onDelete={() => {
                   void remove(doc.id);
                 }}
+                // Per decision Q9: only completed documents open a
+                // preview. Pending/running/failed rows degrade to
+                // non-interactive (no onPreview).
+                onPreview={
+                  doc.status === "completed"
+                    ? () => {
+                        void openPreview({ documentId: doc.id });
+                      }
+                    : undefined
+                }
                 rightSlot={
                   showProgress ? (
                     <IngestionProgress jobId={jobId} className="mt-1" />

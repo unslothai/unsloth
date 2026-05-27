@@ -93,12 +93,33 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
             f'id="{index}"',
             f'source="{_xml_attr(hit.get("filename") or "unknown")}"',
         ]
+        # Durable backend ids — additive per contracts.md §3.1 (T3).
+        # ``id`` above stays as the visible citation id (used by the model
+        # as `[N]`); ``document_id`` + ``chunk_id`` are what the preview
+        # route consumes. Old XML without these attrs still parses on
+        # the frontend (hover-only), per contracts §3.2.
+        document_id = hit.get("document_id")
+        if document_id:
+            attrs.append(f'document_id="{_xml_attr(document_id)}"')
+        backend_chunk_id = hit.get("chunk_id")
+        if backend_chunk_id:
+            attrs.append(f'chunk_id="{_xml_attr(backend_chunk_id)}"')
         page = hit.get("page_number")
         if page is not None:
             attrs.append(f'page="{page}"')
         chunk_index = hit.get("chunk_index")
         if chunk_index is not None:
             attrs.append(f'chunk_index="{chunk_index}"')
+        for attr_name in (
+            "source_page_index",
+            "page_char_start",
+            "page_char_end",
+            "line_start",
+            "line_end",
+        ):
+            value = hit.get(attr_name)
+            if value is not None:
+                attrs.append(f'{attr_name}="{value}"')
         tokens = hit.get("token_count")
         if tokens:
             attrs.append(f'tokens="{tokens}"')
@@ -106,7 +127,6 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
         if kind and kind != "text":
             attrs.append(f'kind="{_xml_attr(kind)}"')
         image_path = hit.get("image_path")
-        document_id = hit.get("document_id")
         if kind == "image" and image_path and document_id:
             # Mirror routes/rag.py search-response shape so the frontend
             # tool card can render the image inline via the same route.
@@ -213,6 +233,8 @@ def search_knowledge_base(
                 f"""
                 SELECT c.id AS chunk_id, c.text, c.page_number,
                        c.token_count, c.kind, c.image_path,
+                       c.source_page_index, c.page_char_start,
+                       c.page_char_end, c.line_start, c.line_end,
                        c.document_id, d.filename
                 FROM rag_chunks c
                 JOIN rag_documents d ON d.id = c.document_id

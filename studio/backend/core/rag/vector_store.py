@@ -131,6 +131,45 @@ def search(
     return out
 
 
+def update_chunk_payload_fields(
+    scope: str,
+    updates: dict[str, dict],
+) -> None:
+    """Merge locator fields into existing vector payload JSON by chunk id."""
+    from core.rag.db import get_rag_connection
+
+    if not updates:
+        return
+    conn = get_rag_connection()
+    rows = conn.execute(
+        f"""
+        SELECT chunk_id, payload_json
+        FROM rag_vectors
+        WHERE scope = ? AND chunk_id IN ({",".join("?" for _ in updates)})
+        """,
+        [scope, *updates.keys()],
+    ).fetchall()
+    payload_rows: list[tuple[str, str]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        payload.update(updates.get(row["chunk_id"], {}))
+        payload_rows.append((json.dumps(payload, default = str), row["chunk_id"], scope))
+    if not payload_rows:
+        return
+    conn.executemany(
+        """
+        UPDATE rag_vectors
+        SET payload_json = ?
+        WHERE chunk_id = ? AND scope = ?
+        """,
+        payload_rows,
+    )
+    conn.commit()
+
+
 def delete_scope(scope: str) -> None:
     from core.rag.db import get_rag_connection
 

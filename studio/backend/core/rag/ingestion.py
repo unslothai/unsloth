@@ -9,6 +9,7 @@ vectors, and rebuilds BM25 on completion. Only the parent opens rag.db.
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import queue as queue_module
 import sqlite3
@@ -97,6 +98,22 @@ def _subprocess_worker(
             )
             pages = inline_image_captions(pages, parsed.images, captions)
 
+        out_queue.put(
+            {
+                "type": "document_pages",
+                "pages": [
+                    {
+                        "page_index": index,
+                        "page_number": page.page_number,
+                        "text": page.text,
+                        "char_count": len(page.text),
+                        "line_count": len(page.text.splitlines()),
+                    }
+                    for index, page in enumerate(pages)
+                ],
+            }
+        )
+
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
         from core.rag.embeddings import (
             get_embedder,
@@ -112,6 +129,7 @@ def _subprocess_worker(
         if chunking_strategy == "late":
             _run_late_chunking(
                 pages = pages,
+                stored_path = Path(stored_path),
                 chunk_size = chunk_size,
                 overlap = overlap,
                 counter = counter,
@@ -123,6 +141,7 @@ def _subprocess_worker(
 
         text_count = _run_standard_chunking(
             pages = pages,
+            stored_path = Path(stored_path),
             chunk_size = chunk_size,
             overlap = overlap,
             counter = counter,
@@ -151,6 +170,7 @@ def _subprocess_worker(
 def _run_standard_chunking(
     *,
     pages,
+    stored_path,
     chunk_size,
     overlap,
     counter,
@@ -172,6 +192,9 @@ def _run_standard_chunking(
         if send_complete:
             out_queue.put({"type": "error", "error": "chunker produced no chunks"})
         return 0
+    from core.rag.locators import pdf_regions_for_chunks
+
+    pdf_regions = pdf_regions_for_chunks(stored_path, pages, chunks)
 
     total = len(chunks)
     for i in range(0, total, batch_size):
@@ -192,9 +215,15 @@ def _run_standard_chunking(
                         "text": c.text,
                         "token_count": c.token_count,
                         "page_number": c.page_number,
+                        "source_page_index": c.source_page_index,
+                        "page_char_start": c.page_char_start,
+                        "page_char_end": c.page_char_end,
+                        "line_start": c.line_start,
+                        "line_end": c.line_end,
+                        "pdf_regions": pdf_regions[i + offset],
                         "kind": "text",
                     }
-                    for c in batch
+                    for offset, c in enumerate(batch)
                 ],
                 "vectors": vectors.tolist(),
             }
@@ -315,6 +344,7 @@ def _stream_image_chunks(
 def _run_late_chunking(
     *,
     pages,
+    stored_path,
     chunk_size,
     overlap,
     counter,
@@ -324,6 +354,7 @@ def _run_late_chunking(
 ) -> None:
     """Chunk once, embed in one pass, ship all chunks in one chunks_batch."""
     from core.rag.chunking import chunk_pages_with_spans
+    from core.rag.locators import pdf_regions_for_chunks
 
     out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
     full_doc, chunks, char_spans = chunk_pages_with_spans(
@@ -343,6 +374,7 @@ def _run_late_chunking(
         model_name = model_name,
         normalize = True,
     )
+    pdf_regions = pdf_regions_for_chunks(stored_path, pages, chunks)
 
     out_queue.put({"type": "progress", "stage": "embed", "progress": 0.9})
     out_queue.put(
@@ -354,8 +386,15 @@ def _run_late_chunking(
                     "text": c.text,
                     "token_count": c.token_count,
                     "page_number": c.page_number,
+                    "source_page_index": c.source_page_index,
+                    "page_char_start": c.page_char_start,
+                    "page_char_end": c.page_char_end,
+                    "line_start": c.line_start,
+                    "line_end": c.line_end,
+                    "pdf_regions": pdf_regions[index],
+                    "kind": "text",
                 }
-                for c in chunks
+                for index, c in enumerate(chunks)
             ],
             "vectors": [v.tolist() for v in vectors],
         }
@@ -469,6 +508,14 @@ def _insert_chunks_and_collect_for_bm25(
                 meta["page_number"],
                 kind,
                 image_path,
+                meta.get("source_page_index"),
+                meta.get("page_char_start"),
+                meta.get("page_char_end"),
+                meta.get("line_start"),
+                meta.get("line_end"),
+                json.dumps(meta.get("pdf_regions") or [], separators = (",", ":"))
+                if meta.get("pdf_regions")
+                else None,
             )
         )
         points.append(
@@ -482,6 +529,12 @@ def _insert_chunks_and_collect_for_bm25(
                     "page_number": meta["page_number"],
                     "kind": kind,
                     "image_path": image_path,
+                    "source_page_index": meta.get("source_page_index"),
+                    "page_char_start": meta.get("page_char_start"),
+                    "page_char_end": meta.get("page_char_end"),
+                    "line_start": meta.get("line_start"),
+                    "line_end": meta.get("line_end"),
+                    "pdf_regions": meta.get("pdf_regions") or [],
                 },
             }
         )
@@ -492,8 +545,9 @@ def _insert_chunks_and_collect_for_bm25(
             """
             INSERT INTO rag_chunks
             (id, document_id, chunk_index, text, token_count, page_number,
-             kind, image_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             kind, image_path, source_page_index, page_char_start,
+             page_char_end, line_start, line_end, pdf_regions_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -513,6 +567,41 @@ def _insert_chunks_and_collect_for_bm25(
         conn.commit()
     vector_store.upsert_chunks(scope, points)
     return bm25_rows
+
+
+def _replace_document_pages(document_id: str, pages: list[dict]) -> None:
+    now = int(time.time())
+    rows = [
+        (
+            document_id,
+            int(page["page_index"]),
+            page.get("page_number"),
+            page.get("text") or "",
+            int(page.get("char_count", len(page.get("text") or ""))),
+            int(page.get("line_count", len((page.get("text") or "").splitlines()))),
+            now,
+        )
+        for page in pages
+    ]
+    with get_connection() as conn:
+        doc_row = conn.execute(
+            "SELECT 1 FROM rag_documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        if doc_row is None:
+            raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+        conn.execute("DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,))
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO rag_document_pages
+                (document_id, page_index, page_number, text, char_count,
+                 line_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        conn.commit()
 
 
 def _all_scope_chunks(scope: str) -> list[dict]:
@@ -579,6 +668,17 @@ def _pump(
             elif mtype == "dim":
                 embedding_dim = int(msg["dim"])
                 vector_store.ensure_collection(state.scope, embedding_dim)
+            elif mtype == "document_pages":
+                try:
+                    _replace_document_pages(
+                        state.document_id,
+                        list(msg.get("pages") or []),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    final_error = (
+                        f"document was removed before ingestion finished ({exc})"
+                    )
+                    break
             elif mtype == "chunks_batch":
                 if embedding_dim is None:
                     embedding_dim = len(msg["vectors"][0]) if msg["vectors"] else None

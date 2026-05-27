@@ -54,6 +54,7 @@
 	--duration-normal: 200ms;
 
 	/* Easing curves (Emil Kowalski) */
+	--ease-out-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
@@ -1152,6 +1153,55 @@
 
 .dark [data-sidebar="content"]::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.25);
+}
+
+.preview-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: oklch(0.5 0 0 / 0.25) transparent;
+}
+
+.preview-scrollbar::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+.preview-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.preview-scrollbar::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.22);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 9999px;
+}
+
+.preview-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.38);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+}
+
+.dark .preview-scrollbar {
+	scrollbar-color: oklch(0.72 0 0 / 0.25) transparent;
+}
+
+.dark .preview-scrollbar::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+}
+
+.dark .preview-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.78 0 0 / 0.42);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+}
+
+.preview-sheet-content {
+	transition:
+		transform var(--duration-normal) var(--ease-out-quad),
+		opacity var(--duration-normal) var(--ease-out-quad);
 }
 
 /*---break---*/

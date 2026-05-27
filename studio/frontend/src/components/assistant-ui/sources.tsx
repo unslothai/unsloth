@@ -1,24 +1,26 @@
 "use client";
 
-import { openLink } from "@/lib/open-link";
-import {
-  memo,
-  useState,
-  useRef,
-  useEffect,
-  useCallback,
-  type ComponentProps,
-  type FC,
-} from "react";
-import { FileTextIcon } from "lucide-react";
-import { useMessage } from "@assistant-ui/react";
-import { cn } from "@/lib/utils";
-import { Badge, badgeVariants, type BadgeProps } from "./badge";
 import {
   HoverCard,
-  HoverCardTrigger,
   HoverCardContent,
+  HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { usePreviewStore } from "@/features/rag/stores/preview-store";
+import { openLink } from "@/lib/open-link";
+import { cn } from "@/lib/utils";
+import { useMessage } from "@assistant-ui/react";
+import { FileTextIcon } from "lucide-react";
+import {
+  type ComponentProps,
+  type FC,
+  type KeyboardEvent as ReactKeyboardEvent,
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Badge, type BadgeProps, badgeVariants } from "./badge";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -45,8 +47,12 @@ function SourceIcon({
 }: ComponentProps<"span"> & { url: string; size?: number }) {
   const [hasError, setHasError] = useState(false);
   const domain = extractDomain(url);
-  const SIZE_CLASSES: Record<number, string> = { 3: "size-3", 4: "size-4", 5: "size-5" };
-  const sizeClass = SIZE_CLASSES[size] ?? "size-3";
+  const sizeClasses: Record<number, string> = {
+    3: "size-3",
+    4: "size-4",
+    5: "size-5",
+  };
+  const sizeClass = sizeClasses[size] ?? "size-3";
 
   if (hasError) {
     return (
@@ -101,7 +107,7 @@ function Source({
 }: SourceProps) {
   return (
     <Badge
-      asChild
+      asChild={true}
       variant={variant}
       size={size}
       className={cn(
@@ -136,7 +142,12 @@ interface UrlSourceData {
 
 interface DocSourceData {
   kind: "document";
+  /** Visible citation id (the `[N]` reference). Display only. */
   chunkId: string;
+  /** Durable backend `rag_documents.id`. null on legacy sources. */
+  documentId: string | null;
+  /** Durable backend `rag_chunks.id`. null on legacy sources. */
+  backendChunkId: string | null;
   filename: string;
   page?: string;
   text: string;
@@ -145,9 +156,7 @@ interface DocSourceData {
 type SourceData = UrlSourceData | DocSourceData;
 
 function sourceKey(source: SourceData): string {
-  return source.kind === "url"
-    ? `url:${source.url}`
-    : `doc:${source.chunkId}`;
+  return source.kind === "url" ? `url:${source.url}` : `doc:${source.chunkId}`;
 }
 
 const SourceBadge: FC<{ source: UrlSourceData }> = ({ source }) => {
@@ -156,7 +165,7 @@ const SourceBadge: FC<{ source: UrlSourceData }> = ({ source }) => {
 
   return (
     <HoverCard openDelay={0} closeDelay={0}>
-      <HoverCardTrigger asChild>
+      <HoverCardTrigger asChild={true}>
         <span className="inline-block">
           <Source href={source.url}>
             <SourceIcon url={source.url} />
@@ -193,13 +202,53 @@ const DocumentSourceBadge: FC<{ source: DocSourceData }> = ({ source }) => {
   const metaParts: string[] = [];
   if (source.page) metaParts.push(`page ${source.page}`);
 
+  // Preview is clickable IFF both durable IDs are present (contracts
+  // §4.1 routing rule + Q3). Legacy sources fall through to a
+  // non-interactive badge with hover-only behavior.
+  const isClickable =
+    source.documentId !== null && source.backendChunkId !== null;
+  const openPreview = usePreviewStore((s) => s.open);
+
+  const handleOpen = useCallback(() => {
+    if (!isClickable || !source.documentId) return;
+    void openPreview({
+      documentId: source.documentId,
+      backendChunkId: source.backendChunkId,
+    });
+  }, [isClickable, openPreview, source.documentId, source.backendChunkId]);
+
+  const handleKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (!isClickable) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpen();
+      }
+    },
+    [isClickable, handleOpen],
+  );
+
   return (
     <HoverCard openDelay={0} closeDelay={0}>
-      <HoverCardTrigger asChild>
+      <HoverCardTrigger asChild={true}>
         <span className="inline-block">
           <Badge
             variant="outline"
-            className="rounded-full cursor-default inline-flex items-center gap-1.5 outline-none"
+            {...(isClickable
+              ? {
+                  role: "button",
+                  tabIndex: 0,
+                  onClick: handleOpen,
+                  onKeyDown: handleKeyDown,
+                  "aria-label": `Open preview of ${source.filename}`,
+                }
+              : {})}
+            className={cn(
+              "rounded-full inline-flex items-center gap-1.5 outline-none",
+              isClickable
+                ? "cursor-pointer hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                : "cursor-default",
+            )}
           >
             <span className="font-mono text-[10px] font-semibold text-muted-foreground">
               [{source.chunkId}]
@@ -229,6 +278,11 @@ const DocumentSourceBadge: FC<{ source: DocSourceData }> = ({ source }) => {
             <p className="text-xs text-white/70 leading-relaxed line-clamp-3 whitespace-pre-wrap">
               {source.text}
             </p>
+            {isClickable ? (
+              <p className="mt-1 text-[10px] text-white/50">
+                Click to open preview
+              </p>
+            ) : null}
           </div>
         </div>
       </HoverCardContent>
@@ -269,6 +323,8 @@ const SourcesGroup: FC = () => {
       ) {
         const docPart = part as {
           chunkId?: string;
+          documentId?: string | null;
+          backendChunkId?: string | null;
           filename?: string;
           page?: string;
           text?: string;
@@ -277,6 +333,8 @@ const SourcesGroup: FC = () => {
           sources.push({
             kind: "document",
             chunkId: docPart.chunkId,
+            documentId: docPart.documentId ?? null,
+            backendChunkId: docPart.backendChunkId ?? null,
             filename: docPart.filename,
             page: docPart.page,
             text: docPart.text ?? "",
@@ -340,7 +398,7 @@ const SourcesGroup: FC = () => {
       {/* Hidden measurement container — renders all badges to measure row positions */}
       <div
         ref={containerRef}
-        aria-hidden
+        aria-hidden={true}
         className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
       >
         {sources.map((source) => (

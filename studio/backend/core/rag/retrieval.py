@@ -50,6 +50,11 @@ class Hit:
     document_id: str | None = None
     chunk_index: int | None = None
     kind: str = "text"
+    source_page_index: int | None = None
+    page_char_start: int | None = None
+    page_char_end: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
     # Raw cosine; None for BM25-only hits.
     dense_score: float | None = None
 
@@ -151,6 +156,11 @@ def retrieve_dense(
                 document_id = payload.get("document_id"),
                 chunk_index = payload.get("chunk_index"),
                 kind = payload.get("kind", "text"),
+                source_page_index = payload.get("source_page_index"),
+                page_char_start = payload.get("page_char_start"),
+                page_char_end = payload.get("page_char_end"),
+                line_start = payload.get("line_start"),
+                line_end = payload.get("line_end"),
                 dense_score = r["score"],
             )
         )
@@ -184,6 +194,11 @@ def _rrf_fuse(
             document_id = seen[cid].document_id,
             chunk_index = seen[cid].chunk_index,
             kind = seen[cid].kind,
+            source_page_index = seen[cid].source_page_index,
+            page_char_start = seen[cid].page_char_start,
+            page_char_end = seen[cid].page_char_end,
+            line_start = seen[cid].line_start,
+            line_end = seen[cid].line_end,
             dense_score = dense_scores.get(cid),
         )
         for cid, score in ordered

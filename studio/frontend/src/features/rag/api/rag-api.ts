@@ -4,6 +4,7 @@
 import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { EventSourcePolyfill } from "event-source-polyfill";
 
 export type ChunkingStrategy = "standard" | "late";
 export type KBMode = "text" | "multimodal";
@@ -47,6 +48,74 @@ export interface SearchHit {
   filename: string | null;
   kind?: "text" | "image" | "caption";
   image_url?: string | null;
+  source_page_index?: number | null;
+  page_char_start?: number | null;
+  page_char_end?: number | null;
+  line_start?: number | null;
+  line_end?: number | null;
+}
+
+// --- Preview target (durable backend-id routing) ---
+
+export type PreviewMediaKind =
+  | "pdf"
+  | "text"
+  | "docx"
+  | "html"
+  | "image"
+  | "unknown";
+
+export type PreviewChunkKind = "text" | "image" | "caption";
+
+export interface PreviewPdfRegion {
+  pageIndex: number;
+  pageNumber: number | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: "exact";
+  source: string;
+}
+
+export interface PreviewTarget {
+  documentId: string;
+  filename: string;
+  contentType: string | null;
+  mediaKind: PreviewMediaKind;
+  byteSize: number;
+  status: string;
+  kbId: string | null;
+  threadId: string | null;
+  chunkId: string | null;
+  chunkIndex: number | null;
+  targetPage: number | null;
+  snippet: string | null;
+  kind: PreviewChunkKind | null;
+  imageUrl: string | null;
+  sourcePageIndex: number | null;
+  pageCharStart: number | null;
+  pageCharEnd: number | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  pdfRegions: PreviewPdfRegion[];
+}
+
+export interface PreviewFileUrl {
+  url: string;
+  expiresAt: number;
+}
+
+export interface LocatorBackfillResult {
+  documentId: string;
+  totalChunks: number;
+  matched: number;
+  alreadyLocated: number;
+  ambiguous: number;
+  missing: number;
+  skipped: number;
+  regionsMatched: number;
+  pagesRefreshed: number;
 }
 
 export interface SearchRequest {
@@ -63,7 +132,13 @@ export interface SearchRequest {
 }
 
 export type JobEvent =
-  | { type: "status"; status: string; stage?: string | null; progress?: number; error?: string | null }
+  | {
+      type: "status";
+      status: string;
+      stage?: string | null;
+      progress?: number;
+      error?: string | null;
+    }
   | { type: "progress"; stage: string; progress: number }
   | { type: "complete"; num_chunks: number }
   | { type: "error"; error: string };
@@ -72,7 +147,9 @@ function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
     const detail = (body as { detail?: unknown }).detail;
     const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
+    if (formatted) {
+      return formatted;
+    }
   }
   return `Request failed (${status})`;
 }
@@ -95,7 +172,9 @@ async function throwOnError(response: Response): Promise<void> {
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const response = await authFetch("/api/rag/knowledge-bases");
-  const body = await parseJsonOrThrow<{ knowledge_bases: KnowledgeBase[] }>(response);
+  const body = await parseJsonOrThrow<{ knowledge_bases: KnowledgeBase[] }>(
+    response,
+  );
   return body.knowledge_bases;
 }
 
@@ -136,7 +215,9 @@ export async function listKBDocuments(kbId: string): Promise<RagDocument[]> {
   return body.documents;
 }
 
-export async function listThreadDocuments(threadId: string): Promise<RagDocument[]> {
+export async function listThreadDocuments(
+  threadId: string,
+): Promise<RagDocument[]> {
   const response = await authFetch(
     `/api/rag/threads/${encodeURIComponent(threadId)}/documents`,
   );
@@ -187,7 +268,9 @@ export interface ThreadIndexSummary {
 
 export async function listThreadIndexes(): Promise<ThreadIndexSummary[]> {
   const response = await authFetch("/api/rag/thread-indexes");
-  const body = await parseJsonOrThrow<{ threads: ThreadIndexSummary[] }>(response);
+  const body = await parseJsonOrThrow<{ threads: ThreadIndexSummary[] }>(
+    response,
+  );
   return body.threads;
 }
 
@@ -342,7 +425,8 @@ export async function search(req: SearchRequest): Promise<SearchHit[]> {
 // --- Ingestion SSE ---
 
 /** Subscribe to a job's SSE stream; returns an unsubscribe fn.
- *  Token goes via ?token= since EventSource cannot send headers. */
+ *  Use the EventSource polyfill so the bearer token rides in an
+ *  Authorization header instead of leaking through URL query params. */
 export function subscribeToJobEvents(
   jobId: string,
   handlers: {
@@ -352,9 +436,17 @@ export function subscribeToJobEvents(
   },
 ): () => void {
   const token = getAuthToken();
-  const params = token ? `?token=${encodeURIComponent(token)}` : "";
-  const url = apiUrl(`/api/rag/jobs/${encodeURIComponent(jobId)}/events${params}`);
-  const source = new EventSource(url);
+  const url = apiUrl(`/api/rag/jobs/${encodeURIComponent(jobId)}/events`);
+  const source = new EventSourcePolyfill(
+    url,
+    token
+      ? {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      : undefined,
+  );
 
   source.onmessage = (e) => {
     try {
@@ -380,4 +472,69 @@ export function subscribeToJobEvents(
     source.close();
     handlers.onClose?.();
   };
+}
+
+// --- Preview target + blob ---
+
+/** Fetch the preview-target metadata for a document. When `chunkId` is
+ *  provided it must belong to `documentId`; mismatch collapses to 404
+ *  with the same "Document not found" body as missing/unauthorized. */
+export async function fetchPreviewTarget(
+  documentId: string,
+  chunkId?: string | null,
+): Promise<PreviewTarget> {
+  const params = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
+  const response = await authFetch(
+    `/api/rag/documents/${encodeURIComponent(documentId)}/preview-target${params}`,
+  );
+  return parseJsonOrThrow<PreviewTarget>(response);
+}
+
+/** Mint a short-lived URL that PDF.js can range-load without putting
+ *  the user's bearer token in a query string. */
+export async function fetchPreviewFileUrl(
+  documentId: string,
+  signal?: AbortSignal,
+): Promise<PreviewFileUrl> {
+  const response = await authFetch(
+    `/api/rag/documents/${encodeURIComponent(documentId)}/file-url`,
+    signal ? { signal } : undefined,
+  );
+  const body = await parseJsonOrThrow<PreviewFileUrl>(response);
+  return {
+    ...body,
+    url: apiUrl(body.url),
+  };
+}
+
+export async function backfillDocumentLocators(
+  documentId: string,
+): Promise<LocatorBackfillResult> {
+  const response = await authFetch(
+    `/api/rag/documents/${encodeURIComponent(documentId)}/locators/backfill`,
+    { method: "POST" },
+  );
+  return parseJsonOrThrow<LocatorBackfillResult>(response);
+}
+
+/** Download the original uploaded file as a Blob via `authFetch` (so
+ *  the bearer token rides in the Authorization header — never a query
+ *  string). The caller (preview-store) creates and revokes the object
+ *  URL so blob lifecycle stays in one place.
+ *
+ *  `signal` lets the caller abort the fetch when the user switches
+ *  documents mid-load. */
+export async function fetchPreviewFileBlob(
+  documentId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/rag/documents/${encodeURIComponent(documentId)}/file`,
+    signal ? { signal } : undefined,
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+  return response.blob();
 }
