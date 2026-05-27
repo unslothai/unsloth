@@ -147,8 +147,11 @@ jobs:
           # scope, so the conftest preload needs unsloth_zoo. Pull from
           # git main so this job sees the same zoo HEAD as Core / MLX /
           # install.sh do (otherwise a fix on zoo main hides until release).
+          # No --no-deps: matches prior `pip install 'unsloth_zoo>=2026.5.1'`
+          # behaviour so triton etc. still come in for the Repo tests CPU
+          # collection imports.
           for attempt in 1 2 3; do
-            if pip install --no-deps "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
               break
             fi
             [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
