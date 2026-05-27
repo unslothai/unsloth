@@ -2640,12 +2640,18 @@ def detect_host() -> HostInfo:
         try:
             result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
-            for line in merged.splitlines():
-                if "CUDA Version:" in line:
-                    raw = line.split("CUDA Version:", 1)[1].strip().split()[0]
-                    major, minor = raw.split(".", 1)
-                    driver_cuda_version = (int(major), int(minor))
-                    break
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+            # "CUDA UMD Version: X.Y" instead of the legacy
+            # "CUDA Version: X.Y"; accept both spellings.
+            cuda_match = re.search(
+                r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)",
+                merged,
+            )
+            if cuda_match is not None:
+                driver_cuda_version = (
+                    int(cuda_match.group(1)),
+                    int(cuda_match.group(2)),
+                )
         except Exception:
             pass
 
