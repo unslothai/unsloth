@@ -156,13 +156,20 @@ export function EvalDatasetFields({
         subset: value.subset || null,
         split: value.split || "train",
       });
-      setDetectedColumns(res.columns ?? []);
+      const cols = res.columns ?? [];
+      setDetectedColumns(cols);
       setPreviewSample(res.preview_samples?.[0] ?? null);
-      if (res.columns?.length) {
+      if (cols.length) {
+        // Reconcile the mapping against the dataset's actual columns so a stale
+        // selection from a previous dataset (e.g. "html"/"json") doesn't linger
+        // as a phantom option that doesn't exist here.
         const next: Partial<EvalDatasetValue> = {};
-        if (!value.inputColumn) next.inputColumn = res.columns[0];
-        if (!value.referenceColumn)
-          next.referenceColumn = res.columns[1] ?? res.columns[0];
+        if (!value.inputColumn || !cols.includes(value.inputColumn)) {
+          next.inputColumn = cols[0];
+        }
+        if (!value.referenceColumn || !cols.includes(value.referenceColumn)) {
+          next.referenceColumn = cols[1] ?? cols[0];
+        }
         if (Object.keys(next).length) update(next);
       }
     } catch (err) {
