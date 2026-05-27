@@ -505,12 +505,15 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
                     if "parameters" in obj
                     else obj.get("arguments", {})
                 )
+                # Skip rather than fabricate ``{"value": args}`` when the
+                # model emits a non-dict / non-string ``arguments`` value.
                 if isinstance(args, dict):
                     args_str = json.dumps(args)
                 elif isinstance(args, str):
                     args_str = args
                 else:
-                    args_str = json.dumps({"value": args})
+                    cursor = brace + end_offset
+                    continue
                 if name:
                     out.append(
                         {

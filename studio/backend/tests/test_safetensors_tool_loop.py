@@ -193,6 +193,17 @@ class TestParserMultiFormat:
         text = '<|python_tag|>brave_search.call(query="x")'
         assert strip_tool_markup(text, final = True) == ""
 
+    def test_llama3_python_tag_json_form_non_scalar_args_skipped(self):
+        # Should NOT fabricate ``{"value": args}`` when the JSON form
+        # has a non-dict / non-string ``arguments`` value.
+        for bad in (
+            '<|python_tag|>{"name":"foo","arguments":42}',
+            '<|python_tag|>{"name":"foo","arguments":[1,2,3]}',
+            '<|python_tag|>{"name":"foo","arguments":null}',
+            '<|python_tag|>{"name":"foo","arguments":true}',
+        ):
+            assert parse_tool_calls_from_text(bad) == [], bad
+
     # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
 
     def test_llama3_2_bare_json_parameters(self):
