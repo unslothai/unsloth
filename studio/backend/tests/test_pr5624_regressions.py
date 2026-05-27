@@ -65,12 +65,12 @@ def test_glm_numeric_and_bool_literals_are_json_decoded(raw_val, expected_python
 @pytest.mark.parametrize(
     "raw_val",
     [
-        "hello world",          # plain prose
-        "True",                 # Python literal, NOT JSON -- no longer eaten by ast.literal_eval
-        "None",                 # Python literal, NOT JSON -- no longer eaten by ast.literal_eval
-        "if x < 10: pass",      # code with literal < (well, < not in arg_value here)
-        "{not valid json",      # looks like an object but is malformed -- must stay raw
-        "[oops",                # looks like an array but is malformed
+        "hello world",  # plain prose
+        "True",  # Python literal, NOT JSON -- no longer eaten by ast.literal_eval
+        "None",  # Python literal, NOT JSON -- no longer eaten by ast.literal_eval
+        "if x < 10: pass",  # code with literal < (well, < not in arg_value here)
+        "{not valid json",  # looks like an object but is malformed -- must stay raw
+        "[oops",  # looks like an array but is malformed
     ],
 )
 def test_glm_non_json_shapes_stay_raw(raw_val):
@@ -201,7 +201,7 @@ def test_routes_layer_strip_removes_deepseek_envelope():
         "before "
         "<｜tool▁calls▁begin｜>"
         "<｜tool▁call▁begin｜>get_time"
-        "<｜tool▁sep｜>{\"city\":\"Tokyo\"}"
+        '<｜tool▁sep｜>{"city":"Tokyo"}'
         "<｜tool▁call▁end｜>"
         "<｜tool▁calls▁end｜>"
         " after"
@@ -217,7 +217,7 @@ def test_routes_layer_strip_removes_kimi_section():
         "before "
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.web_search:0"
-        "<|tool_call_argument_begin|>{\"q\":\"x\"}"
+        '<|tool_call_argument_begin|>{"q":"x"}'
         "<|tool_call_end|>"
         "<|tool_calls_section_end|>"
         " after"
@@ -252,13 +252,15 @@ def test_strip_tool_markup_handles_deepseek_envelope():
         "before "
         "<｜tool▁calls▁begin｜>"
         "<｜tool▁call▁begin｜>get_time"
-        "<｜tool▁sep｜>{\"city\":\"Tokyo\"}"
+        '<｜tool▁sep｜>{"city":"Tokyo"}'
         "<｜tool▁call▁end｜>"
         "<｜tool▁calls▁end｜>"
         " after"
     )
-    assert "tool" not in strip_tool_markup(text, final=True).lower() or "after" in strip_tool_markup(text, final=True)
-    stripped = strip_tool_markup(text, final=True)
+    assert "tool" not in strip_tool_markup(
+        text, final = True
+    ).lower() or "after" in strip_tool_markup(text, final = True)
+    stripped = strip_tool_markup(text, final = True)
     assert "before" in stripped and "after" in stripped
     assert "｜tool▁" not in stripped
 
@@ -268,11 +270,11 @@ def test_strip_tool_markup_handles_kimi_section():
         "before "
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.web_search:0"
-        "<|tool_call_argument_begin|>{\"q\":\"x\"}"
+        '<|tool_call_argument_begin|>{"q":"x"}'
         "<|tool_call_end|>"
         "<|tool_calls_section_end|>"
         " after"
     )
-    stripped = strip_tool_markup(text, final=True)
+    stripped = strip_tool_markup(text, final = True)
     assert "before" in stripped and "after" in stripped
     assert "tool_calls_section_begin" not in stripped

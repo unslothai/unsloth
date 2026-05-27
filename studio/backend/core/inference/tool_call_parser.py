@@ -77,7 +77,9 @@ _TOOL_CLOSED_PATS = [
     # DeepSeek R1 / V3 / V3.1: full envelope ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
     re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>", re.DOTALL),
     # Kimi K2: ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
-    re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
+    re.compile(
+        r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL
+    ),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
@@ -171,14 +173,17 @@ _DEEPSEEK_CALL_END = "<｜tool▁call▁end｜>"
 # not. Detect R1 by the presence of ``function<｜tool▁sep｜>`` followed
 # by ``\n```json``.
 _DEEPSEEK_R1_FUNC_RE = re.compile(
-    r"(?:" + re.escape(_DEEPSEEK_CALL_BEGIN) + r")?function"
-    + re.escape(_DEEPSEEK_SEP) + r"([^\n]+)\n```json\n",
+    r"(?:"
+    + re.escape(_DEEPSEEK_CALL_BEGIN)
+    + r")?function"
+    + re.escape(_DEEPSEEK_SEP)
+    + r"([^\n]+)\n```json\n",
 )
-_DEEPSEEK_R1_CLOSE_RE = re.compile(
-    r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END)
-)
+_DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END))
 _DEEPSEEK_V3_FUNC_RE = re.compile(
-    r"(?:" + re.escape(_DEEPSEEK_CALL_BEGIN) + r")?([^\n<]+?)"
+    r"(?:"
+    + re.escape(_DEEPSEEK_CALL_BEGIN)
+    + r")?([^\n<]+?)"
     + re.escape(_DEEPSEEK_SEP),
 )
 
@@ -1078,14 +1083,16 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             pos = brace_end + 1
             continue
         if name:
-            out.append({
-                "id": f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
         # Move past the closing fence + ``<｜tool▁call▁end｜>``.
         close_m = _DEEPSEEK_R1_CLOSE_RE.search(body, brace_end + 1)
         pos = close_m.end() if close_m else brace_end + 1
@@ -1118,14 +1125,16 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             pos = brace_end + 1
             continue
         if name:
-            out.append({
-                "id": f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
         # Skip past optional ``<｜tool▁call▁end｜>``.
         next_end = body.find(_DEEPSEEK_CALL_END, brace_end + 1)
         pos = next_end + len(_DEEPSEEK_CALL_END) if next_end >= 0 else brace_end + 1
@@ -1184,14 +1193,16 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             args[key] = raw_val
 
         if name:
-            out.append({
-                "id": f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
         pos = close + len(_GLM_TC_CLOSE) if close >= 0 else len(content)
     return out
 
@@ -1247,9 +1258,11 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         # emit ``functions.NAME:IDX``, so this path is the exception.
         if name.isdigit():
             json_start = arg_begin + len(_KIMI_ARG_BEGIN)
-            brace_end = _balanced_brace_end(body, json_start) if (
-                json_start < len(body) and body[json_start] == "{"
-            ) else None
+            brace_end = (
+                _balanced_brace_end(body, json_start)
+                if (json_start < len(body) and body[json_start] == "{")
+                else None
+            )
             if brace_end is None:
                 pos = arg_begin + len(_KIMI_ARG_BEGIN)
             else:
@@ -1277,14 +1290,16 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             pos = brace_end + 1
             continue
         if name:
-            out.append({
-                "id": full_id or f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            out.append(
+                {
+                    "id": full_id or f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
         call_end = body.find(_KIMI_CALL_END, brace_end + 1)
         pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
     return out

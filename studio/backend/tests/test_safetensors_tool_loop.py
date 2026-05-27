@@ -514,6 +514,7 @@ class TestParserDeepSeek:
 
     def test_r1_simple_call_with_code_fence(self):
         import json as _json
+
         text = (
             "<｜tool▁calls▁begin｜>"
             "<｜tool▁call▁begin｜>function"
@@ -532,6 +533,7 @@ class TestParserDeepSeek:
     def test_r1_short_form_outer_marker(self):
         # llama.cpp accepts ``<｜tool▁calls｜>`` as the short-form opener.
         import json as _json
+
         text = (
             "<｜tool▁calls｜>function"
             "<｜tool▁sep｜>get_time\n"
@@ -548,6 +550,7 @@ class TestParserDeepSeek:
     def test_v3_1_bare_json(self):
         # V3 / V3.1 omit the ``function`` prefix and the code fence.
         import json as _json
+
         text = (
             "<｜tool▁calls▁begin｜>"
             "<｜tool▁call▁begin｜>get_time"
@@ -627,6 +630,7 @@ class TestParserGLM:
 
     def test_glm_simple_call(self):
         import json as _json
+
         text = (
             "<tool_call>web_search\n"
             "<arg_key>query</arg_key>\n"
@@ -645,6 +649,7 @@ class TestParserGLM:
         # non-strings are JSON-encoded. The parser must decode the
         # mixed shape back to native types.
         import json as _json
+
         text = (
             "<tool_call>complex_function\n"
             "<arg_key>name</arg_key>\n<arg_value>John Doe</arg_value>\n"
@@ -711,6 +716,7 @@ class TestParserKimi:
 
     def test_kimi_simple_call(self):
         import json as _json
+
         text = (
             "<|tool_calls_section_begin|>"
             "<|tool_call_begin|>functions.special_function:0"
@@ -855,9 +861,9 @@ class TestParserCrossFormatRouting:
             "<|tool_calls_section_begin|>",
             "<|tool_call_begin|>",
         ):
-            assert marker in TOOL_XML_SIGNALS, (
-                f"streaming loop would not wake on {marker!r}"
-            )
+            assert (
+                marker in TOOL_XML_SIGNALS
+            ), f"streaming loop would not wake on {marker!r}"
 
 
 class TestLoopBasic:
