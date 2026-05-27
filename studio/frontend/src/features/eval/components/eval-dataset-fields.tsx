@@ -172,6 +172,30 @@ export function EvalDatasetFields({
     }
   }
 
+  // Auto-detect columns shortly after the dataset / split / subset changes, so
+  // the Input/Output dropdowns populate without a manual click.
+  useEffect(() => {
+    const ref = (value.isLocal ? value.path : value.name).trim();
+    if (!ref) {
+      setDetectedColumns([]);
+      setPreviewSample(null);
+      setDetectError(null);
+      return;
+    }
+    const id = setTimeout(() => {
+      void detectColumns();
+    }, 500);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value.isLocal, value.path, value.name, value.split, value.subset, hfToken]);
+
+  // Detected columns plus the current value (so a persisted/typed selection
+  // still shows while detection is pending or if it isn't in the dataset).
+  const columnOptions = (current: string) =>
+    current && !detectedColumns.includes(current)
+      ? [current, ...detectedColumns]
+      : detectedColumns;
+
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-3">
@@ -391,24 +415,29 @@ export function EvalDatasetFields({
 
       {/* 3. Column mapping */}
       <div className="flex flex-col gap-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          className="w-fit"
-          disabled={detecting}
-          onClick={() => {
-            void detectColumns();
-          }}
-        >
-          {detecting ? (
-            <>
-              <Spinner className="size-3.5" />
-              Detecting…
-            </>
-          ) : (
-            "Detect columns"
-          )}
-        </Button>
+        <div className="flex items-center justify-between gap-2">
+          <Label className="text-xs font-medium text-muted-foreground">
+            Column mapping
+          </Label>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            disabled={detecting}
+            onClick={() => {
+              void detectColumns();
+            }}
+          >
+            {detecting ? (
+              <>
+                <Spinner className="size-3.5" />
+                Detecting…
+              </>
+            ) : (
+              "Refresh columns"
+            )}
+          </Button>
+        </div>
 
         {detectError && (
           <p className="text-xs text-destructive">{detectError}</p>
@@ -420,59 +449,49 @@ export function EvalDatasetFields({
             <Label className="text-xs font-medium text-muted-foreground">
               Input column
             </Label>
-            {detectedColumns.length > 0 ? (
-              <Select
-                value={value.inputColumn}
-                onValueChange={(col) => update({ inputColumn: col })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select column" />
-                </SelectTrigger>
-                <SelectContent>
-                  {detectedColumns.map((col) => (
-                    <SelectItem key={col} value={col}>
-                      {col}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Input
-                value={value.inputColumn}
-                onChange={(e) => update({ inputColumn: e.target.value })}
-                placeholder="e.g. question"
-              />
-            )}
+            <Select
+              value={value.inputColumn || undefined}
+              onValueChange={(col) => update({ inputColumn: col })}
+              disabled={detectedColumns.length === 0 && !value.inputColumn}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={detecting ? "Detecting…" : "Select column"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {columnOptions(value.inputColumn).map((col) => (
+                  <SelectItem key={col} value={col}>
+                    {col}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
-          {/* Reference column */}
+          {/* Output column */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs font-medium text-muted-foreground">
               Output column
             </Label>
-            {detectedColumns.length > 0 ? (
-              <Select
-                value={value.referenceColumn}
-                onValueChange={(col) => update({ referenceColumn: col })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select column" />
-                </SelectTrigger>
-                <SelectContent>
-                  {detectedColumns.map((col) => (
-                    <SelectItem key={col} value={col}>
-                      {col}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Input
-                value={value.referenceColumn}
-                onChange={(e) => update({ referenceColumn: e.target.value })}
-                placeholder="e.g. answer"
-              />
-            )}
+            <Select
+              value={value.referenceColumn || undefined}
+              onValueChange={(col) => update({ referenceColumn: col })}
+              disabled={detectedColumns.length === 0 && !value.referenceColumn}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={detecting ? "Detecting…" : "Select column"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {columnOptions(value.referenceColumn).map((col) => (
+                  <SelectItem key={col} value={col}>
+                    {col}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </div>
