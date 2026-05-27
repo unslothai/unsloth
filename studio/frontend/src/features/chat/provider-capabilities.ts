@@ -686,12 +686,14 @@ function isOpenAIReasoningModelId(modelId: string | null | undefined): boolean {
 }
 
 // Mirror of backend _ANTHROPIC_4_7_SAMPLING_REMOVED in
-// studio/backend/core/inference/external_provider.py:110. Claude 4.7
-// (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k entirely;
-// surfacing the sliders would let the user move a control that the
-// backend silently strips. The trailing -4-7[-.]/EOL anchor keeps future
-// families (claude-opus-5 etc.) unaffected.
-const ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX = /^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)/i;
+// studio/backend/core/inference/external_provider.py:110. Claude Opus
+// 4.7 removed temperature, top_p, and top_k entirely; surfacing the
+// sliders would let the user move a control that the backend silently
+// strips. Only Opus shipped in the 4.7 generation (Sonnet stops at 4.6,
+// Haiku at 4.5 per platform.claude.com/docs/en/about-claude/models/
+// overview), so the regex is opus-only. The trailing -4-7[-.]/EOL
+// anchor keeps future families (claude-opus-5 etc.) unaffected.
+const ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX = /^claude-opus-4-7(?:[-.]|$)/i;
 
 function isClaude47SamplingRemoved(modelId: string | null | undefined): boolean {
   const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -849,8 +851,9 @@ const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
  *     gpt-3.5-turbo): full sampling surface (OPENAI_CHAT_CAPABILITIES).
  *   - openai + reasoning model (gpt-5.x, o1, o3, o4): restrictive
  *     (OPENAI_REASONING_CAPABILITIES).
- *   - anthropic + claude-*-4-7: temperature/top_p/top_k stripped to
- *     match the backend 400-avoidance regex.
+ *   - anthropic + claude-opus-4-7: temperature/top_p/top_k stripped to
+ *     match the backend 400-avoidance regex (Sonnet/Haiku 4.7 do not
+ *     ship; only Opus does in the 4.7 generation).
  *   - deepseek + reasoning model (deepseek-reasoner / r1): hides
  *     temperature/top_p (silently ignored upstream).
  */

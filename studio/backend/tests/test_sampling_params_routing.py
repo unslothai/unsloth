@@ -1105,14 +1105,18 @@ def test_anthropic_4_7_sampling_removed_regex_matches_expected_ids():
         _ANTHROPIC_4_7_SAMPLING_REMOVED as RX,
     )
 
+    # Only Opus shipped in the 4.7 generation per
+    # platform.claude.com/docs/en/about-claude/models/overview; Sonnet
+    # stops at 4.6 and Haiku at 4.5. Pin both directions explicitly so
+    # the regex never widens by accident.
     should_match = [
         "claude-opus-4-7",
-        "claude-sonnet-4-7",
-        "claude-haiku-4-7",
         "claude-opus-4-7-20260418",
-        "claude-sonnet-4-7.1",
+        "claude-opus-4-7.1",
     ]
     should_not_match = [
+        "claude-sonnet-4-7",
+        "claude-haiku-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",

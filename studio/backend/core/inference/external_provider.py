@@ -71,14 +71,16 @@ def _normalize_stop_for_provider(
     return None
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
-# the API returns 400 "<param> is deprecated for this model" if any of
-# them is set to a non-default value. The "Sampling parameters removed"
-# section of the 4.7 release notes is the authoritative reference:
+# Claude 4.7 Opus removed temperature, top_p, and top_k — the API
+# returns 400 "<param> is deprecated for this model" if any of them is
+# set to a non-default value. The "Sampling parameters removed" section
+# of the 4.7 release notes is the authoritative reference:
 #   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
-# 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
-# the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
-# anchor keeps future versions (e.g. claude-opus-5) unaffected.
+# Only Opus shipped in the 4.7 generation (Sonnet stops at 4.6, Haiku at
+# 4.5 per https://platform.claude.com/docs/en/about-claude/models/overview),
+# so the regex is anchored to opus-4-7 only. 3.x and 4.5/4.6 still accept
+# all three knobs; the trailing -4-7[-.]/EOL anchor keeps future versions
+# (e.g. claude-opus-5) unaffected.
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -107,9 +109,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
-    r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
-)
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-opus-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
