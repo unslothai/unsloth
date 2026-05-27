@@ -76,3 +76,31 @@ def test_score_from_text_bare_json_object():
 def test_score_from_text_accepts_already_parsed_dict():
     pred = {"currency": "USD"}
     assert score_from_text({"currency": "USD"}, pred, {"currency": "categorical"}) == 1.0
+
+
+def test_score_from_text_repairs_truncated_json():
+    # A token-limit cutoff leaves the JSON unclosed; json_repair salvages it
+    # so the (partial) document still scores instead of being unparseable.
+    raw = '{"currency": "USD", "total": 100'  # no closing brace
+    score, node = score_from_text(
+        {"currency": "USD", "total": 100},
+        raw,
+        {"currency": "categorical", "total": "money"},
+        return_key_scores=True,
+    )
+    assert node.note != "unparseable prediction"
+    assert score == 1.0
+
+
+def test_score_from_text_repairs_trailing_comma_and_single_quotes():
+    raw = "{'currency': 'USD',}"
+    assert score_from_text({"currency": "USD"}, raw, {"currency": "categorical"}) == 1.0
+
+
+def test_score_from_text_prose_still_unparseable():
+    # Pure prose has no JSON to repair → stays unparseable (no false positives).
+    score, node = score_from_text(
+        _gt(), "* Bullet one\n* Bullet two — a summary, not JSON.",
+        SCHEMA, return_key_scores=True,
+    )
+    assert score == 0.0 and node.note == "unparseable prediction"

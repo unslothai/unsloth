@@ -52,6 +52,17 @@ def _extract_json(text: Any) -> Any | None:
                 return json.loads(s[i : j + 1])
             except (ValueError, TypeError):
                 continue
+    # Last resort: repair malformed/truncated JSON — unclosed braces from a
+    # token-limit cutoff, trailing commas, single quotes, JSON embedded in
+    # prose, etc. Pure prose repairs to "" so it stays unparseable (score 0).
+    try:
+        from json_repair import repair_json
+
+        repaired = repair_json(s, return_objects=True)
+        if isinstance(repaired, (dict, list)) and repaired:
+            return repaired
+    except Exception:
+        pass
     return None
 
 
