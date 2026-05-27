@@ -460,6 +460,32 @@ def warmup_rag_embedder(
     return {"ok": True, "model": model_name}
 
 
+@router.post("/reranker/precache")
+def precache_rag_reranker(
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """Download the reranker weights (~1.1 GB) into the HF cache.
+
+    Called from the frontend the moment the user flips the "Use
+    reranker" switch ON so the cost lands on the explicit toggle
+    instead of the first chat turn — where a multi-minute download
+    looks like a hung tool call.
+    """
+    from core.rag.reranker import precache_reranker
+    from utils.rag.config import RAG_RERANKER_MODEL
+
+    try:
+        precache_reranker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "RAG reranker precache failed",
+            model = RAG_RERANKER_MODEL,
+            error = str(exc),
+        )
+        return {"ok": False, "model": RAG_RERANKER_MODEL, "error": str(exc)}
+    return {"ok": True, "model": RAG_RERANKER_MODEL}
+
+
 @router.put("/defaults", response_model = RagDefaults)
 def set_rag_defaults(
     payload: UpdateRagDefaultsRequest,

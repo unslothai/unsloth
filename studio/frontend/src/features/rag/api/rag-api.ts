@@ -311,6 +311,22 @@ export async function warmupRagEmbedder(): Promise<void> {
   await authFetch("/api/rag/warmup", { method: "POST" });
 }
 
+/**  Download reranker weights into the HF cache. ~1.1 GB on first call;
+ *   no-op when cached. Called when the user flips the reranker toggle so
+ *   the download lands on an explicit action, not the first chat turn. */
+export async function precacheRagReranker(): Promise<{
+  ok: boolean;
+  model: string;
+  error?: string;
+}> {
+  const response = await authFetch("/api/rag/reranker/precache", {
+    method: "POST",
+  });
+  return parseJsonOrThrow<{ ok: boolean; model: string; error?: string }>(
+    response,
+  );
+}
+
 // --- Search ---
 
 export async function search(req: SearchRequest): Promise<SearchHit[]> {

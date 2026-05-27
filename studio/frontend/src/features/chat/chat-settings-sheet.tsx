@@ -97,9 +97,10 @@ import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { useKnowledgeBases } from "@/features/rag/hooks/use-knowledge-bases";
 import { useThreadDocuments } from "@/features/rag/hooks/use-kb-documents";
 import { useRagStore } from "@/features/rag/stores/rag-store";
-import type {
-  ChunkingStrategy as RagChunkingStrategy,
-  KBMode,
+import {
+  type ChunkingStrategy as RagChunkingStrategy,
+  type KBMode,
+  precacheRagReranker,
 } from "@/features/rag/api/rag-api";
 import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 
@@ -1577,7 +1578,37 @@ export function ChatSettingsPanel({
               </div>
               <Switch
                 checked={enableRerank}
-                onCheckedChange={setEnableRerank}
+                onCheckedChange={(next) => {
+                  setEnableRerank(next);
+                  if (!next) return;
+                  // First flip-on may have to download ~1.1 GB; the
+                  // toast covers the latency so the user doesn't think
+                  // the next query is hung waiting on the reranker.
+                  const toastId = toast.loading(
+                    "Preparing reranker (one-time download)…",
+                  );
+                  void precacheRagReranker()
+                    .then((res) => {
+                      if (res.ok) {
+                        toast.success("Reranker ready", { id: toastId });
+                      } else {
+                        toast.error(
+                          `Reranker download failed: ${res.error ?? "unknown"}`,
+                          { id: toastId },
+                        );
+                        setEnableRerank(false);
+                      }
+                    })
+                    .catch((err: unknown) => {
+                      toast.error(
+                        `Reranker download failed: ${
+                          err instanceof Error ? err.message : String(err)
+                        }`,
+                        { id: toastId },
+                      );
+                      setEnableRerank(false);
+                    });
+                }}
                 disabled={!ragEnabled}
               />
             </div>
