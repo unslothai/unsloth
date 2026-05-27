@@ -61,7 +61,7 @@ class SandboxMode(str, Enum):
 class AppServerConfig:
     env: Optional[dict[str, str]] = None
     codex_bin: Optional[str] = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory = dict)
 
 
 @dataclass
@@ -97,7 +97,7 @@ def _tab_id_from_system(system: Optional[str]) -> int:
         line = line.strip()
         if line.startswith("[tab ") and line.endswith("]"):
             try:
-                return int(line[len("[tab "): -1].split("/")[0])
+                return int(line[len("[tab ") : -1].split("/")[0])
             except ValueError:
                 pass
     return 0
@@ -152,7 +152,9 @@ class _TurnStream:
         # Final completion event -- the canonical SDK always emits this,
         # and ``_stream_thread_run`` uses it as its fallback when no
         # deltas arrived (so worth keeping even when deltas did stream).
-        yield _ItemCompletedNotification(item=_ItemRoot(root=_AgentMessage(text=self._text)))
+        yield _ItemCompletedNotification(
+            item = _ItemRoot(root = _AgentMessage(text = self._text))
+        )
 
     async def __anext__(self) -> Any:
         if self._iter is None:
@@ -198,7 +200,7 @@ class _Thread:
 
         text = _spoof_response_text(self._model, prompt, self._tab_id)
         await asyncio.sleep(0)
-        return SimpleNamespace(text=text, final_response=text)
+        return SimpleNamespace(text = text, final_response = text)
 
 
 class AsyncCodex:
@@ -227,7 +229,7 @@ class AsyncCodex:
         # Either kwarg path is accepted -- the real provider tries
         # ``base_instructions`` first then falls back to ``system``.
         sys_text = base_instructions if base_instructions is not None else system
-        return _Thread(model=model, system=sys_text)
+        return _Thread(model = model, system = sys_text)
 
 
 def install_as_openai_codex() -> None:
@@ -260,7 +262,7 @@ def _build_module_alias(name: str) -> Any:
     # ``importlib.util.find_spec(name)`` walks ``sys.modules[name].__spec__``
     # first, so an empty spec is required for the provider's existing
     # availability probe to recognise the spoof.
-    mod.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+    mod.__spec__ = importlib.machinery.ModuleSpec(name, loader = None)
     mod.AsyncCodex = AsyncCodex  # type: ignore[attr-defined]
     mod.AppServerConfig = AppServerConfig  # type: ignore[attr-defined]
     mod.ApprovalMode = ApprovalMode  # type: ignore[attr-defined]
