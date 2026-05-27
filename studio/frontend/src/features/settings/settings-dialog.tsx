@@ -7,6 +7,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -35,19 +36,33 @@ import { ProfileTab } from "./tabs/profile-tab";
 
 interface TabDef {
   id: SettingsTab;
-  label: string;
+  labelKey: TranslationKey;
   icon: typeof Settings02Icon;
-  badge?: string;
+  badgeKey?: TranslationKey;
 }
 
 const TABS: TabDef[] = [
-  { id: "general", label: "General", icon: Settings02Icon },
-  { id: "profile", label: "Profile", icon: UserIcon },
-  { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
-  { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "connections", label: "Connections", icon: CloudIcon, badge: "New" },
-  { id: "api-keys", label: "API", icon: Globe02Icon, badge: "New" },
-  { id: "about", label: "Help", icon: HelpCircleIcon },
+  { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
+  { id: "profile", labelKey: "settings.tabs.profile", icon: UserIcon },
+  {
+    id: "appearance",
+    labelKey: "settings.tabs.appearance",
+    icon: PaintBrush02Icon,
+  },
+  { id: "chat", labelKey: "settings.tabs.chat", icon: Message01Icon },
+  {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
+    badgeKey: "common.new",
+  },
+  {
+    id: "api-keys",
+    labelKey: "settings.tabs.apiKeys",
+    icon: Globe02Icon,
+    badgeKey: "common.new",
+  },
+  { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
 function renderTab(tab: SettingsTab) {
@@ -70,10 +85,12 @@ function renderTab(tab: SettingsTab) {
 }
 
 export function SettingsDialog() {
+  const t = useT();
   const open = useSettingsDialogStore((s) => s.open);
   const activeTab = useSettingsDialogStore((s) => s.activeTab);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const opener = useSettingsDialogStore((s) => s.opener);
   const reduced = useReducedMotion();
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -98,19 +115,30 @@ export function SettingsDialog() {
       <DialogContent
         showCloseButton={false}
         overlayClassName="bg-background/40"
+        onCloseAutoFocus={(e) => {
+          // Restore focus to the element that triggered openDialog().
+          // Radix's FocusScope races our rAF-scheduled tab-button focus
+          // and loses the previous-focus reference, so we restore by hand.
+          if (opener && opener.isConnected) {
+            e.preventDefault();
+            opener.focus({ preventScroll: true });
+          }
+        }}
         className={cn(
-          "!max-w-none h-[560px] w-[820px] p-0 overflow-hidden",
+          // Cap at 820px but shrink to the viewport so we don't clip
+          // on iPad-portrait widths (640-820px) where the fixed
+          // `w-[820px]` overflows by 26px on each side.
+          "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
           "shadow-border rounded-xl border-border",
-          "sm:h-[560px] sm:w-[820px]",
-          "max-sm:h-dvh max-sm:w-dvw max-sm:rounded-none",
+          "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
-        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogTitle className="sr-only">{t("settings.dialog.title")}</DialogTitle>
         <DialogDescription className="sr-only">
-          Manage your Unsloth Studio preferences.
+          {t("settings.dialog.description")}
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
             <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
@@ -153,11 +181,11 @@ export function SettingsDialog() {
                       className="relative z-10 size-icon"
                     />
                     <span className="relative z-10 min-w-0 truncate">
-                      {tab.label}
+                      {t(tab.labelKey)}
                     </span>
-                    {tab.badge ? (
+                    {tab.badgeKey ? (
                       <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                        {tab.badge}
+                        {t(tab.badgeKey)}
                       </span>
                     ) : null}
                   </button>
@@ -171,7 +199,7 @@ export function SettingsDialog() {
               type="button"
               onClick={closeDialog}
               className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Close settings"
+              aria-label={t("settings.dialog.closeAriaLabel")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>

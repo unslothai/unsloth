@@ -105,12 +105,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
+          // Server truth wins; keep localStorage in sync both ways.
+          if (result.requires_password_change !== mustChangePassword()) {
+            setMustChangePassword(result.requires_password_change);
+          }
+
           // Redirect between login ↔ change-password based on server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
+          if (mode === "change-password" && !result.requires_password_change) {
             navigate({ to: "/login" });
             return;
           }
@@ -163,14 +168,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const blockedByState =
     initialized === false ||
     (mode === "login" && requiresPasswordChange) ||
-    (mode === "change-password" && !requiresPasswordChange && !mustChangePassword());
+    (mode === "change-password" && !requiresPasswordChange);
 
   let helperText: string | null = null;
   if (initialized === false) {
     helperText = "Auth is still bootstrapping the default admin account.";
   } else if (isLoginMode && requiresPasswordChange) {
     helperText = "Sign in once with the seeded credentials to change the password.";
-  } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
+  } else if (!isLoginMode && !requiresPasswordChange) {
     helperText = "Password already updated. Use the login screen.";
   }
   const title = isLoginMode ? "Welcome back" : "Setup your account";
@@ -189,7 +194,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
+    (currentPassword.length < 8 ||
+      newPassword.length < 8 ||
+      newPassword !== confirmPassword ||
+      currentPassword === newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -201,8 +209,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setError(null);
 
     if (!isLoginMode) {
-      if (!currentPassword) {
-        setError("Unable to initialize setup. Reload the page and try again.");
+      // Mirror the disable gate: Enter / autofill can bypass the button.
+      if (currentPassword.length < 8) {
+        setError(
+          currentPassword
+            ? "Current password must be at least 8 characters."
+            : "Unable to initialize setup. Reload the page and try again.",
+        );
         return;
       }
       if (newPassword.length < 8) {

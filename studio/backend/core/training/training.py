@@ -233,6 +233,7 @@ class TrainingBackend:
             "hf_token": kwargs.get("hf_token", ""),
             "load_in_4bit": kwargs.get("load_in_4bit", True),
             "max_seq_length": kwargs.get("max_seq_length", 2048),
+            "vision_image_size": kwargs.get("vision_image_size"),
             "hf_dataset": kwargs.get("hf_dataset", ""),
             "local_datasets": kwargs.get("local_datasets"),
             "local_eval_datasets": kwargs.get("local_eval_datasets"),

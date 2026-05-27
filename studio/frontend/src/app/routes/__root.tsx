@@ -6,17 +6,36 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
-import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
+import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useT, type TranslationKey } from "@/i18n";
 import {
   Outlet,
   createRootRoute,
   redirect,
+  useMatches,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useLayoutEffect } from "react";
 import { AppProvider } from "../provider";
+
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    title?: string;
+    titleKey?: TranslationKey;
+  }
+}
+
+function RouteFallback() {
+  const t = useT();
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
+      {t("common.loading")}
+    </div>
+  );
+}
 
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
@@ -47,13 +66,37 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
+// Fallback when no matched route declares a `staticData.title`.
+const DEFAULT_DOCUMENT_TITLE = "Unsloth Studio";
+
 function RootLayout() {
+  const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const isChatRoute = pathname.startsWith("/chat");
   const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
+
+  const matchedTitle = useMatches({
+    select: (matches) => {
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const { title, titleKey } = matches[i].staticData;
+        if (titleKey) return t(titleKey);
+        if (title) return title;
+      }
+      return null;
+    },
+  });
+
+  const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
+  const documentTitle = settingsDialogOpen ? t("settings.title") : matchedTitle;
+
+  useLayoutEffect(() => {
+    document.title = documentTitle
+      ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
+      : DEFAULT_DOCUMENT_TITLE;
+  }, [documentTitle]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -72,7 +115,7 @@ function RootLayout() {
       <SettingsDialog />
       {hideNavbar ? (
         <main className="flex-1">
-          <Suspense fallback={null}>
+          <Suspense fallback={<RouteFallback />}>
             <Outlet />
           </Suspense>
         </main>
@@ -98,7 +141,7 @@ function RootLayout() {
                   transition={{ duration: 0.15 }}
                   className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
                 >
-                  <Suspense fallback={null}>
+                  <Suspense fallback={<RouteFallback />}>
                     <Outlet />
                   </Suspense>
                 </motion.div>

@@ -346,20 +346,26 @@ class TestRuntimePatterns:
         patterns = runtime_patterns_for_choice(choice)
         assert "llama-server" in patterns
         assert "llama-quantize" in patterns
+        # Broad lib*.so* covers libllama, libggml, libmtmd, libggml-cpu-*,
+        # plus the libllama-<binary>-impl.so split that ggml-org/llama.cpp
+        # #23462 introduced between b9279 and b9283.
+        assert "lib*.so*" in patterns
 
     def test_linux_cuda_patterns(self):
         choice = AssetChoice(
             repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cuda"
         )
         patterns = runtime_patterns_for_choice(choice)
-        assert "libggml-cuda.so*" in patterns
+        # libggml-cuda.so is matched by lib*.so* now.
+        assert "lib*.so*" in patterns
 
     def test_linux_rocm_patterns(self):
         choice = AssetChoice(
             repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-rocm"
         )
         patterns = runtime_patterns_for_choice(choice)
-        assert "libggml-hip.so*" in patterns
+        # libggml-hip.so is matched by lib*.so* now.
+        assert "lib*.so*" in patterns
         assert "llama-server" in patterns
 
     def test_windows_hip_patterns(self):
@@ -372,7 +378,10 @@ class TestRuntimePatterns:
             install_kind = "windows-hip",
         )
         patterns = runtime_patterns_for_choice(choice)
-        assert "*.exe" in patterns
+        # Narrowed from "*.exe" to the two binaries Studio actually
+        # invokes, mirroring the Linux/macOS pattern style.
+        assert "llama-server.exe" in patterns
+        assert "llama-quantize.exe" in patterns
         assert "*.dll" in patterns
 
     def test_macos_patterns(self):

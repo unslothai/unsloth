@@ -23,7 +23,7 @@ on:
   pull_request:
     paths:
       - 'install.ps1'
-      - 'uninstall.ps1'
+      - 'scripts/uninstall.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
@@ -176,32 +176,6 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # install.ps1 runs `uv pip install --no-deps -r
-        # no-torch-runtime.txt` to keep torch out of transitive
-        # resolution from accelerate/peft/trl. That also drops
-        # typer's and pydantic's runtime deps unless they're
-        # explicitly pinned in no-torch-runtime.txt. We pin the
-        # known ones (click, shellingham, annotated-doc, rich,
-        # pydantic-core, annotated-types, typing-inspection, ...)
-        # but typer / pydantic minor versions can introduce new
-        # transitive deps that are NOT in our pin list.
-        #
-        # Belt-and-suspenders: re-install typer + pydantic +
-        # huggingface_hub WITH their deps into the Studio venv.
-        # `pip install --upgrade` only adds missing packages; it
-        # never down-shifts an installed version. Cannot pull
-        # torch (none of typer / pydantic / huggingface_hub depend
-        # on it).
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
-
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -268,21 +242,22 @@ jobs:
           echo "post-update Studio /api/health OK"
 
       - name: Uninstall and verify clean
-        # Round-trip through uninstall.ps1 against the default install
-        # tree at %USERPROFILE%\.unsloth\studio. Catches regressions
-        # where install.ps1 starts writing under a new key (registry,
-        # Start Menu, %APPDATA%) and uninstall.ps1 has not been updated
-        # to match. Skips gracefully if uninstall.ps1 has not landed yet
-        # (lets this workflow merge before #5513).
+        # Round-trip through scripts/uninstall.ps1 against the default
+        # install tree at %USERPROFILE%\.unsloth\studio. Catches
+        # regressions where install.ps1 starts writing under a new key
+        # (registry, Start Menu, %APPDATA%) and scripts/uninstall.ps1 has
+        # not been updated to match. Skips gracefully if
+        # scripts/uninstall.ps1 has not landed yet (lets this workflow
+        # merge before #5513).
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          if (-not (Test-Path "$PWD\uninstall.ps1")) {
-            Write-Host "uninstall.ps1 not present in this tree; skipping round-trip"
+          if (-not (Test-Path "$PWD\scripts\uninstall.ps1")) {
+            Write-Host "scripts/uninstall.ps1 not present in this tree; skipping round-trip"
             "" | Set-Content logs/uninstall.log
             exit 0
           }
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
           $leak = 0
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth\studio",
@@ -296,8 +271,8 @@ jobs:
           }
           if ($leak -gt 0) { exit 1 }
           # Idempotency.
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
           Write-Host "PASS: windows install -> update -> uninstall round-trip clean"
 
       - name: Upload update logs
