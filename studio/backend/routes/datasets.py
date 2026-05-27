@@ -138,6 +138,8 @@ _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
+TRAINING_DATASET_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+TRAINING_DATASET_UPLOAD_MAX_LABEL = "200MB"
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 
@@ -334,10 +336,27 @@ async def upload_dataset(
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
-    # Stream file to disk in chunks to avoid holding entire file in memory
-    with open(stored_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            f.write(chunk)
+    # Stream file to disk in chunks to avoid holding entire file in memory.
+    # Keep a route-level cap below the global request-body cap so users get a
+    # clear training-dataset-specific error and oversized partial files are not
+    # left in the Studio uploads directory.
+    total_bytes = 0
+    try:
+        with open(stored_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > TRAINING_DATASET_UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code = 413,
+                        detail = (
+                            "Training dataset upload too large. "
+                            f"Maximum is {TRAINING_DATASET_UPLOAD_MAX_LABEL}."
+                        ),
+                    )
+                f.write(chunk)
+    except HTTPException:
+        stored_path.unlink(missing_ok = True)
+        raise
 
     if stored_path.stat().st_size == 0:
         stored_path.unlink(missing_ok = True)

@@ -40,12 +40,12 @@ import {
 } from "@/hooks";
 import {
   HfDatasetSubsetSplitSelectors,
+  listLocalDatasets,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
+  type LocalDatasetInfo,
 } from "@/features/training";
-import { listLocalDatasets } from "@/features/training/api/datasets-api";
-import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
@@ -83,6 +83,10 @@ const TRAINING_UPLOAD_EXTENSIONS = [
 const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(TRAINING_UPLOAD_EXTENSIONS);
 const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
 const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
+const TRAINING_DATASET_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet";
+const DOCUMENT_REDIRECT_LABEL = "PDF/DOCX/TXT open Learning Recipes";
+const TRAINING_UPLOAD_MAX_BYTES = 200 * 1024 * 1024;
+const TRAINING_UPLOAD_MAX_LABEL = "200MB";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
@@ -92,6 +96,10 @@ const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
 function getFileExtension(fileName: string) {
   const extensionStart = fileName.lastIndexOf(".");
   return extensionStart >= 0 ? fileName.slice(extensionStart).toLowerCase() : "";
+}
+
+function formatUploadSize(bytes: number) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 function isLikelyLocalDatasetRef(value: string) {
@@ -392,6 +400,15 @@ export function DatasetSection() {
     onSuccess: (storedPath: string) => void,
     successMessage: string,
   ) => {
+    if (file.size > TRAINING_UPLOAD_MAX_BYTES) {
+      toast.error("File too large", {
+        description: `${file.name} is ${formatUploadSize(
+          file.size,
+        )}. Training uploads support up to ${TRAINING_UPLOAD_MAX_LABEL}.`,
+      });
+      return;
+    }
+
     setIsUploading(true);
     try {
       const uploaded = await uploadTrainingDataset(file);
@@ -1061,7 +1078,7 @@ export function DatasetSection() {
                     Drop 1 file here or click to upload
                   </span>
                   <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_UPLOAD_LABEL}
+                    {TRAINING_DATASET_UPLOAD_LABEL} · up to {TRAINING_UPLOAD_MAX_LABEL}; {DOCUMENT_REDIRECT_LABEL}
                   </span>
                 </span>
               </button>
