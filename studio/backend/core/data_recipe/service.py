@@ -109,7 +109,7 @@ def _apply_data_designer_image_context_patch() -> None:
         return
 
     try:
-        from data_designer.config.models import ImageContext
+        from data_designer.config.models import ImageContext  # pyright: ignore[reportMissingImports]
     except ImportError:
         return
 
@@ -131,7 +131,7 @@ def _apply_data_designer_image_context_patch() -> None:
 
 
 def build_model_providers(recipe: dict[str, Any]):
-    from data_designer.config.models import ModelProvider
+    from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[ModelProvider] = []
     for provider in recipe.get("model_providers", []):
@@ -174,7 +174,7 @@ def _validate_recipe_runtime_support(
 def build_mcp_providers(
     recipe: dict[str, Any],
 ) -> list:
-    from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider
+    from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[MCPProvider | LocalStdioMCPProvider] = []
     for provider in recipe.get("mcp_providers", []):
@@ -214,16 +214,42 @@ def build_mcp_providers(
     return providers
 
 
+def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, Any]:
+    model_configs = recipe.get("model_configs")
+    if not isinstance(model_configs, list):
+        return recipe
+
+    changed = False
+    next_model_configs: list[Any] = []
+    for model_config in model_configs:
+        if isinstance(model_config, dict) and "gguf_variant" in model_config:
+            next_model_config = dict(model_config)
+            next_model_config.pop("gguf_variant", None)
+            next_model_configs.append(next_model_config)
+            changed = True
+            continue
+        next_model_configs.append(model_config)
+
+    if not changed:
+        return recipe
+
+    return {
+        **recipe,
+        "model_configs": next_model_configs,
+    }
+
+
 def build_config_builder(recipe: dict[str, Any]):
     _apply_data_designer_image_context_patch()
-    from data_designer.config import DataDesignerConfigBuilder
-    from data_designer.config.processors import ProcessorType
+    from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
+    from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
 
     recipe_core = {
         key: value
         for key, value in recipe.items()
         if key not in {"model_providers", "mcp_providers"}
     }
+    recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
         recipe_core
     )
@@ -256,8 +282,9 @@ def create_data_designer(
     artifact_path: str | None = None,
 ):
     _apply_data_designer_image_context_patch()
-    from data_designer.interface.data_designer import DataDesigner
+    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
+    recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
@@ -265,7 +292,7 @@ def create_data_designer(
     # when the pipeline contains no LLM columns.  Supply a lightweight stub
     # so sampler/expression-only recipes can run without a real provider.
     if not model_providers:
-        from data_designer.config.models import ModelProvider
+        from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
         model_providers = [
             ModelProvider(
