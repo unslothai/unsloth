@@ -47,6 +47,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebSearch,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
@@ -71,9 +72,9 @@ export type CompareMessagePart =
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
-  appendMessage: (content: CompareMessagePart[]) => void;
+  appendMessage: (content: CompareMessagePart[]) => Promise<string | null>;
   /** Trigger generation on the current thread (after appendMessage). */
-  startRun: () => void;
+  startRun: (parentId?: string | null) => void;
   cancel: () => void;
   isRunning: () => boolean;
   /** Returns a promise that resolves when the current or next run finishes. */
@@ -223,12 +224,52 @@ export function RegisterCompareHandle({
       // fixes occasional reorder on reload.
       append: (content) =>
         aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
-      startRun: () => {
+      appendMessage: (content) => {
+        const thread = aui.thread();
+        const beforeIds = new Set(
+          thread.getState().messages.map((message) => message.id),
+        );
+        thread.append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+
+        const findAppendedUserMessageId = () => {
+          const messages = thread.getState().messages;
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (beforeIds.has(message.id) || message.role !== "user") {
+              continue;
+            }
+            return message.id;
+          }
+          return null;
+        };
+
+        const appendedId = findAppendedUserMessageId();
+        if (appendedId) {
+          return Promise.resolve(appendedId);
+        }
+
+        return new Promise<string | null>((resolve) => {
+          const startedAt = Date.now();
+          const poll = () => {
+            const messageId = findAppendedUserMessageId();
+            if (messageId || Date.now() - startedAt >= 1000) {
+              resolve(messageId);
+              return;
+            }
+            window.setTimeout(poll, 16);
+          };
+          window.setTimeout(poll, 0);
+        });
+      },
+      startRun: (parentId) => {
         const msgs = aui.thread().getState().messages;
-        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
-        aui.thread().startRun({ parentId: lastId });
+        const fallbackId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: parentId ?? fallbackId });
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
@@ -651,12 +692,81 @@ export function SharedComposer({
         chatTemplateOverride?.trim() ? chatTemplateOverride : null;
 
       function modelDisplayName(id: string): string {
+        const external = parseExternalModelId(id);
+        if (external) return external.modelId;
         const parts = id.split("/");
         return parts[parts.length - 1] || id;
       }
 
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+        const external = parseExternalModelId(sel.id);
+        if (external) {
+          const externalStore = useExternalProvidersStore.getState();
+          if (!externalStore.connectionsEnabled) {
+            throw new Error(
+              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
+            );
+          }
+          const provider = externalStore.providers.find(
+            (p) => p.id === external.providerId,
+          );
+          if (!provider) {
+            throw new Error("Connection not found. Open Settings -> Connections and add it again.");
+          }
+
+          const reasoningCaps = getExternalReasoningCapabilities(
+            provider.providerType,
+            external.modelId,
+            {
+              isReasoningProvider: provider.isReasoningModel === true,
+              baseUrl: provider.baseUrl ?? null,
+            },
+          );
+          const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+            provider.providerType,
+            external.modelId,
+            provider.baseUrl,
+          );
+          const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+            provider.providerType,
+            external.modelId,
+            provider.baseUrl,
+          );
+          const supportsBuiltinImageGeneration =
+            providerSupportsBuiltinImageGeneration(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+            provider.providerType,
+          );
+          const currentStore = useChatRuntimeStore.getState();
+          currentStore.setCheckpoint(sel.id, null);
+          useChatRuntimeStore.setState({
+            activeGgufVariant: null,
+            ggufContextLength: null,
+            ggufMaxContextLength: null,
+            ggufNativeContextLength: null,
+            activeNativePathToken: null,
+            supportsReasoning: reasoningCaps.supportsReasoning,
+            reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+            reasoningStyle: reasoningCaps.reasoningStyle,
+            supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+            reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
+            supportsPreserveThinking: false,
+            supportsTools: false,
+            supportsBuiltinWebSearch,
+            supportsBuiltinCodeExecution,
+            supportsBuiltinImageGeneration,
+            supportsBuiltinWebFetch,
+            loadedIsMultimodal:
+              providerTypeSupportsVision(provider.providerType) === true,
+          });
+          return "external";
+        }
+
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
@@ -738,9 +848,12 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
+      // Show user messages immediately on both sides and keep the ids
+      // so delayed model loads can start the run from the intended turn.
+      const [parentId1, parentId2] = await Promise.all([
+        handle1 ? handle1.appendMessage(content) : Promise.resolve(null),
+        handle2 ? handle2.appendMessage(content) : Promise.resolve(null),
+      ]);
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
@@ -754,7 +867,7 @@ export function SharedComposer({
           const status1 = await ensureModelLoaded(model1);
           toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
           const done = handle1.waitForRunEnd();
-          handle1.startRun();
+          handle1.startRun(parentId1);
           await done;
         }
 
@@ -768,7 +881,7 @@ export function SharedComposer({
           const status2 = await ensureModelLoaded(model2);
           toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
           const done = handle2.waitForRunEnd();
-          handle2.startRun();
+          handle2.startRun(parentId2);
           await done;
         }
 
