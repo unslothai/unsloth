@@ -646,20 +646,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             ),
             ...getHydratedSettingsState(settings, state, hydrationVersions),
           };
-          // Migration: pre-existing ragSource → auto-enable ragToolEnabled.
-          const hydratedRagSource =
-            (nextState.ragSource as RagSource | undefined) ?? state.ragSource;
-          if (
-            hydratedRagSource &&
-            hydratedRagSource.kind !== "off" &&
-            !state.ragToolEnabled
-          ) {
-            nextState.ragToolEnabled = true;
-            saveBool(CHAT_RAG_TOOL_ENABLED_KEY, true);
-          }
-          // After hydration, if RAG is on (persisted or just migrated),
-          // warm the embedder so the first message doesn't pay the
-          // cold load inline.
+          // After hydration, if RAG is explicitly on (persisted), warm
+          // the embedder so the first message doesn't pay the cold load
+          // inline. RAG is opt-in by default — no auto-enable migration.
           if (
             nextState.ragToolEnabled === true ||
             (nextState.ragToolEnabled === undefined && state.ragToolEnabled)

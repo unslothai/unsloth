@@ -719,6 +719,11 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               activeNativePathToken: nativePathToken ?? null,
             });
+            // Reset RAG to off on every successful model load so the
+            // user always opts in explicitly per session. Goes through
+            // the setter so the persisted toggle in localStorage is
+            // kept in sync (setState alone would skip the saveBool).
+            useChatRuntimeStore.getState().setRagToolEnabled(false);
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (
               modelId.toLowerCase().includes("qwen3") &&
