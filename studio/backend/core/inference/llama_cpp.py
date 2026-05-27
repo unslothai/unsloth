@@ -5453,7 +5453,9 @@ class LlamaCppBackend:
         if skip_special_tokens is not None:
             stream_payload["skip_special_tokens"] = skip_special_tokens
         if spaces_between_special_tokens is not None:
-            stream_payload["spaces_between_special_tokens"] = spaces_between_special_tokens
+            stream_payload["spaces_between_special_tokens"] = (
+                spaces_between_special_tokens
+            )
         if include_stop_str_in_output is not None:
             stream_payload["include_stop_str_in_output"] = include_stop_str_in_output
         if truncate_prompt_tokens is not None:
