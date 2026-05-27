@@ -1027,7 +1027,7 @@ export function SharedComposer({
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => {
               // The picker accepts both image and audio. Don't gate the
               // button on image-availability — addFiles still filters
