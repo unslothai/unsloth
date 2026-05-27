@@ -2644,7 +2644,8 @@ def detect_host() -> HostInfo:
             # "CUDA UMD Version: X.Y" instead of the legacy
             # "CUDA Version: X.Y"; accept both spellings.
             cuda_match = re.search(
-                r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", merged,
+                r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)",
+                merged,
             )
             if cuda_match is not None:
                 driver_cuda_version = (
