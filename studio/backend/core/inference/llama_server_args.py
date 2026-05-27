@@ -58,6 +58,13 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
+    # Server-mode flips: --embedding / --rerank restrict llama-server to
+    # those endpoints, breaking Studio's /v1/chat/completions hop.
+    frozenset({"--embedding", "--embeddings"}),
+    frozenset({"--rerank", "--reranking"}),
+    # llama-server's own built-in tools flag would silently stack on top
+    # of Studio's --enable-tools / --disable-tools policy resolver.
+    frozenset({"--tools"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)

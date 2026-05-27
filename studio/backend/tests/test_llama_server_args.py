@@ -162,6 +162,14 @@ def test_non_flag_token_passes_through():
         "--models-max",
         "--models-autoload",
         "--no-models-autoload",
+        # Server-mode flips: --embedding / --rerank would restrict
+        # llama-server to those endpoints and break Studio's chat hop.
+        "--embedding",
+        "--embeddings",
+        "--rerank",
+        "--reranking",
+        # llama-server's own --tools clashes with Studio's tool policy.
+        "--tools",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
