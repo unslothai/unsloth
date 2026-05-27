@@ -455,12 +455,23 @@ _smart_apt_install() {
         echo "    If you accept, we'll run sudo now, and it'll prompt your password."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
+        # Detect non-interactive contexts (curl | sh, docker run -i without -t,
+        # CI runners). Without a TTY we cannot prompt for a sudo password, and
+        # sudo without -n would block forever waiting for stdin that never arrives.
+        if [ ! -r /dev/tty ] || [ ! -t 1 ]; then
+            if sudo -n true >/dev/null 2>&1; then
+                # Passwordless sudo configured; safe to escalate non-interactively.
+                sudo apt-get update -y </dev/null
+                sudo apt-get install -y $_STILL_MISSING </dev/null
+                return 0
+            fi
+            echo "    No TTY available and sudo would require a password."
+            echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+            echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+            exit 1
         fi
+        printf "    Accept? [Y/n] "
+        read -r REPLY </dev/tty || REPLY="y"
         case "$REPLY" in
             [nN]*)
                 echo ""

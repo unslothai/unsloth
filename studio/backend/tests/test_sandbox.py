@@ -643,3 +643,141 @@ def test_sandbox_available_concurrent_calls_consistent(monkeypatch):
     assert len(set(results)) == 1, results
     if results[0] and sys.platform == "linux":
         assert sandbox._linux_bwrap_path is not None
+
+
+# ---------------------------------------------------------------------------
+# Round-6 reviewer fixes
+# ---------------------------------------------------------------------------
+
+
+def test_safe_subpath_rejects_seatbelt_injection_chars():
+    """Paths containing Seatbelt string-literal delimiters must be
+    rejected. Without this guard a workdir containing a `"` could
+    close the profile string and inject Scheme into the policy."""
+    sandbox = _load_sandbox_module()
+    for bad_char in ('"', "\\", "\n", "\r", "\x00"):
+        with pytest.raises(ValueError):
+            sandbox._safe_subpath(f"/tmp/x{bad_char}y")
+    # Sanity: normal paths still pass.
+    assert sandbox._safe_subpath("/tmp/normal/path") == "/tmp/normal/path"
+
+
+def test_compute_blocked_commands_per_platform():
+    """The platform union must contain the common set plus the
+    platform-specific add-ons, and only those. Tests can call this
+    pure function on any host."""
+    from core.inference import tools
+
+    linux = tools._compute_blocked_commands("linux")
+    darwin = tools._compute_blocked_commands("darwin")
+    win32 = tools._compute_blocked_commands("win32")
+
+    assert "rm" in linux and "rm" in darwin and "rm" in win32
+    assert "open" not in linux  # xdg-open wrapper on Linux is legitimate
+    assert "open" in darwin  # macOS LaunchServices escape vector
+    assert "security" in darwin and "osascript" in darwin
+    assert "powershell" in win32 and "powershell" not in linux
+
+
+def test_blocklist_catches_pipe_to_shell_bypass():
+    """`echo 'rm -rf /' | sh` and friends. The shell at command
+    position is not in the blocklist (so `bash -c 'ls'` still works),
+    but the rm hides inside the quoted echo argument."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "rm" in _find_blocked_commands("echo 'rm -rf /tmp/x' | sh")
+    assert "curl" in _find_blocked_commands("echo 'curl example.com' | bash")
+    assert "sudo" in _find_blocked_commands("printf '%s' 'sudo whoami' | zsh")
+
+
+def test_blocklist_catches_language_interpreter_dash_c():
+    """`python -c '...'`, `perl -e '...'`, `node -e '...'`, `ruby -e '...'`
+    bypass the bash blocklist (only `python`/etc. are at command
+    position) AND the Python AST gate (which only runs on the python
+    tool, not on bash). Round 6 surfaces these as the interpreter name."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "python3" in _find_blocked_commands(
+        "python3 -c 'import os; os.system(\"rm x\")'"
+    )
+    assert "perl" in _find_blocked_commands("perl -e 'system(\"rm /tmp/x\")'")
+    assert "node" in _find_blocked_commands(
+        "node -e 'require(\"child_process\").execSync(\"rm x\")'"
+    )
+    assert "ruby" in _find_blocked_commands("ruby -e 'system(\"rm x\")'")
+    # Benign interpreter calls must not false-positive.
+    assert _find_blocked_commands("python3 -c 'print(1)'") == set()
+
+
+def test_blocklist_catches_awk_positional_script():
+    """awk takes its script as the first positional argument, not -c."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "awk" in _find_blocked_commands("awk 'BEGIN{system(\"rm x\")}'")
+    assert _find_blocked_commands("awk '{print $1}'") == set()
+
+
+def test_blocklist_catches_find_destructive_primaries():
+    """find -delete / -fprint* mutate the filesystem WITHOUT spawning
+    a separate command; the -exec scanner does not see them."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "find" in _find_blocked_commands("find / -name x -delete")
+    assert "find" in _find_blocked_commands("find /tmp -fprint /etc/passwd")
+    # Plain find is fine.
+    assert _find_blocked_commands("find /tmp -name '*.txt'") == set()
+
+
+def test_blocklist_catches_posix_dot_source():
+    """`source ./foo` was already blocked; `. ./foo` is the POSIX
+    synonym and must be too."""
+    from core.inference.tools import _find_blocked_commands
+
+    assert "." in _find_blocked_commands(". ./evil.sh")
+    assert "source" in _find_blocked_commands("source ./evil.sh")
+
+
+def test_resolve_nproc_limit_clamps_below_floor(monkeypatch):
+    """A value of 0 would brick the inner wrapper itself; clamp to
+    the floor so the sandboxed interpreter can at least start."""
+    sandbox = _load_sandbox_module()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "0")
+    assert sandbox._resolve_nproc_limit() == sandbox._NPROC_FLOOR
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "5")
+    assert sandbox._resolve_nproc_limit() == sandbox._NPROC_FLOOR
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "9999")
+    assert sandbox._resolve_nproc_limit() == 9999
+
+
+def test_sandbox_unavailable_does_not_cache_on_transient_timeout(monkeypatch):
+    """A probe TimeoutExpired must NOT pin the cache to False; the
+    next caller has to re-probe so a one-off slow runner doesn't
+    disable the sandbox for the rest of the process lifetime."""
+    import subprocess
+
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
+
+    call_count = {"n": 0}
+
+    def fake_run(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise subprocess.TimeoutExpired(cmd = args[0], timeout = 5)
+        # On the second call, return a "success" CompletedProcess.
+        return subprocess.CompletedProcess(args = args[0], returncode = 0, stdout = b"", stderr = b"")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox.os.path, "exists", lambda p: p == sandbox._SANDBOX_EXEC)
+
+    # First call: probe times out, returns False, but cache must stay None.
+    first = sandbox.sandbox_available()
+    assert first is False
+    assert sandbox._sandbox_available_cache is None, "transient timeout was cached"
+    # Second call: probe succeeds, value is cached.
+    second = sandbox.sandbox_available()
+    assert second is True
+    assert sandbox._sandbox_available_cache is True

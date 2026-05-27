@@ -33,15 +33,33 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
         print(msg)
 
 
+def _is_wsl1() -> bool:
+    """Detect WSL1 specifically (WSL2 has its own kernel and supports
+    unprivileged user namespaces; WSL1 is a Windows-side translation
+    layer with no userns and no way to enable one)."""
+    try:
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as f:
+            version = f.read().lower()
+    except OSError:
+        return False
+    return "microsoft" in version and "wsl2" not in version
+
+
 def print_sandbox_unavailable_notice(strict: bool = False) -> None:
     """Notice that tool execution cannot use the OS-level sandbox.
 
     The header line flips to "blocked by strict mode" when
     UNSLOTH_STUDIO_SANDBOX_STRICT is active so the banner does not
-    contradict the actual runtime refusal. On Linux, includes both
-    bubblewrap install hints and an AppArmor / unprivileged-userns
-    note for Ubuntu 23.10+ where bwrap can be installed but still
-    fail the probe with "RTM_NEWADDR: Operation not permitted".
+    contradict the actual runtime refusal. Platform-specific hints:
+
+    * Linux: bubblewrap install + AppArmor userns sysctl (Ubuntu 23.10+).
+    * WSL1:  no userns support in the WSL1 kernel; the AppArmor hint
+             would be wrong. Tell the operator to upgrade to WSL2 or
+             use native.
+    * Windows: no OS sandbox primitive exists in this PR; the only
+               path to refuse tool calls is the strict env var.
+    * macOS: sandbox-exec ships with the OS, so the only way to hit
+             this banner is a probe failure (already logged).
     """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
@@ -58,15 +76,34 @@ def print_sandbox_unavailable_notice(strict: bool = False) -> None:
     )
     lines = ["", style(header)]
     if sys.platform == "linux":
+        if _is_wsl1():
+            for line in (
+                "  WSL1 does not support unprivileged user namespaces; the OS",
+                "  sandbox cannot be enabled here. Upgrade to WSL2 or run",
+                "  Studio under native Linux / macOS:",
+                "    wsl --set-version <distro> 2",
+            ):
+                lines.append(style(line))
+        else:
+            for line in (
+                "  Install bubblewrap to enable the Linux sandbox:",
+                "    Debian/Ubuntu:  sudo apt install bubblewrap",
+                "    Fedora/RHEL:    sudo dnf install bubblewrap",
+                "    Arch:           sudo pacman -S bubblewrap",
+                "  If bubblewrap is installed but the probe still fails",
+                "  (Ubuntu 23.10+ AppArmor blocks unprivileged user namespaces):",
+                "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+                "  Restart this server after install or kernel policy changes.",
+            ):
+                lines.append(style(line))
+    elif sys.platform == "win32":
         for line in (
-            "  Install bubblewrap to enable the Linux sandbox:",
-            "    Debian/Ubuntu:  sudo apt install bubblewrap",
-            "    Fedora/RHEL:    sudo dnf install bubblewrap",
-            "    Arch:           sudo pacman -S bubblewrap",
-            "  If bubblewrap is installed but the probe still fails",
-            "  (Ubuntu 23.10+ AppArmor blocks unprivileged user namespaces):",
-            "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
-            "  Restart this server after install or kernel policy changes.",
+            "  Windows has no OS-level sandbox primitive in this build.",
+            "  Tool execution falls back to the AST gate + bash blocklist +",
+            "  env whitelist defences. To refuse tool calls outright until a",
+            "  sandbox primitive is available, set the strict env var:",
+            "    PowerShell: $env:UNSLOTH_STUDIO_SANDBOX_STRICT='1'",
+            "    cmd.exe:   set UNSLOTH_STUDIO_SANDBOX_STRICT=1",
         ):
             lines.append(style(line))
     if not strict:

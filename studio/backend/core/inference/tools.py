@@ -92,6 +92,10 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "rsync",
         "eval",
         "source",
+        # POSIX dot: `.` is a synonym for `source` and was missed by the
+        # original blocklist. `. ./evil.sh` would otherwise execute the
+        # script in the current shell context.
+        ".",
     }
 )
 # macOS-only escape vectors. `open URL` uses LaunchServices to spawn a
@@ -110,12 +114,23 @@ _BLOCKED_COMMANDS_WIN = frozenset(
         "pwsh",
     }
 )
-if sys.platform == "win32":
-    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
-elif sys.platform == "darwin":
-    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_MACOS
-else:
-    _BLOCKED_COMMANDS = _BLOCKED_COMMANDS_COMMON
+
+
+def _compute_blocked_commands(platform: str) -> frozenset[str]:
+    """Return the platform-appropriate blocklist union.
+
+    Broken out as a function so unit tests can exercise all three
+    platform branches on any host without monkeypatching the module
+    constant, which the rest of the module captures at import time.
+    """
+    if platform == "win32":
+        return _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
+    if platform == "darwin":
+        return _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_MACOS
+    return _BLOCKED_COMMANDS_COMMON
+
+
+_BLOCKED_COMMANDS = _compute_blocked_commands(sys.platform)
 
 
 _SHELL_SEPARATORS = frozenset(
@@ -146,6 +161,41 @@ _COMMAND_PREFIXES = frozenset(
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# find primaries that mutate the filesystem WITHOUT invoking a separate
+# command. -delete unlinks matched paths in place; -fprint / -fprintf /
+# -fls write output to arbitrary host paths. None of them appear in
+# _FIND_EXEC_FLAGS so the nested-command scanner misses them; we flag
+# the `find` invocation itself when any of these are present.
+_FIND_DESTRUCTIVE_FLAGS = frozenset({"-delete", "-fprint", "-fprintf", "-fls"})
+# Shells whose `-c <code>` argument is itself code to scan. Without
+# recursion, `bash -c 'rm -rf /'` would bypass the blocklist because
+# only `bash` (not blocked) is at command position.
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+_SHELLS_WIN = frozenset({"cmd", "cmd.exe"})
+# Language interpreters whose `-c <code>` / `-e <code>` argument runs
+# arbitrary code in that language. `python -c "import os; os.system('rm')"`
+# from the bash tool would bypass the Python AST gate (only the python
+# tool entry point invokes it). awk and gawk take the script positionally.
+_LANG_INTERPRETERS_DASH_C_E = frozenset({"python", "python2", "python3", "perl", "ruby", "node"})
+_LANG_INTERPRETERS_POSITIONAL = frozenset({"awk", "gawk", "mawk", "nawk"})
+# Quick danger-pattern scan for code passed to a language interpreter.
+# The bash-blocklist regex matches at shell separator boundaries and so
+# does not see `rm` inside `os.system("rm")`. These patterns catch the
+# usual LLM bypass shapes regardless of language: anything that invokes
+# the OS, spawns subprocesses, evaluates code, or imports a runtime
+# module from a string. False-positive surface is acceptable in
+# interpreter-code context.
+_INTERP_DANGER_RE = re.compile(
+    r"(?:^|\W)(?:"
+    r"os\.system|os\.popen|os\.exec[vlpe]+|os\.spawn[a-z]+|"
+    r"subprocess\.(?:run|Popen|call|check_call|check_output|getoutput|getstatusoutput)|"
+    r"system\s*\(|exec\s*\(|popen\s*\(|spawn\s*\(|"
+    r"__import__|importlib|"
+    r"eval\s*\(|compile\s*\(|"
+    r"child_process|execSync|execFileSync|spawnSync|"
+    r"Kernel\.|`[^`]*`"
+    r")"
+)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -222,11 +272,46 @@ def _find_blocked_commands(command: str) -> set[str]:
         prefix_pending = False
 
     # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    # `find ... -delete` / `-fprint*` mutate the filesystem in place.
     for i, tok in enumerate(tokens):
         if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
             base = _token_basename(tokens[i + 1])
             if base in _BLOCKED_COMMANDS:
                 blocked.add(base)
+        if tok in _FIND_DESTRUCTIVE_FLAGS:
+            # Surface as a synthetic "find" entry; flagging the bare flag
+            # would be cryptic to the LLM operator. The find invocation
+            # itself is the thing being refused.
+            blocked.add("find")
+            break
+
+    # Pipe-to-shell bypass: `echo 'rm -rf /' | sh` and friends. The
+    # shell appears at command position but is NOT itself blocked
+    # (so `bash -c 'ls'` still works) — the bypass is that the
+    # blocklist never sees the rm because it lives inside the quoted
+    # echo argument. When we see a pipe-or-redirect immediately
+    # followed by a shell or interpreter, scan ALL preceding tokens
+    # for blocked commands hiding in their string-literal arguments.
+    _PIPE_OR_REDIR = frozenset({"|", "<"})
+    for i, tok in enumerate(tokens):
+        if tok not in _PIPE_OR_REDIR or i + 1 >= len(tokens):
+            continue
+        # Walk forward past flags to find the actual interpreter token.
+        j = i + 1
+        while j < len(tokens) and tokens[j].startswith("-"):
+            j += 1
+        if j >= len(tokens):
+            continue
+        nxt_base = _token_basename(tokens[j])
+        if nxt_base not in _SHELLS and nxt_base not in _LANG_INTERPRETERS_DASH_C_E:
+            continue
+        # Re-scan every preceding token's contents as if it were a
+        # shell command. Quoted args that contained `rm` etc. were a
+        # single token to shlex; recursing splits them back out.
+        for prev in tokens[:i]:
+            if prev in _SHELL_SEPARATORS:
+                continue
+            blocked |= _find_blocked_commands(prev)
 
     # Regex: blocked words at shell command boundaries that shlex won't see,
     # e.g. inside an unquoted $(rm -rf), <(rm), backtick chain, or appended to
@@ -243,16 +328,21 @@ def _find_blocked_commands(command: str) -> set[str]:
         blocked.update(re.findall(pattern, lowered))
 
     # Nested shell invocations (bash -c 'sudo whoami',
-    #    bash -lc '...', bash --login -c '...', cmd /c '...').
-    #    When a -c or /c flag is found, look backwards for a shell name
-    #    (skipping intermediate flags like --login, -l, -x) and recursively
-    #    scan the nested command string.
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    #    bash -lc '...', bash --login -c '...', cmd /c '...') AND
+    #    nested language interpreters (python -c '...', perl -e '...',
+    #    node -e '...', ruby -e '...'). When a -c/-e or /c flag is
+    #    found, look backwards for the interpreter binary (skipping
+    #    intermediate flags like --login, -l, -x) and recursively scan
+    #    the nested code string for blocked commands. Without this,
+    #    `python -c "import os; os.system('rm -rf /')"` from the bash
+    #    tool would bypass both the bash blocklist (only `python` is at
+    #    command position) and the Python AST gate (which only runs on
+    #    the python tool entry point).
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
-        # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
-        is_unix_c = tok_lower == "-c" or (
+        # Match -c / -e exactly, or combined flags ending in c (e.g. -lc, -xc).
+        # -e is python/perl/node/ruby's "eval this string" flag.
+        is_unix_c = tok_lower in ("-c", "-e") or (
             tok_lower.startswith("-")
             and tok_lower.endswith("c")
             and not tok_lower.startswith("--")
@@ -260,10 +350,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
-        # Look backwards past any flags to find the shell binary.
-        # On Unix, flags start with - (skip those). On Windows, flags
-        # start with / but so do absolute paths, so only skip short
-        # single-char /X flags (not /bin/bash style paths).
+        # Look backwards past any flags to find the interpreter binary.
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
@@ -273,9 +360,31 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
+            elif is_unix_c and prev_base in _LANG_INTERPRETERS_DASH_C_E:
+                blocked |= _find_blocked_commands(tokens[i + 1])
+                if _INTERP_DANGER_RE.search(tokens[i + 1]):
+                    blocked.add(prev_base)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
+
+    # awk / gawk / mawk / nawk take their script as the first positional
+    # argument (`awk 'BEGIN{system("rm")}'`). Scan that script.
+    for i, token in enumerate(tokens):
+        base = _token_basename(token)
+        if base not in _LANG_INTERPRETERS_POSITIONAL:
+            continue
+        # Find the next non-flag positional after the interpreter.
+        for j in range(i + 1, len(tokens)):
+            nxt = tokens[j]
+            if nxt.startswith("-"):
+                continue
+            if nxt in _SHELL_SEPARATORS:
+                break
+            blocked |= _find_blocked_commands(nxt)
+            if _INTERP_DANGER_RE.search(nxt):
+                blocked.add(base)
+            break
 
     return blocked
 
@@ -283,14 +392,16 @@ def _find_blocked_commands(command: str) -> set[str]:
 def _normalized_sys_executable() -> str:
     """Return ``sys.executable`` with redundant ``..`` segments collapsed.
 
-    Studio is sometimes launched as ``../.venv/bin/python``, which puts a
-    literal ``..`` in ``sys.executable``. ``_linux_bwrap_argv`` only
-    bind-mounts the realpath chain of the interpreter, so the bwrap
-    child cannot resolve the unresolved parent segment and fails with
-    ``execvp ... No such file or directory``. ``abspath(normpath(...))``
-    collapses ``..`` while preserving the venv launcher path
-    (``realpath`` would dereference a symlink-launcher venv onto the
-    base interpreter and reintroduce the wrong sys.prefix).
+    Studio is sometimes launched as ``../.venv/bin/python``, which puts
+    a literal ``..`` in ``sys.executable``. ``_linux_bwrap_argv``
+    bind-mounts only the realpath chain of the interpreter plus the
+    venv tree, so the bwrap child cannot resolve the unresolved parent
+    segment and fails with ``execvp ... No such file or directory``.
+    ``abspath(normpath(...))`` collapses ``..`` while preserving the
+    venv launcher path. ``realpath`` would resolve ``bin/python`` to
+    the base interpreter outside the venv root, which the bind set does
+    not cover, so the venv site-packages would not be visible inside
+    the sandbox.
     """
     return os.path.abspath(os.path.normpath(sys.executable))
 
@@ -503,6 +614,19 @@ def _resolve_bash_path() -> str:
     global _RESOLVED_BASH_PATH
     if _RESOLVED_BASH_PATH is not None:
         return _RESOLVED_BASH_PATH
+
+    def _usable(path: str) -> bool:
+        # os.path.exists returns True for broken symlinks; os.access(X_OK)
+        # rejects them. We also realpath() to defend against a Homebrew
+        # tap installing bash as a symlink into a path the Seatbelt
+        # profile does not allow, even though Homebrew installs real
+        # binaries in practice.
+        return (
+            os.path.exists(path)
+            and os.access(path, os.X_OK)
+            and not os.path.isdir(path)
+        )
+
     if sys.platform == "darwin":
         for path in (
             "/opt/homebrew/bin/bash",
@@ -510,20 +634,27 @@ def _resolve_bash_path() -> str:
             "/bin/bash",
             "/usr/bin/bash",
         ):
-            if os.path.exists(path):
+            if _usable(path) and os.path.realpath(path).startswith(
+                _MACOS_BASH_ALLOWED_PREFIXES
+            ):
                 _RESOLVED_BASH_PATH = path
                 return path
         candidate = shutil.which("bash")
-        if candidate and candidate.startswith(_MACOS_BASH_ALLOWED_PREFIXES):
+        if (
+            candidate
+            and _usable(candidate)
+            and candidate.startswith(_MACOS_BASH_ALLOWED_PREFIXES)
+            and os.path.realpath(candidate).startswith(_MACOS_BASH_ALLOWED_PREFIXES)
+        ):
             _RESOLVED_BASH_PATH = candidate
             return candidate
     else:
         for path in ("/bin/bash", "/usr/bin/bash"):
-            if os.path.exists(path):
+            if _usable(path):
                 _RESOLVED_BASH_PATH = path
                 return path
         candidate = shutil.which("bash")
-        if candidate:
+        if candidate and _usable(candidate):
             _RESOLVED_BASH_PATH = candidate
             return candidate
     _RESOLVED_BASH_PATH = "bash"
@@ -1983,12 +2114,19 @@ def _kill_process_tree(proc) -> None:
 
 
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
-    """Daemon thread that kills a process when cancel_event is set."""
+    """Daemon thread that kills a process when cancel_event is set.
+
+    Callers always pass a non-None cancel_event (see _python_exec /
+    _bash_exec); the early-return makes the contract explicit and
+    removes the dead None-branch wait().
+    """
+    if cancel_event is None:
+        return
     while proc.poll() is None:
-        if cancel_event is not None and cancel_event.is_set():
+        if cancel_event.is_set():
             _kill_process_tree(proc)
             return
-        cancel_event.wait(poll_interval) if cancel_event else None
+        cancel_event.wait(poll_interval)
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
@@ -2111,8 +2249,13 @@ def _python_exec(
 
         return result
 
-    except Exception as e:
-        return f"Execution error: {e}"
+    except Exception:
+        # Full traceback to the server log; only the exception type
+        # reaches the LLM. The exception message itself often contains
+        # the full bwrap argv (workdir absolute path, bind list) which
+        # would otherwise leak the host filesystem layout to the model.
+        logger.exception("python tool execution failed")
+        return "Execution error: see server logs."
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -2193,5 +2336,8 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         return _truncate(result) if result.strip() else "(no output)"
 
-    except Exception as e:
-        return f"Execution error: {e}"
+    except Exception:
+        # See note above: don't leak the bwrap argv / workdir path to
+        # the LLM via Exception formatting.
+        logger.exception("bash tool execution failed")
+        return "Execution error: see server logs."

@@ -833,7 +833,12 @@ def run_server(
                 probe_done.set()
 
         threading.Thread(target = _bg_probe, daemon = True).start()
-        if probe_done.wait(timeout = 2.0) and probe_result and not probe_result[0]:
+        # Match the per-attempt probe timeout (5s) so the notice has a
+        # chance to land BEFORE the access banner instead of racing
+        # with later log lines. If the probe hasn't decided by then,
+        # the background thread still emits the notice — just later
+        # in the log stream.
+        if probe_done.wait(timeout = 5.0) and probe_result and not probe_result[0]:
             _print_notice_once()
         wildcard_bind = host in ("0.0.0.0", "::")
         # For wildcard binds, run the reachability check between the URL

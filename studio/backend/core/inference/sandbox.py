@@ -48,8 +48,28 @@ _MACOS_EXTRA_EXEC_PREFIXES = (
 )
 
 
-def _probe(argv: list[str], label: str) -> bool:
-    """Run *argv*, return True iff exit code is 0. Log on failure."""
+class _ProbeResult:
+    """Three-way probe result: True / False / transient timeout.
+
+    The caller treats a transient timeout as "do not cache; let the
+    next caller re-probe". A definite True or False (binary missing,
+    bwrap setuid helper denied, kernel userns refusal) is cacheable
+    for the lifetime of the process.
+    """
+
+    __slots__ = ("ok", "transient")
+
+    def __init__(self, ok: bool, transient: bool = False):
+        self.ok = ok
+        self.transient = transient
+
+
+def _probe(argv: list[str], label: str) -> _ProbeResult:
+    """Run *argv*; return _ProbeResult(ok=..., transient=...).
+
+    ``transient=True`` means the answer might change next time (e.g.
+    timed out under IO load); the caller should NOT cache the False.
+    """
     try:
         proc = subprocess.run(
             argv,
@@ -57,11 +77,18 @@ def _probe(argv: list[str], label: str) -> bool:
             stderr = subprocess.PIPE,
             timeout = 5,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except subprocess.TimeoutExpired as e:
+        # Slow runner / loaded box / cold filesystem. Don't pin the
+        # answer to False forever; let the next caller re-probe.
+        logger.warning(
+            "%s probe timed out (%s); will retry on next tool call", label, e
+        )
+        return _ProbeResult(ok = False, transient = True)
+    except OSError as e:
         logger.warning(
             "%s probe failed (%s); tool execution will run unsandboxed", label, e
         )
-        return False
+        return _ProbeResult(ok = False)
     if proc.returncode != 0:
         stderr_tail = proc.stderr.decode("utf-8", errors = "replace").strip()[-200:]
         logger.warning(
@@ -70,21 +97,21 @@ def _probe(argv: list[str], label: str) -> bool:
             proc.returncode,
             stderr_tail,
         )
-        return False
-    return True
+        return _ProbeResult(ok = False)
+    return _ProbeResult(ok = True)
 
 
-def _macos_probe() -> bool:
+def _macos_probe() -> _ProbeResult:
     if not os.path.exists(_SANDBOX_EXEC):
         logger.warning("macOS sandbox unavailable (sandbox-exec missing)")
-        return False
+        return _ProbeResult(ok = False)
     return _probe(
         [_SANDBOX_EXEC, "-p", "(version 1)(allow default)", "/usr/bin/true"],
         "macOS sandbox-exec",
     )
 
 
-def _linux_probe() -> bool:
+def _linux_probe() -> _ProbeResult:
     """Smoke-test that ``bwrap`` can apply a minimal sandbox here.
 
     Catches the cases where the kernel refuses to create unprivileged
@@ -94,8 +121,8 @@ def _linux_probe() -> bool:
     bwrap = shutil.which("bwrap")
     if bwrap is None:
         logger.warning("bwrap not found on PATH; tool execution will run unsandboxed")
-        return False
-    ok = _probe(
+        return _ProbeResult(ok = False)
+    result = _probe(
         [
             bwrap,
             "--ro-bind",
@@ -107,9 +134,9 @@ def _linux_probe() -> bool:
         ],
         "Linux bwrap",
     )
-    if ok:
+    if result.ok:
         _linux_bwrap_path = bwrap
-    return ok
+    return result
 
 
 def sandbox_available() -> bool:
@@ -125,6 +152,12 @@ def sandbox_available() -> bool:
     slow-failing probe from overwriting a fast-succeeding probe (or
     vice versa) and ensures _linux_bwrap_path is set before any caller
     observes _sandbox_available_cache=True.
+
+    A transient probe TIMEOUT (slow runner, cold filesystem, loaded
+    host) is NOT cached: the next caller re-probes. Without this, a
+    one-off timeout would pin the answer to "unavailable" for the
+    entire Studio process lifetime even after the underlying load
+    cleared.
     """
     global _sandbox_available_cache
     if _sandbox_available_cache is not None:
@@ -135,16 +168,18 @@ def sandbox_available() -> bool:
             return _sandbox_available_cache
 
         if sys.platform == "darwin":
-            ok = _macos_probe()
+            result = _macos_probe()
             label = "macOS Seatbelt"
         elif sys.platform == "linux":
-            ok = _linux_probe()
+            result = _linux_probe()
             label = "Linux bubblewrap"
         else:
-            ok = False
+            result = _ProbeResult(ok = False)
             label = "no sandbox primitive for this platform"
 
-        _sandbox_available_cache = ok
+        ok = result.ok
+        if not result.transient:
+            _sandbox_available_cache = ok
         if ok:
             logger.info("%s sandbox available; tool execution sandboxed", label)
         elif sys.platform not in ("darwin", "linux"):
@@ -203,13 +238,14 @@ def _exec_chain_symlinks(executable: str) -> list[str]:
                 if os.path.islink(prefix):
                     seen_links.add(prefix)
                     out.append(prefix)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("exec-chain islink(%s) failed: %s", prefix, e)
         try:
             if not os.path.islink(current):
                 break
             target = os.readlink(current)
-        except OSError:
+        except OSError as e:
+            logger.debug("exec-chain readlink(%s) failed: %s", current, e)
             break
         if not target.startswith(os.sep):
             target = os.path.normpath(os.path.join(os.path.dirname(current), target))
@@ -411,6 +447,15 @@ _LINUX_NPROC_WRAPPER_TEMPLATE = (
 )
 
 
+_NPROC_DEFAULT = 10000
+# Hard floor: Python's own startup needs a handful of threads for the
+# GC and signal handlers; multiprocessing needs at least two. A value
+# of 0 or 1 would brick the inner interpreter before the LLM-supplied
+# code even ran. 64 is well below any realistic legitimate need and
+# well above the kernel minimum.
+_NPROC_FLOOR = 64
+
+
 def _resolve_nproc_limit() -> int:
     """Read UNSLOTH_STUDIO_SANDBOX_NPROC on the host; default 10000.
 
@@ -418,11 +463,30 @@ def _resolve_nproc_limit() -> int:
     propagated into the sandbox. Bake the value into the wrapper at
     argv-build time so the operator's override still takes effect
     inside the namespace.
+
+    Values below ``_NPROC_FLOOR`` are silently clamped up; a value of
+    0 would otherwise prevent the inner Python wrapper itself from
+    spawning the LLM-controlled child.
     """
     try:
-        return int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+        value = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", str(_NPROC_DEFAULT)))
     except ValueError:
-        return 10000
+        return _NPROC_DEFAULT
+    if value < _NPROC_FLOOR:
+        logger.warning(
+            "UNSLOTH_STUDIO_SANDBOX_NPROC=%s below floor %s; clamping",
+            value, _NPROC_FLOOR,
+        )
+        return _NPROC_FLOOR
+    return value
+
+
+# Import-time sanity: catch the case where a maintainer accidentally
+# adds a literal `{` to the template (e.g. a dict literal) which would
+# turn .format() into a KeyError at every tool call.
+assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = 12345), (
+    "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
+)
 
 
 def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:
