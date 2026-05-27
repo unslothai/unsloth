@@ -60,7 +60,9 @@ _INTENT_SIGNAL = re.compile(
     # Handles both straight and curly apostrophes.
     # Excludes "I can", "I should", "I want to", "let's" which
     # appear frequently in direct answers / explanations.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    # Negative lookahead drops negated forms ("I will not", "I'll never")
+    # so a refusal doesn't trigger a re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"

@@ -37,6 +37,7 @@ from backend.utils.wheel_utils import (
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
+IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
@@ -423,6 +424,7 @@ def _infer_no_torch() -> bool:
 
 NO_TORCH = _infer_no_torch()
 
+
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
@@ -447,6 +449,11 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 )
+
+# Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides file).
+_MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
+    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the default console encoding can be a legacy code page
@@ -959,6 +966,20 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
+
+    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
+    # mlx-vlm / mlx-lm transformers pin -- set at module load).
+    if IS_MAC_ARM and not skip_base:
+        _progress("MLX stack (Apple Silicon)")
+        pip_install(
+            "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
+            "--no-cache-dir",
+            "--upgrade",
+            "mlx",
+            "mlx-metal",
+            "mlx-lm",
+            "mlx-vlm",
+        )
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
