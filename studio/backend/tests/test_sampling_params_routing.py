@@ -239,22 +239,20 @@ def test_anthropic_rejects_openai_only_knobs(monkeypatch):
 def _drive_openai_compat(captured, **kwargs) -> dict:
     """Send through the default OAI-compat branch (NOT /v1/responses).
 
-    Use a non-OpenAI provider_type so the dispatcher takes the default
-    branch at the bottom of stream_chat_completion rather than the
-    Responses translator path that routes provider_type=="openai".
+    Use qwen so the dispatcher takes the default branch and the provider
+    inherits the default 16-stop cap (Mistral now caps at 4 per its
+    third-party shims).
     """
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "mistral",
-            base_url = "https://api.mistral.ai/v1",
+            provider_type = "qwen",
+            base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             api_key = "test-key",
         )
-        # mistral's OpenAI-compat /v1/chat/completions returns OpenAI
-        # SSE; a single DONE frame is enough to drain the stream.
         async for _ in client.stream_chat_completion(
             messages = [{"role": "user", "content": "hi"}],
-            model = "mistral-small-latest",
+            model = "qwen-plus",
             temperature = 0.5,
             top_p = 0.9,
             max_tokens = 64,
@@ -278,10 +276,36 @@ def test_openai_compat_forwards_frequency_penalty(monkeypatch):
 
 
 def test_openai_compat_forwards_seed(monkeypatch):
+    """qwen has no seed_field override so seed forwards as `seed`."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
     body = _drive_openai_compat(captured, seed = 12345)
-    # Default OAI-compat provider (mistral here) renames seed to
-    # random_seed via provider registry's seed_field.
+    assert body.get("seed") == 12345, body
+
+
+def test_mistral_renames_seed_to_random_seed(monkeypatch):
+    """Mistral's registry sets seed_field="random_seed" so the OAI seed
+    is renamed on the wire. https://docs.mistral.ai/api/endpoint/chat"""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "mistral",
+            base_url = "https://api.mistral.ai/v1",
+            api_key = "mistral-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "mistral-small-latest",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            seed = 12345,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
     assert body.get("random_seed") == 12345, body
     assert "seed" not in body, body
 
@@ -349,13 +373,40 @@ def test_openai_compat_forwards_stop_array(monkeypatch):
 
 
 def test_openai_compat_truncates_stop_to_default_cap(monkeypatch):
-    """Default OAI-compat cap is 16 (DeepSeek and Mistral both accept
-    that many); only OpenAI Chat has a tighter 4-entry hard limit."""
+    """Default OAI-compat cap is 16 (Qwen, DeepSeek, HuggingFace, custom);
+    OpenAI Chat / OpenRouter / Gemini / Mistral have tighter 4-entry caps."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
     body = _drive_openai_compat(captured, stop = [f"s{i}" for i in range(20)])
     assert len(body.get("stop", [])) == 16, body
     assert body["stop"][0] == "s0"
     assert body["stop"][-1] == "s15"
+
+
+def test_mistral_stop_cap_is_4(monkeypatch):
+    """Mistral's docs publish no max but third-party shims cap at 4;
+    match OpenAI Chat's cap to avoid silent upstream truncation."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "mistral",
+            base_url = "https://api.mistral.ai/v1",
+            api_key = "mistral-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "mistral-small-latest",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            stop = [f"S{i}" for i in range(8)],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("stop") == ["S0", "S1", "S2", "S3"], body
 
 
 def test_openai_compat_stop_dedup_and_drop_empties(monkeypatch):
@@ -590,9 +641,9 @@ def test_kimi_web_search_bypass_forwards_new_sampling_fields(monkeypatch):
     assert "top_p" not in body, body
     assert "seed" not in body, body
     assert "parallel_tool_calls" not in body, body
+    assert "presence_penalty" not in body, body
     # Knobs not on Kimi's drop-list forward through the bypass.
     assert body.get("stop") == ["END"], body
-    assert body.get("presence_penalty") == 0.5, body
 
 
 def test_kimi_web_search_uses_kimi_stop_cap_5(monkeypatch):
@@ -679,6 +730,72 @@ def test_gemini_stop_sequences_capped_to_5(monkeypatch):
     body = captured["body"]
     gen_config = body.get("generationConfig", {})
     assert gen_config.get("stopSequences") == ["S0", "S1", "S2", "S3", "S4"], body
+
+
+def test_openrouter_forwards_top_a(monkeypatch):
+    """OpenRouter exposes `top_a` (the tail-cut sampler). The frontend
+    capability map lets the value through; verify the OAI-compat body
+    builder actually carries it to the wire."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openrouter",
+            base_url = "https://openrouter.ai/api/v1",
+            api_key = "or-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "openai/gpt-4o",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            top_a = 0.25,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("top_a") == 0.25, body
+
+
+def test_vllm_forwards_output_shape_knobs(monkeypatch):
+    """vLLM accepts skip_special_tokens / spaces_between_special_tokens /
+    include_stop_str_in_output / truncate_prompt_tokens. Verify the
+    OAI-compat external proxy forwards them to the wire body."""
+    captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "vllm",
+            base_url = "https://vllm.example.com/v1",
+            api_key = "vllm-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "Qwen/Qwen3-4B",
+            temperature = 0.5,
+            top_p = 0.9,
+            max_tokens = 64,
+            skip_special_tokens = False,
+            spaces_between_special_tokens = False,
+            include_stop_str_in_output = True,
+            truncate_prompt_tokens = 2048,
+            min_tokens = 8,
+            ignore_eos = True,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    assert body.get("skip_special_tokens") is False, body
+    assert body.get("spaces_between_special_tokens") is False, body
+    assert body.get("include_stop_str_in_output") is True, body
+    assert body.get("truncate_prompt_tokens") == 2048, body
+    assert body.get("min_tokens") == 8, body
+    assert body.get("ignore_eos") is True, body
 
 
 def test_kimi_drops_stop_strings_over_32_bytes(monkeypatch):
@@ -837,27 +954,52 @@ def test_responses_to_chat_bridge_omits_unset_parallel_tool_calls():
 def test_chat_settings_payload_accepts_new_sampling_keys():
     """ChatSettingsPayload has extra="forbid" so the new keys must be
     listed explicitly; otherwise every settings save with any of them
-    422s. Pin the round-trip."""
+    422s. Pin the round-trip for every persisted sampler the frontend
+    can emit (see PERSISTED_INFERENCE_PARAM_KEYS in chat-runtime-store.ts)."""
     from routes.chat_history import ChatSettingsPayload
 
-    parsed = ChatSettingsPayload.model_validate(
-        {
-            "inferenceParams": {
-                "frequencyPenalty": 0.7,
-                "seed": 42,
-                "stop": ["END"],
-                "serviceTier": "standard_only",
-                "parallelToolCalls": False,
-            }
-        }
-    )
+    inference = {
+        "frequencyPenalty": 0.7,
+        "seed": 42,
+        "stop": ["END"],
+        "serviceTier": "standard_only",
+        "parallelToolCalls": False,
+        "fastMode": True,
+        # Extended llama.cpp / vLLM / OpenRouter samplers.
+        "typicalP": 0.85,
+        "topNSigma": 2.5,
+        "repeatLastN": 64,
+        "dynatempRange": 0.3,
+        "dynatempExponent": 1.2,
+        "mirostat": 2,
+        "mirostatTau": 4.0,
+        "mirostatEta": 0.15,
+        "topA": 0.2,
+        "dryMultiplier": 0.8,
+        "dryBase": 1.75,
+        "dryAllowedLength": 2,
+        "dryPenaltyLastN": -1,
+        "xtcProbability": 0.5,
+        "xtcThreshold": 0.1,
+        "minKeep": 5,
+        "ignoreEos": True,
+        "minTokens": 10,
+        "skipSpecialTokens": False,
+        "spacesBetweenSpecialTokens": False,
+        "includeStopStrInOutput": True,
+        "truncatePromptTokens": 1024,
+        "nKeep": -1,
+        "nProbs": 5,
+        "cachePrompt": False,
+        "returnTokens": True,
+        "timingsPerToken": True,
+        "postSamplingProbs": True,
+    }
+    parsed = ChatSettingsPayload.model_validate({"inferenceParams": inference})
     ip = parsed.inferenceParams
     assert ip is not None
-    assert ip.frequencyPenalty == 0.7
-    assert ip.seed == 42
-    assert ip.stop == ["END"]
-    assert ip.serviceTier == "standard_only"
-    assert ip.parallelToolCalls is False
+    for key, expected in inference.items():
+        assert getattr(ip, key) == expected, f"{key} did not round-trip"
 
 
 # ── Local /v1/messages: disable_parallel_tool_use translation ──────────
@@ -1093,7 +1235,7 @@ def test_local_passthrough_forwards_dry_xtc_min_keep_eos_min_tokens():
     assert body.get("min_tokens") == 16
 
     # Unset = absent from body. Matches the upstream "use default"
-    # contract — llama-server / vLLM apply their own defaults instead.
+    # contract: llama-server / vLLM apply their own defaults instead.
     body2 = route_mod._build_passthrough_payload(
         openai_messages = [{"role": "user", "content": "hi"}],
         openai_tools = None,

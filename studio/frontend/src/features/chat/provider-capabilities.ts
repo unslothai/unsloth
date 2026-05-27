@@ -553,7 +553,7 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
 // plus the permissive `custom` preset. Exposes the full llama.cpp
 // sampler chain (typical_p / top_n_sigma / mirostat / dynatemp /
 // repeat_last_n) per the upstream server README. Not used for vLLM or
-// Ollama — see VLLM_OLLAMA_CAPABILITIES below.
+// Ollama; see VLLM_OLLAMA_CAPABILITIES below.
 const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
   topP: true,
@@ -630,8 +630,8 @@ const VLLM_CAPABILITIES: ProviderCapabilities = {
 };
 
 // Ollama OAI translator (openai/openai.go FromChatRequest) only copies
-// the documented OpenAI subset on /v1/chat/completions — top_k / min_p
-// / repetition_penalty / ignore_eos / min_tokens / the 4 vLLM output
+// the documented OpenAI subset on /v1/chat/completions: top_k, min_p,
+// repetition_penalty, ignore_eos, min_tokens, and the 4 vLLM output
 // knobs all silently drop on this path. (Native /api/chat would forward
 // them via `options`, but Studio uses /v1.)
 const OLLAMA_CAPABILITIES: ProviderCapabilities = {
@@ -974,7 +974,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     postSamplingProbs: false,
   },
   // DeepSeek schema (api-docs.deepseek.com/api/create-chat-completion)
-  // lists temperature/top_p/stop only — no seed or parallel_tool_calls.
+  // lists temperature/top_p/stop only; no seed or parallel_tool_calls.
   // Presence/frequency are deprecated. Reasoner ids additionally ignore
   // temperature/top_p; getProviderCapabilities downshifts them.
   deepseek: {
@@ -1023,7 +1023,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   openrouter: OPENROUTER_CAPABILITIES,
   // llama_cpp + custom: first-party llama-server, full chain.
   // vllm: OAI subset + top_k/min_p/repetition_penalty/seed.
-  // ollama: stricter — OAI translator drops top_k/min_p/rep_pen too.
+  // ollama: stricter (OAI translator drops top_k/min_p/rep_pen too).
   custom: LLAMA_CPP_CAPABILITIES,
   llama_cpp: LLAMA_CPP_CAPABILITIES,
   vllm: VLLM_CAPABILITIES,
@@ -1055,8 +1055,8 @@ export function getProviderCapabilities(
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
 // OpenRouter ids with no non-reasoning mode. (google/gemini-pro-latest
-// was dropped — gateway 404s; don't re-pin to a versioned id that
-// may rotate again.)
+// was dropped: gateway 404s; don't re-pin to a versioned id that may
+// rotate again.)
 const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
   "baidu/cobuddy:free",
   "inclusionai/ring-2.6-1t:free",
@@ -1377,7 +1377,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+// vLLM has no per-model reasoning signal on OpenAI-compat; pin via user toggle.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,

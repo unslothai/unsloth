@@ -52,11 +52,11 @@ export interface InferenceParams {
   dryAllowedLength: number | null;
   /** 0 disables, -1 = ctx-size. */
   dryPenaltyLastN: number | null;
-  /** llama.cpp XTC — probability is the master switch (0 disables). */
+  /** llama.cpp XTC: probability is the master switch (0 disables). */
   xtcProbability: number | null;
   /** Default 0.1. */
   xtcThreshold: number | null;
-  /** llama.cpp `min_keep` — min tokens past all filters. 0 disables. */
+  /** llama.cpp `min_keep`: min tokens past all filters. 0 disables. */
   minKeep: number | null;
   /** Continue past EOS. llama.cpp + vLLM. */
   ignoreEos: boolean | null;
@@ -72,7 +72,7 @@ export interface InferenceParams {
   truncatePromptTokens: number | null;
   /** llama.cpp `n_keep`. 0 disables, -1 = keep all. */
   nKeep: number | null;
-  /** llama.cpp `n_probs` — top-N token probabilities per token. */
+  /** llama.cpp `n_probs`: top-N token probabilities per token. */
   nProbs: number | null;
   /** llama.cpp `cache_prompt`. Default true; forward only when false. */
   cachePrompt: boolean | null;

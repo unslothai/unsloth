@@ -904,6 +904,34 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        typical_p: Optional[float] = None,
+        top_n_sigma: Optional[float] = None,
+        repeat_last_n: Optional[int] = None,
+        dynatemp_range: Optional[float] = None,
+        dynatemp_exponent: Optional[float] = None,
+        mirostat: Optional[int] = None,
+        mirostat_tau: Optional[float] = None,
+        mirostat_eta: Optional[float] = None,
+        top_a: Optional[float] = None,
+        dry_multiplier: Optional[float] = None,
+        dry_base: Optional[float] = None,
+        dry_allowed_length: Optional[int] = None,
+        dry_penalty_last_n: Optional[int] = None,
+        xtc_probability: Optional[float] = None,
+        xtc_threshold: Optional[float] = None,
+        min_keep: Optional[int] = None,
+        ignore_eos: Optional[bool] = None,
+        min_tokens: Optional[int] = None,
+        skip_special_tokens: Optional[bool] = None,
+        spaces_between_special_tokens: Optional[bool] = None,
+        include_stop_str_in_output: Optional[bool] = None,
+        truncate_prompt_tokens: Optional[int] = None,
+        n_keep: Optional[int] = None,
+        n_probs: Optional[int] = None,
+        cache_prompt: Optional[bool] = None,
+        return_tokens: Optional[bool] = None,
+        timings_per_token: Optional[bool] = None,
+        post_sampling_probs: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -1067,10 +1095,76 @@ class ExternalProviderClient:
         if parallel_tool_calls is not None:
             body["parallel_tool_calls"] = parallel_tool_calls
 
+        # Extended OAI-compat samplers (OpenRouter `top_a`, vLLM output
+        # knobs, llama.cpp samplers on custom proxies). Each is gated `is
+        # not None` so explicit 0/False reach the wire; `body_omit` below
+        # strips fields the upstream rejects.
+        if typical_p is not None:
+            body["typical_p"] = typical_p
+        if top_n_sigma is not None:
+            body["top_n_sigma"] = top_n_sigma
+        if repeat_last_n is not None:
+            body["repeat_last_n"] = repeat_last_n
+        if dynatemp_range is not None:
+            body["dynatemp_range"] = dynatemp_range
+        if dynatemp_exponent is not None:
+            body["dynatemp_exponent"] = dynatemp_exponent
+        if mirostat is not None:
+            body["mirostat"] = mirostat
+        if mirostat_tau is not None:
+            body["mirostat_tau"] = mirostat_tau
+        if mirostat_eta is not None:
+            body["mirostat_eta"] = mirostat_eta
+        if top_a is not None:
+            body["top_a"] = top_a
+        if dry_multiplier is not None:
+            body["dry_multiplier"] = dry_multiplier
+        if dry_base is not None:
+            body["dry_base"] = dry_base
+        if dry_allowed_length is not None:
+            body["dry_allowed_length"] = dry_allowed_length
+        if dry_penalty_last_n is not None:
+            body["dry_penalty_last_n"] = dry_penalty_last_n
+        if xtc_probability is not None:
+            body["xtc_probability"] = xtc_probability
+        if xtc_threshold is not None:
+            body["xtc_threshold"] = xtc_threshold
+        if min_keep is not None:
+            body["min_keep"] = min_keep
+        if ignore_eos is not None:
+            body["ignore_eos"] = ignore_eos
+        if min_tokens is not None:
+            body["min_tokens"] = min_tokens
+        if skip_special_tokens is not None:
+            body["skip_special_tokens"] = skip_special_tokens
+        if spaces_between_special_tokens is not None:
+            body["spaces_between_special_tokens"] = spaces_between_special_tokens
+        if include_stop_str_in_output is not None:
+            body["include_stop_str_in_output"] = include_stop_str_in_output
+        if truncate_prompt_tokens is not None:
+            body["truncate_prompt_tokens"] = truncate_prompt_tokens
+        if n_keep is not None:
+            body["n_keep"] = n_keep
+        if n_probs is not None:
+            body["n_probs"] = n_probs
+        if cache_prompt is not None:
+            body["cache_prompt"] = cache_prompt
+        if return_tokens is not None:
+            body["return_tokens"] = return_tokens
+        if timings_per_token is not None:
+            body["timings_per_token"] = timings_per_token
+        if post_sampling_probs is not None:
+            body["post_sampling_probs"] = post_sampling_probs
+
         # Drop body fields the provider's registry entry locks down
         # (e.g. Kimi k2.5/k2.6 only accept temperature=1, top_p=1).
+        # Also pop the renamed seed field so `body_omit=("seed",)` on a
+        # provider with `seed_field` rename still strips correctly.
+        _seed_field = provider_info.get("seed_field", "seed")
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+            if field == "seed" and _seed_field != "seed":
+                body.pop(_seed_field, None)
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is
         # always on (ignore the toggle); kimi-k2.6 defaults on, can be

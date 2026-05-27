@@ -192,6 +192,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Mistral renames OpenAI's `seed` to `random_seed` on
         # /v1/chat/completions. https://docs.mistral.ai/api/endpoint/chat
         "seed_field": "random_seed",
+        # Mistral's docs publish no max but third-party shims cap at 4;
+        # match OpenAI Chat's cap to avoid silent upstream truncation.
+        "stop_max": 4,
     },
     "kimi": {
         "display_name": "Kimi",
@@ -216,12 +219,13 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
         # k2.5/k2.6 are reasoning-class: API locks temperature=1, top_p=1,
-        # frequency_penalty; seed and parallel_tool_calls are undocumented
-        # and 400.
+        # frequency_penalty; presence_penalty / seed / parallel_tool_calls
+        # are undocumented in the Kimi chat schema.
         "body_omit": (
             "temperature",
             "top_p",
             "frequency_penalty",
+            "presence_penalty",
             "seed",
             "parallel_tool_calls",
         ),

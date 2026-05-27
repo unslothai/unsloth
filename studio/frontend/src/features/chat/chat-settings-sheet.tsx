@@ -133,21 +133,11 @@ export function InfoHint({ children }: { children: ReactNode }) {
   );
 }
 
-/**
- * Editable numeric value display.
- *
- * Renders as a single <input> that *looks* like text by default —
- * transparent background, no border, no ring — and only shows a faint
- * surface tint on hover/focus to signal editability. When unfocused,
- * the input shows the formatted display string (`displayValue ?? value`,
- * so labels like "Off" / "Max" still render); on focus, it switches to
- * the raw numeric value, selects it, and accepts free text input.
- * Commit happens on blur or Enter; Escape reverts. The clamp-to-range
- * happens on commit so users can type intermediate values without the
- * input fighting them mid-keystroke. Single component shared by every
- * slider value and the Context Length input so the click-to-edit
- * affordance is consistent across the panel.
- */
+/** Editable numeric value display: transparent text-like input that
+ *  shows formatted display on blur (so "Off"/"Max" labels render) and
+ *  switches to the raw number on focus. Commits on blur/Enter, reverts
+ *  on Escape, clamps on commit. Shared by every slider value + the
+ *  Context Length input. */
 function snapToStep(
   value: number,
   step: number,
@@ -1431,7 +1421,19 @@ export function ChatSettingsPanel({
                   </InfoHint>
                 </div>
                 <Select
-                  value={params.serviceTier ?? "auto"}
+                  value={
+                    // Fall back to "auto" when the persisted tier is not
+                    // legal for the active provider (e.g. "priority" saved
+                    // on OpenAI, then user switched to Anthropic which only
+                    // accepts auto|standard_only). Without this Radix Select
+                    // shows a blank trigger.
+                    params.serviceTier &&
+                    (serviceTierOptions as readonly ServiceTier[]).includes(
+                      params.serviceTier,
+                    )
+                      ? params.serviceTier
+                      : "auto"
+                  }
                   onValueChange={(value) => {
                     // Store "auto" verbatim: Anthropic distinguishes
                     // omitted (provider default) from auto (Priority Tier opt-in).
@@ -1484,7 +1486,7 @@ export function ChatSettingsPanel({
                 max={32768}
                 step={128}
                 onChange={set("maxSeqLength")}
-                info="Maximum context window size in tokens — input prompt plus generated output combined. Capped by the model's trained limit."
+                info="Maximum context window in tokens (prompt plus generated output). Capped by the model's trained limit."
               />
             )}
             <ParamSlider

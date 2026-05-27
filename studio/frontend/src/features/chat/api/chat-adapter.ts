@@ -2335,7 +2335,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(params.postSamplingProbs === true
               ? { post_sampling_probs: true }
               : {}),
-            parallel_tool_calls: params.parallelToolCalls,
+            // Forward only on explicit opt-out (default true on every
+            // backend; default omit keeps wire-shape stable for users
+            // who never opened the new settings panel).
+            ...(params.parallelToolCalls === false
+              ? { parallel_tool_calls: false }
+              : {}),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
