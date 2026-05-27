@@ -630,3 +630,329 @@ def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
     )
     # Empty allow-list = run anything (preserved contract).
     assert calls == [("python", {"code": "1"})] or len(calls) >= 1
+
+
+# ── discovery cache ─────────────────────────────────────────────────
+
+
+def _one_tool(name = "echo"):
+    return [{"name": name, "inputSchema": {"type": "object", "properties": {}}}]
+
+
+def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
+    """A second send must serve tools from cache instead of re-probing."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    calls: list[str] = []
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        calls.append(url)
+        return _one_tool()
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    first = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    second = asyncio.run(tools_mod.get_enabled_mcp_tools())
+
+    assert len(calls) == 1  # probed once, cache hit on the second send
+    assert [t["function"]["name"] for t in first] == ["mcp__s1__echo"]
+    assert first == second
+
+
+def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
+    """A failed probe must not be cached, so a recovered server is retried."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    attempts = {"n": 0}
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("server down")
+        return _one_tool()
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []  # failure -> empty
+    second = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert attempts["n"] == 2  # retried because the failure was not cached
+    assert [t["function"]["name"] for t in second] == ["mcp__s1__echo"]
+
+
+def test_refresh_warms_tool_cache(tmp_path, monkeypatch):
+    """Clicking Refresh must populate the cache the chat path reads."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    async def fake_refresh(url, headers = None, timeout = None, use_oauth = False):
+        return _one_tool()
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_refresh)
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("s1", current_subject = "u"))
+    assert res.ok and res.tool_count == 1
+
+    def boom(*a, **k):
+        raise AssertionError("chat path re-probed despite a warm cache")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", boom)
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert [t["function"]["name"] for t in specs] == ["mcp__s1__echo"]
+
+
+def test_update_url_evicts_tool_cache(tmp_path, monkeypatch):
+    """Re-pointing the URL must drop the old endpoint's cached tools."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("stale")})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
+    )
+
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(url = "https://new/mcp"), current_subject = "u"
+        )
+    )
+    assert mcp_client.get_cached_tools("s1") is None
+
+
+def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
+    """A rename touches no endpoint, so the cache must survive it."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    cached = _one_tool()
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": cached})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(display_name = "B"), current_subject = "u"
+        )
+    )
+    assert mcp_client.get_cached_tools("s1") == cached
+
+
+def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
+    """Disabling a server must drop its cached tools, not leave them unread."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(is_enabled = False), current_subject = "u"
+        )
+    )
+    assert mcp_client.get_cached_tools("s1") is None
+
+
+def test_delete_evicts_tool_cache(tmp_path, monkeypatch):
+    """Deleting a server must not leave its tools cached."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+    asyncio.run(routes_mcp.delete_mcp_server("s1", current_subject = "u"))
+    assert mcp_client.get_cached_tools("s1") is None
+
+
+def test_invalidate_tool_cache_clears_all(monkeypatch):
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"a": _one_tool(), "b": _one_tool()})
+    mcp_client.invalidate_tool_cache()
+    assert mcp_client.get_cached_tools("a") is None
+    assert mcp_client.get_cached_tools("b") is None
+
+
+def test_get_enabled_mcp_tools_probes_only_uncached(tmp_path, monkeypatch):
+    """An already-cached server must not be re-probed alongside a cold one."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("cached")})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://a/mcp", is_enabled = True
+    )
+    mcp_servers_db.create_server(
+        id = "s2", display_name = "B", url = "https://b/mcp", is_enabled = True
+    )
+
+    probed: list[str] = []
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        probed.append(url)
+        return _one_tool("fresh")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert probed == ["https://b/mcp"]  # only the uncached server is probed
+    assert sorted(t["function"]["name"] for t in specs) == [
+        "mcp__s1__cached",
+        "mcp__s2__fresh",
+    ]
+
+
+def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypatch):
+    """One server failing must not stop the others from being cached/served."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://bad/mcp", is_enabled = True
+    )
+    mcp_servers_db.create_server(
+        id = "s2", display_name = "B", url = "https://good/mcp", is_enabled = True
+    )
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        if "bad" in url:
+            raise RuntimeError("down")
+        return _one_tool("ok")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert [t["function"]["name"] for t in specs] == ["mcp__s2__ok"]
+    assert mcp_client.get_cached_tools("s1") is None  # failure not cached
+    assert mcp_client.get_cached_tools("s2") == _one_tool("ok")  # healthy cached
+
+
+def test_get_enabled_mcp_tools_caches_empty_tool_list(tmp_path, monkeypatch):
+    """A server exposing zero tools is cached as [] (a hit), not re-probed."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    calls: list[str] = []
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        calls.append(url)
+        return []
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+    assert len(calls) == 1  # [] is a cache hit, not re-probed every send
+    assert mcp_client.get_cached_tools("s1") == []
+
+
+def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
+    """Changing auth headers must drop tools discovered under the old headers."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(headers = {"Authorization": "Bearer new"}),
+            current_subject = "u",
+        )
+    )
+    assert mcp_client.get_cached_tools("s1") is None
+
+
+def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
+    tmp_path, monkeypatch
+):
+    """A config edit landing during an in-flight probe must not be clobbered
+    by the now-stale probe result (TOCTOU on the cache write)."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
+    )
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        # Simulate a PUT landing while we are awaiting the probe.
+        mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
+        return _one_tool()
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert specs == []  # stale result is neither served...
+    assert mcp_client.get_cached_tools("s1") is None  # ...nor cached

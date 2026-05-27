@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import get_current_subject
 from core.inference.mcp_client import (
+    OAUTH_PROBE_TIMEOUT_SECONDS,
+    PROBE_TIMEOUT_SECONDS,
+    TOOL_CACHE_INVALIDATING_FIELDS,
+    cache_tools,
     clear_oauth_tokens_async,
+    invalidate_tool_cache,
     list_tools_async,
     parse_server_headers,
 )
@@ -26,12 +31,6 @@ from storage import mcp_servers_db
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
-
-
-_PROBE_TIMEOUT_SECONDS = 8.0
-# When OAuth probes need to open a browser, wait long enough for the user to
-# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
-_OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
 
 
 def _validate_url(url: str) -> str:
@@ -156,6 +155,11 @@ async def update_mcp_server(
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
+    # A new endpoint/auth makes cached tools wrong and disabling makes them
+    # unreachable, so drop them and let the next send re-probe; a rename
+    # leaves them valid.
+    if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
+        invalidate_tool_cache(server_id)
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
@@ -170,6 +174,7 @@ async def delete_mcp_server(
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
+    invalidate_tool_cache(server_id)
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -186,15 +191,17 @@ async def refresh_mcp_server_tools(
         tools = await list_tools_async(
             url = server["url"],
             headers = parse_server_headers(server),
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
+            timeout = OAUTH_PROBE_TIMEOUT_SECONDS
             if use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            else PROBE_TIMEOUT_SECONDS,
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
         logger.warning("MCP refresh failed", server_id = server_id, error = str(exc))
         return McpServerProbeResult(ok = False, error = str(exc))
 
+    # Warm the chat-path cache so the next send skips re-probing.
+    cache_tools(server_id, tools)
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
@@ -212,9 +219,9 @@ async def test_mcp_server(
         tools = await list_tools_async(
             url = url,
             headers = headers,
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
+            timeout = OAUTH_PROBE_TIMEOUT_SECONDS
             if payload.use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            else PROBE_TIMEOUT_SECONDS,
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001

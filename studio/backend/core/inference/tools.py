@@ -27,7 +27,12 @@ import urllib.request
 
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    OAUTH_PROBE_TIMEOUT_SECONDS,
+    PROBE_TIMEOUT_SECONDS,
+    TOOL_CACHE_INVALIDATING_FIELDS,
+    cache_tools,
     call_tool_sync,
+    get_cached_tools,
     list_tools_async,
     parse_server_headers,
 )
@@ -571,30 +576,50 @@ async def get_enabled_mcp_tools() -> list[dict]:
     if not servers:
         return []
 
-    # OAuth probes need minutes for first-connect/expired-token browser
-    # sign-in; non-OAuth probes fail fast. Matches routes/mcp_servers.py.
-    results = await asyncio.gather(
-        *(
-            list_tools_async(
-                url = s["url"],
-                headers = parse_server_headers(s),
-                timeout = 305.0 if s.get("use_oauth") else 8.0,
-                use_oauth = bool(s.get("use_oauth")),
-            )
-            for s in servers
-        ),
-        return_exceptions = True,
-    )
+    uncached = [s for s in servers if get_cached_tools(s["id"]) is None]
+    if uncached:
+        results = await asyncio.gather(
+            *(
+                list_tools_async(
+                    url = s["url"],
+                    headers = parse_server_headers(s),
+                    timeout = OAUTH_PROBE_TIMEOUT_SECONDS
+                    if s.get("use_oauth")
+                    else PROBE_TIMEOUT_SECONDS,
+                    use_oauth = bool(s.get("use_oauth")),
+                )
+                for s in uncached
+            ),
+            return_exceptions = True,
+        )
+        # An edit/delete can land while we await a probe (up to 305 s for
+        # OAuth); its cache eviction is a no-op against an entry we haven't
+        # written yet. Re-read and drop a result whose server changed or
+        # was removed mid-probe, else a stale tool list caches indefinitely.
+        current = {s["id"]: s for s in mcp_servers_db.list_servers()}
+        for server, payload in zip(uncached, results):
+            if isinstance(payload, BaseException):
+                logger.warning(
+                    "MCP server '%s' (%s) discovery failed: %s",
+                    server.get("display_name") or server["id"],
+                    server.get("url"),
+                    payload,
+                )
+                # Don't cache failures: a transiently-down server should be
+                # retried next send, not left empty until a manual refresh.
+                continue
+            fresh = current.get(server["id"])
+            if fresh is None or any(
+                fresh.get(k) != server.get(k)
+                for k in TOOL_CACHE_INVALIDATING_FIELDS
+            ):
+                continue
+            cache_tools(server["id"], payload)
 
     specs: list[dict] = []
-    for server, payload in zip(servers, results):
-        if isinstance(payload, BaseException):
-            logger.warning(
-                "MCP server '%s' (%s) discovery failed: %s",
-                server.get("display_name") or server["id"],
-                server.get("url"),
-                payload,
-            )
+    for server in servers:
+        payload = get_cached_tools(server["id"])
+        if payload is None:
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
     return specs

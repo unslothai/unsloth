@@ -13,6 +13,11 @@ logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
 
+PROBE_TIMEOUT_SECONDS = 8.0
+# When OAuth probes need to open a browser, wait long enough for the user to
+# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
+OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
+
 _oauth_token_store = None
 
 
@@ -92,6 +97,39 @@ async def list_tools_async(
         return [t.model_dump(exclude_none = True) for t in tools]
 
     return await asyncio.wait_for(_fetch(), timeout = timeout)
+
+
+# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools()
+# probes a server only on a cache miss, keeping MCP discovery off the chat
+# send's critical path -- tool schemas are stable within a session. The
+# /refresh route warms it; a URL/header/OAuth change or a delete evicts it.
+# Successful probes are cached indefinitely; failures are never cached so a
+# transiently-down server is retried on the next send.
+_tool_cache: dict[str, list[dict]] = {}
+
+# MCP server fields whose change invalidates a server's discovered tools: the
+# endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
+# all (is_enabled). A rename does not. The update route's eviction and
+# get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {"url", "headers_json", "use_oauth", "is_enabled"}
+)
+
+
+def get_cached_tools(server_id: str) -> Optional[list[dict]]:
+    return _tool_cache.get(server_id)
+
+
+def cache_tools(server_id: str, tools: list[dict]) -> None:
+    _tool_cache[server_id] = tools
+
+
+def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
+    """Evict one server's cached tools, or every entry when server_id is None."""
+    if server_id is None:
+        _tool_cache.clear()
+    else:
+        _tool_cache.pop(server_id, None)
 
 
 def _flatten_result(result: Any) -> str:
