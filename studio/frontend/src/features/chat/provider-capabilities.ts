@@ -139,6 +139,26 @@ export interface ProviderCapabilities {
    * llama.cpp + vLLM accept this; Ollama's OAI translator drops it.
    */
   minTokens: boolean;
+  /** vLLM `skip_special_tokens` (vLLM SamplingParams). vLLM only. */
+  skipSpecialTokens: boolean;
+  /** vLLM `spaces_between_special_tokens`. vLLM only. */
+  spacesBetweenSpecialTokens: boolean;
+  /** vLLM `include_stop_str_in_output`. vLLM only — useful for agentic tools. */
+  includeStopStrInOutput: boolean;
+  /** vLLM `truncate_prompt_tokens` — left-truncate the prompt. vLLM only. */
+  truncatePromptTokens: boolean;
+  /** llama.cpp `n_keep` — tokens to retain on context overflow. llama.cpp only. */
+  nKeep: boolean;
+  /** llama.cpp `n_probs` — return top-N token probabilities. llama.cpp only. */
+  nProbs: boolean;
+  /** llama.cpp `cache_prompt` — KV-cache reuse. llama.cpp only. */
+  cachePrompt: boolean;
+  /** llama.cpp `return_tokens` — debug. llama.cpp only. */
+  returnTokens: boolean;
+  /** llama.cpp `timings_per_token` — performance debug. llama.cpp only. */
+  timingsPerToken: boolean;
+  /** llama.cpp `post_sampling_probs` — sampling-chain debug. llama.cpp only. */
+  postSamplingProbs: boolean;
 }
 
 /**
@@ -595,6 +615,16 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   minKeep: false,
   ignoreEos: false,
   minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 
 // Unsloth's first-party llama-server runtime (provider type `llama_cpp`)
@@ -632,6 +662,18 @@ const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   minKeep: true,
   ignoreEos: true,
   minTokens: true,
+  // vLLM-only output-shape knobs — llama-server does not document them.
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  // llama.cpp-only context / KV-cache / instrumentation knobs.
+  nKeep: true,
+  nProbs: true,
+  cachePrompt: true,
+  returnTokens: true,
+  timingsPerToken: true,
+  postSamplingProbs: true,
 };
 
 // vLLM's OpenAI-compat endpoint accepts the OpenAI subset plus top_k /
@@ -658,6 +700,18 @@ const VLLM_CAPABILITIES: ProviderCapabilities = {
   xtcProbability: false,
   xtcThreshold: false,
   minKeep: false,
+  // vLLM-only output-shape knobs — flip the LLAMA_CPP defaults.
+  skipSpecialTokens: true,
+  spacesBetweenSpecialTokens: true,
+  includeStopStrInOutput: true,
+  truncatePromptTokens: true,
+  // llama.cpp-only instrumentation knobs — vLLM has no analog.
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 
 // Ollama is stricter than vLLM. Studio reaches Ollama via the OpenAI-
@@ -677,6 +731,12 @@ const OLLAMA_CAPABILITIES: ProviderCapabilities = {
   // on the /v1/chat/completions path Studio uses.
   ignoreEos: false,
   minTokens: false,
+  // The vLLM-specific output-shape knobs are not recognised by the
+  // Ollama OAI translator; flip them back to false.
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
 };
 
 // OpenRouter is a router-of-routers: the gateway accepts a wider set
@@ -716,6 +776,16 @@ const OPENROUTER_CAPABILITIES: ProviderCapabilities = {
   minKeep: false,
   ignoreEos: false,
   minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 
 // Reasoning-class OpenAI models served via /v1/responses fix temperature
@@ -756,6 +826,16 @@ const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
   minKeep: false,
   ignoreEos: false,
   minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
@@ -789,6 +869,16 @@ const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   minKeep: false,
   ignoreEos: false,
   minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 
 // Prefix list for OpenAI reasoning-class model ids. Kept in sync with
@@ -894,6 +984,16 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minKeep: false,
     ignoreEos: false,
     minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
@@ -939,6 +1039,16 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minKeep: false,
     ignoreEos: false,
     minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
   // DeepSeek deprecated presence/frequency penalty and never published
   // `seed` or `parallel_tool_calls` in the current chat-completion
@@ -982,6 +1092,16 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minKeep: false,
     ignoreEos: false,
     minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,

@@ -1118,6 +1118,73 @@ def test_local_passthrough_forwards_dry_xtc_min_keep_eos_min_tokens():
         assert key not in body2, body2
 
 
+def test_local_passthrough_forwards_vllm_output_and_llama_cpp_instrumentation():
+    """Round-trip the 10 extra knobs added in round 4:
+    skip_special_tokens / spaces_between_special_tokens /
+    include_stop_str_in_output / truncate_prompt_tokens (vLLM
+    SamplingParams) + n_keep / n_probs / cache_prompt / return_tokens /
+    timings_per_token / post_sampling_probs (llama-server README).
+    Each is gated `is not None` so explicit upstream-default values
+    (skip_special_tokens=True, cache_prompt=True, etc) still reach the
+    wire when the caller opted in.
+    """
+    from routes import inference as route_mod
+
+    body = route_mod._build_passthrough_payload(
+        openai_messages = [{"role": "user", "content": "hi"}],
+        openai_tools = None,
+        temperature = 0.6,
+        top_p = 0.95,
+        top_k = 20,
+        max_tokens = 64,
+        stream = True,
+        skip_special_tokens = False,
+        spaces_between_special_tokens = False,
+        include_stop_str_in_output = True,
+        truncate_prompt_tokens = 4096,
+        n_keep = -1,
+        n_probs = 5,
+        cache_prompt = False,
+        return_tokens = True,
+        timings_per_token = True,
+        post_sampling_probs = True,
+    )
+    assert body.get("skip_special_tokens") is False
+    assert body.get("spaces_between_special_tokens") is False
+    assert body.get("include_stop_str_in_output") is True
+    assert body.get("truncate_prompt_tokens") == 4096
+    assert body.get("n_keep") == -1
+    assert body.get("n_probs") == 5
+    assert body.get("cache_prompt") is False
+    assert body.get("return_tokens") is True
+    assert body.get("timings_per_token") is True
+    assert body.get("post_sampling_probs") is True
+
+    # Unset = absent from body so each backend applies its own default.
+    body2 = route_mod._build_passthrough_payload(
+        openai_messages = [{"role": "user", "content": "hi"}],
+        openai_tools = None,
+        temperature = 0.6,
+        top_p = 0.95,
+        top_k = 20,
+        max_tokens = 64,
+        stream = True,
+    )
+    for key in (
+        "skip_special_tokens",
+        "spaces_between_special_tokens",
+        "include_stop_str_in_output",
+        "truncate_prompt_tokens",
+        "n_keep",
+        "n_probs",
+        "cache_prompt",
+        "return_tokens",
+        "timings_per_token",
+        "post_sampling_probs",
+    ):
+        assert key not in body2, body2
+
+
 def test_local_passthrough_forwards_typical_p_when_set():
     """`typical_p` is a llama.cpp-specific sampler (`typ_p` in the
     sampler chain). The local-llama-cpp passthrough payload builder must

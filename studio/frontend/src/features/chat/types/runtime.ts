@@ -97,6 +97,58 @@ export interface InferenceParams {
    * vLLM + llama.cpp accept this. 0 disables. `null` = unset.
    */
   minTokens: number | null;
+  /**
+   * vLLM `skip_special_tokens`. Default true. Forward only when false
+   * (i.e. user wants to see raw special tokens in the output).
+   * https://docs.vllm.ai/en/latest/api/vllm/sampling_params/
+   */
+  skipSpecialTokens: boolean | null;
+  /**
+   * vLLM `spaces_between_special_tokens`. Default true. Forward only
+   * when false.
+   */
+  spacesBetweenSpecialTokens: boolean | null;
+  /**
+   * vLLM `include_stop_str_in_output`. Default false. Useful for
+   * agentic tools that need the matched stop string echoed back.
+   */
+  includeStopStrInOutput: boolean | null;
+  /**
+   * vLLM `truncate_prompt_tokens` — left-truncate the prompt to this
+   * many tokens. Useful for long-context overflow. `null` = unset.
+   */
+  truncatePromptTokens: number | null;
+  /**
+   * llama.cpp `n_keep` — tokens to retain when context overflows.
+   * 0 disables, -1 keeps all. `null` = unset.
+   */
+  nKeep: number | null;
+  /**
+   * llama.cpp `n_probs` — return top-N token probabilities per
+   * generated token. 0 disables. `null` = unset.
+   */
+  nProbs: number | null;
+  /**
+   * llama.cpp `cache_prompt` — reuse KV cache from previous prompts
+   * with a shared prefix. Default true upstream. Forward only when
+   * explicitly false (e.g. for deterministic benchmarks).
+   */
+  cachePrompt: boolean | null;
+  /**
+   * llama.cpp `return_tokens` — include raw token IDs in the response.
+   * Debug. Default false.
+   */
+  returnTokens: boolean | null;
+  /**
+   * llama.cpp `timings_per_token` — include per-token speed metrics.
+   * Default false.
+   */
+  timingsPerToken: boolean | null;
+  /**
+   * llama.cpp `post_sampling_probs` — return token probabilities AFTER
+   * the sampler chain runs. Debug. Default false.
+   */
+  postSamplingProbs: boolean | null;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
@@ -141,6 +193,16 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   minKeep: null,
   ignoreEos: null,
   minTokens: null,
+  skipSpecialTokens: null,
+  spacesBetweenSpecialTokens: null,
+  includeStopStrInOutput: null,
+  truncatePromptTokens: null,
+  nKeep: null,
+  nProbs: null,
+  cachePrompt: null,
+  returnTokens: null,
+  timingsPerToken: null,
+  postSamplingProbs: null,
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",

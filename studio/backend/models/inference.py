@@ -1011,6 +1011,85 @@ class ChatCompletionRequest(BaseModel):
             "it. 0 disables (server default)."
         ),
     )
+    skip_special_tokens: Optional[bool] = Field(
+        None,
+        description = (
+            "vLLM `skip_special_tokens` (default true). Forward only when "
+            "false — i.e. user wants raw special tokens in the output. "
+            "vLLM only; llama-server / Ollama do not document this field."
+        ),
+    )
+    spaces_between_special_tokens: Optional[bool] = Field(
+        None,
+        description = (
+            "vLLM `spaces_between_special_tokens` (default true). Forward "
+            "only when false. vLLM only."
+        ),
+    )
+    include_stop_str_in_output: Optional[bool] = Field(
+        None,
+        description = (
+            "vLLM `include_stop_str_in_output` (default false). Forward "
+            "only when true — useful for agentic tools that need the "
+            "matched stop string echoed back. vLLM only."
+        ),
+    )
+    truncate_prompt_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "vLLM `truncate_prompt_tokens` — left-truncate the prompt to "
+            "this many tokens. Useful for long-context overflow. vLLM "
+            "only; llama-server / Ollama drop this on the OAI path."
+        ),
+    )
+    n_keep: Optional[int] = Field(
+        None,
+        description = (
+            "llama.cpp `n_keep` — tokens to retain when context overflows. "
+            "0 disables (server default), -1 keeps the whole prompt. "
+            "Local llama-server only."
+        ),
+    )
+    n_probs: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = (
+            "llama.cpp `n_probs` — return top-N token probabilities per "
+            "generated token. 0 disables (server default). Local only."
+        ),
+    )
+    cache_prompt: Optional[bool] = Field(
+        None,
+        description = (
+            "llama.cpp `cache_prompt` — reuse KV cache across requests "
+            "with a shared prefix. Default true upstream; forward only "
+            "when explicitly false (e.g. deterministic benchmarks). "
+            "Local llama-server only."
+        ),
+    )
+    return_tokens: Optional[bool] = Field(
+        None,
+        description = (
+            "llama.cpp `return_tokens` — include raw token IDs in the "
+            "response. Debug. Local only."
+        ),
+    )
+    timings_per_token: Optional[bool] = Field(
+        None,
+        description = (
+            "llama.cpp `timings_per_token` — include per-token speed "
+            "metrics in the streaming response. Local only."
+        ),
+    )
+    post_sampling_probs: Optional[bool] = Field(
+        None,
+        description = (
+            "llama.cpp `post_sampling_probs` — return token probabilities "
+            "AFTER the sampler chain runs (useful for sampler-tuning). "
+            "Local only."
+        ),
+    )
     fast_mode: Optional[bool] = Field(
         None,
         description = (

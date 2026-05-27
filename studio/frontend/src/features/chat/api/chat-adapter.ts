@@ -1859,6 +1859,55 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.minTokens > 0
                 ? { min_tokens: params.minTokens }
                 : {}),
+              // vLLM output-shape knobs. Upstream defaults:
+              //   skip_special_tokens=true, spaces_between_special_tokens=true,
+              //   include_stop_str_in_output=false. Forward only when user
+              //   opted away from the default to avoid no-op wire bloat.
+              ...(externalCapabilities?.skipSpecialTokens &&
+              params.skipSpecialTokens === false
+                ? { skip_special_tokens: false }
+                : {}),
+              ...(externalCapabilities?.spacesBetweenSpecialTokens &&
+              params.spacesBetweenSpecialTokens === false
+                ? { spaces_between_special_tokens: false }
+                : {}),
+              ...(externalCapabilities?.includeStopStrInOutput &&
+              params.includeStopStrInOutput === true
+                ? { include_stop_str_in_output: true }
+                : {}),
+              ...(externalCapabilities?.truncatePromptTokens &&
+              params.truncatePromptTokens !== null &&
+              params.truncatePromptTokens > 0
+                ? { truncate_prompt_tokens: params.truncatePromptTokens }
+                : {}),
+              // llama.cpp-only context / KV-cache / instrumentation knobs.
+              // n_keep accepts -1 (= keep all) so the gate is != 0.
+              ...(externalCapabilities?.nKeep &&
+              params.nKeep !== null &&
+              params.nKeep !== 0
+                ? { n_keep: params.nKeep }
+                : {}),
+              ...(externalCapabilities?.nProbs &&
+              params.nProbs !== null &&
+              params.nProbs > 0
+                ? { n_probs: params.nProbs }
+                : {}),
+              ...(externalCapabilities?.cachePrompt &&
+              params.cachePrompt === false
+                ? { cache_prompt: false }
+                : {}),
+              ...(externalCapabilities?.returnTokens &&
+              params.returnTokens === true
+                ? { return_tokens: true }
+                : {}),
+              ...(externalCapabilities?.timingsPerToken &&
+              params.timingsPerToken === true
+                ? { timings_per_token: true }
+                : {}),
+              ...(externalCapabilities?.postSamplingProbs &&
+              params.postSamplingProbs === true
+                ? { post_sampling_probs: true }
+                : {}),
               // Built-in tools: Search pill maps to provider-side
               // web_search (currently OpenAI / Anthropic / OpenRouter /
               // Kimi); Code pill maps to Anthropic's server-side
@@ -2044,6 +2093,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(params.ignoreEos === true ? { ignore_eos: true } : {}),
             ...(params.minTokens !== null && params.minTokens > 0
               ? { min_tokens: params.minTokens }
+              : {}),
+            // Local llama-server / vLLM / Ollama route. Per-backend
+            // capability gating handles the silent-drop story; here we
+            // forward only when the value diverges from upstream default.
+            ...(params.skipSpecialTokens === false
+              ? { skip_special_tokens: false }
+              : {}),
+            ...(params.spacesBetweenSpecialTokens === false
+              ? { spaces_between_special_tokens: false }
+              : {}),
+            ...(params.includeStopStrInOutput === true
+              ? { include_stop_str_in_output: true }
+              : {}),
+            ...(params.truncatePromptTokens !== null &&
+            params.truncatePromptTokens > 0
+              ? { truncate_prompt_tokens: params.truncatePromptTokens }
+              : {}),
+            ...(params.nKeep !== null && params.nKeep !== 0
+              ? { n_keep: params.nKeep }
+              : {}),
+            ...(params.nProbs !== null && params.nProbs > 0
+              ? { n_probs: params.nProbs }
+              : {}),
+            ...(params.cachePrompt === false ? { cache_prompt: false } : {}),
+            ...(params.returnTokens === true ? { return_tokens: true } : {}),
+            ...(params.timingsPerToken === true
+              ? { timings_per_token: true }
+              : {}),
+            ...(params.postSamplingProbs === true
+              ? { post_sampling_probs: true }
               : {}),
             parallel_tool_calls: params.parallelToolCalls,
             image_base64: imageBase64,

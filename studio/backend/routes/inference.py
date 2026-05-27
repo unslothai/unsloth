@@ -2588,6 +2588,16 @@ async def openai_chat_completions(
                     min_keep = payload.min_keep,
                     ignore_eos = payload.ignore_eos,
                     min_tokens = payload.min_tokens,
+                    skip_special_tokens = payload.skip_special_tokens,
+                    spaces_between_special_tokens = payload.spaces_between_special_tokens,
+                    include_stop_str_in_output = payload.include_stop_str_in_output,
+                    truncate_prompt_tokens = payload.truncate_prompt_tokens,
+                    n_keep = payload.n_keep,
+                    n_probs = payload.n_probs,
+                    cache_prompt = payload.cache_prompt,
+                    return_tokens = payload.return_tokens,
+                    timings_per_token = payload.timings_per_token,
+                    post_sampling_probs = payload.post_sampling_probs,
                     top_n_sigma = payload.top_n_sigma,
                     repeat_last_n = payload.repeat_last_n,
                     dynatemp_range = payload.dynatemp_range,
@@ -2778,6 +2788,16 @@ async def openai_chat_completions(
                 min_keep = payload.min_keep,
                 ignore_eos = payload.ignore_eos,
                 min_tokens = payload.min_tokens,
+                skip_special_tokens = payload.skip_special_tokens,
+                spaces_between_special_tokens = payload.spaces_between_special_tokens,
+                include_stop_str_in_output = payload.include_stop_str_in_output,
+                truncate_prompt_tokens = payload.truncate_prompt_tokens,
+                n_keep = payload.n_keep,
+                n_probs = payload.n_probs,
+                cache_prompt = payload.cache_prompt,
+                return_tokens = payload.return_tokens,
+                timings_per_token = payload.timings_per_token,
+                post_sampling_probs = payload.post_sampling_probs,
                 top_n_sigma = payload.top_n_sigma,
                 repeat_last_n = payload.repeat_last_n,
                 dynatemp_range = payload.dynatemp_range,
@@ -5075,6 +5095,16 @@ def _build_passthrough_payload(
     min_keep = None,
     ignore_eos = None,
     min_tokens = None,
+    skip_special_tokens = None,
+    spaces_between_special_tokens = None,
+    include_stop_str_in_output = None,
+    truncate_prompt_tokens = None,
+    n_keep = None,
+    n_probs = None,
+    cache_prompt = None,
+    return_tokens = None,
+    timings_per_token = None,
+    post_sampling_probs = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -5169,6 +5199,30 @@ def _build_passthrough_payload(
         body["ignore_eos"] = ignore_eos
     if min_tokens is not None:
         body["min_tokens"] = min_tokens
+    # vLLM output-shape knobs + llama.cpp context / KV / instrumentation
+    # knobs. Per-backend capability gating on the frontend prevents these
+    # from being forwarded to wires that don't recognise them; here we
+    # only enforce the `is not None` rule so explicit defaults still pass.
+    if skip_special_tokens is not None:
+        body["skip_special_tokens"] = skip_special_tokens
+    if spaces_between_special_tokens is not None:
+        body["spaces_between_special_tokens"] = spaces_between_special_tokens
+    if include_stop_str_in_output is not None:
+        body["include_stop_str_in_output"] = include_stop_str_in_output
+    if truncate_prompt_tokens is not None:
+        body["truncate_prompt_tokens"] = truncate_prompt_tokens
+    if n_keep is not None:
+        body["n_keep"] = n_keep
+    if n_probs is not None:
+        body["n_probs"] = n_probs
+    if cache_prompt is not None:
+        body["cache_prompt"] = cache_prompt
+    if return_tokens is not None:
+        body["return_tokens"] = return_tokens
+    if timings_per_token is not None:
+        body["timings_per_token"] = timings_per_token
+    if post_sampling_probs is not None:
+        body["post_sampling_probs"] = post_sampling_probs
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema
         # when response_format is present. Field is documented flat at the

@@ -386,6 +386,26 @@ export interface OpenAIChatCompletionsRequest {
    * 0 disables.
    */
   min_tokens?: number;
+  /** vLLM `skip_special_tokens` — default true; forward only when false. */
+  skip_special_tokens?: boolean;
+  /** vLLM `spaces_between_special_tokens` — default true; forward only when false. */
+  spaces_between_special_tokens?: boolean;
+  /** vLLM `include_stop_str_in_output` — default false; forward only when true. */
+  include_stop_str_in_output?: boolean;
+  /** vLLM `truncate_prompt_tokens` — left-truncate the prompt. > 0 only. */
+  truncate_prompt_tokens?: number;
+  /** llama.cpp `n_keep` — tokens to retain on context overflow. -1 = all. */
+  n_keep?: number;
+  /** llama.cpp `n_probs` — return top-N token probabilities. > 0 only. */
+  n_probs?: number;
+  /** llama.cpp `cache_prompt` — KV-cache reuse. Default true upstream; forward only when false. */
+  cache_prompt?: boolean;
+  /** llama.cpp `return_tokens` — include raw token IDs in response. Default false. */
+  return_tokens?: boolean;
+  /** llama.cpp `timings_per_token` — include per-token speed metrics. Default false. */
+  timings_per_token?: boolean;
+  /** llama.cpp `post_sampling_probs` — token probs after the sampler chain. Default false. */
+  post_sampling_probs?: boolean;
 }
 
 export interface OpenAIChatDelta {
