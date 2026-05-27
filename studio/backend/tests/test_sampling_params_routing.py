@@ -1129,3 +1129,32 @@ def test_anthropic_4_7_sampling_removed_regex_matches_expected_ids():
         assert RX.match(mid), f"{mid!r} should match 4.7 sampling-removed regex"
     for mid in should_not_match:
         assert not RX.match(mid), f"{mid!r} should NOT match 4.7 regex"
+
+
+def test_deepseek_payload_omits_seed_and_parallel_tool_calls():
+    """DeepSeek's published /chat/completions schema lists
+    messages/model/thinking/max_tokens/response_format/stop/stream/
+    temperature/top_p/tools/tool_choice/logprobs/top_logprobs/user_id
+    only. `seed` and `parallel_tool_calls` are not in the schema; the
+    capability bucket hides them so the chat-adapter never sends them.
+    Source:
+        https://api-docs.deepseek.com/api/create-chat-completion
+    """
+    # Frontend capability flags are the source of truth. Re-derive them
+    # by reading the TS file as text (the backend has no JS engine) and
+    # confirm the deepseek bucket has seed:false + parallelToolCalls:false.
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "chat"
+        / "provider-capabilities.ts"
+    ).read_text(encoding = "utf-8")
+    deepseek_idx = src.index("  deepseek: {")
+    end = src.index("},", deepseek_idx)
+    bucket = src[deepseek_idx:end]
+    assert "seed: false" in bucket, bucket
+    assert "parallelToolCalls: false" in bucket, bucket

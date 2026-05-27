@@ -234,20 +234,25 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
-  // Anthropic
+  // Anthropic — overview table at
+  // platform.claude.com/docs/en/about-claude/models/overview. Opus 4.7
+  // and Opus 4.6 BOTH ship 128k Max output (the legacy-table row for
+  // 4.6 reads "128k tokens"); Sonnet 4.6 / Sonnet 4.5 / Sonnet 4 / Opus
+  // 4.5 / Haiku 4.5 ship 64k; Opus 4.1 / Opus 4 ship 32k (covered by
+  // the 32k default below).
   {
     providerType: "anthropic",
-    prefixes: ["claude-opus-4-7"],
+    prefixes: ["claude-opus-4-7", "claude-opus-4-6"],
     cap: 128000,
   },
   {
     providerType: "anthropic",
     prefixes: [
-      "claude-opus-4-6",
       "claude-sonnet-4-6",
       "claude-opus-4-5",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
+      "claude-sonnet-4",
     ],
     cap: 64000,
   },
@@ -548,11 +553,12 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   topA: false,
 };
 
-// Local llama.cpp-style backends (own llama-server, vLLM with extended
-// sampler support, Ollama). Exposes the full llama.cpp sampler chain
-// (typical_p / top_n_sigma / mirostat / dynatemp / repeat_last_n) but
-// not OpenRouter's gateway-specific top_a.
-const LOCAL_LLAMA_CAPABILITIES: ProviderCapabilities = {
+// Unsloth's first-party llama-server runtime (provider type `llama_cpp`)
+// plus the permissive `custom` preset. Exposes the full llama.cpp
+// sampler chain (typical_p / top_n_sigma / mirostat / dynatemp /
+// repeat_last_n) per the upstream server README. Not used for vLLM or
+// Ollama — see VLLM_OLLAMA_CAPABILITIES below.
+const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
   topP: true,
   topK: true,
@@ -573,6 +579,26 @@ const LOCAL_LLAMA_CAPABILITIES: ProviderCapabilities = {
   mirostatTau: true,
   mirostatEta: true,
   topA: false,
+};
+
+// vLLM and Ollama's OpenAI-compat endpoints accept the OpenAI subset
+// plus top_k / min_p / repetition_penalty / seed, but neither forwards
+// the llama.cpp-only extended samplers (typical_p, top_n_sigma,
+// repeat_last_n, dynatemp_*, mirostat*). vLLM's SamplingParams has no
+// fields for them (vllm/sampling_params.py) and Ollama's OAI
+// translator (ollama/openai/openai.go FromChatRequest) only copies the
+// OpenAI subset. Surfacing the eight extra sliders here would be the
+// silent-drop UX the file header warns against, so we hide them.
+const VLLM_OLLAMA_CAPABILITIES: ProviderCapabilities = {
+  ...LLAMA_CPP_CAPABILITIES,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
 };
 
 // OpenRouter is a router-of-routers: the gateway accepts a wider set
@@ -791,15 +817,18 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     mirostatEta: false,
     topA: false,
   },
-  // DeepSeek deprecated presence/frequency penalty in their current docs.
-  // Chat-class defaults (deepseek-chat / deepseek-v4-flash non-thinking):
-  // accept temperature, top_p, seed, stop. Reasoning class
-  // (deepseek-reasoner / deepseek-v4-flash thinking-mode) ignores
-  // temperature, top_p, presence_penalty, frequency_penalty entirely and
-  // 400s on logprobs — see
+  // DeepSeek deprecated presence/frequency penalty and never published
+  // `seed` or `parallel_tool_calls` in the current chat-completion
+  // schema — see https://api-docs.deepseek.com/api/create-chat-completion
+  // (body fields: messages, model, thinking, max_tokens, response_format,
+  // stop, stream, stream_options, temperature, top_p, tools, tool_choice,
+  // logprobs, top_logprobs, user_id). Chat-class (deepseek-chat /
+  // deepseek-v4-flash non-thinking) accepts temperature, top_p, stop;
+  // reasoning class (deepseek-reasoner / deepseek-v4-flash thinking-mode)
+  // additionally ignores temperature, top_p, presence_penalty,
+  // frequency_penalty per
   // https://api-docs.deepseek.com/guides/reasoning_model. Per-model
-  // resolution in getProviderCapabilities downshifts reasoner ids onto
-  // DEEPSEEK_REASONING_CAPABILITIES.
+  // resolution in getProviderCapabilities downshifts reasoner ids.
   deepseek: {
     temperature: true,
     topP: true,
@@ -808,10 +837,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
     frequencyPenalty: false,
-    seed: true,
+    seed: false,
     stop: true,
     serviceTier: false,
-    parallelToolCalls: true,
+    parallelToolCalls: false,
     typicalP: false,
     topNSigma: false,
     repeatLastN: false,
@@ -830,12 +859,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter API docs do not list them; they would be silently
   // dropped on most underlying models.
   openrouter: OPENROUTER_CAPABILITIES,
-  // Local OpenAI-compatible connections terminate at llama-server-
-  // style backends — full llama.cpp sampler chain available.
-  custom: LOCAL_LLAMA_CAPABILITIES,
-  vllm: LOCAL_LLAMA_CAPABILITIES,
-  ollama: LOCAL_LLAMA_CAPABILITIES,
-  llama_cpp: LOCAL_LLAMA_CAPABILITIES,
+  // `llama_cpp` and the permissive `custom` preset terminate at the
+  // first-party llama-server runtime, so the full sampler chain is
+  // available. vLLM and Ollama only surface the OpenAI subset
+  // (+ top_k/min_p/rep_penalty/seed) — the 8 extended llama.cpp
+  // samplers are hidden to avoid the silent-drop UX.
+  custom: LLAMA_CPP_CAPABILITIES,
+  llama_cpp: LLAMA_CPP_CAPABILITIES,
+  vllm: VLLM_OLLAMA_CAPABILITIES,
+  ollama: VLLM_OLLAMA_CAPABILITIES,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
@@ -876,8 +908,11 @@ export function getProviderCapabilities(
 }
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+// OpenRouter ids that have NO non-reasoning mode. `google/gemini-pro-latest`
+// used to live here but the gateway 404s the id today
+// (https://openrouter.ai/google/gemini-pro-latest); drop it rather than
+// re-pin to a versioned id that may rotate again.
 const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
-  "google/gemini-pro-latest",
   "baidu/cobuddy:free",
   "inclusionai/ring-2.6-1t:free",
   "deepseek/deepseek-r1",
@@ -908,6 +943,9 @@ const NO_REASONING_CAPS: ReasoningCaps = {
   reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
 };
 
+// Order matters: longest/most-specific prefixes first so the find() loop
+// in resolveAnthropicReasoningEffortCapabilities lands the right bucket
+// before the bare-family fallback ("claude-opus-4") sweeps an id.
 const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-7"],
@@ -920,6 +958,13 @@ const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
     // Backend maps semantic levels to manual budget_tokens.
+    levels: ["none", "low", "medium", "high"],
+  },
+  {
+    // Legacy 4.x models. Live overview lists "Extended thinking = Yes"
+    // for opus-4-1, sonnet-4, opus-4 (the latter two retire 2026-06-15
+    // but the registry still surfaces them).
+    prefixes: ["claude-opus-4-1", "claude-opus-4", "claude-sonnet-4"],
     levels: ["none", "low", "medium", "high"],
   },
 ] as const;
@@ -968,7 +1013,16 @@ const OPENAI_REASONING_MODELS = [
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
   {
-    prefixes: ["gpt-5", "gpt-5.1", "gpt-5.2"],
+    // Original gpt-5: minimal is supported, but per Azure footnote ^7^
+    // "minimal is only supported with the original GPT-5 reasoning
+    // models. minimal is not supported with gpt-5.1 or greater".
+    // Listed before the gpt-5.1/5.2 entry so the longer match wins.
+    prefixes: ["gpt-5.1", "gpt-5.2"],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high", "xhigh"],
+  },
+  {
+    prefixes: ["gpt-5"],
     supportsOff: false,
     levels: ["minimal", "low", "medium", "high"],
   },
@@ -1036,19 +1090,32 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
 }
 
 function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
-  if (modelId === "magistral-medium-latest") {
-    return withReasoningEffortStyle({
+  // Native always-on reasoning family: magistral-* per
+  // https://mistral.ai/news/magistral and
+  // https://docs.mistral.ai/studio-api/conversations/reasoning .
+  // "Always reasons; no parameter needed" — injecting reasoning_effort
+  // returns 422 upstream. Treat like an OpenAI o-series always-on.
+  if (
+    modelId === "magistral-medium-latest" ||
+    modelId === "magistral-small-latest"
+  ) {
+    return withEnableThinkingStyle({
       supportsReasoning: true,
-      supportsReasoningOff: false,
-      // Native reasoning model: present baseline as Medium in the UI.
-      reasoningEffortLevels: ["medium", "high"] as const,
+      reasoningAlwaysOn: true,
     });
   }
-  if (modelId === "mistral-small-latest" || modelId === "mistral-vibe-cli-latest") {
+  // Adjustable reasoning family: three documented levels low/medium/high
+  // plus the "none" off-switch (Mistral Studio conversations doc). The
+  // earlier two-level ["none","high"] ladder was wrong.
+  if (
+    modelId === "mistral-small-latest" ||
+    modelId === "mistral-medium-latest" ||
+    modelId === "mistral-vibe-cli-latest"
+  ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
-      reasoningEffortLevels: ["none", "high"] as const,
+      reasoningEffortLevels: ["none", "low", "medium", "high"] as const,
     });
   }
   return withEnableThinkingStyle();
