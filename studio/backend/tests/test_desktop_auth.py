@@ -484,11 +484,14 @@ from typer.testing import CliRunner
 studio_home = Path(sys.argv[1])
 real_import = builtins.__import__
 
-def guarded_import(name, *args, **kwargs):
+def guarded_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    # Only gate absolute imports; relative `from .utils import x` inside
+    # third-party packages (e.g. typer._click.decorators) hits level > 0
+    # with name="utils" and must pass through.
     blocked = ("auth", "fastapi", "structlog", "utils")
-    if name in blocked or name.startswith(("auth.", "utils.")):
+    if level == 0 and (name in blocked or name.startswith(("auth.", "utils."))):
         raise ModuleNotFoundError(name)
-    return real_import(name, *args, **kwargs)
+    return real_import(name, globals, locals, fromlist, level)
 
 builtins.__import__ = guarded_import
 from unsloth_cli.commands import studio as studio_cli
