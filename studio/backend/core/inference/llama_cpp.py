@@ -5089,13 +5089,30 @@ class LlamaCppBackend:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
                         )
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                        )
+                        # Guard against the model emitting a tool not in the
+                        # per-request advertised set: filtered MCP names, a
+                        # built-in the caller opted out of, or a stale name
+                        # from a prior turn. Mirrors the safetensors loop's
+                        # allowed_tool_names check.
+                        _allowed = {
+                            (t.get("function") or {}).get("name")
+                            for t in (tools or [])
+                            if (t.get("function") or {}).get("name")
+                        }
+                        if _allowed and tool_name not in _allowed:
+                            result = (
+                                f"Error: tool '{tool_name}' is not enabled "
+                                "for this request. Use one of the enabled "
+                                "tools or provide a final answer."
+                            )
+                        else:
+                            result = execute_tool(
+                                tool_name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                            )
 
                     yield {
                         "type": "tool_end",

@@ -38,15 +38,17 @@ TOOL_XML_SIGNALS = (
 
 
 # Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed
-# tails for end-of-turn cleanup.
+# tails for end-of-turn cleanup. ``[\w-]+`` on ``<function=...>`` tracks
+# OpenAI's ``^[a-zA-Z0-9_-]{1,64}$`` so MCP tool names with hyphens
+# (mcp__srv__list-issues) parse the same as the built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
-    re.compile(r"<function=\w+>.*$", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
     re.compile(r"<\|python_tag\|>.*$", re.DOTALL),
@@ -87,7 +89,9 @@ BUDGET_EXHAUSTED_NUDGE = (
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # Qwen3.5 / Hermes ``<function=name><parameter=k>v`` AND the attribute
 # form ``<function name="name"><param name="k">v`` used by MiniCPM-5,
-# MiniMax-M2, etc. Name lands in group(1) or group(2).
+# MiniMax-M2, etc. Name char class is ``[\w\.\-]+`` so MCP tool names
+# with hyphens (mcp__srv__list-issues) and dotted module names parse
+# the same as the built-ins. Name lands in group(1) or group(2).
 _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
