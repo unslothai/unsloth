@@ -458,9 +458,9 @@ export const zhCN = {
         "推荐值：LoRA 用 2e-4，CPT 用 5e-5，全量微调用 2e-5",
       embeddingLearningRate: "Embedding 学习率",
       embeddingLearningRateTooltip:
-        "仅在 CPT 训练 embed_tokens 时使用。Embedding 比 LoRA 权重更易失稳，通常需要更小的学习率。留空则使用 lr/10；常用区间是主学习率的 2 至 10 倍小。仅在词表或领域 token 适配过慢时才提高。",
+        "仅在 CPT 训练 embed_tokens 时使用。Embedding 比 LoRA 权重更易失稳，通常需要更小的学习率。留空则使用 lr/10；常用区间是比主学习率小 2 至 10 倍。仅在词表或领域 token 适配过慢时才提高。",
       embeddingLearningRateDescription:
-        "留空使用 lr/10（推荐）。常用区间是主学习率的 2 至 10 倍小。",
+        "留空使用 lr/10（推荐）。常用区间是比主学习率小 2 至 10 倍。",
       rank: "Rank",
       rankTooltip: "低秩矩阵的维度。越高容量越大。",
       alpha: "Alpha",
