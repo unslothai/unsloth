@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gc
 import threading
+import time
 from typing import Any
 
 from loggers import get_logger
@@ -21,11 +22,70 @@ _model: Any | None = None
 _model_name: str | None = None
 
 
+def _resolve_device() -> str:
+    """Prefer CUDA when available; otherwise CPU. Explicit so we don't rely
+    on sentence-transformers' auto-detect (which historically picks CPU when
+    CUDA_VISIBLE_DEVICES is set funny)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:  # noqa: BLE001
+        pass
+    return "cpu"
+
+
 def _load(model_name: str) -> Any:
     from sentence_transformers import CrossEncoder
 
-    logger.info("Loading RAG reranker: %s", model_name)
-    return CrossEncoder(model_name)
+    device = _resolve_device()
+    logger.info(
+        "Loading RAG reranker",
+        model = model_name,
+        device = device,
+    )
+    started = time.perf_counter()
+    model = CrossEncoder(model_name, device = device)
+    logger.info(
+        "RAG reranker loaded",
+        model = model_name,
+        device = device,
+        elapsed_seconds = round(time.perf_counter() - started, 2),
+    )
+    return model
+
+
+def precache_reranker(model_name: str | None = None) -> None:
+    """Download reranker weights into the HF cache (no instantiation).
+
+    Mirrors ``precache_helper_gguf``: runs in a background thread on
+    FastAPI startup so the first user-facing rerank doesn't pay the
+    ~1.1 GB download. Safe to call when the model is already cached
+    (huggingface_hub no-ops on existing files).
+    """
+    target = model_name or RAG_RERANKER_MODEL
+    try:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+        logger.info("Pre-caching RAG reranker", model = target)
+        started = time.perf_counter()
+        snapshot_download(repo_id = target, repo_type = "model")
+        logger.info(
+            "RAG reranker cached",
+            model = target,
+            elapsed_seconds = round(time.perf_counter() - started, 2),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Non-critical: the lazy loader will retry the download on first
+        # use. We log so the user can see what happened.
+        logger.warning(
+            "RAG reranker precache failed; will download lazily",
+            model = target,
+            error = str(exc),
+        )
 
 
 def get_reranker(model_name: str | None = None) -> Any:
@@ -72,10 +132,21 @@ def rerank(
     model = get_reranker(model_name)
     if text_pairs:
         inputs = [(query, text) for _, text in text_pairs]
+        logger.info(
+            "RAG reranker predict starting",
+            n_inputs = len(inputs),
+            batch_size = RAG_RERANK_BATCH_SIZE,
+        )
+        started = time.perf_counter()
         scores = model.predict(
             inputs,
             batch_size = RAG_RERANK_BATCH_SIZE,
             show_progress_bar = False,
+        )
+        logger.info(
+            "RAG reranker predict done",
+            n_inputs = len(inputs),
+            elapsed_seconds = round(time.perf_counter() - started, 2),
         )
         ranked = sorted(
             zip(text_pairs, scores),

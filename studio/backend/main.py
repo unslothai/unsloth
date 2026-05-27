@@ -260,7 +260,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass  # non-critical
 
+    def _precache_reranker():
+        try:
+            from core.rag.reranker import precache_reranker
+
+            precache_reranker()
+        except Exception:
+            pass  # non-critical
+
     threading.Thread(target = _precache, daemon = True).start()
+    threading.Thread(target = _precache_reranker, daemon = True).start()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
