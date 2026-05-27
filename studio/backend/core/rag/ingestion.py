@@ -667,12 +667,18 @@ def _probe_loaded_vlm() -> tuple[str | None, str | None]:
     unsloth in-process VLMs would need a different bridge.
     """
     try:
-        from core.inference.llama_cpp import get_llama_cpp_backend
-    except Exception:
+        # The singleton getter lives in routes.inference, not the
+        # llama_cpp module. Importing from the wrong place silently
+        # returned None for every probe — captioner always fell back
+        # to the helper VLM even when the chat model was vision-capable.
+        from routes.inference import get_llama_cpp_backend
+    except Exception as exc:
+        logger.debug("RAG probe: get_llama_cpp_backend import failed: %s", exc)
         return None, None
     try:
         backend = get_llama_cpp_backend()
-    except Exception:
+    except Exception as exc:
+        logger.debug("RAG probe: get_llama_cpp_backend() raised: %s", exc)
         return None, None
     if not getattr(backend, "is_loaded", False):
         return None, None
