@@ -91,6 +91,8 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { listMcpServers } from "./api/mcp-servers-api";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -1341,6 +1343,12 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
         ) : null}
+
+        {!isExternalModel ? (
+          <CollapsibleSection label="MCP Servers">
+            <McpServersSection />
+          </CollapsibleSection>
+        ) : null}
       </div>
       </div>
       <Dialog
@@ -1499,6 +1507,74 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function McpServersSection() {
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  const [enabledServerCount, setEnabledServerCount] = useState<number | null>(
+    null,
+  );
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    listMcpServers()
+      .then((rows) => {
+        if (cancelled) return;
+        setEnabledServerCount(rows.filter((row) => row.is_enabled).length);
+      })
+      .catch(() => {
+        if (!cancelled) setEnabledServerCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshTick]);
+
+  return (
+    <div className="flex flex-col gap-3 pt-1">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+            Use MCP Servers
+          </span>
+          <InfoHint>
+            When on, every server marked enabled in the manage dialog is
+            attached to this chat's tool list.
+          </InfoHint>
+        </div>
+        <Switch
+          className="panel-switch"
+          checked={mcpEnabledForChat}
+          onCheckedChange={setMcpEnabledForChat}
+          disabled={enabledServerCount === 0 && !mcpEnabledForChat}
+        />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-muted-foreground">
+          {enabledServerCount === null
+            ? "Loading…"
+            : enabledServerCount === 0
+              ? "No servers configured"
+              : `${enabledServerCount} server${enabledServerCount === 1 ? "" : "s"} enabled`}
+        </span>
+        <Button variant="ghost" size="sm" onClick={() => setDialogOpen(true)}>
+          Manage…
+        </Button>
+      </div>
+      <ChatMcpServersDialog
+        open={dialogOpen}
+        onOpenChange={(next) => {
+          setDialogOpen(next);
+          if (!next) setRefreshTick((tick) => tick + 1);
+        }}
       />
     </div>
   );

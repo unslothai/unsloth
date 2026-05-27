@@ -1697,9 +1697,15 @@ get_torch_index_url() {
         echo "[WARN] To install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
         echo "$_base/cpu"; return
     fi
-    # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
+    # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
+    # Newer NVIDIA drivers (e.g. 610.x) print "CUDA UMD Version: X.Y" instead
+    # of the legacy "CUDA Version: X.Y"; accept both with two BRE expressions
+    # (POSIX sed does not support "?" without -E).  The two patterns are
+    # mutually exclusive per line, so head -1 picks the first emitted match.
     _cuda_ver=$(LC_ALL=C $_smi 2>/dev/null \
-        | sed -n 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | sed -n \
+            -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+            -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
     if [ -z "$_cuda_ver" ]; then
         echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2

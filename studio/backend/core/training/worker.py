@@ -1085,7 +1085,47 @@ def _activate_transformers_version(model_name: str) -> None:
     activate_transformers_for_subprocess(model_name)
 
 
-def _adapt_for_mlx_vlm(items):
+def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
+    if width <= 0 or height <= 0 or target <= 0:
+        return width, height
+    largest_side = max(width, height)
+    if largest_side <= target:
+        return width, height
+    # Integer formula matches unsloth_zoo's collator (Python round() differs
+    # by 1px on half-pixel cases). max(1, _) avoids zero-side degenerate output.
+    new_w = max(1, (width * target + largest_side // 2) // largest_side)
+    new_h = max(1, (height * target + largest_side // 2) // largest_side)
+    return new_w, new_h
+
+
+def _resize_mlx_vlm_image(image, resize):
+    if resize is None:
+        return image
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        return image
+    if not isinstance(image, Image.Image):
+        return image
+    image = image.convert("RGB")
+    new_size = _mlx_vlm_max_resized_size(*image.size, int(resize))
+    if new_size != image.size:
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        image = image.resize(new_size, resampling)
+    # When a resize is requested, hand mlx-vlm a writable RGB ndarray so its
+    # PIL-path square-resize is skipped and HF processors don't warn on
+    # non-writable views. resize=None (Default) above keeps the original PIL.
+    return np.array(image, copy = True)
+
+
+def _resize_mlx_vlm_images(value, resize):
+    if isinstance(value, list):
+        return [_resize_mlx_vlm_image(image, resize) for image in value]
+    return _resize_mlx_vlm_image(value, resize)
+
+
+def _adapt_for_mlx_vlm(items, resize = None):
     """Adapt GPU-path VLM dataset output for mlx-vlm consumption.
 
     The GPU path embeds PIL images inside messages content as
@@ -1105,7 +1145,7 @@ def _adapt_for_mlx_vlm(items):
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
-                            images.append(img)
+                            images.append(_resize_mlx_vlm_image(img, resize))
                         new_content.append({"type": "image"})
                     else:
                         new_content.append(part)
@@ -1116,9 +1156,9 @@ def _adapt_for_mlx_vlm(items):
         if images:
             out["image"] = images[0] if len(images) == 1 else images
         elif "image" in item:
-            out["image"] = item["image"]
+            out["image"] = _resize_mlx_vlm_images(item["image"], resize)
         elif "images" in item:
-            out["images"] = item["images"]
+            out["images"] = _resize_mlx_vlm_images(item["images"], resize)
         adapted.append(out)
     return adapted
 
@@ -1294,6 +1334,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
+    vision_image_size = config.get("vision_image_size")
+    # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
+    _model_name_lower = str(config.get("model_name", "")).lower()
+    _is_deepseek_ocr = "deepseek" in _model_name_lower and "ocr" in _model_name_lower
+    if is_vlm and vision_image_size is not None and _is_deepseek_ocr:
+        _send(
+            "status",
+            status_message = (
+                "MLX vision image resize ignored for DeepSeek OCR "
+                "(uses fixed Gundam preset)."
+            ),
+        )
+        vision_image_size = None
+    elif is_vlm and vision_image_size is not None:
+        vision_image_size = int(vision_image_size)
+        _send(
+            "status",
+            status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
+        )
 
     # ── 2. Apply LoRA / full FT ──
     # Pass gradient_checkpointing as string ("mlx"/"unsloth"/"none"/etc.)
@@ -1428,7 +1487,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
-                dataset = _adapt_for_mlx_vlm(vlm_info["dataset"])
+                dataset = _adapt_for_mlx_vlm(
+                    vlm_info["dataset"],
+                    resize = vision_image_size,
+                )
             else:
                 errors = vlm_info.get("errors", [])
                 raise ValueError(
@@ -1443,7 +1505,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     dataset_name = hf_dataset or "local",
                 )
                 if ev_info.get("success"):
-                    eval_dataset = _adapt_for_mlx_vlm(ev_info["dataset"])
+                    eval_dataset = _adapt_for_mlx_vlm(
+                        ev_info["dataset"],
+                        resize = vision_image_size,
+                    )
 
         elif format_type:
             _send("status", status_message = f"Formatting dataset ({format_type})...")
@@ -2820,6 +2885,7 @@ def run_training_process(
             eval_dataset = eval_dataset,
             eval_steps = eval_steps,
             max_seq_length = config.get("max_seq_length", 2048),
+            vision_image_size = config.get("vision_image_size"),
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
             is_cpt = is_cpt,

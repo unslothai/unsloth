@@ -59,6 +59,29 @@ MOCK
     echo "$_dir"
 }
 
+# Helper: create a mock nvidia-smi that prints the new "CUDA UMD Version" header
+# layout used by newer NVIDIA drivers (e.g. 610.x on Windows).  See issue #5812.
+make_mock_smi_umd() {
+    _dir=$(mktemp -d)
+    cat > "$_dir/nvidia-smi" <<MOCK
+#!/bin/sh
+case "\$1" in
+    -L)
+        echo "GPU 0: NVIDIA GeForce RTX 5090 Laptop GPU (UUID: GPU-fake-uuid)"
+        ;;
+    *)
+        cat <<'SMI_OUT'
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.47                 KMD Version: 610.47        CUDA UMD Version: $1     |
++-----------------------------------------------------------------------------------------+
+SMI_OUT
+        ;;
+esac
+MOCK
+    chmod +x "$_dir/nvidia-smi"
+    echo "$_dir"
+}
+
 # Helper: create a mock amd-smi that prints a given ROCm version string
 # Supports both "amd-smi version" and "amd-smi list" subcommands so that
 # the GPU presence check (amd-smi list) also succeeds in tests.
@@ -277,6 +300,25 @@ assert_eq "empty mirror env -> official/cpu" "https://download.pytorch.org/whl/c
 # 28) Trailing slash in UNSLOTH_PYTORCH_MIRROR is stripped
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl/" run_func "none")
 assert_eq "trailing slash stripped -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
+
+# 29) "CUDA UMD Version: 13.3" header (newer NVIDIA driver layout, issue #5812)
+#     -> cu130, not the cu126 fallback.
+_dir=$(make_mock_smi_umd "13.3")
+_result=$(run_func "$_dir")
+assert_eq "CUDA UMD Version 13.3 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+# 30) "CUDA UMD Version: 12.8" header (newer layout on a 12.x driver) -> cu128
+_dir=$(make_mock_smi_umd "12.8")
+_result=$(run_func "$_dir")
+assert_eq "CUDA UMD Version 12.8 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 31) "CUDA UMD Version: 11.8" header (newer layout on an older driver) -> cu118
+_dir=$(make_mock_smi_umd "11.8")
+_result=$(run_func "$_dir")
+assert_eq "CUDA UMD Version 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
+rm -rf "$_dir"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
