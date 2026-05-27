@@ -105,3 +105,46 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
     assert "_force_text_only = False" in method_source
     assert "auto_model = AutoModelForCausalLM" in method_source
     assert "auto_config = _get_text_only_config(auto_config, model_name)" in method_source
+
+
+def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
+    """Tiny end-to-end: build a Gemma3 text-only config, instantiate the
+    matching model class with shrunken hidden sizes, assert it has the
+    text language model attributes and no vision tower attribute.
+
+    This is the integration check the AST-only tests were missing -- it
+    proves the text-only routing actually produces a model that can be
+    instantiated and that the resulting model is purely text. We use
+    shrunken hidden sizes so the test is fast and CPU-only.
+    """
+    transformers = pytest.importorskip("transformers")
+    helper = _load_text_only_helper()
+
+    full_config = transformers.Gemma3Config()
+    text_config = helper(full_config, "google/gemma-3-27b-it")
+
+    # Shrink so a CPU instantiation is cheap; preserve the shape attributes
+    # that the model class reads at construction time.
+    text_config.num_hidden_layers = 1
+    text_config.hidden_size = 32
+    text_config.intermediate_size = 32
+    text_config.num_attention_heads = 2
+    text_config.num_key_value_heads = 1
+    text_config.head_dim = 16
+    text_config.vocab_size = 128
+
+    model_class = transformers.AutoModelForCausalLM._model_mapping[type(text_config)]
+    model = model_class(text_config)
+
+    # Positive checks: text language model surface is present.
+    assert hasattr(model, "lm_head"), "text-only Gemma3 model should expose lm_head"
+
+    # Negative checks: no vision tower or multimodal projector exists on the
+    # model. The presence of either would indicate the helper failed to
+    # strip multimodal components.
+    assert not hasattr(model, "vision_tower"), (
+        "text-only Gemma3 model should not have a vision_tower"
+    )
+    assert not hasattr(model, "multi_modal_projector"), (
+        "text-only Gemma3 model should not have a multi_modal_projector"
+    )
