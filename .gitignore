@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.class
 unsloth_compiled_cache/
+# Notebook-validator runtime PyPI metadata cache (CI repopulates).
+scripts/data/pypi_cache/
 # ML artifacts (large files)
 feature/
 outputs/
@@ -227,7 +229,11 @@ log.txt
 setup_leo.sh
 server.pid
 *.log
+# Ignore stray lockfiles; real npm projects opt back in below (npm ci needs them).
 package-lock.json
+!studio/frontend/package-lock.json
+!studio/backend/core/data_recipe/oxc-validator/package-lock.json
+!studio/package-lock.json
 llama.cpp/
 /.omc
 /studio/frontend/.omc

@@ -28,6 +28,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
+    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -36,6 +37,7 @@ from backend.utils.wheel_utils import (
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
+IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
@@ -422,6 +424,7 @@ def _infer_no_torch() -> bool:
 
 NO_TORCH = _infer_no_torch()
 
+
 # -- Verbosity control ----------------------------------------------------------
 # By default the installer shows a minimal progress bar (one line, in-place).
 # Set UNSLOTH_VERBOSE=1 in the environment to restore full per-step output:
@@ -446,6 +449,11 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 )
+
+# Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides file).
+_MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
+    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the default console encoding can be a legacy code page
@@ -628,9 +636,18 @@ def _flash_attn_install_disabled() -> bool:
 
 
 def _ensure_flash_attn() -> None:
-    if NO_TORCH or IS_WINDOWS or IS_MACOS:
-        return
     if _flash_attn_install_disabled():
+        return
+    if NO_TORCH:
+        return
+    if has_blackwell_gpu():
+        _step(
+            "warning",
+            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+            _cyan,
+        )
+        return
+    if IS_WINDOWS or IS_MACOS:
         return
     if (
         subprocess.run(
@@ -950,6 +967,20 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
+    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
+    # mlx-vlm / mlx-lm transformers pin -- set at module load).
+    if IS_MAC_ARM and not skip_base:
+        _progress("MLX stack (Apple Silicon)")
+        pip_install(
+            "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
+            "--no-cache-dir",
+            "--upgrade",
+            "mlx",
+            "mlx-metal",
+            "mlx-lm",
+            "mlx-vlm",
+        )
+
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
         pass
@@ -968,6 +999,16 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             package_name,
             "unsloth-zoo",
+        )
+        # Resolve pydantic WITH deps so pip pins pydantic-core to the
+        # exact version pydantic's metadata declares. Under --no-deps
+        # alone pip picks the latest of each and trips pydantic's
+        # _ensure_pydantic_core_version check. Transitive deps are
+        # torch-free.
+        pip_install(
+            "Installing pydantic (with deps for compatible core)",
+            "--no-cache-dir",
+            "pydantic",
         )
         pip_install(
             "Installing no-torch runtime deps",

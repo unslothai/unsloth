@@ -18,6 +18,12 @@ export interface InferenceParams {
    *  orchestrator captures this in its snapshot so restore can round-trip
    *  the original quantization instead of forcing 4-bit. */
   loadIn4Bit?: boolean;
+  /**
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at
+   * 6x standard Opus pricing. Default false.
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   */
+  fastMode?: boolean;
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
@@ -33,6 +39,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   checkpoint: "",
   trustRemoteCode: false,
   loadIn4Bit: true,
+  fastMode: false,
 };
 
 export interface ChatModelSummary {

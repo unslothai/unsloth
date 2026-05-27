@@ -10,6 +10,7 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 import ast
 import http.client
 import os
+import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -58,21 +59,37 @@ _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
-        "sudo",
-        "su",
         "dd",
         "chmod",
         "chown",
         "mkfs",
-        "shutdown",
-        "reboot",
-        "passwd",
         "mount",
         "umount",
         "fdisk",
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
         "kill",
         "killall",
         "pkill",
+        "passwd",
+        "curl",
+        "wget",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "ssh",
+        "scp",
+        "sftp",
+        "rsync",
+        "eval",
+        "source",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -92,40 +109,120 @@ _BLOCKED_COMMANDS = (
 )
 
 
+_SHELL_SEPARATORS = frozenset(
+    {";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"}
+)
+# Bash keywords that introduce a new command position (then $cmd, do $cmd, etc.).
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# Wrappers whose next non-flag argument is itself the command Bash will exec.
+_COMMAND_PREFIXES = frozenset(
+    {
+        "env",
+        "command",
+        "builtin",
+        "exec",
+        "time",
+        "nohup",
+        "nice",
+        "setsid",
+        "stdbuf",
+        "timeout",
+        "ionice",
+        "chroot",
+        "sudo",
+        "doas",
+        "su",
+        "xargs",
+    }
+)
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+
 def _find_blocked_commands(command: str) -> set[str]:
-    """Detect blocked commands using shlex tokenization and regex scanning.
+    """Detect blocked commands at shell command position only.
 
-    Catches: full paths (/usr/bin/sudo), quoted strings ("sudo"),
-    split-quotes (su""do), backslash escapes (\\rm), and command-position
-    words after ;, |, &&, $().
+    A token is at command position if it is the first token, or if the
+    preceding token is a shell separator / brace-group opener / keyword
+    that starts a new command (`then`, `do`, etc.), or a command-prefix
+    wrapper like `env` / `time` / `xargs` (the next token is the real
+    command). Tokens in argument position (`grep -r curl .`,
+    `echo source the data`, `ls /usr/bin/curl`) are passed through.
+    Also scans `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
-    blocked = set()
+    blocked: set[str] = set()
 
-    # 1. shlex tokenization (handles quotes, escapes, concatenation)
+    # shlex with punctuation_chars splits `;`, `&&`, `||`, `|`, `(`, `)`, `` ` ``
+    # off as their own tokens so we can detect command position even when a
+    # caller writes `echo done; rm -rf x` (no whitespace) or quote-splits the
+    # command name itself (`r''m` collapses to a single token `rm` at command
+    # position after the `;` separator).
     try:
-        tokens = (
-            shlex.split(command)
-            if sys.platform != "win32"
-            else shlex.split(command, posix = False)
-        )
+        if sys.platform == "win32":
+            tokens = shlex.split(command, posix = False)
+        else:
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
     except ValueError:
         tokens = command.split()
 
-    for token in tokens:
-        base = os.path.basename(token).lower()
-        # Strip common Windows executable extensions so that
-        # runas.exe, shutdown.bat, etc. match the blocklist.
+    def _token_basename(tok: str) -> str:
+        # shlex may glue trailing meta-chars onto a token (`rm;`); strip them
+        # so the basename match still hits `rm`. Leading shell-state chars
+        # likewise.
+        tok = tok.strip(";&|()`{}")
+        base = os.path.basename(tok).lower()
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
+        return base
+
+    expect_command = True  # start of string is a command position
+    prefix_pending = False  # last command-position token was env/time/timeout/xargs/...
+    for token in tokens:
+        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+            expect_command = True
+            prefix_pending = False
+            continue
+        if token.startswith("-"):
+            # Flags belong to the active command. While a wrapper prefix is
+            # waiting for its command (`stdbuf -oL cmd`, `xargs -- cmd`),
+            # keep expect_command intact.
+            if not prefix_pending:
+                expect_command = False
+            continue
+        if not expect_command:
+            continue
+        # FOO=bar prefix: assignment list, next non-assignment token is the command.
+        if _ASSIGNMENT_RE.match(token):
+            continue
+        # `timeout 1 cmd` / `nice -n 5 cmd` style numeric wrapper arg.
+        if prefix_pending and token.lstrip("-").isdigit():
+            continue
+        base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        # Wrappers (`env` / `time` / `xargs` / `sudo`) consume one command; the
+        # next non-flag, non-numeric token is the real command. `sudo` is
+        # already in _BLOCKED_COMMANDS, so it's flagged AND we keep walking.
+        if base in _COMMAND_PREFIXES:
+            prefix_pending = True
+            continue
+        expect_command = False
+        prefix_pending = False
 
-    # 2. Regex: catch blocked words at shell command boundaries
-    #    (semicolons, pipes, &&, ||, backticks, $(), <(), subshells, newlines)
-    #    Uses a single combined pattern for all blocked words.
-    #    Handles optional Unix path prefix (/usr/bin/) and Windows drive
-    #    letter prefix (C:\Windows\...\).
+    # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    for i, tok in enumerate(tokens):
+        if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
+            base = _token_basename(tokens[i + 1])
+            if base in _BLOCKED_COMMANDS:
+                blocked.add(base)
+
+    # Regex: blocked words at shell command boundaries that shlex won't see,
+    # e.g. inside an unquoted $(rm -rf), <(rm), backtick chain, or appended to
+    # a separator with no whitespace ("foo;rm"). Anchored to command-position
+    # delimiters; does not match in argument position.
     lowered = command.lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
@@ -136,7 +233,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
-    # 3. Check for nested shell invocations (bash -c 'sudo whoami',
+    # Nested shell invocations (bash -c 'sudo whoami',
     #    bash -lc '...', bash --login -c '...', cmd /c '...').
     #    When a -c or /c flag is found, look backwards for a shell name
     #    (skipping intermediate flags like --login, -l, -x) and recursively
@@ -177,10 +274,13 @@ def _find_blocked_commands(command: str) -> set[str]:
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
-    Strips HF_TOKEN, WANDB_API_KEY, AWS_*, GH_TOKEN, LD_PRELOAD, DYLD_*, etc.
-    Preserves the active Python interpreter and virtualenv directories in PATH
-    so that pip, uv, and packages installed in the Studio runtime remain
-    accessible.
+    Whitelist-built from scratch -- the parent process env is NOT inherited.
+    Only PATH / HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV
+    or Windows SystemRoot when applicable) reach the child. HF_TOKEN,
+    WANDB_API_KEY, AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and
+    every other parent var are absent by construction. HOME points at the
+    sandbox workdir so HF / wandb / aws SDKs cannot read cached credentials
+    from the operator's real ~/.
     """
     # Start with the directory containing the running Python interpreter
     # so that subprocess calls to 'python', 'pip', etc. resolve to the
@@ -221,34 +321,76 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
 
 def _sandbox_preexec():
-    """Pre-exec hook: drop privilege escalation ability and set resource limits.
+    """Best-effort sandbox setup for sandboxed subprocesses.
 
-    On Linux, applies PR_SET_NO_NEW_PRIVS so sudo/su/pkexec fail at the
-    kernel level. On Linux and macOS, sets RLIMIT_FSIZE.
-    No-op on Windows (use creationflags instead).
-
-    Note: RLIMIT_NPROC is intentionally NOT set because Linux enforces it
-    per real UID, not per process tree, so it would starve the Studio
-    server and other sessions sharing the same user account.
-
-    All modules and handles are resolved at import time (module level) so
-    this function does not trigger Python imports in the forked child,
-    avoiding potential deadlocks in multi-threaded servers.
+    Modules are resolved at import time so the forked child runs no imports.
     """
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+    try:
+        os.umask(0o077)
+    except OSError:
+        pass
+
     if _libc is not None:
         try:
-            # PR_SET_NO_NEW_PRIVS = 38, arg2 = 1 (enable)
-            _libc.prctl(38, 1, 0, 0, 0)
+            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
         except (OSError, AttributeError):
-            pass  # Not available (container, old kernel, etc.)
+            pass
+
+        try:
+            _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
+        except (OSError, AttributeError):
+            pass
+
+        # CLONE_NEWNET intentionally not applied: where userns is enabled it
+        # blocks all egress, including allowlisted hosts. Network policy is
+        # enforced by the AST host check and the bash blocklist.
 
     if _resource is not None:
+        # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
         try:
-            # Limit file size to 100MB (prevents disk filling)
+            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
             _resource.setrlimit(
                 _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
             )
         except (ValueError, OSError):
+            pass
+        try:
+            as_bytes = (
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8"))
+                * 1024
+                * 1024
+                * 1024
+            )
+            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
+            cpu_s = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"))
+            _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_s, cpu_s))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
+            # Default high enough for multi-shard safetensors mmaps + Python's
+            # own handle count; tunable via env for installs that hit the cap.
+            # Clamp to the inherited hard limit so setrlimit doesn't ValueError
+            # on machines where the parent's hard cap is below the requested
+            # value (would otherwise leave NOFILE at the parent's default).
+            nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
+            _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+            target = (
+                nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+            )
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
+        except (ValueError, OSError, AttributeError):
             pass
 
 
@@ -265,25 +407,36 @@ def _get_shell_cmd(command: str) -> list[str]:
 _workdirs: dict[str, str] = {}
 
 
+# Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
+_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+
+
 def _get_workdir(session_id: str | None = None) -> str:
-    """Return (and lazily create) a persistent working directory for tool execution."""
+    """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or "_default"
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id:
-            # Sanitize: strip path separators and parent-dir references
-            safe_id = os.path.basename(session_id.replace("..", ""))
-            if not safe_id:
-                safe_id = "_invalid"
-            workdir = os.path.join(sandbox_root, safe_id)
-            # Verify resolved path stays under sandbox root
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root)):
+        if session_id and _SESSION_ID_RE.match(session_id):
+            workdir = os.path.join(sandbox_root, session_id)
+            if not os.path.realpath(workdir).startswith(
+                os.path.realpath(sandbox_root) + os.sep
+            ):
                 workdir = os.path.join(sandbox_root, "_invalid")
+        elif session_id:
+            workdir = os.path.join(sandbox_root, "_invalid")
         else:
             workdir = os.path.join(sandbox_root, "_default")
         os.makedirs(workdir, exist_ok = True)
+        try:
+            os.chmod(sandbox_root, 0o700)
+        except OSError:
+            pass
+        try:
+            os.chmod(workdir, 0o700)
+        except OSError:
+            pass
         _workdirs[key] = workdir
     return _workdirs[key]
 
@@ -932,7 +1085,12 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(shell_node, ast.Constant)
                         and shell_node.value is False
                     )
-                    if shell_func in _STRING_SHELL_FUNCS or not shell_safe:
+                    # Dynamic shell-exec args (chr/format/concat bypasses).
+                    if (
+                        shell_func in _STRING_SHELL_FUNCS
+                        or shell_func in _SHELL_EXEC_FUNCS
+                        or not shell_safe
+                    ):
 
                         def _is_safe_literal(n):
                             if _extract_string_from_node(n) is not None:
@@ -1006,15 +1164,616 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
+    # Static host policy: block metadata hosts and any literal host outside
+    # the trusted allowlist; uploads blocked regardless of host. Dynamic hosts
+    # are caught by the bash blocklist instead.
+    network_calls: list[dict] = []
+    sensitive_file_reads: list[dict] = []
+    _NETWORK_FQ_PREFIXES = (
+        "socket.socket",
+        "socket.create_connection",
+        "socket.getaddrinfo",
+        "urllib.request.urlopen",
+        "urllib.request.urlretrieve",
+        "urllib3.",
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.delete",
+        "requests.patch",
+        "requests.head",
+        "requests.request",
+        "requests.Session",
+        "http.client.HTTPConnection",
+        "http.client.HTTPSConnection",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.request",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+    )
+    _UPLOAD_HTTP_METHODS = (
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.request",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.request",
+        "urllib.request.urlopen",
+        "urllib.request.Request",
+    )
+    _UPLOAD_HF_FQ = (
+        "huggingface_hub.upload_file",
+        "huggingface_hub.upload_folder",
+        "huggingface_hub.upload_large_folder",
+        "huggingface_hub.create_commit",
+    )
+    _UPLOAD_HF_METHODS = frozenset(
+        {
+            "upload_file",
+            "upload_folder",
+            "upload_large_folder",
+            "create_commit",
+        }
+    )
+    # Cloud-metadata / link-local hosts.
+    _METADATA_HOST_LITERALS = {
+        "169.254.169.254",
+        "fd00:ec2::254",
+        "metadata.google.internal",
+        "metadata",
+        "metadata.tencentyun.com",
+        "100.100.100.200",
+        "100.100.100.110",
+        "169.254.170.2",
+        "169.254.170.23",
+    }
+    _METADATA_HOST_PREFIXES = (
+        "169.254.",
+        "100.64.",
+    )
+    # Allowlist kept explicit so each entry is auditable.
+    _TRUSTED_PUBLIC_HOST_LITERALS = frozenset(
+        {
+            # search
+            "www.google.com",
+            "google.com",
+            "www.bing.com",
+            "bing.com",
+            "duckduckgo.com",
+            "html.duckduckgo.com",
+            # encyclopedic / reference
+            "wikipedia.org",
+            "www.wikipedia.org",
+            "wikimedia.org",
+            "www.wikimedia.org",
+            "wikidata.org",
+            "www.wikidata.org",
+            "commons.wikimedia.org",
+            "www.britannica.com",
+            "openlibrary.org",
+            "www.openstreetmap.org",
+            # ML / dev / data
+            "huggingface.co",
+            "hf.co",
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "gist.github.com",
+            "docs.github.com",
+            "pypi.org",
+            "files.pythonhosted.org",
+            "www.npmjs.com",
+            "registry.npmjs.org",
+            "crates.io",
+            "static.crates.io",
+            # docs
+            "docs.python.org",
+            "python.org",
+            "www.python.org",
+            "developer.mozilla.org",
+            "developer.apple.com",
+            "learn.microsoft.com",
+            "docs.docker.com",
+            "pytorch.org",
+            "docs.pytorch.org",
+            "tensorflow.org",
+            "www.tensorflow.org",
+            "numpy.org",
+            "pandas.pydata.org",
+            "scipy.org",
+            "scikit-learn.org",
+            "matplotlib.org",
+            "fastapi.tiangolo.com",
+            "starlette.io",
+            # academic
+            "arxiv.org",
+            "export.arxiv.org",
+            "scholar.google.com",
+            "openreview.net",
+            "semanticscholar.org",
+            "www.semanticscholar.org",
+            "biorxiv.org",
+            "www.biorxiv.org",
+            "medrxiv.org",
+            "www.medrxiv.org",
+            "pubmed.ncbi.nlm.nih.gov",
+            "www.ncbi.nlm.nih.gov",
+            # Q&A / community
+            "stackoverflow.com",
+            "stackexchange.com",
+            "askubuntu.com",
+            "superuser.com",
+            "serverfault.com",
+            # standards
+            "www.w3.org",
+            "tools.ietf.org",
+            "datatracker.ietf.org",
+            "www.rfc-editor.org",
+            # reputable news
+            "www.bbc.com",
+            "www.bbc.co.uk",
+            "www.reuters.com",
+            "apnews.com",
+            "www.nature.com",
+            "www.science.org",
+            # government / open data
+            "data.gov",
+            "catalog.data.gov",
+            "www.census.gov",
+            "www.nasa.gov",
+            "data.nasa.gov",
+            "www.cdc.gov",
+            "www.nih.gov",
+            "www.who.int",
+            # weather / time
+            "api.weather.gov",
+            "worldtimeapi.org",
+        }
+    )
+    _TRUSTED_PUBLIC_HOST_SUFFIXES = (
+        ".wikipedia.org",
+        ".wikimedia.org",
+        ".wiktionary.org",
+        ".wikibooks.org",
+        ".wikiquote.org",
+        ".wikisource.org",
+        ".wikiversity.org",
+        ".wikivoyage.org",
+        ".stackexchange.com",
+        ".hf.co",
+        ".huggingface.co",
+        ".githubusercontent.com",
+        ".github.io",
+        ".arxiv.org",
+        ".readthedocs.io",
+        ".readthedocs.org",
+    )
+    _SENSITIVE_FILE_PREFIXES = (
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+    )
+    _SENSITIVE_FILE_RE = re.compile(
+        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
+    )
+
+    def _normalize_host(host: str) -> str:
+        if not host:
+            return ""
+        h = host.strip().lower().rstrip(".")
+        if "@" in h:
+            h = h.split("@", 1)[1]
+        if h.startswith("[") and "]" in h:
+            h = h[1 : h.index("]")]
+        elif h.count(":") == 1:
+            h = h.split(":", 1)[0]
+        return h
+
+    def _is_metadata_host(host: str) -> bool:
+        h = _normalize_host(host)
+        if not h:
+            return False
+        if h in _METADATA_HOST_LITERALS:
+            return True
+        if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
+            return True
+        return False
+
+    def _is_trusted_host(host: str) -> bool:
+        h = _normalize_host(host)
+        if not h:
+            return False
+        if h in _TRUSTED_PUBLIC_HOST_LITERALS:
+            return True
+        return any(h.endswith(s) for s in _TRUSTED_PUBLIC_HOST_SUFFIXES)
+
+    def _call_is_upload_shape(node: ast.Call, fq: str) -> bool:
+        """True for statically obvious upload shapes (files=, data=open(), bytes literal)."""
+        if fq in _UPLOAD_HF_FQ:
+            return True
+        if fq not in _UPLOAD_HTTP_METHODS:
+            return False
+        for kw in node.keywords or []:
+            if kw.arg == "files":
+                return True
+            if kw.arg == "data":
+                v = kw.value
+                if (
+                    isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Name)
+                    and v.func.id == "open"
+                ):
+                    return True
+                if isinstance(v, ast.Constant) and isinstance(
+                    v.value, (bytes, bytearray)
+                ):
+                    return True
+        return False
+
+    # Bare method-name fallback (`x.upload_file(...)`) is intentionally fuzzy,
+    # but should only fire when huggingface_hub / hf_api is actually imported
+    # somewhere in the snippet -- otherwise paramiko.upload_file, boto3
+    # create_commit, etc. hit a false positive. We pre-scan for the imports.
+    _HF_IMPORT_MODULES = (
+        "huggingface_hub",
+        "hf_api",
+        "huggingface_hub.hf_api",
+    )
+
+    def _module_has_hf_import(tree: ast.AST) -> bool:
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                for alias in n.names:
+                    if alias.name.split(".", 1)[0] in _HF_IMPORT_MODULES:
+                        return True
+            elif isinstance(n, ast.ImportFrom):
+                root = (n.module or "").split(".", 1)[0]
+                if root in _HF_IMPORT_MODULES:
+                    return True
+            elif isinstance(n, ast.Call) and n.args:
+                # __import__('huggingface_hub'), importlib.import_module('huggingface_hub'),
+                # and bare import_module('huggingface_hub') (via `from importlib import ...`).
+                arg0 = n.args[0]
+                if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
+                    continue
+                if arg0.value.split(".", 1)[0] not in _HF_IMPORT_MODULES:
+                    continue
+                func = n.func
+                if isinstance(func, ast.Name) and func.id in {
+                    "__import__",
+                    "import_module",
+                }:
+                    return True
+                if isinstance(func, ast.Attribute) and func.attr == "import_module":
+                    return True
+        return False
+
+    _hf_in_scope = _module_has_hf_import(tree)
+
+    def _method_call_hf_upload_name(node: ast.Call) -> str | None:
+        """Return the HF upload method name (`upload_file`, ...) or None.
+
+        Catches `HfApi().upload_file(...)` (Attribute) and
+        `from huggingface_hub import upload_file; upload_file(...)` (Name).
+        The bare-name branch fires only when an HF import is in scope, mirroring
+        the Attribute branch's gating so paramiko/boto3 do not false-positive.
+        """
+        if not _hf_in_scope:
+            return None
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr in _UPLOAD_HF_METHODS:
+            return f.attr
+        if isinstance(f, ast.Name) and f.id in _UPLOAD_HF_METHODS:
+            return f.id
+        return None
+
+    # Kwargs that ship a credential over the wire. Sandbox env strips HF_TOKEN
+    # / WANDB_API_KEY / AWS_* up front, so any value here is hard-coded or
+    # lifted from the parent process.
+    _HF_SENSITIVE_KWARGS = frozenset(
+        {
+            "token",
+            "hf_token",
+            "api_token",
+            "api_key",
+            "auth_token",
+            "access_token",
+            "password",
+            "secret",
+        }
+    )
+
+    def _is_os_environ(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+        )
+
+    def _reads_env_or_secret(node: ast.AST | None) -> bool:
+        """True if any node in the subtree resolves to an env / process read.
+
+        Walking the subtree (not just the root) means wrapper calls like
+        `str(os.environ)`, `json.dumps(os.environ)`, or
+        `'-'.join(os.environ.values())` are caught too.
+
+        Covers: `os.environ`, `os.environ[K]`, `os.environ.get(K)`, `os.getenv(K)`,
+        bare `getenv(K)` (after `from os import getenv`), and
+        `subprocess.{run,check_output,Popen,getoutput,getstatusoutput}` which
+        the LLM could use to lift parent env via `printenv` / `env` / `set`.
+        """
+        if node is None:
+            return False
+        for sub in ast.walk(node):
+            if _is_os_environ(sub):
+                return True
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                if isinstance(f, ast.Attribute):
+                    if (
+                        f.attr in {"getenv", "getenvb"}
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id == "os"
+                    ):
+                        return True
+                    if (
+                        f.attr
+                        in {
+                            "check_output",
+                            "run",
+                            "Popen",
+                            "getoutput",
+                            "getstatusoutput",
+                        }
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id in {"subprocess", "commands"}
+                    ):
+                        return True
+                if isinstance(f, ast.Name) and f.id in {"getenv", "getenvb"}:
+                    return True
+        return False
+
+    def _is_safe_relative_path(path: str) -> bool:
+        """Relative path with no leading `/`, `~`, drive letter, or `..` segments."""
+        if not isinstance(path, str) or not path:
+            return False
+        if path[0] in ("/", "\\", "~"):
+            return False
+        if len(path) >= 2 and path[1] == ":":
+            return False
+        return ".." not in path.replace("\\", "/").split("/")
+
+    def _path_arg_is_sandbox_local(node: ast.AST | None) -> bool:
+        """Whether the path argument resolves to a sandbox-local literal."""
+        if node is None:
+            return False
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (bytes, bytearray)
+        ):
+            return True  # inline bytes, no file access
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return _is_safe_relative_path(node.value)
+        if isinstance(node, ast.Call):
+            f = node.func
+            is_open = (isinstance(f, ast.Name) and f.id == "open") or (
+                isinstance(f, ast.Attribute) and f.attr == "open"
+            )
+            if is_open and node.args:
+                a0 = node.args[0]
+                return (
+                    isinstance(a0, ast.Constant)
+                    and isinstance(a0.value, str)
+                    and _is_safe_relative_path(a0.value)
+                )
+        return False
+
+    def _hf_upload_violation(node: ast.Call, method_name: str) -> str | None:
+        """Inspect an HF upload call; return a violation reason or None.
+
+        Policy: HF uploads are allowed only when (a) no sensitive kwarg is set,
+        (b) no positional / keyword value reads `os.environ` or related env
+        readers, and (c) the path argument is a sandbox-local literal -- a
+        relative string with no `..`, an `open(<literal>)`, or inline bytes.
+        Dynamic / variable paths are rejected; the policy cannot prove safety
+        statically and the cost of a wrong-allow is a credential exfiltration.
+        """
+        for kw in node.keywords or []:
+            if kw.arg in _HF_SENSITIVE_KWARGS:
+                return (
+                    f"HF upload {kw.arg}= cannot be set from sandboxed code; "
+                    "uploads run with the sandbox identity only"
+                )
+        all_values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
+        for v in all_values:
+            if _reads_env_or_secret(v):
+                return (
+                    "HF upload cannot include os.environ / os.getenv / subprocess "
+                    "env reads; secrets and tokens must not be exfiltrated"
+                )
+        if method_name == "create_commit":
+            for kw in node.keywords or []:
+                if kw.arg == "operations" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if isinstance(elt, ast.Call):
+                            inner = _hf_upload_violation(elt, "upload_file")
+                            if inner:
+                                return inner
+            return None
+        path_node: ast.AST | None = node.args[0] if node.args else None
+        for kw in node.keywords or []:
+            if kw.arg in ("path_or_fileobj", "folder_path"):
+                path_node = kw.value
+                break
+        if not _path_arg_is_sandbox_local(path_node):
+            return (
+                "HF upload path must be a sandbox-local relative-path literal "
+                "(no absolute paths, no '..' segments, no dynamic expressions)"
+            )
+        return None
+
+    class NetworkAndIoVisitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            parts: list[str] = []
+            cur = node.func
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.insert(0, cur.id)
+            fq = ".".join(parts) if parts else ""
+
+            hf_upload_name = _method_call_hf_upload_name(node)
+            if hf_upload_name is not None:
+                violation = _hf_upload_violation(node, hf_upload_name)
+                if violation is not None:
+                    network_calls.append(
+                        {
+                            "type": "upload_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"Blocked: {violation}",
+                        }
+                    )
+
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
+                a0 = node.args[0]
+                host_lit = None
+                if isinstance(a0, ast.Tuple) and a0.elts:
+                    e0 = a0.elts[0]
+                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
+                        host_lit = e0.value
+                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    host_lit = a0.value
+                if host_lit:
+                    if _is_metadata_host(host_lit):
+                        network_calls.append(
+                            {
+                                "type": "metadata_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": "Blocked: cloud-metadata host",
+                            }
+                        )
+                    elif not _is_trusted_host(host_lit):
+                        network_calls.append(
+                            {
+                                "type": "untrusted_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "Blocked: host not in sandbox allowlist; "
+                                    "use an allowed informational source"
+                                ),
+                            }
+                        )
+
+            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+                # 1) Upload-shape check (host-independent).
+                if _call_is_upload_shape(node, fq):
+                    network_calls.append(
+                        {
+                            "type": "upload_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: file upload disallowed in sandbox"
+                            ),
+                        }
+                    )
+
+                # 2) Extract literal host (URL string or (host, port) tuple).
+                host_arg = None
+                url_arg = None
+                if node.args:
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        url_arg = a0.value
+                    elif isinstance(a0, ast.Tuple) and a0.elts:
+                        e0 = a0.elts[0]
+                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
+                            host_arg = e0.value
+                if url_arg and host_arg is None:
+                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
+                    if m:
+                        host_arg = m.group(1)
+
+                if host_arg:
+                    if _is_metadata_host(host_arg):
+                        network_calls.append(
+                            {
+                                "type": "metadata_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": "Blocked: cloud-metadata host",
+                            }
+                        )
+                    elif not _is_trusted_host(host_arg):
+                        network_calls.append(
+                            {
+                                "type": "untrusted_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "Blocked: host not in sandbox allowlist; "
+                                    "use an allowed informational source"
+                                ),
+                            }
+                        )
+
+            is_open_call = (
+                (isinstance(node.func, ast.Name) and node.func.id == "open")
+                or fq in ("io.open", "pathlib.Path.open")
+                or fq.endswith(".open")
+            )
+            if is_open_call and node.args:
+                a0 = node.args[0]
+                path_lit = None
+                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    path_lit = a0.value
+                if path_lit:
+                    flagged = False
+                    if any(path_lit.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
+                        flagged = True
+                    elif _SENSITIVE_FILE_RE.match(path_lit):
+                        flagged = True
+                    if flagged:
+                        sensitive_file_reads.append(
+                            {
+                                "type": "sensitive_file_read",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"open({path_lit!r}) targets a host identity / "
+                                    "credential file; sandboxed code may not read it"
+                                ),
+                            }
+                        )
+            self.generic_visit(node)
+
+    NetworkAndIoVisitor().visit(tree)
+
     is_safe = (
         len(signal_tampering) == 0
         and len(exception_catching) == 0
         and len(shell_escapes) == 0
+        and len(network_calls) == 0
+        and len(sensitive_file_reads) == 0
     )
     return is_safe, {
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "network_calls": network_calls,
+        "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
 
@@ -1041,7 +1800,21 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        all_reasons = [r for r in reasons + shell_reasons + exception_reasons if r]
+        network_reasons = [
+            item.get("description", "") for item in info.get("network_calls", [])
+        ]
+        file_reasons = [
+            item.get("description", "") for item in info.get("sensitive_file_reads", [])
+        ]
+        all_reasons = [
+            r
+            for r in reasons
+            + shell_reasons
+            + exception_reasons
+            + network_reasons
+            + file_reasons
+            if r
+        ]
         if all_reasons:
             return (
                 f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
@@ -1051,11 +1824,31 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _kill_process_tree(proc) -> None:
+    """SIGKILL the setsid process group; fall back to single-pid kill."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
-            proc.kill()
+            _kill_process_tree(proc)
             return
         cancel_event.wait(poll_interval) if cancel_event else None
 
@@ -1126,8 +1919,11 @@ def _python_exec(
         try:
             output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            _kill_process_tree(proc)
+            try:
+                proc.communicate(timeout = 5)
+            except subprocess.TimeoutExpired:
+                pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -1211,8 +2007,11 @@ def _bash_exec(
         try:
             output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            _kill_process_tree(proc)
+            try:
+                proc.communicate(timeout = 5)
+            except subprocess.TimeoutExpired:
+                pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():

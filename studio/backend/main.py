@@ -42,12 +42,15 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+import hashlib
 import mimetypes
 import re as _re
 import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+from typing import Optional
+from urllib.parse import urlparse
 
 
 _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -103,7 +106,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -113,12 +116,14 @@ from datetime import datetime
 # Import routers
 from routes import (
     auth_router,
+    chat_history_router,
     data_recipe_router,
     datasets_router,
     export_router,
     inference_router,
     inference_studio_router,
     models_router,
+    providers_router,
     training_history_router,
     training_router,
 )
@@ -134,6 +139,11 @@ import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.native_path_leases import native_path_leases_supported
+from utils.update_status import (
+    get_studio_install_source_status,
+    get_studio_update_status,
+)
+from utils.studio_version import get_studio_version
 
 
 def get_unsloth_version() -> str:
@@ -155,6 +165,25 @@ def get_unsloth_version() -> str:
 
 
 UNSLOTH_VERSION = get_unsloth_version()
+STUDIO_VERSION = get_studio_version()
+
+
+def _load_desktop_owner() -> dict[str, str] | None:
+    token = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN", "")
+    kind = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "")
+    if kind != "tauri" or not token:
+        return None
+    return {
+        "kind": "tauri",
+        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+    }
+
+
+_DESKTOP_OWNER = _load_desktop_owner()
+
+
+def _desktop_owner() -> dict[str, str] | None:
+    return _DESKTOP_OWNER
 
 
 @asynccontextmanager
@@ -171,6 +200,43 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
+
+    # llama.cpp probes: capability (MTP support) + freshness (release age).
+    # Both cached; freshness has a 24h disk TTL.
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        from utils.llama_cpp_freshness import (
+            check_prebuilt_freshness,
+            format_stale_warning,
+        )
+
+        _bin = LlamaCppBackend._find_llama_server_binary()
+        _caps = LlamaCppBackend.probe_server_capabilities(_bin)
+        app.state.llama_cpp_capabilities = _caps
+        _freshness = check_prebuilt_freshness(_bin)
+        app.state.llama_cpp_freshness = _freshness
+
+        import structlog as _structlog
+
+        _log = _structlog.get_logger(__name__)
+        if _caps.get("found") and not _caps.get("supports_mtp"):
+            _msg = (
+                "llama.cpp prebuilt lacks MTP support "
+                "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
+                "MTP GGUFs will load without speculative decoding."
+            )
+            _log.warning(_msg)
+            print(f"WARNING: {_msg}", flush = True)
+        if _freshness.get("stale"):
+            _msg = format_stale_warning(_freshness)
+            _log.warning(_msg)
+            print(f"WARNING: {_msg}", flush = True)
+    except Exception as _probe_exc:
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).debug(
+            "llama.cpp startup probes failed: %s", _probe_exc
+        )
 
     from storage.studio_db import cleanup_orphaned_runs
 
@@ -196,6 +262,11 @@ async def lifespan(app: FastAPI):
             pass  # non-critical
 
     threading.Thread(target = _precache, daemon = True).start()
+
+    # Initialize RSA key pair for API key encryption (external providers)
+    from core.inference.key_exchange import init_key_pair
+
+    init_key_pair()
 
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
@@ -235,6 +306,183 @@ logger = LogConfig.setup_logging(
 
 app.add_middleware(LoggingMiddleware)
 
+
+# Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
+# kept for legacy web-search faviconV2 paths. Everything else is same-origin.
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.requests import Request as _StarletteRequest  # noqa: E402
+
+
+_CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
+
+
+def _build_csp(script_nonce: "str | None" = None) -> str:
+    script_src = "script-src 'self'"
+    if script_nonce:
+        script_src += f" 'nonce-{script_nonce}'"
+    return (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https://t0.gstatic.com "
+        "https://t1.gstatic.com https://t2.gstatic.com "
+        "https://t3.gstatic.com https://www.google.com; "
+        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        "style-src 'self' 'unsafe-inline'; "
+        f"{script_src}; "
+        "font-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'; "
+        "base-uri 'self'"
+    )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Set baseline security headers; splice per-response inline-script nonces into CSP."""
+
+    async def dispatch(self, request: _StarletteRequest, call_next):
+        response = await call_next(request)
+        # Strip the internal nonce hand-off header so it never reaches the client.
+        nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
+        if nonce is not None:
+            del response.headers[_CSP_SCRIPT_NONCE_HEADER]
+        response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+        )
+        response.headers["server"] = "unsloth-studio"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+import json as _json_for_413  # noqa: E402
+
+
+_MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
+_BODY_PROTECTED_PREFIXES = (
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/api/inference",
+    "/api/data-recipe",
+    "/api/datasets",
+    "/api/chat",
+    "/api/train",
+    "/api/export",
+)
+
+
+async def _send_413(send, total_bytes: int) -> None:
+    payload = _json_for_413.dumps(
+        {
+            "detail": (
+                f"Request body too large "
+                f"({total_bytes:,} bytes; max {_MAX_BODY_BYTES:,})."
+            )
+        },
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
+
+
+class MaxBodyMiddleware:
+    """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
+
+    def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
+        self.app = app
+        self.max_bytes = max_bytes
+        self.protected_prefixes = protected_prefixes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "").upper()
+        path = scope.get("path", "")
+        if method not in ("POST", "PUT", "PATCH") or not any(
+            path.startswith(p) for p in self.protected_prefixes
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        declared = None
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared = int(value.decode("latin-1"))
+                except (ValueError, UnicodeDecodeError):
+                    declared = None
+                break
+        if declared is not None and declared > self.max_bytes:
+            await _send_413(send, declared)
+            return
+
+        chunks: list = []
+        total = 0
+        while True:
+            msg = await receive()
+            mtype = msg.get("type")
+            if mtype == "http.disconnect":
+                return
+            if mtype != "http.request":
+                # Mid-stream unexpected frame: forwarding would corrupt downstream.
+                return
+            body = msg.get("body", b"") or b""
+            if body:
+                total += len(body)
+                if total > self.max_bytes:
+                    await _send_413(send, total)
+                    return
+                chunks.append(body)
+            if not msg.get("more_body", False):
+                break
+
+        replayed = {"sent": False}
+
+        async def replay_receive():
+            if not replayed["sent"]:
+                replayed["sent"] = True
+                return {
+                    "type": "http.request",
+                    "body": b"".join(chunks),
+                    "more_body": False,
+                }
+            # After replay, fall through so http.disconnect still propagates.
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+app.add_middleware(
+    MaxBodyMiddleware,
+    max_bytes = _MAX_BODY_BYTES,
+    protected_prefixes = _BODY_PROTECTED_PREFIXES,
+)
+
+
+from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
+
+
+@app.get("/recipes", include_in_schema = False)
+@app.get("/recipes/{rest:path}", include_in_schema = False)
+async def _recipes_redirect(rest: str = ""):
+    target = "/data-recipes" + (("/" + rest) if rest else "")
+    return _RedirectResponse(url = target, status_code = 308)
+
+
 # CORS middleware
 _api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
 _cors_origins = ["*"]
@@ -265,6 +513,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
+app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are intentionally NOT
 # exposed on the /v1 OpenAI-compat prefix below.
@@ -274,6 +523,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # so external tools (Open WebUI, SillyTavern, etc.) can use the
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -286,26 +536,69 @@ app.include_router(
 
 
 @app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
-    device_type = platform_map.get(sys.platform, sys.platform)
+async def health_check(request: Request):
+    """Liveness plus launcher capability bits; install fingerprint gated on a valid bearer.
 
-    return {
+    Unauthenticated callers (Tauri watchdog, frontend bootstrap polls) need
+    ``service`` / ``studio_root_id`` / ``chat_only`` / ``desktop_*`` / ``native_path_leases_supported``
+    to (a) re-adopt a sibling backend across restarts and (b) gate UI surfaces
+    before any token is available. None of those leak install path or version.
+    ``version`` / ``studio_version`` / ``device_type`` still require a bearer
+    because they fingerprint the host.
+    """
+    base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
-        "version": UNSLOTH_VERSION,
-        "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_desktop_auth": True,
-        # why: launchers compare against an install-time hash so a sibling
-        # Studio on the same port is rejected; hex digest avoids leaking the
-        # raw install path on -H 0.0.0.0.
+        "supports_desktop_backend_ownership": True,
+        # Opaque per-install id; launchers reject sibling Studios on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return base
+    try:
+        from auth.authentication import get_current_subject as _gcs
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        creds = HTTPAuthorizationCredentials(
+            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
+        )
+        # Must await: a bare coroutine is truthy and would skip the auth check.
+        subject = await _gcs(creds)
+    except HTTPException:
+        return base
+    except Exception:
+        return base
+    if not subject:
+        return base
+
+    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
+    device_type = platform_map.get(sys.platform, sys.platform)
+    return {
+        **base,
+        "version": UNSLOTH_VERSION,
+        "studio_version": STUDIO_VERSION,
+        "device_type": device_type,
+    }
+
+
+@app.get("/api/studio/install-source")
+def studio_install_source(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware install metadata without remote update checks."""
+    return get_studio_install_source_status(UNSLOTH_VERSION)
+
+
+@app.get("/api/studio/update-status")
+def studio_update_status(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware manual update status for browser-served Studio."""
+    return get_studio_update_status(UNSLOTH_VERSION)
 
 
 @app.post("/api/shutdown")
@@ -337,8 +630,17 @@ async def shutdown_server(
 
 
 @app.get("/api/system")
-async def get_system_info():
-    """Get system information"""
+async def get_system_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Get system information.
+
+    Gated behind auth: the response includes platform, Python version,
+    GPU name, memory total, and ML package set -- enough to fingerprint
+    a host. Studio's chat-only-mode design assumes only the local user
+    reaches /api/system; in -H 0.0.0.0 / Colab / Tauri-relayed setups
+    that assumption breaks unless we require a bearer.
+    """
     import platform
     import psutil
     from utils.hardware import get_device
@@ -378,8 +680,14 @@ async def get_gpu_visibility(
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info():
-    """Return GPU name, total VRAM, and key ML package versions."""
+async def get_hardware_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return GPU name, total VRAM, and key ML package versions.
+
+    Gated behind auth alongside /api/system -- same fingerprinting
+    concern. /api/system/gpu-visibility is also auth-gated already.
+    """
     from utils.hardware import get_gpu_summary, get_package_versions
 
     return {
@@ -407,21 +715,20 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
-def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
-    """Inject bootstrap credentials into HTML when password change is required.
-
-    The script tag is only injected while the default admin account still
-    has ``must_change_password=True``.  Once the user changes the password
-    the HTML is served clean — no credentials leak.
+def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
+    """Inject bootstrap credentials when password change is pending.
+    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the
+    nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
     """
     import json as _json
+    import secrets as _secrets
 
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
-        return html_bytes
+        return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)
     if not bootstrap_pw:
-        return html_bytes
+        return html_bytes, None
 
     payload = _json.dumps(
         {
@@ -429,10 +736,91 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
             "password": bootstrap_pw,
         }
     )
-    tag = f"<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>"
+    nonce = _secrets.token_urlsafe(16)
+    tag = f'<script nonce="{nonce}">window.__UNSLOTH_BOOTSTRAP__={payload}</script>'
     html = html_bytes.decode("utf-8")
     html = html.replace("</head>", f"{tag}</head>", 1)
-    return html.encode("utf-8")
+    return html.encode("utf-8"), nonce
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
+    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
+    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
+    case-insensitive (RFC 3986), so bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable
+    input so callers fall to the safer cross-origin default.
+    """
+    scheme = (scheme or "").strip().lower()
+    if not scheme or not netloc:
+        return None
+    # Strip userinfo (RFC 3986); Origin never carries credentials.
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
+    # ``partition(":")`` mis-parses these and breaks ``unsloth studio -H ::1``.
+    if netloc.startswith("["):
+        close = netloc.find("]")
+        if close == -1:
+            return None
+        host = netloc[1:close]
+        rest = netloc[close + 1 :]
+        if rest.startswith(":"):
+            port_str = rest[1:]
+        elif rest == "":
+            port_str = ""
+        else:
+            return None
+    else:
+        host, _, port_str = netloc.partition(":")
+    host = host.strip().lower()
+    if not host:
+        return None
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+    else:
+        port = _DEFAULT_PORTS.get(scheme, 0)
+    return (scheme, host, port)
+
+
+def _is_same_origin_request(request: Request) -> bool:
+    """True when Origin is missing or matches request's scheme://host:port.
+    Top-level same-document GETs omit Origin, so missing counts as same-origin.
+    Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
+    :func:`_canonical_origin` so default-port stripping and scheme/host case
+    do not misclassify same-origin requests as cross-origin.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        # Missing header: top-level same-document GETs omit Origin.
+        return True
+    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
+    if not origin:
+        return False
+    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
+    if origin == "null":
+        return False
+    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets; swallow
+    # so a garbage Origin doesn't 500 the SPA handler.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
+    if origin_canon is None:
+        return False
+    try:
+        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    except ValueError:
+        return False
+    if self_canon is None:
+        return False
+    return origin_canon == self_canon
 
 
 def setup_frontend(app: FastAPI, build_path: Path):
@@ -445,19 +833,32 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
-    @app.get("/")
-    async def serve_root():
+    def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        content = _inject_bootstrap(content, app)
+        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
+        if _is_same_origin_request(request):
+            content, nonce = _inject_bootstrap(content, app)
+        else:
+            nonce = None
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Vary": "Origin",
+        }
+        if nonce:
+            headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
             content = content,
             media_type = "text/html",
-            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"},
+            headers = headers,
         )
 
+    @app.get("/")
+    async def serve_root(request: Request):
+        return _build_index_response(request)
+
     @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
+    async def serve_frontend(request: Request, full_path: str):
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
@@ -471,13 +872,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
             return FileResponse(file_path)
 
         # Serve index.html as bytes — avoids Content-Length mismatch
-        content = (build_path / "index.html").read_bytes()
-        content = _strip_crossorigin(content)
-        content = _inject_bootstrap(content, app)
-        return Response(
-            content = content,
-            media_type = "text/html",
-            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
+        return _build_index_response(request)
 
     return True

@@ -3,6 +3,7 @@ typer
 fastapi
 uvicorn
 pydantic
+packaging
 matplotlib
 pandas
 nest_asyncio
@@ -25,3 +26,5 @@ python-multipart>=0.0.26
 # onnxruntime -> numpy._multiarray_umath ABI mismatch). Verified
 # end-to-end with onnxruntime 1.25.0 + numpy 2.4.x.
 onnxruntime>=1.19
+cryptography>=42.0.0
+httpx>=0.27.0

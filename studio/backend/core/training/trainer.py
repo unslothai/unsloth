@@ -59,7 +59,9 @@ from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset, load_dataset
 
+from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
+from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from utils.datasets.raw_text import prepare_raw_text_dataset
@@ -625,7 +627,8 @@ class UnslothTrainer:
 
             # Proactive gated-model check: verify access BEFORE from_pretrained.
             # Catches ALL gated/private models (text, vision, audio) globally.
-            if "/" in model_name:  # Only check HF repo IDs, not local paths
+            # Skip when offline -- from_pretrained will use the cache.
+            if "/" in model_name and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
@@ -3216,6 +3219,9 @@ class UnslothTrainer:
                 if eval_steps_val > 0:
                     config_args["eval_strategy"] = "steps"
                     config_args["eval_steps"] = eval_steps_val
+                    config_args["per_device_eval_batch_size"] = config_args[
+                        "per_device_train_batch_size"
+                    ]
                     logger.info(
                         f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n"
                     )

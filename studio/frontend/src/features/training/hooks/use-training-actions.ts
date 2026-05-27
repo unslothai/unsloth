@@ -3,7 +3,7 @@
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { useCallback } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";

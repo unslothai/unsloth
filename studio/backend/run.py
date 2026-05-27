@@ -9,6 +9,7 @@ Works independently and can be moved to any directory.
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -24,7 +25,7 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
-from startup_banner import print_studio_access_banner
+from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
@@ -72,6 +73,255 @@ def _resolve_external_ip() -> str:
         return ip
     except Exception:
         return "0.0.0.0"
+
+
+def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
+    externally-reachable address, replace the CTRL+C suffix with our Mac-aware
+    stop hint, and rename the prefix to "Unsloth Studio running on"."""
+    import logging
+    import re
+
+    rewrite_host = (
+        bind_host in ("0.0.0.0", "::")
+        and bool(display_host)
+        and display_host != bind_host
+    )
+    new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
+    old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
+    old_prefix = "Uvicorn running on "
+    new_prefix = "Unsloth Studio running on "
+
+    def _rewrite(text: str) -> str:
+        if text.startswith(old_prefix):
+            text = new_prefix + text[len(old_prefix) :]
+        return old_suffix_re.sub(new_suffix, text)
+
+    class _UvicornStartupRewrite(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            try:
+                msg = record.msg if isinstance(record.msg, str) else ""
+                if (
+                    msg.startswith(old_prefix)
+                    and isinstance(record.args, tuple)
+                    and len(record.args) >= 3
+                ):
+                    if rewrite_host and record.args[1] == bind_host:
+                        record.args = (
+                            record.args[0],
+                            display_host,
+                            record.args[2],
+                            *record.args[3:],
+                        )
+                    record.msg = _rewrite(msg)
+                    cmsg = getattr(record, "color_message", None)
+                    if isinstance(cmsg, str):
+                        record.color_message = _rewrite(cmsg)
+            except Exception:
+                pass
+            return True
+
+    f = _UvicornStartupRewrite()
+    for name in ("uvicorn", "uvicorn.error"):
+        logging.getLogger(name).addFilter(f)
+
+
+def _local_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Return True iff a TCP connection to (host, port) succeeds within timeout."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout = timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _working_local_url(port: int) -> "str | None":
+    """Return a working loopback URL on this machine, or None if neither
+    127.0.0.1 nor ::1 responds. Used as a fallback when external reachability fails."""
+    if _local_port_open("127.0.0.1", port):
+        return f"http://127.0.0.1:{port}"
+    if _local_port_open("::1", port):
+        return f"http://[::1]:{port}"
+    return None
+
+
+def _stdout_color_ok() -> bool:
+    """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
+    if os.environ.get("NO_COLOR", "").strip():
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _verify_global_reachability(display_host: str, port: int) -> None:
+    """Probe check-host.net to confirm display_host:port is reachable from the
+    public internet. Synchronous so the caller can render output between the
+    banner URL section and the trailing stop hint. Bounded at ~15s; failures
+    are swallowed (the verifier failing is not Studio failing). Only meaningful
+    when bound to a wildcard host."""
+    import ipaddress
+    import json
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    if not display_host or display_host in ("0.0.0.0", "::"):
+        return
+
+    use_color = _stdout_color_ok()
+    dim = "\033[38;5;245m" if use_color else ""
+    ok_c = "\033[38;5;120;1m" if use_color else ""
+    err_c = "\033[38;5;203;1m" if use_color else ""
+    warn_c = "\033[38;5;215;1m" if use_color else ""
+    local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
+    reset = "\033[0m" if use_color else ""
+
+    url = f"http://{display_host}:{port}"
+
+    # Private / loopback / link-local addresses are not globally routable.
+    try:
+        addr = ipaddress.ip_address(display_host)
+        if addr.is_loopback or addr.is_private or addr.is_link_local:
+            print(
+                f"{dim}  Note: {display_host} is a private/LAN address -- "
+                f"reachable on this network only, not from the public internet."
+                f"{reset}",
+                flush = True,
+            )
+            return
+    except ValueError:
+        # Not an IP literal; probe by hostname.
+        pass
+
+    try:
+        qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
+        req = urllib.request.Request(
+            f"https://check-host.net/check-tcp?{qs}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        with urllib.request.urlopen(req, timeout = 5) as resp:
+            init = json.loads(resp.read().decode("utf-8", errors = "replace"))
+        req_id = init.get("request_id")
+        if not req_id:
+            return
+
+        results = {}
+        deadline = time.monotonic() + 15.0
+        poll_req = urllib.request.Request(
+            f"https://check-host.net/check-result/{req_id}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        while time.monotonic() < deadline:
+            time.sleep(1.5)
+            try:
+                with urllib.request.urlopen(poll_req, timeout = 5) as resp:
+                    results = json.loads(resp.read().decode("utf-8", errors = "replace"))
+            except Exception:
+                continue
+            if results and all(v is not None for v in results.values()):
+                break
+            # Two decisive nodes is enough; stop polling early.
+            decisive = [
+                v
+                for v in results.values()
+                if isinstance(v, list)
+                and v
+                and isinstance(v[0], dict)
+                and ("time" in v[0] or "error" in v[0])
+            ]
+            if len(decisive) >= 2:
+                break
+
+        ok_nodes = err_nodes = 0
+        for v in results.values():
+            if not isinstance(v, list) or not v or not isinstance(v[0], dict):
+                continue
+            if "time" in v[0]:
+                ok_nodes += 1
+            elif "error" in v[0]:
+                err_nodes += 1
+        total = ok_nodes + err_nodes
+
+        print("", flush = True)
+        if ok_nodes:
+            print(
+                f"{ok_c}  Reachability check: {url}/ is reachable from the "
+                f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
+                flush = True,
+            )
+        elif err_nodes:
+            print(
+                f"{err_c}  Reachability check: {url}/ is NOT reachable from "
+                f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
+                flush = True,
+            )
+            print(f"{dim}    Common causes:{reset}", flush = True)
+            print(
+                f"{dim}      * AWS  -- the instance's Security Group doesn't "
+                f"allow inbound TCP {port}.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
+                f"for the instance's network tag.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Azure / other clouds -- equivalent NSG / "
+                f"firewall rule missing.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Home -- your router isn't port-forwarding "
+                f"{port} to this machine.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    Workaround that needs no firewall changes -- "
+                f"SSH local-forward from your laptop:{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}        ssh -L {port}:localhost:{port} "
+                f"<user>@{display_host}{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
+                flush = True,
+            )
+            # Only offer the local URL if loopback actually answers.
+            local_url = _working_local_url(port)
+            if local_url:
+                print(
+                    f"{local_url_c}  You can access Unsloth Studio locally "
+                    f"in the meantime: {local_url}{reset}",
+                    flush = True,
+                )
+        else:
+            print(
+                f"{warn_c}  Reachability check: probe nodes did not respond "
+                f"in time -- could not verify {url}/.{reset}",
+                flush = True,
+            )
+    except urllib.error.URLError:
+        # Outbound HTTPS blocked; skip silently.
+        pass
+    except Exception:
+        pass
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -267,10 +517,94 @@ _server = None
 _shutdown_event = None
 
 
+_DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+def _iter_frontend_fallback_candidates() -> "list[Path]":
+    """Yield `studio/frontend/dist` paths to try when the default is missing.
+
+    Covers PATH-shadowed binaries whose __file__ resolves into a
+    site-packages tree that never received a vite build (e.g. plain
+    `pip install unsloth` from PyPI).
+    """
+    import ast
+    import re
+
+    out: list[Path] = []
+    home_str = (
+        os.environ.get("UNSLOTH_STUDIO_HOME")
+        or os.environ.get("STUDIO_HOME")
+        or str(Path.home() / ".unsloth" / "studio")
+    )
+    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
+    # Installer venv site-packages.
+    for pattern in (
+        "lib/python*/site-packages/studio/frontend/dist",
+        "Lib/site-packages/studio/frontend/dist",
+    ):
+        out.extend(venv_dir.glob(pattern))
+    # Editable source roots referenced from the installer venv.
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for finder in sp.glob("__editable___*_finder.py"):
+                try:
+                    src = finder.read_text(encoding = "utf-8")
+                except OSError:
+                    continue
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
+                if not m:
+                    continue
+                try:
+                    mapping = ast.literal_eval(m.group(1))
+                except (SyntaxError, ValueError):
+                    continue
+                # Defensive: literal_eval can return a set / list / None if the
+                # matched literal is not a dict (regex captures `{...}`).
+                if not isinstance(mapping, dict):
+                    continue
+                studio_pkg = mapping.get("studio")
+                if studio_pkg:
+                    out.append(Path(studio_pkg) / "frontend" / "dist")
+    return out
+
+
+def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Path]]:
+    """Pick a frontend dir that actually contains `index.html`.
+
+    Returns (chosen, attempted). `chosen` is None if nothing servable was
+    found; `attempted` is the full ordered list for diagnostics.
+    """
+    attempted: list[Path] = []
+    seen: set[Path] = set()
+
+    def _try(p: Path) -> bool:
+        try:
+            key = p.resolve()
+        except OSError:
+            key = p
+        if key in seen:
+            return False
+        seen.add(key)
+        attempted.append(p)
+        return (p / "index.html").is_file()
+
+    if _try(Path(frontend_path)):
+        return attempted[-1], attempted
+    for alt in _iter_frontend_fallback_candidates():
+        if _try(alt):
+            return attempted[-1], attempted
+    return None, attempted
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
-    frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+    frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
@@ -311,7 +645,6 @@ def run_server(
 
     import asyncio
     from threading import Thread, Event
-    import time
     import uvicorn
 
     from main import app, setup_frontend
@@ -340,24 +673,73 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Output port for Tauri to parse when in api-only mode
-    if api_only:
-        print(f"TAURI_PORT={port}", flush = True)
-
-    # Setup frontend if path provided (skip in api-only mode)
+    # Setup frontend if path provided (skip in api-only mode).
+    # Falls back through alternate locations if the default lacks a built
+    # dist; errors out loudly rather than silently serving 404 on `/`.
     if frontend_path and not api_only:
-        if setup_frontend(app, frontend_path):
+        chosen, attempted = _resolve_frontend_path(Path(frontend_path))
+        if chosen is not None and setup_frontend(app, chosen):
             if not silent:
-                print(f"[OK] Frontend loaded from {frontend_path}")
+                # Resolve so logs always show an absolute path for support.
+                try:
+                    display = chosen.resolve()
+                except OSError:
+                    display = chosen
+                print(f"[OK] Frontend loaded from {display}")
         else:
-            if not silent:
-                print(f"[WARNING] Frontend not found at {frontend_path}")
+            home_str = (
+                os.environ.get("UNSLOTH_STUDIO_HOME")
+                or os.environ.get("STUDIO_HOME")
+                or str(Path.home() / ".unsloth" / "studio")
+            )
+            # Windows ships the user-facing shim at $STUDIO_HOME/bin/unsloth.exe
+            # (a hardlink to the venv exe); Linux/macOS use the venv binary
+            # at $STUDIO_HOME/unsloth_studio/bin/unsloth.
+            home = Path(home_str).expanduser()
+            if sys.platform == "win32":
+                installer_bin = home / "bin" / "unsloth.exe"
+            else:
+                installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
+            tried_lines = "\n".join(f"  - {p}" for p in attempted) or "  (none)"
+            raise SystemExit(
+                "[ERROR] Studio frontend build not found.\n"
+                f"Tried:\n{tried_lines}\n"
+                "\n"
+                "Likely cause: another 'unsloth' on PATH is shadowing the "
+                "installer's binary and points at a site-packages tree with "
+                "no built dist.\n"
+                "\n"
+                "Fix one of:\n"
+                f"  - run the installer's binary directly: {installer_bin} studio\n"
+                "  - pass --frontend <path/to/studio/frontend/dist>\n"
+                "  - pass --api-only to skip serving the web UI\n"
+                "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
+            )
 
-    # Create the uvicorn server and expose it for signal handlers
+    # Resolve once; shared by the log rewrite and the banner.
+    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    _install_uvicorn_startup_log_rewrite(host, display_host)
+
+    ready_event = Event()
+    startup_failed = Event()
+    startup_errors = []
+
+    class _ReadyServer(uvicorn.Server):
+        async def startup(self, *args, **kwargs):
+            await super().startup(*args, **kwargs)
+            if getattr(self, "started", False) and not self.should_exit:
+                ready_event.set()
+
+    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     config = uvicorn.Config(
-        app, host = host, port = port, log_level = "info", access_log = False
+        app,
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
     )
-    _server = uvicorn.Server(config)
+    _server = _ReadyServer(config)
     _shutdown_event = Event()
 
     # Expose the actual bound port so request-handling code can build
@@ -369,21 +751,8 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.llama_parallel_slots = llama_parallel_slots
 
-    # Run server in a daemon thread
-    def _run():
-        asyncio.run(_server.serve())
-
-    thread = Thread(target = _run, daemon = True)
-    thread.start()
-    time.sleep(3)
-
-    _write_pid_file()
-    import atexit
-
-    atexit.register(_remove_pid_file)
-
-    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
-    # can trigger graceful shutdown without circular imports.
+    # Expose a shutdown callable via app.state before the server can accept
+    # requests so /api/shutdown is available as soon as readiness is published.
     def _trigger_shutdown():
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
@@ -391,13 +760,60 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
+    # Run server in a daemon thread
+    def _run():
+        try:
+            asyncio.run(_server.serve())
+        except BaseException as exc:
+            startup_errors.append(exc)
+            startup_failed.set()
+        finally:
+            if not ready_event.is_set():
+                startup_failed.set()
+
+    thread = Thread(target = _run, daemon = True)
+    thread.start()
+
+    # Wait until uvicorn has completed lifespan startup and bound sockets, or
+    # until the server exits/fails before startup. This intentionally has no
+    # correctness deadline: a slow but live startup should remain in progress.
+    try:
+        while not ready_event.is_set():
+            if startup_failed.is_set() or not thread.is_alive():
+                if startup_errors:
+                    raise RuntimeError(
+                        "Uvicorn server failed before startup completed"
+                    ) from startup_errors[0]
+                raise RuntimeError("Uvicorn server exited before startup completed")
+            ready_event.wait(timeout = 0.1)
+    except KeyboardInterrupt:
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
+        raise
+
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
+
+    # Output port for Tauri to parse when in api-only mode. Emit only after
+    # uvicorn sockets are bound and FastAPI lifespan/startup has completed.
+    if api_only:
+        print(f"TAURI_PORT={port}", flush = True)
+
     if not silent:
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        wildcard_bind = host in ("0.0.0.0", "::")
+        # For wildcard binds, run the reachability check between the URL
+        # section and the stop hint so the stop hint stays last on screen.
         print_studio_access_banner(
             port = port,
             bind_host = host,
             display_host = display_host,
+            include_stop_hint = not wildcard_bind,
         )
+        if wildcard_bind:
+            _verify_global_reachability(display_host, port)
+            print_studio_stop_hint()
 
     return app
 
@@ -425,7 +841,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frontend",
         type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        default = _DEFAULT_FRONTEND_PATH,
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")

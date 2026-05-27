@@ -70,7 +70,28 @@ class LoadRequest(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+        description = (
+            "Speculative decoding mode for GGUF models. Canonical values: "
+            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
+            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
+            "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
+            "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
+            "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
+            "still accepted. Ignored for non-GGUF and vision models."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = (
+            "Max draft tokens per step for MTP speculative decoding "
+            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
+            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
+            "quants). Only applied when speculative_type resolves to "
+            "'mtp' or 'mtp+ngram'."
+        ),
     )
     llama_extra_args: Optional[List[str]] = Field(
         None,
@@ -230,7 +251,19 @@ class LoadResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest "
+            "via _canonicalize_spec_mode. None when no model is loaded."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
     )
 
 
@@ -278,7 +311,11 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description = "Currently active model identifier"
+        None, description = "Currently active model display identifier"
+    )
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Loadable identifier for the active model.",
     )
     is_vision: bool = Field(
         False, description = "Whether the active model is a vision model"
@@ -356,7 +393,41 @@ class InferenceStatusResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest. "
+            "None when no model is loaded."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
+    )
+    llama_cpp_supports_mtp: bool = Field(
+        True,
+        description = (
+            "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
+            "False -> recommend `unsloth studio update`."
+        ),
+    )
+    llama_cpp_prebuilt_stale: bool = Field(
+        False,
+        description = (
+            "Installed llama.cpp prebuilt is >=3 days behind the latest "
+            "release. True -> show `unsloth studio update` banner."
+        ),
+    )
+    llama_cpp_installed_tag: Optional[str] = Field(
+        None,
+        description = "Installed llama.cpp tag, or None if unknown.",
+    )
+    llama_cpp_latest_tag: Optional[str] = Field(
+        None,
+        description = "Latest published llama.cpp tag, or None if GitHub unreachable.",
     )
 
 
@@ -389,6 +460,93 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class InputDocumentContentPart(BaseModel):
+    """Document (PDF / file) content part in a multimodal message.
+
+    Studio-normalised shape. The frontend sends either
+    ``{type:"input_document", file_data:"data:application/pdf;base64,..."}``
+    or ``{type:"input_document", file_url:"https://..."}``, plus optional
+    ``filename`` and ``media_type``. ``external_provider`` translates this
+    onto Anthropic's ``document`` block or OpenAI Responses' ``input_file``
+    block for vision-capable providers; non-vision providers drop the
+    part entirely (handled in ``_build_external_messages``).
+    """
+
+    type: Literal["input_document"]
+    file_data: Optional[str] = Field(
+        None,
+        description = "data:<media_type>;base64,<DATA> URI for inline payloads. Either file_data or file_url must be set; otherwise the part is dropped.",
+    )
+    file_url: Optional[str] = Field(
+        None,
+        description = "Remote URL pointing to the document (https://...).",
+    )
+    filename: Optional[str] = Field(
+        None,
+        description = "Display filename, forwarded to providers as `title`/`filename`.",
+    )
+    media_type: Optional[str] = Field(
+        None,
+        description = 'Override the media type sniffed from the data URI (e.g. "application/pdf").',
+    )
+
+
+class OpenAIReasoningContentPart(BaseModel):
+    """OpenAI Responses reasoning item paired with a tool output.
+
+    Reasoning models can require the previous ``reasoning`` output item
+    to be replayed immediately before an ``image_generation_call`` id
+    when manually managing Responses context. This part is OpenAI-only;
+    routes strip it for every other provider before proxying.
+    """
+
+    type: Literal["reasoning"]
+    id: str = Field(..., description = "OpenAI reasoning output item id.")
+    summary: list[dict[str, Any]] = Field(default_factory = list)
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ImageGenerationCallContentPart(BaseModel):
+    """OpenAI Responses image_generation call reference.
+
+    OpenAI accepts prior ``image_generation_call`` items in the next
+    Responses ``input`` array so follow-up prompts can edit or refine a
+    generated image without resending the base64 payload. The frontend
+    forwards this as a synthetic assistant content part when building
+    the next OpenAI Responses request; ``external_provider`` translates
+    it back to the provider-specific top-level input item.
+    """
+
+    type: Literal["image_generation_call"]
+    id: str = Field(..., description = "OpenAI image_generation_call output item id.")
+    response_id: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses response id to use as previous_response_id for follow-up edits.",
+    )
+
+
+class CompactionContentPart(BaseModel):
+    """Anthropic server-side compaction state, attached to an assistant
+    message for round-tripping on the next turn.
+
+    When Anthropic runs compaction during a request, the response
+    carries a ``{"type": "compaction", "content": "<summary>"}`` block
+    on the assistant message. The chat-adapter persists it onto the
+    stored message; the next turn's outbound request must forward it
+    back so Anthropic recognises the existing compaction state and
+    doesn't re-summarise the conversation from scratch. See
+    ``external_provider._stream_anthropic`` for the wire-side handling
+    and https://platform.claude.com/docs/en/build-with-claude/compaction
+    for the upstream contract.
+    """
+
+    type: Literal["compaction"]
+    content: str = Field(
+        ...,
+        description = "Anthropic-produced summary of the compacted-away conversation prefix.",
+    )
+
+
 def _content_part_discriminator(v):
     if isinstance(v, dict):
         return v.get("type")
@@ -399,6 +557,10 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
+        Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
+        Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
 ]
@@ -409,15 +571,12 @@ ContentPart = Annotated[
 
 
 class ChatMessage(BaseModel):
-    """
-    A single message in the conversation.
+    """Single message in a chat conversation.
 
-    ``content`` may be a plain string (text-only) or a list of
-    content parts for multimodal messages (OpenAI vision format).
-    Assistant messages that only contain tool calls may set ``content``
-    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
-    carry the result of a client-executed tool call and require
-    ``tool_call_id`` per the OpenAI spec.
+    ``content`` is a string or a list of multimodal content parts. Assistant
+    messages with only ``tool_calls`` populated may set ``content=None``.
+    Missing ``tool_call_id`` on ``role="tool"`` is resolved at the
+    ``ChatCompletionRequest`` layer by walking back to the preceding assistant.
     """
 
     role: Literal["system", "user", "assistant", "tool"] = Field(
@@ -441,14 +600,6 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
-        # Enforce the per-role OpenAI spec shape at the request boundary.
-        # Without this, malformed messages (e.g. user entries with no
-        # content, tool_calls on a user/system role, role="tool" without
-        # tool_call_id) would be silently forwarded to llama-server via
-        # the passthrough path, surfacing as opaque upstream errors or
-        # broken tool-call reconciliation downstream.
-
-        # Tool-call metadata must appear only on the appropriate role.
         if self.tool_calls is not None and self.role != "assistant":
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
@@ -456,23 +607,14 @@ class ChatMessage(BaseModel):
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
 
-        # Per-role content requirements. OpenAI-compatible clients may send
-        # ``content=""`` for image-only turns when the image travels in a
-        # companion field such as Studio's ``image_base64`` extension, so treat
-        # empty strings as present content for user/system messages.
         if self.role == "tool":
-            if not self.tool_call_id:
-                raise ValueError(
-                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
-                )
+            # tool_call_id resolution happens at ChatCompletionRequest scope.
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
-            # Assistant messages may omit content when tool_calls is set.
-            if not self.content and not self.tool_calls:
-                raise ValueError(
-                    'role="assistant" messages require either "content" or "tool_calls".'
-                )
+            # Post-Stop sentinel: collapse content="" / [] to None.
+            if (self.content == "" or self.content == []) and not self.tool_calls:
+                self.content = None
         else:  # "user" | "system"
             if self.content is None or self.content == []:
                 raise ValueError(f'role="{self.role}" messages require "content".')
@@ -558,9 +700,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = Field(
         None,
-        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
     )
     preserve_thinking: Optional[bool] = Field(
         None,
@@ -572,7 +716,13 @@ class ChatCompletionRequest(BaseModel):
     )
     enabled_tools: Optional[list[str]] = Field(
         None,
-        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+        description = (
+            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
+            "['web_search', 'python', 'terminal']. External providers accept "
+            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
+            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
+            "all local tools are enabled and no server-side tools are forwarded."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -596,6 +746,245 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
     )
+
+    # ── External provider routing (x-unsloth extensions) ──────────
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved provider config ID. If set with encrypted_api_key, routes to external LLM.",
+    )
+    provider_type: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
+    )
+    external_model: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Model ID at the external provider.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded API key for the external provider.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Override base URL for the external provider.",
+    )
+    enable_prompt_caching: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
+            "attaches cache_control={type:ephemeral} to the system block so the "
+            "static prefix is reused across turns. On OpenAI cloud, caching is "
+            "automatic for prompts >=1024 tokens and this flag is informational. "
+            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
+            "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
+    prompt_cache_ttl: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
+            "pool instead -- 1h writes are billed at 2x base input vs 1.25x "
+            "for 5m, but reads stay at 0.1x for both, so 1h pays off the "
+            "moment a single extra read lands more than 5 minutes after the "
+            "write. Only `5m` and `1h` are forwarded; any other value is "
+            "silently ignored downstream so a stale frontend can't make the "
+            "API 422 on the request. No-op on every non-Anthropic provider."
+        ),
+    )
+    compaction_threshold: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 2_000_000,
+        description = (
+            "[x-unsloth] Server-side context compaction trigger, in tokens. "
+            "Per-provider routing:\n"
+            "  - Anthropic (Opus 4.6+, Sonnet 4.6, Mythos preview): attaches "
+            "the `compact_20260112` edit and the `compact-2026-01-12` beta "
+            "header. The upstream floor is 50k; `_stream_anthropic` clamps "
+            "lower values up.\n"
+            "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
+            "(*.openai.azure.com): attaches "
+            "`context_management:[{type:'compaction', compact_threshold:N}]` "
+            "to /v1/responses. Effective floor is around 200k (OpenAI's "
+            "canonical example); values below it surface "
+            "`compact_threshold is not enabled` 400s upstream.\n"
+            "Schema floor stays at ge=1 (any positive int) so the field is a "
+            "silent no-op on non-cloud OpenAI-compatible bases (ollama / "
+            "llama.cpp / vLLM) and every non-compaction-capable provider "
+            "rather than returning 422 at request validation time. Per-"
+            "provider floors are enforced in the corresponding stream helpers."
+        ),
+    )
+    openai_code_exec_container_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] OpenAI shell-tool container id from the prior response "
+            "in the same chat thread. When set and `code_execution` is in "
+            "`enabled_tools`, the next /v1/responses call uses "
+            "environment.type='container_reference' so filesystem state "
+            "persists across turns. Unset → environment.type='container_auto' "
+            "and OpenAI creates a fresh container. Only meaningful for the "
+            "OpenAI cloud + gpt-5.5 family path; ignored otherwise."
+        ),
+    )
+    anthropic_code_exec_container_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic code_execution container id from the prior "
+            "response in the same chat thread. When set and `code_execution` "
+            "is in `enabled_tools`, the next /v1/messages call carries a "
+            "top-level `container` field so the model sees filesystem state "
+            "from earlier turns. Unset → Anthropic auto-creates a fresh "
+            "container. Stale ids surface a 4xx with a `container_expired` / "
+            "`container_not_found` hint; the backend emits a synthetic "
+            "`container_invalidated` _toolEvent so the next turn falls back "
+            "to auto-create."
+        ),
+    )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic fast-mode toggle. On Claude Opus 4.6 / "
+            "4.7 adds the `fast-mode-2026-02-01` beta header and sends "
+            "`speed: 'fast'` for higher OTPS at premium pricing. Silently "
+            "ignored on every other model + provider. See "
+            "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":
+        """Fill missing tool_call_id by walking back to the preceding assistant.
+
+        OpenAI / Anthropic passthrough require the result id to match the
+        assistant's tool_calls[].id. Prefer function.name match, else first
+        unconsumed tool_call; synth random id only if no candidate exists.
+        Crossing a user turn breaks the lookup.
+        """
+        # Pre-mark explicit ids first so a sibling missing-id result does not
+        # steal one already claimed by name.
+        consumed: set[tuple[int, int]] = set()
+
+        def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
+            for asst_idx in range(start_idx - 1, -1, -1):
+                prev = self.messages[asst_idx]
+                if prev.role == "user":
+                    break
+                if prev.role != "assistant" or not prev.tool_calls:
+                    continue
+                for tc_idx, tc in enumerate(prev.tool_calls):
+                    if isinstance(tc, dict) and tc.get("id") == tool_call_id:
+                        consumed.add((asst_idx, tc_idx))
+                        return
+
+        for tool_idx, msg in enumerate(self.messages):
+            if msg.role == "tool" and msg.tool_call_id:
+                _mark_consumed(tool_idx, msg.tool_call_id)
+
+        for tool_idx, msg in enumerate(self.messages):
+            if msg.role != "tool" or msg.tool_call_id:
+                continue
+            picked: str | None = None
+            for asst_idx in range(tool_idx - 1, -1, -1):
+                prev = self.messages[asst_idx]
+                if prev.role != "assistant" or not prev.tool_calls:
+                    if prev.role == "user":
+                        break
+                    continue
+                name_match = None
+                fallback = None
+                for tc_idx, tc in enumerate(prev.tool_calls):
+                    if (asst_idx, tc_idx) in consumed:
+                        continue
+                    if not isinstance(tc, dict):
+                        continue
+                    tc_id = tc.get("id")
+                    if not tc_id:
+                        continue
+                    function = tc.get("function")
+                    function_name = (
+                        function.get("name") if isinstance(function, dict) else None
+                    )
+                    if msg.name and function_name == msg.name:
+                        name_match = (tc_id, asst_idx, tc_idx)
+                        break
+                    if fallback is None:
+                        fallback = (tc_id, asst_idx, tc_idx)
+                chosen = name_match or fallback
+                if chosen is not None:
+                    picked, a, t = chosen
+                    consumed.add((a, t))
+                    break
+            if picked is None:
+                import secrets as _secrets
+
+                picked = f"call_{_secrets.token_hex(8)}"
+            msg.tool_call_id = picked
+        return self
+
+
+# ── OpenAI shell-tool container management ─────────────────────
+
+
+class OpenAIContainerRequest(BaseModel):
+    """
+    Shared body for the three OpenAI container endpoints (list / create
+    / delete). Carries the encrypted API key + base URL so the route
+    handler can decrypt it and proxy to the user's OpenAI account.
+    Same pattern as the inference proxy endpoints — keeps the key off
+    persistent storage on the backend.
+    """
+
+    encrypted_api_key: str = Field(
+        ...,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded OpenAI API key.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] OpenAI base URL. Only api.openai.com is supported; non-cloud bases are rejected with 400.",
+    )
+
+
+class CreateOpenAIContainerBody(OpenAIContainerRequest):
+    name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 256,
+        description = "Human-readable container name. Surfaces in the picker UI.",
+    )
+    ttl_minutes: int = Field(
+        20,
+        ge = 1,
+        le = 20,
+        description = (
+            "Idle-timeout TTL the new container will inherit (anchor="
+            "last_active_at). OpenAI hard-caps this at 20 minutes and "
+            "rejects larger values with integer_above_max_value."
+        ),
+    )
+
+
+class DeleteOpenAIContainerBody(OpenAIContainerRequest):
+    container_id: str = Field(
+        ...,
+        description = "OpenAI container id (cntr_...) to delete.",
+    )
+
+
+class OpenAIContainerSummary(BaseModel):
+    """One row from GET /v1/containers, reshaped for the UI."""
+
+    id: str
+    name: Optional[str] = None
+    created_at: Optional[int] = None
+    last_active_at: Optional[int] = None
+    expires_after_minutes: Optional[int] = None
+    status: Optional[str] = None
+
+
+class ListOpenAIContainersResponse(BaseModel):
+    containers: list[OpenAIContainerSummary]
 
 
 # ── Streaming response chunks ────────────────────────────────────
@@ -1026,9 +1415,12 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    name: str
+    # Client tools have input_schema; server tools may only have type/name.
+    type: Optional[str] = None
+    name: Optional[str] = None
     description: Optional[str] = None
-    input_schema: dict
+    input_schema: Optional[dict] = None
+    model_config = {"extra": "allow"}
 
 
 class AnthropicMessagesRequest(BaseModel):

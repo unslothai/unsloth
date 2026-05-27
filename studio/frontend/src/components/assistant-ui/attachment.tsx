@@ -278,12 +278,13 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
+  const name = useAuiState(({ attachment }) => attachment.name);
 
   if (src) {
     return (
       <img
         src={src}
-        alt="Attachment preview"
+        alt={name || "Attachment preview"}
         className="h-full w-full object-cover"
       />
     );
@@ -306,6 +307,7 @@ const AttachmentUI: FC = () => {
       : null;
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
+  const name = useAuiState(({ attachment }) => attachment.name);
   const typeLabel = useAuiState(({ attachment }) => {
     const type = attachment.type;
     switch (type) {
@@ -323,6 +325,11 @@ const AttachmentUI: FC = () => {
   // `rawAttachment.id` (or that share a typeLabel like "image") still produce
   // a unique DOM id within a single composer.
   const reactInstanceId = useId().replace(/[^A-Za-z0-9_-]/g, "-");
+  // Include filename in accessible name so screen readers distinguish
+  // same-typed attachments. Sighted users get it via the tooltip.
+  const accessibleName = name
+    ? `${typeLabel} attachment: ${name}`
+    : `${typeLabel} attachment`;
 
   if (docAttachment !== null) {
     const doc = docAttachment.document;
@@ -461,7 +468,7 @@ const AttachmentUI: FC = () => {
                   "aui-attachment-tile-composer border-foreground/20",
               )}
               id={attachmentDomId}
-              aria-label={`${typeLabel} attachment`}
+              aria-label={accessibleName}
               type="button"
             >
               <AttachmentThumb />

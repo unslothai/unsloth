@@ -186,6 +186,20 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        # why: snapshot before TRL's unwrap context manager, which calls
+        # gradient_checkpointing_disable() before yielding; preserve the actual
+        # mode value (e.g. "unsloth") rather than collapsing it to a bool, so
+        # the finally restore matches the caller's configured GC mode.
+        use_gradient_checkpointing = next(
+            (
+                v
+                for v in (
+                    getattr(m, "gradient_checkpointing", False) for m in model.modules()
+                )
+                if v
+            ),
+            False,
+        )
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
             FastLanguageModel.for_inference(model)
@@ -207,7 +221,10 @@ def PatchRL(FastLanguageModel):
             finally:
                 # Restore generate and return
                 unwrapped_model.generate = original_generate
-                FastLanguageModel.for_training(model)
+                FastLanguageModel.for_training(
+                    model,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                )
 
     from transformers import Trainer
     from transformers.trainer_pt_utils import nested_detach
@@ -539,7 +556,208 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
+_UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = (
+    "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+)
+_UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
+_UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
+
+
+def _grpo_hidden_states_wrap_target(model):
+    if model is None:
+        return None
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        base_model = get_base_model()
+        if base_model is not None and base_model is not model:
+            return base_model
+    for attr in ("base_model", "model"):
+        child = getattr(model, attr, None)
+        if child is not None and child is not model and hasattr(child, "forward"):
+            return child
+    return model
+
+
+def _model_supports_unsloth_return_hidden_states(model):
+    target_model = _grpo_hidden_states_wrap_target(model)
+    for candidate in (model, target_model):
+        if candidate is None:
+            continue
+        if getattr(candidate, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
+            return True
+        if getattr(
+            type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False
+        ):
+            return True
+    return False
+
+
+def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):
+    if len(args) == 0 or len(kwargs) == 0:
+        return kwargs
+
+    consumed_names = []
+    for parameter in forward_signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            break
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            consumed_names.append(parameter.name)
+        if len(consumed_names) >= len(args):
+            break
+
+    if len(consumed_names) == 0:
+        return kwargs
+
+    kwargs = dict(kwargs)
+    for name in consumed_names:
+        kwargs.pop(name, None)
+    return kwargs
+
+
+def _get_num_logits_to_keep(forward_signature, args, kwargs):
+    try:
+        bound = forward_signature.bind_partial(*args, **kwargs)
+        arguments = bound.arguments
+        num_logits_to_keep = arguments.get("num_logits_to_keep", 0) or 0
+        logits_to_keep = arguments.get("logits_to_keep", 0) or 0
+        for parameter in forward_signature.parameters.values():
+            if parameter.kind != inspect.Parameter.VAR_KEYWORD:
+                continue
+            extra_kwargs = arguments.get(parameter.name, {})
+            num_logits_to_keep = max(
+                num_logits_to_keep,
+                extra_kwargs.get("num_logits_to_keep", 0) or 0,
+            )
+            logits_to_keep = max(
+                logits_to_keep,
+                extra_kwargs.get("logits_to_keep", 0) or 0,
+            )
+            break
+        return max(num_logits_to_keep, logits_to_keep)
+    except TypeError:
+        logger.debug(
+            "Unsloth: Could not bind forward arguments for GRPO hidden-state fallback.",
+            exc_info = True,
+        )
+
+    num_logits_to_keep = kwargs.get("num_logits_to_keep", 0) or 0
+    logits_to_keep = kwargs.get("logits_to_keep", 0) or 0
+    return max(num_logits_to_keep, logits_to_keep)
+
+
+def _warn_grpo_hidden_states_fallback_once(model, message):
+    if getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, False):
+        return
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, True)
+    logger.warning(message)
+
+
+def _replace_outputs_logits(outputs, hidden_states):
+    if hasattr(outputs, "logits"):
+        outputs.logits = hidden_states
+        return outputs
+    if isinstance(outputs, dict):
+        outputs["logits"] = hidden_states
+        return outputs
+    if isinstance(outputs, tuple) and len(outputs) != 0:
+        return (hidden_states,) + tuple(outputs[1:])
+    raise TypeError(
+        f"Unsupported output type for GRPO hidden-state fallback: {type(outputs)}"
+    )
+
+
+def _install_grpo_hidden_states_forward_wrapper(model):
+    if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
+        return False
+    if _model_supports_unsloth_return_hidden_states(model):
+        return False
+
+    target_model = _grpo_hidden_states_wrap_target(model)
+    if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
+        setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+        return False
+
+    original_forward = target_model.forward
+    forward_signature = inspect.signature(original_forward)
+    model_name = type(target_model).__name__
+
+    def wrapped_forward(*args, **kwargs):
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+            return original_forward(*args, **kwargs)
+
+        forward_kwargs = _drop_forward_kwargs_consumed_positionally(
+            forward_signature, args, kwargs
+        )
+        num_logits_to_keep = _get_num_logits_to_keep(
+            forward_signature, args, forward_kwargs
+        )
+        forward_kwargs["output_hidden_states"] = True
+        forward_kwargs["return_dict"] = True
+        try:
+            outputs = original_forward(*args, **forward_kwargs)
+        except TypeError as error:
+            if "output_hidden_states" not in str(error) and "return_dict" not in str(
+                error
+            ):
+                raise
+            _warn_grpo_hidden_states_fallback_once(
+                target_model,
+                f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
+            )
+            return original_forward(*args, **kwargs)
+
+        hidden_states = getattr(outputs, "hidden_states", None)
+        if hidden_states is None or len(hidden_states) == 0:
+            _warn_grpo_hidden_states_fallback_once(
+                target_model,
+                f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
+            )
+            return outputs
+
+        hidden_states = hidden_states[-1]
+        if num_logits_to_keep != 0:
+            hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        return _replace_outputs_logits(outputs, hidden_states)
+
+    wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True
+    target_model.forward = wrapped_forward
+    setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+    return True
+
+
+def _wrap_grpo_hidden_states_fallback(trainer_cls):
+    original_init = trainer_cls.__init__
+    if getattr(original_init, "_unsloth_grpo_hidden_states_init_wrapped", False):
+        return
+
+    def wrapped_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        _install_grpo_hidden_states_forward_wrapper(getattr(self, "model", None))
+        _install_grpo_hidden_states_forward_wrapper(getattr(self, "ref_model", None))
+
+    wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
+    trainer_cls.__init__ = wrapped_init
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+    # Defensive wrapper: matches patch_trl_rl_trainers()'s try/except so
+    # direct callers don't see exceptions from the impl on TRL versions
+    # that rename or move classes (e.g. TRL 1.x trl.experimental).
+    try:
+        return _patch_trl_rl_trainers_impl(trainer_file)
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not patch trl.trainer.{trainer_file}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return
+
+
+def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
@@ -983,6 +1201,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += data_collator_check
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
+        # Only swap LM/Seq2Seq collators; leave preference collators
+        # (DPODataCollatorWithPadding etc.) alone so ORPO/DPO/CPO/KTO keep
+        # their own prompt/chosen/rejected handling.
         pad_check = (
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"
@@ -991,7 +1212,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "                __tokenizer.tokenizer,\n"
             "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "            )\n"
-            "        else:\n"
+            "        elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
             "            data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "                __tokenizer.tokenizer,\n"
             "                mlm = False,\n"
@@ -1091,7 +1312,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "logging_nan_inf_filter": False,
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
-        "weight_decay": 0.01,
+        # LoRA decays A and B toward 0 so effective W = W_init + (alpha/r) * B @ A is pulled toward W_init, not 0 as in full FT.
+        # 0.001 keeps a small Frobenius prior |A|_F^2 + |B|_F^2 without measurably dragging the merged adapter back to base.
+        "weight_decay": 0.001,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
@@ -1613,6 +1836,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             logger.info(
                 f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
             )
+        try:
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
+            )
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
@@ -2061,6 +2292,11 @@ def patch_trl_vllm_generation():
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
+    # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so
+    # downstream `inspect.getsource(trl.SFTTrainer)` drift detectors see the
+    # pristine upstream class, not the compiled Unsloth* wrappers.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return
     # Install the disable_gradient_checkpointing noop BEFORE
     # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
     # submodules while generating the compiled cache; any new trl.* modules
