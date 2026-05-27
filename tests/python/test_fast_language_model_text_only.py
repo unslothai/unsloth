@@ -76,9 +76,7 @@ def test_fast_language_model_forces_text_only_when_delegating_to_fast_model():
 
     assert len(fast_model_calls) == 2
     for call in fast_model_calls:
-        force_kwarg = [
-            kw for kw in call.keywords if kw.arg == "_force_text_only"
-        ]
+        force_kwarg = [kw for kw in call.keywords if kw.arg == "_force_text_only"]
         assert len(force_kwarg) == 1
         assert isinstance(force_kwarg[0].value, ast.Constant)
         assert force_kwarg[0].value.value is True
@@ -90,9 +88,12 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
         source, _class_method(ast.parse(source), "FastModel", "from_pretrained")
     )
 
-    assert "_force_text_only = kwargs.pop(\"_force_text_only\", False)" in method_source
+    assert '_force_text_only = kwargs.pop("_force_text_only", False)' in method_source
     assert "load_text_only = _force_text_only and auto_model is None" in method_source
-    assert "model_config = _get_text_only_config(model_config, old_model_name)" in method_source
+    assert (
+        "model_config = _get_text_only_config(model_config, old_model_name)"
+        in method_source
+    )
     assert "_force_text_only = load_text_only" in method_source
 
 
@@ -104,7 +105,9 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
 
     assert "_force_text_only = False" in method_source
     assert "auto_model = AutoModelForCausalLM" in method_source
-    assert "auto_config = _get_text_only_config(auto_config, model_name)" in method_source
+    assert (
+        "auto_config = _get_text_only_config(auto_config, model_name)" in method_source
+    )
 
 
 def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
@@ -142,9 +145,9 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     # Negative checks: no vision tower or multimodal projector exists on the
     # model. The presence of either would indicate the helper failed to
     # strip multimodal components.
-    assert not hasattr(model, "vision_tower"), (
-        "text-only Gemma3 model should not have a vision_tower"
-    )
-    assert not hasattr(model, "multi_modal_projector"), (
-        "text-only Gemma3 model should not have a multi_modal_projector"
-    )
+    assert not hasattr(
+        model, "vision_tower"
+    ), "text-only Gemma3 model should not have a vision_tower"
+    assert not hasattr(
+        model, "multi_modal_projector"
+    ), "text-only Gemma3 model should not have a multi_modal_projector"
