@@ -1017,30 +1017,7 @@ function ActiveThreadSync({
     if (!enabled) {
       return;
     }
-    // Don't clobber a persisted activeThreadId while aui is still booting
-    // up. mainThreadId starts null on every page load before aui's async
-    // thread init finishes; without this guard we'd reset our persisted
-    // draft id to null and lose the doc chip mapping for that thread.
-    // Explicit clears (new chat / thread delete) go through
-    // setActiveThreadId(null) directly and bypass this effect.
-    if (!mainThreadId) {
-      return;
-    }
-    const persisted = useChatRuntimeStore.getState().activeThreadId;
-    // On page reload aui mints a fresh `__LOCALID_*` for its draft thread.
-    // If we already have a persisted draft id, keep it so any RAG docs
-    // attached to that draft id stay visible — assistant-ui's internal
-    // chat history for the new mainThreadId starts empty either way, so
-    // this only affects what we treat as the active id for doc/RAG lookup.
-    if (
-      persisted
-      && persisted !== mainThreadId
-      && persisted.startsWith("__LOCALID_")
-      && mainThreadId.startsWith("__LOCALID_")
-    ) {
-      return;
-    }
-    setActiveThreadId(mainThreadId);
+    setActiveThreadId(mainThreadId ?? null);
   }, [enabled, mainThreadId, setActiveThreadId]);
 
   return null;
