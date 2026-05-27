@@ -1489,10 +1489,11 @@ class TestParserRobustness:
         # python_tag paths already accept both keys; this path now does
         # too. Was extracting name only and silently dropping the args.
         import json
+
         text = (
-            '<tool_call>\n'
+            "<tool_call>\n"
             '{"name": "search", "parameters": {"q": "ramen"}}\n'
-            '</tool_call>'
+            "</tool_call>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -1503,10 +1504,11 @@ class TestParserRobustness:
         # MiniCPM-5 / MiniMax-M2 attribute syntax:
         # ``<function name="..."><param name="...">v</param></function>``.
         import json
+
         text = (
             '<function name="get_weather">'
             '<param name="city">Tokyo</param>'
-            '</function>'
+            "</function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -1515,11 +1517,12 @@ class TestParserRobustness:
 
     def test_function_xml_attribute_form_multi_param(self):
         import json
+
         text = (
             '<function name="get_weather">'
             '<param name="city">Tokyo</param>'
             '<param name="unit">celsius</param>'
-            '</function>'
+            "</function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -1530,10 +1533,9 @@ class TestParserRobustness:
         # Regression guard: the old ``<function=name><parameter=k>v``
         # syntax must keep parsing after the regex broadening.
         import json
+
         text = (
-            '<function=get_weather>'
-            '<parameter=city>Tokyo</parameter>'
-            '</function>'
+            "<function=get_weather>" "<parameter=city>Tokyo</parameter>" "</function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -1548,8 +1550,9 @@ class TestParserRobustness:
         # the role label to the JSON body, else every round-tripped
         # tool call in history silently drops.
         import json
+
         text = (
-            '<|start_header_id|>assistant<|end_header_id|>\n\n'
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
             '{"name": "get_weather", "parameters": {"city": "Tokyo"}}'
         )
         result = parse_tool_calls_from_text(text)
@@ -1560,9 +1563,10 @@ class TestParserRobustness:
     def test_llama3_round_trip_all_roles(self):
         # Same logic must work for every role the chat template inserts.
         import json
+
         for role in ("assistant", "user", "system", "tool", "ipython"):
             text = (
-                f'<|start_header_id|>{role}<|end_header_id|>\n\n'
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n"
                 '{"name": "f", "parameters": {"x": 1}}'
             )
             result = parse_tool_calls_from_text(text)
@@ -1573,8 +1577,9 @@ class TestParserRobustness:
         # Prior assistant turn closes with ``<|eot_id|>``, then the
         # new header opens. Both sentinels + the role must be consumed.
         import json
+
         text = (
-            '<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n'
+            "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
             '{"name": "f", "parameters": {}}'
         )
         result = parse_tool_calls_from_text(text)

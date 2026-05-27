@@ -88,9 +88,7 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # Qwen3.5 / Hermes ``<function=name><parameter=k>v`` AND the attribute
 # form ``<function name="name"><param name="k">v`` used by MiniCPM-5,
 # MiniMax-M2, etc. Name lands in group(1) or group(2).
-_TC_FUNC_START_RE = re.compile(
-    r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*'
-)
+_TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(
