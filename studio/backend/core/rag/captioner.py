@@ -25,11 +25,12 @@ falls back to the parser's page-text caption in that case.
 from __future__ import annotations
 
 import base64
-import logging
 from io import BytesIO
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 _PROMPT = (
     "Describe this figure in <=60 words. Focus on factual content "
@@ -81,9 +82,9 @@ def _load_helper_vlm() -> Optional[tuple[Any, str, str]]:
         # apart by PID ownership.
         backend = LlamaCppBackend(kill_orphans = False)
         logger.info(
-            "RAG captioner: loading helper VLM %s (%s) as fallback",
-            _HELPER_REPO,
-            _HELPER_VARIANT,
+            "RAG captioner: loading helper VLM as fallback",
+            repo = _HELPER_REPO,
+            variant = _HELPER_VARIANT,
         )
         ok = backend.load_model(
             hf_repo = _HELPER_REPO,
@@ -98,7 +99,7 @@ def _load_helper_vlm() -> Optional[tuple[Any, str, str]]:
             return None
         return backend, backend.base_url, _HELPER_MODEL_NAME
     except Exception as exc:  # noqa: BLE001
-        logger.warning("RAG captioner: helper VLM load raised: %s", exc)
+        logger.warning("RAG captioner: helper VLM load raised", error = str(exc))
         return None
 
 
@@ -142,6 +143,12 @@ def caption_images(
     before returning. On any failure returns ``""`` for the affected
     image. Never raises.
     """
+    logger.info(
+        "caption_images: invoked",
+        n_images = len(image_bytes_list),
+        vlm_url = vlm_url,
+        vlm_model = vlm_model,
+    )
     if not image_bytes_list:
         return []
 
@@ -153,28 +160,44 @@ def caption_images(
         if vlm_url and vlm_model:
             endpoint = f"{vlm_url.rstrip('/')}/v1/chat/completions"
             model_name = vlm_model
+            logger.info("caption_images: using loaded chat VLM", endpoint = endpoint, model = model_name)
         else:
+            logger.info("caption_images: chat VLM unavailable, loading helper")
             loaded = _load_helper_vlm()
             if loaded is None:
-                # No chat VLM and helper failed → all empty strings;
-                # caller falls back to page-text captions.
+                logger.warning("caption_images: helper load failed, returning empty captions")
                 return ["" for _ in image_bytes_list]
             helper_backend, helper_base_url, helper_model_name = loaded
             endpoint = f"{helper_base_url.rstrip('/')}/v1/chat/completions"
             model_name = helper_model_name
+            logger.info("caption_images: using helper VLM", endpoint = endpoint)
 
         out: list[str] = []
         with httpx.Client(timeout = _REQUEST_TIMEOUT_SECONDS) as client:
-            for blob in image_bytes_list:
+            for idx, blob in enumerate(image_bytes_list):
                 try:
-                    out.append(_post_one(client, endpoint, model_name, blob))
+                    caption = _post_one(client, endpoint, model_name, blob)
+                    out.append(caption)
+                    logger.info(
+                        "caption_images: per-image done",
+                        idx = idx,
+                        caption_len = len(caption),
+                        preview = caption[:80],
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "caption_images: per-image request to %s failed: %s",
-                        endpoint,
-                        exc,
+                        "caption_images: per-image request failed",
+                        idx = idx,
+                        endpoint = endpoint,
+                        error = str(exc),
                     )
                     out.append("")
+        non_empty = sum(1 for c in out if c.strip())
+        logger.info(
+            "caption_images: complete",
+            total = len(out),
+            non_empty = non_empty,
+        )
         return out
     finally:
         # Always tear down the helper if we spawned one. Chat VLM (when
@@ -184,4 +207,4 @@ def caption_images(
                 helper_backend.unload_model()
                 logger.info("RAG captioner: helper VLM unloaded")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("RAG captioner: helper unload failed: %s", exc)
+                logger.warning("RAG captioner: helper unload failed", error = str(exc))

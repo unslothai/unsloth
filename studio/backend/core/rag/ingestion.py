@@ -9,7 +9,6 @@ vectors, and rebuilds BM25 on completion. Only the parent opens rag.db.
 
 from __future__ import annotations
 
-import logging
 import multiprocessing as mp
 import queue as queue_module
 import sqlite3
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from loggers import get_logger
 from storage.studio_db import get_connection
 from utils.rag.config import (
     RAG_CHUNK_OVERLAP,
@@ -30,7 +30,7 @@ from utils.rag.config import (
 from . import bm25, embeddings, vector_store
 from .vector_store import kb_scope, thread_scope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 _QUEUE_TIMEOUT_SECONDS = 300
@@ -244,7 +244,7 @@ def _stream_image_chunks(
         try:
             path.write_bytes(img.image_bytes)
         except OSError:
-            logger.warning("failed to save image %s; skipping", path)
+            logger.warning("failed to save image; skipping", path = str(path))
             continue
         paths.append(str(path))
         bytes_for_encoding.append(img.image_bytes)
@@ -609,7 +609,7 @@ def _pump(
                 final_error = str(msg.get("error", "unknown error"))
                 break
             else:
-                logger.warning("ingestion: unknown message type %r", mtype)
+                logger.warning("ingestion: unknown message type", mtype = repr(mtype))
     finally:
         proc.join(timeout = 30)
         if proc.is_alive():
@@ -673,12 +673,12 @@ def _probe_loaded_vlm() -> tuple[str | None, str | None]:
         # to the helper VLM even when the chat model was vision-capable.
         from routes.inference import get_llama_cpp_backend
     except Exception as exc:
-        logger.debug("RAG probe: get_llama_cpp_backend import failed: %s", exc)
+        logger.warning("RAG probe: get_llama_cpp_backend import failed", error = str(exc))
         return None, None
     try:
         backend = get_llama_cpp_backend()
     except Exception as exc:
-        logger.debug("RAG probe: get_llama_cpp_backend() raised: %s", exc)
+        logger.warning("RAG probe: get_llama_cpp_backend() raised", error = str(exc))
         return None, None
     if not getattr(backend, "is_loaded", False):
         return None, None
@@ -719,9 +719,9 @@ def enqueue_ingestion(
     vlm_url, vlm_model = _probe_loaded_vlm()
     if vlm_url:
         logger.info(
-            "RAG ingest: will caption figures via loaded chat VLM %s at %s",
-            vlm_model,
-            vlm_url,
+            "RAG ingest: will caption figures via loaded chat VLM",
+            vlm_model = vlm_model,
+            vlm_url = vlm_url,
         )
     else:
         logger.info(
