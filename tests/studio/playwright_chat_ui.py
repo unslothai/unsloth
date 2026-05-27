@@ -939,27 +939,50 @@ with sync_playwright() as p:
             # Account-menu sets data-state="open" while the view-
             # transition is mid-flight; clicking it again before that
             # clears would no-op silently and the for-loop bailed
-            # after cycle 1 in earlier runs.
+            # after cycle 1 in earlier runs. The view transition triggered
+            # by the theme toggle can run >700ms on slow CI runners, so
+            # both the "menu detached" wait and the "menu appeared" wait
+            # need a comfortable budget; 3s was too tight and caused
+            # cycle-2 flake.
             try:
                 page.wait_for_function(
-                    """() => !document.querySelector('[role="menu"]')""",
-                    timeout = 3_000,
+                    """() => {
+                        const m = document.querySelector('[role="menu"]');
+                        if (!m) return true;
+                        // Radix sets data-state="closed" during the
+                        // close animation; treat that as already gone.
+                        return m.getAttribute('data-state') === 'closed';
+                    }""",
+                    timeout = 7_000,
                 )
             except Exception:
                 pass
-            page.wait_for_timeout(150)
-            try:
-                acct.click(force = True)
-            except Exception as exc:
-                soft_fail(
-                    f"theme cycle {cycle + 1}: account-menu click failed " f"({exc!r})"
-                )
-                break
-            # Wait for the dropdown menu to actually render before
-            # querying its items.
-            try:
-                page.wait_for_selector('[role="menu"]', timeout = 3_000)
-            except Exception:
+            page.wait_for_timeout(250)
+            # Try the click + wait; if the first click silently no-oped
+            # (e.g. mid-view-transition swallowed the event), retry once
+            # after pressing Escape to force-close any stray popup.
+            opened = False
+            for attempt in range(2):
+                try:
+                    acct.click(force = True)
+                except Exception as exc:
+                    if attempt == 1:
+                        soft_fail(
+                            f"theme cycle {cycle + 1}: account-menu click failed "
+                            f"({exc!r})"
+                        )
+                    continue
+                try:
+                    page.wait_for_selector(
+                        '[role="menu"][data-state="open"]',
+                        timeout = 5_000,
+                    )
+                    opened = True
+                    break
+                except Exception:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(300)
+            if not opened:
                 soft_fail(f"theme cycle {cycle + 1}: account menu didn't open")
                 break
             theme_item = page.get_by_role(
@@ -970,13 +993,35 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
-            try:
-                theme_item.click(force = True)
-            except Exception as exc:
+            # Click sequence with two fallbacks. On small CI viewports the
+            # Radix dropdown can render the theme item below the visible
+            # area; force=True still requires the element to be in the
+            # viewport, so the regular .click() fails with "Element is
+            # outside of the viewport". Fall back to scroll-into-view +
+            # click, then to a synthetic .click() via evaluate() that
+            # bypasses Playwright's viewport check entirely (Radix's
+            # menuitem handler only needs the click event, not a real
+            # pointer landing on a pixel).
+            click_err = None
+            for click_attempt in range(3):
+                try:
+                    if click_attempt == 0:
+                        theme_item.click(force = True, timeout = 3_000)
+                    elif click_attempt == 1:
+                        theme_item.scroll_into_view_if_needed(timeout = 2_000)
+                        theme_item.click(force = True, timeout = 3_000)
+                    else:
+                        theme_item.evaluate("el => el.click()")
+                    click_err = None
+                    break
+                except Exception as exc:
+                    click_err = exc
+                    page.wait_for_timeout(200)
+            if click_err is not None:
                 page.keyboard.press("Escape")
                 soft_fail(
                     f"theme cycle {cycle + 1}: theme menuitem click failed "
-                    f"({exc!r})"
+                    f"({click_err!r})"
                 )
                 break
             # Settle. The ".dark" class on <html> is the ground

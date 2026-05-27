@@ -74,6 +74,7 @@ export function SettingsDialog() {
   const activeTab = useSettingsDialogStore((s) => s.activeTab);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const opener = useSettingsDialogStore((s) => s.opener);
   const reduced = useReducedMotion();
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -98,11 +99,22 @@ export function SettingsDialog() {
       <DialogContent
         showCloseButton={false}
         overlayClassName="bg-background/40"
+        onCloseAutoFocus={(e) => {
+          // Restore focus to the element that triggered openDialog().
+          // Radix's FocusScope races our rAF-scheduled tab-button focus
+          // and loses the previous-focus reference, so we restore by hand.
+          if (opener && opener.isConnected) {
+            e.preventDefault();
+            opener.focus({ preventScroll: true });
+          }
+        }}
         className={cn(
-          "!max-w-none h-[560px] w-[820px] p-0 overflow-hidden",
+          // Cap at 820px but shrink to the viewport so we don't clip
+          // on iPad-portrait widths (640-820px) where the fixed
+          // `w-[820px]` overflows by 26px on each side.
+          "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
           "shadow-border rounded-xl border-border",
-          "sm:h-[560px] sm:w-[820px]",
-          "max-sm:h-dvh max-sm:w-dvw max-sm:rounded-none",
+          "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
@@ -110,7 +122,7 @@ export function SettingsDialog() {
           Manage your Unsloth Studio preferences.
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
             <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;

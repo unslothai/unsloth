@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -13,6 +14,8 @@ import sys
 import tempfile
 import time
 import types
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -200,6 +203,79 @@ def _find_setup_script() -> Optional[Path]:
     ):
         for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
+    return None
+
+
+def _iter_editable_studio_source_roots(venv_dir: Path):
+    """Yield repo roots from setuptools `__editable___*_finder.py` files in
+    *venv_dir*'s site-packages whose MAPPING includes a `studio` entry.
+
+    Returns the parent dir of the mapped `studio` package (i.e. the repo
+    root), so callers can append `/studio/...` to reach any subdir.
+    """
+    import ast
+    import re
+
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for finder in sp.glob("__editable___*_finder.py"):
+                try:
+                    src = finder.read_text(encoding = "utf-8")
+                except OSError:
+                    continue
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
+                if not m:
+                    continue
+                try:
+                    mapping = ast.literal_eval(m.group(1))
+                except (SyntaxError, ValueError):
+                    continue
+                # Defensive: literal_eval can return a set / list / None if the
+                # matched literal is not a dict (regex captures `{...}`).
+                if not isinstance(mapping, dict):
+                    continue
+                studio_pkg = mapping.get("studio")
+                if studio_pkg:
+                    yield Path(studio_pkg).parent
+
+
+def _find_frontend_dist() -> Optional[Path]:
+    """Locate a built `studio/frontend/dist` (containing index.html).
+
+    Probes (in order): package-local default, installer venv site-packages,
+    editable source roots referenced from the installer venv. Returns None
+    if nothing servable is found, so callers can decide to error or proceed
+    in `--api-only` mode.
+
+    Fixes the silent 404 when another `unsloth` on PATH shadows the
+    installer's binary and points `_PACKAGE_ROOT` at a site-packages copy
+    that never received a vite build.
+    """
+    candidates: List[Path] = [_PACKAGE_ROOT / "studio" / "frontend" / "dist"]
+    venv_dir = STUDIO_HOME / "unsloth_studio"
+    for pattern in (
+        "lib/python*/site-packages/studio/frontend/dist",
+        "Lib/site-packages/studio/frontend/dist",
+    ):
+        candidates.extend(venv_dir.glob(pattern))
+    for repo_root in _iter_editable_studio_source_roots(venv_dir):
+        candidates.append(repo_root / "studio" / "frontend" / "dist")
+    seen: set[Path] = set()
+    for c in candidates:
+        try:
+            resolved = c.resolve()
+        except OSError:
+            resolved = c
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (c / "index.html").is_file():
+            return c
     return None
 
 
@@ -536,8 +612,14 @@ def studio_default(
                 "--port",
                 str(port),
             ]
-            if frontend:
-                args.extend(["--frontend", str(frontend)])
+            # Resolve frontend explicitly so the spawned run.py uses a real
+            # built dist regardless of where its __file__ lands. Skip in
+            # --api-only (no UI served).
+            resolved_frontend = frontend
+            if resolved_frontend is None and not api_only:
+                resolved_frontend = _find_frontend_dist()
+            if resolved_frontend is not None:
+                args.extend(["--frontend", str(resolved_frontend)])
             if silent:
                 args.append("--silent")
             if api_only:
@@ -1064,6 +1146,170 @@ def _run_setup_script(*, verbose: bool = False) -> None:
         raise typer.Exit(result.returncode)
 
 
+_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
+_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+
+
+def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
+    """Re-run installer with --shortcuts-only to refresh launchers post-update."""
+    env = {**os.environ}
+    if verbose:
+        env["UNSLOTH_VERBOSE"] = "1"
+
+    is_windows = platform.system() == "Windows"
+    installer_name = "install.ps1" if is_windows else "install.sh"
+    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
+
+    # Prefer local checkout, fall back to package dir, then network fetch.
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    candidates: list[Path] = []
+    if local_repo:
+        candidates.append(Path(local_repo) / installer_name)
+    candidates.append(_PACKAGE_ROOT / installer_name)
+
+    args = ["--shortcuts-only"]
+    if verbose:
+        args.append("--verbose")
+
+    if is_windows:
+        ps_argv: list[str] = ["powershell.exe"]
+        if _should_hide_windows_subprocesses():
+            ps_argv.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
+
+        for script in candidates:
+            try:
+                if script.is_file():
+                    quoted = str(script).replace("'", "''")
+                    argv = list(ps_argv)
+                    argv.extend(
+                        [
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-Command",
+                            f"& '{quoted}' {' '.join(args)} *>&1",
+                        ]
+                    )
+                    result = subprocess.run(
+                        argv,
+                        env = env,
+                        check = False,
+                        **_windows_hidden_subprocess_kwargs(),
+                    )
+                    if result.returncode != 0:
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
+                    return
+            except OSError:
+                continue
+
+        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
+        try:
+            request = urllib.request.Request(
+                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+            )
+            with urllib.request.urlopen(request, timeout = 30) as response:
+                installer = response.read().decode("utf-8", errors = "replace")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            typer.echo(
+                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+            )
+            return
+
+        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
+        # stdin `$args` is empty so that triggers the full installer flow
+        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
+        installer = re.sub(
+            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
+            "",
+            installer,
+        )
+        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
+        marker_args = " ".join(args)
+        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
+
+        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
+        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
+        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
+        # in install.ps1. -File reads the BOM and decodes correctly. The
+        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
+        ps1_fd, ps1_path = tempfile.mkstemp(
+            prefix = "unsloth-studio-refresh-",
+            suffix = ".ps1",
+        )
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
+            argv = list(ps_argv)
+            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
+            try:
+                result = subprocess.run(
+                    argv,
+                    env = env,
+                    check = False,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+                    )
+            except OSError as exc:
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
+        finally:
+            try:
+                os.unlink(ps1_path)
+            except OSError:
+                pass
+        return
+
+    for script in candidates:
+        try:
+            if script.is_file():
+                result = subprocess.run(
+                    ["bash", str(script), *args],
+                    env = env,
+                    check = False,
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
+                return
+        except OSError:
+            continue
+
+    # PyPI installs lack install.sh: fetch upstream.
+    try:
+        request = urllib.request.Request(
+            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+        )
+        with urllib.request.urlopen(request, timeout = 30) as response:
+            installer = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+        )
+        return
+
+    try:
+        result = subprocess.run(
+            ["bash", "-s", "--", *args],
+            input = installer,
+            env = env,
+            check = False,
+        )
+        if result.returncode != 0:
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
+
+
 @studio_app.command(hidden = True)
 def setup(
     verbose: bool = typer.Option(
@@ -1093,6 +1339,9 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
+    # subprocess resolves the same install root the user originally chose.
+    _ensure_studio_env_exported()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -1105,7 +1354,88 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _run_setup_script(verbose = verbose)
+    _release_self_exe_lock_windows()
+    try:
+        _run_setup_script(verbose = verbose)
+    except BaseException:
+        # Restore unsloth.exe from .deleteme if setup failed before pip
+        # produced a replacement; otherwise the user has no CLI for recovery.
+        _restore_self_exe_lock_windows()
+        raise
+    # On Windows clear the .deleteme orphan now that pip wrote a fresh
+    # unsloth.exe; on next update os.replace would overwrite it anyway,
+    # but leaving a stale binary around invites cross-version restore
+    # confusion from _restore_self_exe_lock_windows.
+    _cleanup_self_exe_lock_windows()
+    # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
+    # so a Tauri-initiated update doesn't create duplicate shortcuts.
+    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+        if verbose:
+            typer.echo("  refresh-launcher  skipped (Tauri update)")
+        return
+    _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _release_self_exe_lock_windows() -> None:
+    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    if not exe.exists():
+        return
+    stale = exe.with_suffix(".exe.deleteme")
+    try:
+        # os.replace is atomic-overwrite on Windows; os.rename would raise
+        # FileExistsError if a prior aborted update left a .deleteme behind.
+        os.replace(exe, stale)
+    except OSError as e:
+        # Not fatal; setup.ps1 retries from a sibling process.
+        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+
+
+def _restore_self_exe_lock_windows() -> None:
+    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    stale = exe.with_suffix(".exe.deleteme")
+    if not stale.exists():
+        return
+    # Treat a missing or zero-byte exe as "pip didn't produce a usable
+    # replacement"; otherwise leave the new binary alone.
+    if exe.exists():
+        try:
+            if exe.stat().st_size > 0:
+                return
+        except OSError:
+            return
+    try:
+        os.replace(stale, exe)
+    except OSError as e:
+        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+
+
+def _cleanup_self_exe_lock_windows() -> None:
+    """Remove the .deleteme orphan after a successful update on Windows."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
+    try:
+        stale.unlink(missing_ok = True)
+    except OSError:
+        pass
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

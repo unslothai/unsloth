@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.4"
+__version__ = "2026.5.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -226,8 +226,10 @@ def apply_unsloth_gradient_checkpointing(
     return use_gradient_checkpointing
 
 
-# Models that don't work with flex_attention:
-# GPT-OSS: left padding issues cause incorrect outputs.
+# Models that don't work with flex_attention as the global Transformers
+# attention implementation:
+# GPT-OSS: training uses the custom flex sink patch, but inference intentionally
+# falls back to eager because flex decoding gives incorrect outputs.
 # Mllama: BlockMask Q_LEN!=KV_LEN ValueError on decode.
 # NemotronH: hybrid Mamba-2 + Transformer, raises NotImplementedError.
 # Gemma3N: timm vision wrappers don't support flex_attention.
@@ -235,6 +237,8 @@ def apply_unsloth_gradient_checkpointing(
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
+_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
+_FLASH_EXCLUDED_MODELS = ("gpt_oss",)
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -242,6 +246,14 @@ _FLASH_ATTENTION_DISABLED_WARNED = set()
 
 def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
+
+
+def _is_sdpa_excluded(model_type):
+    return model_type in _SDPA_EXCLUDED_MODELS
+
+
+def _is_flash_excluded(model_type):
+    return model_type in _FLASH_EXCLUDED_MODELS
 
 
 def _config_prefers_flex_attention(config):
@@ -360,6 +372,9 @@ def _get_max_attention_head_dim(config):
 
 
 def _get_flash_attention_disable_reason(config):
+    model_type = _config_get(config, "model_type", "").lower()
+    if _is_flash_excluded(model_type):
+        return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
         return (
@@ -489,9 +504,15 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(
             model_class, "_supports_sdpa", False
         )
-    supports_flash_attention = model_class is not None and (
-        getattr(model_class, "_supports_flash_attn_2", False)
-        or getattr(model_class, "_supports_flash_attn", False)
+    if _is_sdpa_excluded(model_type):
+        supports_sdpa = False
+    supports_flash_attention = (
+        model_class is not None
+        and (
+            getattr(model_class, "_supports_flash_attn_2", False)
+            or getattr(model_class, "_supports_flash_attn", False)
+        )
+        and not _is_flash_excluded(model_type)
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
@@ -1770,6 +1791,13 @@ def get_statistics(local_files_only = False):
     ):
         return
     if local_files_only:
+        return
+    # Also skip when HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are set.
+    _offline_vals = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+        or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
+    ):
         return
     from huggingface_hub.utils import (
         disable_progress_bars,

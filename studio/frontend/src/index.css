@@ -1187,3 +1187,86 @@
 	color: var(--popover-foreground) !important;
 	border-color: var(--border) !important;
 }
+
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
+}
+
+/*
+ * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
+ * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
+ * keyframes, and Framer Motion layout transitions all ignore the media query
+ * by default. Forcing every animation/transition to ~0ms collapses zoom-ins,
+ * slide-ins, and continuous shimmers to a single frame without removing the
+ * end state. Hover colour changes become instant rather than fading, which is
+ * the documented WCAG outcome (motion is "minimised, not removed").
+ *
+ * .animate-spin and generated image loading dots are the exceptions: loading
+ * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * startup / update screens, the <Spinner /> primitive, and image generation
+ * cards). Freezing them removes the only visual signal that work is in flight,
+ * so they keep animating.
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	.animate-spin {
+		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.generated-image-loading-dot {
+		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+}
