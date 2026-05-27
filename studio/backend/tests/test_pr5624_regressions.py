@@ -228,6 +228,24 @@ def test_kimi_bare_counter_id_is_dropped():
 # ────────────────────────────────────────────────────────────────────
 
 
+def test_deepseek_v3_1_huge_truncated_body_is_linear():
+    """Adversarial input: DeepSeek envelope with no JSON brace and a
+    50k-char body. A regex-based ``[^\\n<]+?`` name capture is O(N^2)
+    here; the parser uses ``str.find`` on the sep marker so it stays
+    linear. Budget 1s to flag any future regression."""
+    import time as _time
+
+    text = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn"
+        "<｜tool▁sep｜>" + "x" * 50_000
+    )
+    start = _time.time()
+    calls = parse_tool_calls_from_text(text)
+    elapsed = _time.time() - start
+    assert elapsed < 1.0, f"V3 path is non-linear: {elapsed:.2f}s"
+    assert calls == []
+
+
 def test_deepseek_v3_1_truncated_arguments_drops_call_without_crash():
     text = (
         "<｜tool▁calls▁begin｜>"

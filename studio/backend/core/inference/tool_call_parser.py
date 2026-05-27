@@ -160,12 +160,9 @@ _DEEPSEEK_R1_FUNC_RE = re.compile(
     + r"([^\n]+)\n```json\n",
 )
 _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END))
-_DEEPSEEK_V3_FUNC_RE = re.compile(
-    r"(?:"
-    + re.escape(_DEEPSEEK_CALL_BEGIN)
-    + r")?([^\n<]+?)"
-    + re.escape(_DEEPSEEK_SEP),
-)
+# V3 / V3.1 (bare-JSON, no fence) is handled by ``str.find`` on the sep
+# marker; see ``_parse_deepseek_tool_calls`` -- a ``([^\n<]+?)`` regex
+# is O(N^2) on adversarial truncated bodies.
 
 # GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>...``.
 # GLM 4.7 strips the ``\n`` after the name, so lookahead allows either
@@ -972,19 +969,28 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     if out:
         return out
 
-    # V3 / V3.1 path: name then bare JSON.
+    # V3 / V3.1 path: name then bare JSON. We use ``str.find`` for the
+    # sep marker and walk back for the name (regex search with a
+    # ``[^\n<]+`` quantifier is O(N^2) on adversarial truncated bodies).
     pos = 0
     while pos < len(body):
-        m = _DEEPSEEK_V3_FUNC_RE.search(body, pos)
-        if not m:
+        sep_pos = body.find(_DEEPSEEK_SEP, pos)
+        if sep_pos < 0:
             break
-        name = m.group(1).strip()
-        json_start = m.end()
+        # Walk left from sep_pos to find the name start. Stops at
+        # ``\n`` (previous turn boundary), ``<`` (start of an arbitrary
+        # tag), or ``>`` (end of an optional ``<｜tool▁call▁begin｜>``
+        # marker).
+        name_start = sep_pos
+        while name_start > pos and body[name_start - 1] not in "\n<>":
+            name_start -= 1
+        name = body[name_start:sep_pos].strip()
+        json_start = sep_pos + len(_DEEPSEEK_SEP)
         # Skip any whitespace before the JSON.
         while json_start < len(body) and body[json_start] in " \t\n\r":
             json_start += 1
         if json_start >= len(body) or body[json_start] != "{":
-            pos = m.end()
+            pos = sep_pos + len(_DEEPSEEK_SEP)
             continue
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
