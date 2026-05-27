@@ -144,7 +144,10 @@ def detect_hardware() -> DeviceType:
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
         CHAT_ONLY = False
-        chip = platform.processor() or platform.machine()
+        # platform.processor() runs `uname -p` which returns "i386" on most
+        # universal2 / Rosetta-shaped Python builds even on native arm64.
+        # platform.machine() is "arm64" once is_apple_silicon() has gated us.
+        chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         return DEVICE
 
@@ -279,13 +282,11 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             try:
                 info = mx.device_info()
-                gpu_name = (
-                    info.get("device_name")
-                    or platform.processor()
-                    or platform.machine()
-                )
+                # See detect_hardware(): platform.processor() can return "i386"
+                # on native arm64 Python builds, so prefer machine() as fallback.
+                gpu_name = info.get("device_name") or platform.machine() or "arm64"
             except Exception:
-                gpu_name = platform.processor() or platform.machine()
+                gpu_name = platform.machine() or "arm64"
 
             return {
                 "available": True,
