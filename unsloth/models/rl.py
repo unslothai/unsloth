@@ -365,6 +365,22 @@ calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+align_completion_tool_mask = RL_REPLACEMENTS.get("align_completion_tool_mask")
+if align_completion_tool_mask is None:
+
+    def align_completion_tool_mask(
+        tool_mask: torch.Tensor,
+        completion_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if tool_mask is None:
+            return completion_mask
+        raise RuntimeError(
+            "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+            "grpo_accumulated_loss handles tool_mask. Please upgrade "
+            "unsloth_zoo."
+        )
+
+
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 sanitize_logprob = RL_REPLACEMENTS["sanitize_logprob"]
 
@@ -452,6 +468,7 @@ torch_compile_options = {{
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{align_completion_tool_mask_code}
 {autotune_batch_and_chunks_code}
 {sanitize_logprob_code}
 
@@ -1577,6 +1594,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    align_completion_tool_mask_code = inspect.getsource(align_completion_tool_mask)
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     # Get final source code
@@ -1607,6 +1625,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
+        align_completion_tool_mask_code = align_completion_tool_mask_code,
         sanitize_logprob_code = sanitize_logprob_code,
     )
 
