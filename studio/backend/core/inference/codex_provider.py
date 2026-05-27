@@ -358,7 +358,16 @@ def _import_codex() -> Any:
     name resolves, so this branch is reached only when (a) the user
     explicitly forces the provider via a stale stored config or (b)
     the install state changes between status probe and chat submit.
+
+    When ``UNSLOTH_CODEX_SPOOF=1`` is set we install the in-process
+    spoof under ``openai_codex`` so the rest of the provider runs
+    end-to-end (with deterministic per-tab replies and no upstream
+    credit usage). The flag is OFF by default in production.
     """
+    from core.inference import codex_spoof
+
+    if codex_spoof.is_spoof_enabled():
+        codex_spoof.install_as_openai_codex()
     for name in _SDK_MODULE_NAMES:
         if importlib.util.find_spec(name) is not None:
             return importlib.import_module(name)

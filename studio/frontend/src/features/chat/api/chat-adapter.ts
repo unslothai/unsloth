@@ -59,6 +59,13 @@ import {
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import {
+  EMPTY_CODEX_PARALLEL_STATE,
+  hasCodexParallelContent,
+  reduceCodexParallelState,
+  type CodexParallelEvent,
+  type CodexParallelState,
+} from "../components/codex-parallel-tabs";
+import {
   generateAudio,
   listCachedGguf,
   listCachedModels,
@@ -1714,29 +1721,47 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // dict keyed by tab_id and re-assembling cumulativeText from
       // scratch on every codex event puts each tab's text under its
       // own header regardless of arrival interleaving.
-      const codexTabBuffers = new Map<number, string>();
-      const codexTabClosed = new Set<number>();
-      const codexTabError = new Map<number, string>();
-      let codexTotalTabs = 0;
+      // Per-tab Codex fan-out state. Each codex_* SSE event is folded
+      // into ``codexParallelState`` via the pure reducer in
+      // ``components/codex-parallel-tabs``. The state is re-published
+      // on every yield as the ``args`` of a single tool-call part with
+      // ``toolName === "codex_parallel"`` so the assistant-ui surface
+      // can render real clickable tabs (one per worker plus a
+      // Synthesis tab) instead of inline ``[Codex tab N]`` headings.
+      // The stable toolCallId keeps assistant-ui updating the same
+      // part across stream yields rather than spawning new cards.
+      let codexParallelState: CodexParallelState = EMPTY_CODEX_PARALLEL_STATE;
       let codexGatherEmitted = false;
+      const CODEX_PARALLEL_TOOL_ID = "codex_parallel_main";
 
-      function renderCodexTabsBlock(): string {
-        if (codexTabBuffers.size === 0) return "";
-        const lines: string[] = [];
-        const ids = [...codexTabBuffers.keys()].sort((a, b) => a - b);
-        for (const id of ids) {
-          const header = codexTotalTabs
-            ? `[Codex tab ${id}/${codexTotalTabs}]`
-            : `[Codex tab ${id}]`;
-          lines.push(`\n\n${header}\n${codexTabBuffers.get(id) ?? ""}`);
-          if (codexTabError.has(id)) {
-            lines.push(`\n[Codex tab ${id} error: ${codexTabError.get(id)}]\n`);
-          }
-          if (codexTabClosed.has(id)) {
-            lines.push("\n");
-          }
+      function upsertCodexParallelToolPart(): void {
+        if (!hasCodexParallelContent(codexParallelState)) return;
+        const args = { state: codexParallelState };
+        const argsText = "";
+        const idx = toolCallParts.findIndex(
+          (p) => p.toolCallId === CODEX_PARALLEL_TOOL_ID,
+        );
+        const part: ToolCallMessagePart = {
+          type: "tool-call" as const,
+          toolCallId: CODEX_PARALLEL_TOOL_ID,
+          toolName: "codex_parallel",
+          argsText,
+          args: args as unknown as ToolCallMessagePart["args"],
+        };
+        if (idx === -1) {
+          toolCallParts.push(part);
+        } else {
+          toolCallParts[idx] = part;
         }
-        return lines.join("");
+      }
+
+      // No inline `[Codex tab N]` block in the message body any more --
+      // the tab UI is mounted as a tool-call part above. The function
+      // is kept (returning the empty string) so the rest of the
+      // adapter's renderFullContent() / pin signature paths are
+      // unchanged across the file.
+      function renderCodexTabsBlock(): string {
+        return "";
       }
 
       // Codex parallel-calls fan-out renders the labeled tab outputs
@@ -2222,50 +2247,70 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Codex parallel-calls fan-out events: route chunks
-                // into per-tab buffers keyed by tab_id, then render
-                // the whole codex block from scratch each event so
-                // concurrent tabs cannot interleave under the wrong
-                // header. `codex_gather` carries the synthesis
-                // payload which the backend also emits as a normal
-                // content delta later in the same SSE stream, so we
-                // only render a divider here to avoid duplicating
-                // the synthesis text.
+                // Codex parallel-calls fan-out events. Each event is
+                // folded into ``codexParallelState`` and re-published
+                // as the ``args.state`` of the ``codex_parallel`` tool-
+                // call part, so the assistant-ui surface renders one
+                // tab per worker plus a Synthesis tab the user can
+                // click between. ``codex_gather`` flips the flag so
+                // ``renderFullContent`` knows the synthesis stream is
+                // about to arrive on the regular content-delta path.
                 if (typeof toolEvent.type === "string" && toolEvent.type.startsWith("codex_")) {
-                  if (toolEvent.type === "codex_tab_open") {
-                    const tabId = Number(toolEvent.tab_id);
+                  const evType = toolEvent.type;
+                  const tabId = Number(toolEvent.tab_id);
+                  let reduced: CodexParallelEvent | null = null;
+                  if (evType === "codex_tab_open" && Number.isFinite(tabId)) {
                     const total = Number(toolEvent.total_tabs);
-                    if (Number.isFinite(tabId)) {
-                      if (!codexTabBuffers.has(tabId)) {
-                        codexTabBuffers.set(tabId, "");
-                      }
-                      if (Number.isFinite(total) && total > codexTotalTabs) {
-                        codexTotalTabs = total;
-                      }
+                    reduced = {
+                      type: "codex_tab_open",
+                      tab_id: tabId,
+                      query:
+                        typeof toolEvent.query === "string"
+                          ? toolEvent.query
+                          : undefined,
+                      total_tabs: Number.isFinite(total) ? total : undefined,
+                    };
+                  } else if (evType === "codex_tab_chunk" && Number.isFinite(tabId)) {
+                    const text =
+                      typeof toolEvent.text === "string" ? toolEvent.text : "";
+                    if (text) {
+                      reduced = {
+                        type: "codex_tab_chunk",
+                        tab_id: tabId,
+                        text,
+                      };
                     }
-                  } else if (toolEvent.type === "codex_tab_chunk") {
-                    const tabId = Number(toolEvent.tab_id);
-                    const text = typeof toolEvent.text === "string" ? toolEvent.text : "";
-                    if (Number.isFinite(tabId) && text) {
-                      const prev = codexTabBuffers.get(tabId) ?? "";
-                      codexTabBuffers.set(tabId, prev + text);
-                    }
-                  } else if (toolEvent.type === "codex_tab_error") {
-                    const tabId = Number(toolEvent.tab_id);
-                    const err = typeof toolEvent.error === "string" ? toolEvent.error : "error";
-                    if (Number.isFinite(tabId)) {
-                      codexTabError.set(tabId, err);
-                      if (!codexTabBuffers.has(tabId)) {
-                        codexTabBuffers.set(tabId, "");
-                      }
-                    }
-                  } else if (toolEvent.type === "codex_tab_close") {
-                    const tabId = Number(toolEvent.tab_id);
-                    if (Number.isFinite(tabId)) {
-                      codexTabClosed.add(tabId);
-                    }
-                  } else if (toolEvent.type === "codex_gather") {
+                  } else if (evType === "codex_tab_error" && Number.isFinite(tabId)) {
+                    reduced = {
+                      type: "codex_tab_error",
+                      tab_id: tabId,
+                      error:
+                        typeof toolEvent.error === "string"
+                          ? toolEvent.error
+                          : "error",
+                    };
+                  } else if (evType === "codex_tab_close" && Number.isFinite(tabId)) {
+                    reduced = { type: "codex_tab_close", tab_id: tabId };
+                  } else if (evType === "codex_gather") {
                     codexGatherEmitted = true;
+                    reduced = {
+                      type: "codex_gather",
+                      summary:
+                        typeof toolEvent.summary === "string"
+                          ? toolEvent.summary
+                          : undefined,
+                      tab_count:
+                        typeof toolEvent.tab_count === "number"
+                          ? toolEvent.tab_count
+                          : undefined,
+                    };
+                  }
+                  if (reduced) {
+                    codexParallelState = reduceCodexParallelState(
+                      codexParallelState,
+                      reduced,
+                    );
+                    upsertCodexParallelToolPart();
                   }
                   const codexParts = parseAssistantContent(renderFullContent());
                   yield {

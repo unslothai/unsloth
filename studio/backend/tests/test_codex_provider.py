@@ -2353,3 +2353,118 @@ class TestCodexDoneSentinelExactMatch:
                 assert 'if "[DONE]" in line' not in stripped, (
                     "Codex SSE wrapper still uses substring [DONE] check: " + stripped
                 )
+
+
+class TestCodexSpoofModule:
+    """Ensure the in-process Codex SDK spoof installs cleanly under the
+    env flag, satisfies _import_codex, exposes the SDK surface the
+    provider uses, and streams deterministic per-tab text. The spoof
+    is the credit-free path that the rest of the test suite (and the
+    UI demo) rides on, so a regression here would silently break
+    every downstream consumer.
+    """
+
+    def test_install_swaps_in_module_when_flag_set(self, monkeypatch):
+        # Ensure clean import state.
+        import sys
+        for name in ("openai_codex", "codex_app_server"):
+            sys.modules.pop(name, None)
+
+        from core.inference import codex_spoof
+        monkeypatch.setenv(codex_spoof.SPOOF_ENV_VAR, "1")
+        assert codex_spoof.is_spoof_enabled()
+        codex_spoof.install_as_openai_codex()
+
+        import openai_codex  # type: ignore[import-not-found]
+        assert getattr(openai_codex, "__spoof__", False) is True
+        assert hasattr(openai_codex, "AsyncCodex")
+        assert hasattr(openai_codex, "AppServerConfig")
+        assert openai_codex.ApprovalMode.deny_all
+        assert openai_codex.SandboxMode.read_only
+
+    def test_flag_disabled_does_not_install(self, monkeypatch):
+        import sys
+        for name in ("openai_codex", "codex_app_server"):
+            sys.modules.pop(name, None)
+        from core.inference import codex_spoof
+        monkeypatch.delenv(codex_spoof.SPOOF_ENV_VAR, raising=False)
+        assert not codex_spoof.is_spoof_enabled()
+
+    def test_spoof_stream_emits_deltas_and_completion(self):
+        import asyncio
+        from core.inference import codex_spoof
+
+        async def run():
+            codex = codex_spoof.AsyncCodex(
+                config=codex_spoof.AppServerConfig(env={})
+            )
+            thread = await codex.thread_start(
+                model="gpt-5.4-mini",
+                base_instructions=None,
+                approval_mode=codex_spoof.ApprovalMode.deny_all,
+                sandbox=codex_spoof.SandboxMode.read_only,
+            )
+            events = []
+            async for ev in thread.turn("hello").stream():
+                events.append(ev)
+            return events
+
+        events = asyncio.run(run())
+        deltas = [e for e in events if isinstance(e, dict) and e.get("type") == "message.delta"]
+        assert len(deltas) >= 3, "spoof should stream multiple deltas"
+        last = events[-1]
+        assert type(last).__name__ == "_ItemCompletedNotification"
+        # Must carry the worker tag when no [tab N] marker is in the system prompt.
+        full_text = last.item.root.text
+        assert "spoof reply from gpt-5.4-mini" in full_text
+        assert "no upstream tokens" in full_text
+
+    def test_spoof_tags_per_tab(self):
+        import asyncio
+        from core.inference import codex_spoof
+
+        async def reply_for_tab(idx: int) -> str:
+            codex = codex_spoof.AsyncCodex()
+            thread = await codex.thread_start(
+                model="gpt-5.4-mini",
+                base_instructions=f"[tab {idx}/3]",
+            )
+            result = await thread.run("explain LoRA")
+            return result.text
+
+        async def _gather():
+            return await asyncio.gather(
+                reply_for_tab(1),
+                reply_for_tab(2),
+                reply_for_tab(3),
+            )
+
+        tab_replies = asyncio.run(_gather())
+        # Each tab must mention its own worker index, so the UI tabs
+        # show visibly distinct text when clicked.
+        for i, reply in enumerate(tab_replies, start=1):
+            assert f"worker {i}" in reply, f"tab {i} missing its tag: {reply}"
+
+    def test_provider_picks_up_spoof_via_import(self, monkeypatch):
+        import sys
+        for name in ("openai_codex", "codex_app_server"):
+            sys.modules.pop(name, None)
+        from core.inference import codex_provider, codex_spoof
+        monkeypatch.setenv(codex_spoof.SPOOF_ENV_VAR, "1")
+        mod = codex_provider._import_codex()
+        assert getattr(mod, "__spoof__", False) is True
+
+    def test_safety_kwargs_resolve_against_spoof(self, monkeypatch):
+        import sys
+        for name in ("openai_codex", "codex_app_server"):
+            sys.modules.pop(name, None)
+        from core.inference import codex_provider, codex_spoof
+        monkeypatch.setenv(codex_spoof.SPOOF_ENV_VAR, "1")
+        codex_provider._import_codex()  # ensures install
+        kwargs = codex_provider._safe_thread_safety_kwargs()
+        # Spoof exports ApprovalMode.deny_all + SandboxMode.read_only,
+        # so the provider must be able to pin both without falling
+        # through to the unsafe-defaults gate.
+        assert kwargs, "safety kwargs missing -- provider would fail closed"
+        assert str(kwargs["approval_mode"]).endswith("deny_all")
+        assert str(kwargs["sandbox"]).endswith("read_only")
