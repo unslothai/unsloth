@@ -33,9 +33,14 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _PROMPT = (
-    "Describe this figure in <=60 words. Focus on factual content "
-    "(axes, labels, captions, visible text, main objects). "
-    "Do not speculate beyond what is visible."
+    "This image is a region cropped from a PDF page that contains a "
+    "single figure (schematic, chart, diagram, table, photo, or "
+    "their combination). Describe the figure's structure and content "
+    "in <=80 words. Focus on factual visible content: axes, labels, "
+    "arrow labels, box labels, legends, visible text in the figure, "
+    "and what entities are connected to what. Do not speculate beyond "
+    "what is visible and do not describe the page header/footer or "
+    "body paragraphs."
 )
 _MAX_NEW_TOKENS = 200
 # Downscale large images so the base64 payload stays manageable; the chat
