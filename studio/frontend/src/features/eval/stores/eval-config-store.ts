@@ -9,8 +9,6 @@ interface EvalConfigState {
   modelIdentifier: string;
   hfToken: string;
   dataset: EvalDatasetValue;
-  systemPrompt: string;
-  template: string;
   metricName: string;
   metricConfig: Record<string, unknown>;
   runAll: boolean;
@@ -21,8 +19,6 @@ interface EvalConfigState {
   setModelIdentifier: (v: string) => void;
   setHfToken: (v: string) => void;
   setDataset: (v: EvalDatasetValue) => void;
-  setSystemPrompt: (v: string) => void;
-  setTemplate: (v: string) => void;
   setMetricName: (v: string) => void;
   setMetricConfig: (v: Record<string, unknown>) => void;
   // Select a metric AND seed its config defaults in one atomic update (used when the user changes the metric).
@@ -49,8 +45,6 @@ export const useEvalConfigStore = create<EvalConfigState>()(
       modelIdentifier: "",
       hfToken: "",
       dataset: DEFAULT_DATASET,
-      systemPrompt: "",
-      template: "",
       metricName: "",
       metricConfig: {},
       runAll: false,
@@ -61,8 +55,6 @@ export const useEvalConfigStore = create<EvalConfigState>()(
       setModelIdentifier: (v) => set({ modelIdentifier: v }),
       setHfToken: (v) => set({ hfToken: v }),
       setDataset: (v) => set({ dataset: v }),
-      setSystemPrompt: (v) => set({ systemPrompt: v }),
-      setTemplate: (v) => set({ template: v }),
       setMetricName: (v) => set({ metricName: v }),
       setMetricConfig: (v) => set({ metricConfig: v }),
       selectMetric: (name, config) => set({ metricName: name, metricConfig: config }),

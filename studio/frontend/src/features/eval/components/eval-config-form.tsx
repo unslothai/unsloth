@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -19,7 +18,6 @@ import {
   ChipIcon,
   Database02Icon,
   ChartAverageIcon,
-  PencilEdit02Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -44,10 +42,6 @@ export function EvalConfigForm({
   const setHfToken = useEvalConfigStore((s) => s.setHfToken);
   const dataset = useEvalConfigStore((s) => s.dataset);
   const setDataset = useEvalConfigStore((s) => s.setDataset);
-  const systemPrompt = useEvalConfigStore((s) => s.systemPrompt);
-  const setSystemPrompt = useEvalConfigStore((s) => s.setSystemPrompt);
-  const template = useEvalConfigStore((s) => s.template);
-  const setTemplate = useEvalConfigStore((s) => s.setTemplate);
   const metricName = useEvalConfigStore((s) => s.metricName);
   const metricConfig = useEvalConfigStore((s) => s.metricConfig);
   const setMetricConfig = useEvalConfigStore((s) => s.setMetricConfig);
@@ -133,8 +127,8 @@ export function EvalConfigForm({
       reference_column: dataset.referenceColumn.trim(),
       metric_name: metricName,
       metric_config: parsedMetricConfig,
-      system_prompt: systemPrompt,
-      template: template.trim() ? template : null,
+      system_prompt: "",
+      template: null,
       limit: runAll ? null : Math.max(1, Math.floor(limit)),
       max_new_tokens: Math.max(1, Math.floor(maxNewTokens)),
       temperature: Number.isFinite(temperature) ? temperature : 0,
@@ -170,9 +164,7 @@ export function EvalConfigForm({
       </SectionCard>
 
       <div className="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6">
-        {/* Left column: Dataset + Metric */}
-        <div className="flex min-w-0 flex-col gap-4 md:gap-6">
-        {/* Dataset */}
+        {/* Left column: Dataset */}
         <SectionCard
           icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
           title="Dataset"
@@ -182,6 +174,8 @@ export function EvalConfigForm({
           <EvalDatasetFields hfToken={hfToken} value={dataset} onChange={setDataset} />
         </SectionCard>
 
+        {/* Right column: Metric + Generation */}
+        <div className="flex min-w-0 flex-col gap-4 md:gap-6">
         {/* Metric */}
         <SectionCard
           icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
@@ -230,44 +224,6 @@ export function EvalConfigForm({
             {metricsError && (
               <p className="text-sm text-red-500">{metricsError}</p>
             )}
-          </div>
-        </SectionCard>
-
-        </div>
-
-        {/* Right column: Prompt + Generation */}
-        <div className="flex min-w-0 flex-col gap-4 md:gap-6">
-        {/* Prompt */}
-        <SectionCard
-          icon={<HugeiconsIcon icon={PencilEdit02Icon} className="size-5" />}
-          title="Prompt"
-          description="Optional system prompt & input template"
-          accent="blue"
-        >
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="ecf-system-prompt">System prompt (optional)</Label>
-              <Textarea
-                id="ecf-system-prompt"
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
-                spellCheck={false}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="ecf-template">Template</Label>
-              <Textarea
-                id="ecf-template"
-                value={template}
-                onChange={(e) => setTemplate(e.target.value)}
-                className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
-                spellCheck={false}
-              />
-              <p className="text-xs text-muted-foreground">
-                Use {"{input}"} as the column placeholder. Leave blank to send the raw input column.
-              </p>
-            </div>
           </div>
         </SectionCard>
 
