@@ -680,6 +680,16 @@ elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+elif [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && [ "$_LINUX_HAS_GPU" = false ]; then
+    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
+    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
+    # the Linux CUDA bundles, so without this branch the prebuilt
+    # resolver returns 0 attempts on every release and the installer
+    # falls all the way back to a source build. Upstream ggml-org ships
+    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi

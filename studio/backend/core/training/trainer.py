@@ -3057,6 +3057,14 @@ class UnslothTrainer:
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
+                    # DeepSeek OCR's (image_size, base_size, crop_mode) is a
+                    # coupled preset; changing image_size alone desyncs the
+                    # per-crop pixel grid from num_queries. Use Gundam.
+                    if training_args.get("vision_image_size") is not None:
+                        logger.info(
+                            "Vision image resize ignored for DeepSeek OCR "
+                            "(uses fixed Gundam preset).\n"
+                        )
                     data_collator = DeepSeekOCRDataCollator(
                         tokenizer = self.tokenizer,
                         model = self.model,
@@ -3123,7 +3131,21 @@ class UnslothTrainer:
                 from unsloth.trainer import UnslothVisionDataCollator
 
                 FastVisionModel.for_training(self.model)
-                data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+                vision_image_size = training_args.get("vision_image_size")
+                if vision_image_size is None:
+                    data_collator = UnslothVisionDataCollator(
+                        self.model, self.tokenizer
+                    )
+                else:
+                    logger.info(
+                        f"Vision image resize: {vision_image_size} (max dimension)\n"
+                    )
+                    data_collator = UnslothVisionDataCollator(
+                        self.model,
+                        self.tokenizer,
+                        resize = vision_image_size,
+                        resize_dimension = "max",
+                    )
                 logger.info("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========

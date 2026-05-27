@@ -194,6 +194,7 @@ async def start_training(
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
             "max_seq_length": request.max_seq_length,
+            "vision_image_size": request.vision_image_size,
             "hf_dataset": request.hf_dataset or "",
             "local_datasets": request.local_datasets,
             "local_eval_datasets": request.local_eval_datasets,

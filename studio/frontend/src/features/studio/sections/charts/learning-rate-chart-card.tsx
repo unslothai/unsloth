@@ -10,6 +10,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
+import { useT } from "@/i18n";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { ScaleMode } from "./types";
@@ -21,10 +22,6 @@ import {
   formatStepTick,
   fromLog1p,
 } from "./utils";
-
-const lrConfig = {
-  displayLr: { label: "LR", color: "#8b5cf6" },
-} satisfies ChartConfig;
 
 interface LearningRatePoint {
   step: number;
@@ -45,12 +42,18 @@ export function LearningRateChartCard({
   xAxisTicks: number[];
   scale: ScaleMode;
 }): ReactElement {
+  const t = useT();
+  const lrConfig = {
+    displayLr: { label: t("studio.charts.lr"), color: "#8b5cf6" },
+  } satisfies ChartConfig;
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm">Learning Rate</CardTitle>
+        <CardTitle className="text-sm">
+          {t("studio.charts.learningRate")}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={lrConfig} className={CHART_CONTAINER_CLASS}>
@@ -99,13 +102,15 @@ export function LearningRateChartCard({
               content={
                 <ChartTooltipContent
                   labelFormatter={(_value, payload) =>
-                    `Step ${payload?.[0]?.payload?.step ?? ""}`
+                    t("studio.charts.step", {
+                      step: payload?.[0]?.payload?.step ?? "",
+                    })
                   }
                   formatter={(_value, _name, item) => {
                     const raw = Number(item?.payload?.lr);
                     return [
                       Number.isFinite(raw) ? raw.toExponential(3) : "0e+0",
-                      "LR",
+                      t("studio.charts.lr"),
                     ];
                   }}
                 />

@@ -33,6 +33,7 @@ import {
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
+import { useT } from "@/i18n";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -171,6 +172,7 @@ type DownloadRowProps = {
 };
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+  const t = useT();
   // Compute a rolling-window rate + ETA from the same cumulative-byte
   // series the poll hook already produces, so we can show
   // "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left" instead of just the pair.
@@ -179,22 +181,25 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
   const isComplete = state.totalBytes > 0 && state.percent >= 100;
   const statusLabel = isComplete
-    ? "Ready"
+    ? t("studio.trainingStart.ready")
     : state.totalBytes > 0
-      ? "Downloading"
+      ? t("studio.trainingStart.downloading")
       : state.downloadedBytes === 0
-        ? "Preparing"
+        ? t("studio.trainingStart.preparing")
         : null;
   const showRate = stats.stable && !isComplete;
   const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
   const etaStr =
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
-  const etaSuffix = etaStr !== "--" ? ` • ${etaStr} left` : "";
+  const etaSuffix =
+    etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
   const sizeLabel =
     state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
-        ? `${formatBytes(state.downloadedBytes)} downloaded${rateSuffix}`
+        ? `${t("studio.trainingStart.downloaded", {
+            size: formatBytes(state.downloadedBytes),
+          })}${rateSuffix}`
         : null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
@@ -245,6 +250,7 @@ export function TrainingStartOverlay({
   message,
   currentStep,
 }: TrainingStartOverlayProps): ReactElement {
+  const t = useT();
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const phase = useTrainingRuntimeStore((s) => s.phase);
@@ -273,8 +279,8 @@ export function TrainingStartOverlay({
       : null;
   const displayMessage =
     startFromResume && !isDownloadPhase && /^download/i.test(message)
-      ? "Resuming training..."
-      : message || "starting training...";
+      ? t("studio.trainingStart.resumingTraining")
+      : message || t("studio.trainingStart.startingTraining");
   const rawModelDownload = useModelDownloadProgress(modelName);
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
   const modelDownload = isDownloadPhase
@@ -297,7 +303,7 @@ export function TrainingStartOverlay({
       <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
         <img
           src="/unsloth-gem.png"
-          alt="Unsloth mascot"
+          alt="Unsloth Studio"
           className="size-24 object-contain"
         />
         <div className="relative w-full">
@@ -313,13 +319,13 @@ export function TrainingStartOverlay({
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
-                <AlertDialogTitle>Cancel Training</AlertDialogTitle>
+                <AlertDialogTitle>{t("studio.training.cancelTitle")}</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Do you want to cancel the current training run?
+                  {t("studio.training.cancelDescription")}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogCancel>{t("studio.training.continueAction")}</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   onClick={() => {
@@ -335,7 +341,7 @@ export function TrainingStartOverlay({
                     });
                   }}
                 >
-                  Cancel Training
+                  {t("studio.training.cancelAction")}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -348,24 +354,27 @@ export function TrainingStartOverlay({
             duration={36}
             className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
           >
-            {"> unsloth training starts..."}
+            {t("studio.trainingStart.terminalStart")}
           </TypingAnimation>
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
           <TypingAnimation duration={44}>
-            {"> Preparing model and dataset..."}
+            {t("studio.trainingStart.preparingResources")}
           </TypingAnimation>
           <TypingAnimation duration={44}>
-            {"> We are getting everything ready for your run..."}
+            {t("studio.trainingStart.gettingReady")}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {`> ${displayMessage} | waiting for first step... (${currentStep})`}
+            {t("studio.trainingStart.waitingForFirstStep", {
+              message: displayMessage,
+              step: currentStep,
+            })}
           </AnimatedSpan>
           {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Dataset"
+                label={t("studio.trainingStart.dataset")}
                 state={datasetDownload}
               />
             </AnimatedSpan>
@@ -373,7 +382,7 @@ export function TrainingStartOverlay({
           {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Model weights"
+                label={t("studio.trainingStart.modelWeights")}
                 state={modelDownload}
               />
             </AnimatedSpan>
