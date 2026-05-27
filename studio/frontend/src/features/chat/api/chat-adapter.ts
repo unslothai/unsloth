@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -21,6 +21,7 @@ import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -28,13 +29,19 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "../provider-capabilities";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type PendingImageEditReference,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
+  OpenAIChatMessage,
   OpenAIMessageContent,
+  OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
@@ -70,6 +77,13 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // External prompt-cache fields (see _build_usage_chunk in
+  // external_provider.py). cache_creation is Anthropic-only.
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 /** Server-side timing data from llama-server's timings object. */
@@ -143,6 +157,91 @@ async function updateStoredChatThreadEventually(
   }
 }
 
+/**
+ * Return ``raw`` when it is a safe-to-navigate http(s) URL, or "" otherwise.
+ * Rejects non-string input, CR/LF (header injection), and non-http(s)
+ * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider /
+ * tool-controlled strings cannot land in an <a href>.
+ */
+function isSafeNavigableSourceUrl(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const value = raw.trim();
+  if (!value || /[\r\n]/.test(value)) return "";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // Fall through.
+  }
+  return "";
+}
+
+/** Convert an Anthropic document citation dict into a Sources-panel source. */
+function documentCitationToSource(
+  cit: Record<string, unknown>,
+  fallbackIdx: number,
+): {
+  type: "source";
+  sourceType: "url";
+  id: string;
+  url: string;
+  title: string;
+  metadata?: { description: string };
+} | null {
+  const source =
+    typeof cit.source === "string" && cit.source ? cit.source : "";
+  const docTitle =
+    (typeof cit.document_title === "string" && cit.document_title) ||
+    (typeof cit.title === "string" && cit.title) ||
+    "";
+  const docIndex =
+    typeof cit.document_index === "number" ? cit.document_index : undefined;
+  // Only treat ``source`` as a navigable URL when it is real http(s);
+  // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
+  // or a hostile ``javascript:`` / ``data:`` / ``vbscript:`` string.
+  // Fall back to a stable doc anchor otherwise.
+  const url =
+    isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  const title = docTitle || source || `Document ${fallbackIdx + 1}`;
+  const cited =
+    typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
+  // Trim the cited snippet so the Sources panel stays scannable.
+  const description =
+    cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  // Anthropic numbers inline [N] per citation, not per source URL.
+  // Fold citation type + position-bearing fields into the id so two
+  // distinct citations on the same source (or two search_result_locations
+  // with different search_result_index) keep separate Sources entries.
+  const citationType =
+    typeof cit.type === "string" ? String(cit.type) : "";
+  const positionParts = [
+    cit.search_result_index,
+    cit.start_char_index,
+    cit.end_char_index,
+    cit.start_page_number,
+    cit.end_page_number,
+    cit.start_block_index,
+    cit.end_block_index,
+  ]
+    .filter((v) => typeof v === "number")
+    .map((v) => String(v))
+    .join(":");
+  const idAnchor = positionParts
+    ? `${citationType}:${positionParts}`
+    : `${citationType}:${fallbackIdx}`;
+  const id = `${url}#${idAnchor}`;
+  return {
+    type: "source" as const,
+    sourceType: "url" as const,
+    id,
+    url,
+    title,
+    ...(description ? { metadata: { description } } : {}),
+  };
+}
+
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 function parseSourcesFromResult(raw: string): {
   type: "source";
@@ -167,7 +266,11 @@ function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      const url = urlMatch[1].trim();
+      // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
+      // output is attacker-controllable so a hostile ``javascript:`` /
+      // ``data:`` line must not reach the Sources panel <a href>.
+      const url = isSafeNavigableSourceUrl(urlMatch[1]);
+      if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
@@ -302,42 +405,107 @@ function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  const pushImagePart = (part: { type: string }) => {
+    if (part.type !== "image" || !("image" in part)) {
+      return;
+    }
+    const src = (part as { image: string }).image;
+    if (!src) {
+      return;
+    }
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+      },
+    });
+  };
 
   for (const part of message.content ?? []) {
-    if (part.type === "image" && "image" in part) {
-      const src = (part as { image: string }).image;
-      if (src) {
-        parts.push({
-          type: "image_url",
-          image_url: {
-            url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
-          },
-        });
-      }
-    }
+    pushImagePart(part);
   }
 
   if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
     for (const attachment of message.attachments ?? []) {
       for (const part of attachment.content ?? []) {
-        if (part.type === "image" && "image" in part) {
-          const src = (part as { image: string }).image;
-          if (src) {
-            parts.push({
-              type: "image_url",
-              image_url: {
-                url: src.startsWith("data:")
-                  ? src
-                  : `data:image/png;base64,${src}`,
-              },
-            });
-          }
-        }
+        pushImagePart(part);
       }
     }
   }
 
   return parts;
+}
+
+function normalizeOpenAIReasoningItem(
+  value: unknown,
+): OpenAIReasoningContentPart | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  if (item.type !== "reasoning" || typeof item.id !== "string" || !item.id) {
+    return null;
+  }
+  const summary = Array.isArray(item.summary)
+    ? item.summary.flatMap((part) => {
+        if (!part || typeof part !== "object") {
+          return [];
+        }
+        const summaryPart = part as Record<string, unknown>;
+        return summaryPart.type === "summary_text" &&
+          typeof summaryPart.text === "string"
+          ? [{ type: "summary_text" as const, text: summaryPart.text }]
+          : [];
+      })
+    : [];
+  const normalized: OpenAIReasoningContentPart = {
+    type: "reasoning",
+    id: item.id,
+    summary,
+  };
+  if (
+    item.status === "in_progress" ||
+    item.status === "completed" ||
+    item.status === "incomplete"
+  ) {
+    normalized.status = item.status;
+  }
+  return normalized;
+}
+
+function toOpenAIImageEditReferenceMessage(
+  reference: PendingImageEditReference,
+): OpenAIChatMessage | null {
+  if (!reference.openaiImageGenerationCallId) {
+    return null;
+  }
+  const content: Exclude<OpenAIMessageContent, string> = [];
+  const reasoningItem = normalizeOpenAIReasoningItem(
+    reference.openaiReasoningItem,
+  );
+  if (reasoningItem) {
+    content.push(reasoningItem);
+  }
+  content.push({
+    type: "image_generation_call",
+    id: reference.openaiImageGenerationCallId,
+    ...(reference.openaiResponseId
+      ? { response_id: reference.openaiResponseId }
+      : {}),
+  });
+  return { role: "assistant", content };
+}
+
+// Refusal flag stamped on assistant metadata when the backend emits the
+// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
+// request body (Anthropic guidance: leaving refusals in context keeps
+// refusing). Metadata (not text) prevents content from spoofing a reset.
+function isAnthropicRefusalMessage(message: RunMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const metadata = (message as { metadata?: unknown }).metadata as
+    | { custom?: Record<string, unknown> }
+    | undefined;
+  return metadata?.custom?.anthropicRefusal === true;
 }
 
 function toOpenAIMessage(message: RunMessage): {
@@ -360,16 +528,27 @@ function toOpenAIMessage(message: RunMessage): {
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
+    if (isAnthropicRefusalMessage(message)) {
+      // Prune refused assistant turn from outbound history; the
+      // rendered transcript still shows the user-visible notice.
+      return null;
+    }
   }
 
   const imageParts = collectImageParts(message);
   if (imageParts.length > 0) {
     return {
       role: message.role,
-      content: [{ type: "text", text: textContent }, ...imageParts],
+      content: [
+        ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+        ...imageParts,
+      ],
     };
   }
 
+  if (!textContent) {
+    return null;
+  }
   return { role: message.role, content: textContent };
 }
 
@@ -804,17 +983,52 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const resolvedThreadKey = resolvedThreadId ?? null;
+      const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
+      const selectedImageEditReference =
+        (pendingImageEditReferenceForRun?.threadId ?? null) ===
+        resolvedThreadKey
+          ? pendingImageEditReferenceForRun
+          : null;
+      const clearSelectedImageEditReference = () => {
+        if (!selectedImageEditReference) {
+          return;
+        }
+        const store = useChatRuntimeStore.getState();
+        const pending = store.pendingImageEditReference;
+        if (
+          pending?.openaiImageGenerationCallId ===
+            selectedImageEditReference.openaiImageGenerationCallId &&
+          pending.openaiResponseId ===
+            selectedImageEditReference.openaiResponseId &&
+          (pending.threadId ?? null) ===
+            (selectedImageEditReference.threadId ?? null)
+        ) {
+          store.clearPendingImageEditReference();
+        }
+      };
 
       // Wait for in-progress model load to finish before inferring
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
-        await waitForModelReady(abortSignal);
+        try {
+          await waitForModelReady(abortSignal);
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Auto-load the smallest downloaded model
-        const { loaded, blockedByTrustRemoteCode } =
-          await autoLoadSmallestModel();
+        let loaded: boolean;
+        let blockedByTrustRemoteCode: boolean;
+        try {
+          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
@@ -826,6 +1040,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 : "Pick a model in the top bar, then retry.",
             },
           );
+          clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }
       }
@@ -833,7 +1048,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        webFetchToolsEnabled,
+      } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -844,6 +1065,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           description:
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -859,6 +1081,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toast.error("Connection not found.", {
           description: "Open Settings → Connections and add it again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connection not found.");
       }
       // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
@@ -869,36 +1092,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toast.error("Missing API key for selected connection.", {
           description: "Open Settings → Connections and set the API key again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Missing connection API key.");
       }
 
-      const webSearchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
-        );
-      const codeExecEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            externalSelection &&
-            codeToolsEnabled &&
-            providerSupportsBuiltinCodeExecution(
-              externalProvider.providerType,
-              externalSelection.modelId,
-              externalProvider.baseUrl,
-            ),
-        );
-      // web_fetch shares the Search pill with web_search (no separate
-      // UI toggle), so it follows toolsEnabled. Anthropic is the only
-      // provider that ships it today; on others providerSupportsBuiltinWebFetch
-      // returns false and this stays inert.
-      const webFetchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebFetch(externalProvider.providerType),
-        );
+      const webSearchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebSearch(externalProvider.providerType),
+      );
+      const codeExecEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          codeToolsEnabled &&
+          providerSupportsBuiltinCodeExecution(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
+      // Fetch pill is independent of Search (Anthropic bills web_fetch
+      // separately from web_search). Sourced from `webFetchToolsEnabled`;
+      // on providers without web_fetch the toggle is forced off in
+      // chat-page's runtime setState.
+      const webFetchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          webFetchToolsEnabled &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
       const providerShipsWebFetch = Boolean(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
@@ -918,11 +1139,58 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
 
-      const outboundMessages = messages
+      if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
+        clearSelectedImageEditReference();
+        toast.error("Image editing is unavailable", {
+          description:
+            "Select an OpenAI image-generation model, then retry the edit.",
+        });
+        throw new Error("Image generation edit unavailable.");
+      }
+
+      // Two-pass build: a refused assistant turn also drops the user
+      // prompt that triggered it (leaving it in context re-triggers
+      // the classifier). Refusal flag rides assistant
+      // metadata.custom.anthropicRefusal, set out-of-band from the
+      // backend _toolEvent.
+      const survivingMessages: RunMessage[] = [];
+      for (const message of messages) {
+        if (isAnthropicRefusalMessage(message)) {
+          const last = survivingMessages.at(-1);
+          if (last && last.role === "user") {
+            survivingMessages.pop();
+          }
+          continue;
+        }
+        survivingMessages.push(message);
+      }
+
+      const outboundMessages = survivingMessages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
+      if (selectedImageEditReference) {
+        const referenceMessage = toOpenAIImageEditReferenceMessage(
+          selectedImageEditReference,
+        );
+        if (!referenceMessage) {
+          clearSelectedImageEditReference();
+          toast.error("This generated image cannot be edited", {
+            description:
+              "The original image reference is missing. Generate the image again, then retry the edit.",
+          });
+          throw new Error("Generated image edit reference missing.");
+        }
+        let insertAt = outboundMessages.length;
+        for (let i = outboundMessages.length - 1; i >= 0; i -= 1) {
+          if (outboundMessages[i]?.role === "user") {
+            insertAt = i;
+            break;
+          }
+        }
+        outboundMessages.splice(insertAt, 0, referenceMessage);
+      }
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
@@ -941,24 +1209,51 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        // Treat search and fetch as a single "any web tool" axis so
+        // the guard only warns when neither pill is on; checking
+        // webSearchEnabledForThisTurn alone mis-fired when only Fetch
+        // was on and suppressed live web_fetch calls.
+        const anyWebEnabledForThisTurn =
+          webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
+        if (
+          !anyWebEnabledForThisTurn &&
+          !codeExecEnabledForThisTurn &&
+          !imageGenerationEnabledForThisTurn
+        ) {
           disabledToolGuard =
-            `You do not have ${webLabel} or code execution tools in this conversation. ` +
+            `You do not have ${webLabel}, code execution, or image generation tools in this conversation. ` +
             "Answer from your own knowledge. " +
-            "If a request genuinely requires tool use, live data fetch or running code, " +
+            "If a request genuinely requires tool use, live data fetch, running code, or image generation, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn) {
+        } else if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            `You do not have ${webLabel} or code execution tools in this conversation. ` +
+            "You may still use image generation tools when they are available and useful. " +
+            "If a request genuinely requires live data fetch or running code, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        } else if (!anyWebEnabledForThisTurn) {
+          const availableTools = [
+            codeExecEnabledForThisTurn ? "code execution" : null,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
-            "You may still use code execution tools when they are available and useful. " +
+            (availableTools.length > 0
+              ? `You may still use ${availableTools.join(" and ")} tools when they are available and useful. `
+              : "") +
             "If a request genuinely requires live data fetch or web search tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!codeExecEnabledForThisTurn) {
+          const availableTools = [
+            webLabel,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
-            `You may still use ${webLabel} tools when they are available and useful. ` +
+            `You may still use ${availableTools.join(" and ")} tools when they are available and useful. ` +
             "If a request genuinely requires running code or code execution tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
@@ -988,8 +1283,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           });
         }
       }
-      const imageBase64 = findLatestUserImageBase64(messages);
-      const audioBase64 = findLatestUserAudioBase64(messages);
+      // Scan post-prune history so a refused user turn's image/audio
+      // doesn't gate or mis-attribute the next non-refused turn.
+      const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      const audioBase64 = findLatestUserAudioBase64(survivingMessages);
 
       // Block when ANY image is in the outbound payload (current or
       // prior turns) and the loaded model can't process images. Keeps
@@ -1018,6 +1315,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           const gatedThreadKey = resolvedThreadId || "__default";
           runtime.setThreadRunning(gatedThreadKey, true);
           runtime.setThreadRunning(gatedThreadKey, false);
+          clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
       }
@@ -1025,7 +1323,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
-          const lastUserMsg = [...messages]
+          const lastUserMsg = [...survivingMessages]
             .reverse()
             .find((m) => m.role === "user");
           if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
@@ -1136,6 +1434,32 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      const orderAssistantContent = (
+        textParts: ReturnType<typeof parseAssistantContent>,
+      ) => {
+        const imageToolParts = toolCallParts.filter(
+          (part) => part.toolName === "image_generation",
+        );
+        const otherToolParts = toolCallParts.filter(
+          (part) => part.toolName !== "image_generation",
+        );
+        return [...otherToolParts, ...textParts, ...imageToolParts];
+      };
+      // Anthropic document_citations tool_event payload, converted to
+      // Sources-panel source parts at end-of-stream so the inline [N]
+      // markers have matching entries.
+      const documentCitationParts: Array<{
+        type: "source";
+        sourceType: "url";
+        id: string;
+        url: string;
+        title: string;
+        metadata?: { description: string };
+      }> = [];
+      // Latched on the `anthropic_refusal` tool event; stamped onto the
+      // final assistant metadata as `custom.anthropicRefusal` to drive
+      // the history-prune above.
+      let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -1314,8 +1638,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ) {
                       void updateStoredChatThreadEventually(t.id, {
                         openaiCodeExecContainerId: null,
-                      })
-                        .catch(() => {});
+                      }).catch(() => {});
                       continue;
                     }
                     openaiCodeExecContainerId = t.openaiCodeExecContainerId;
@@ -1359,8 +1682,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = created.id;
                   void updateStoredChatThreadEventually(resolvedThreadId, {
                     openaiCodeExecContainerId: created.id,
-                  })
-                    .catch(() => {});
+                  }).catch(() => {});
                 } catch {
                   // Fall back to backend's container_auto path on
                   // failure — keeps the chat moving; the next turn
@@ -1382,18 +1704,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.topP !== false
                 ? { top_p: params.topP }
                 : {}),
-              // Clamp to the cross-provider output cap so a maxTokens value
-              // carried over from a local-model session does not blow past
-              // provider limits (e.g. Claude Opus 400s on >128k). Also
-              // floor to the provider's documented minimum — Kimi's
-              // thinking models need >=16k or the response truncates
-              // before the answer fits alongside reasoning_content.
+              // Floor at the provider's documented min (Kimi thinking
+              // needs >=16k); clamp at the per-model max.
               max_tokens: Math.min(
                 Math.max(
                   params.maxTokens,
                   getExternalMinOutputTokens(externalProvider?.providerType),
                 ),
-                EXTERNAL_MAX_OUTPUT_TOKENS,
+                getExternalMaxOutputTokens(
+                  externalProvider?.providerType,
+                  externalSelection?.modelId,
+                ),
               ),
               // Only forward sampling knobs the provider actually accepts; the
               // backend's external-provider proxy is param-permissive and would
@@ -1419,13 +1740,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // Pair web_fetch with the Search pill on any
-                      // provider that ships it (Anthropic today). The
-                      // common workflow is "search returns URLs, fetch
-                      // reads them"; without web_fetch the model can
-                      // surface a citation but cannot quote from the
-                      // page body, which is the whole point of the
-                      // tool. There is no separate UI toggle yet.
+                      // web_fetch has its own Fetch pill, independent
+                      // of Search. Anthropic-only today.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                       // OpenAI Responses-API only: `image_generation`
@@ -1473,10 +1789,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // attaches `cache_control.ttl` when the value is one of
               // "5m" / "1h" (see external_provider.py near line 1375),
               // so unknown values are a no-op end-to-end.
-              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              ...(supportsProviderPromptCacheTtl(
+                externalProvider.providerType,
+              ) &&
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
+                : {}),
+              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
+              // silently drops on unsupported models as a second
+              // line of defence.
+              ...(params.fastMode &&
+              providerSupportsFastMode(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+                ? { fast_mode: true }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
@@ -1541,10 +1869,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         let retriedWithRefreshedKey = false;
         while (true) {
           try {
-            const stream = streamChatCompletions(
-              await buildRequestPayload(retriedWithRefreshedKey),
-              abortSignal,
-            );
+            let requestPayload: OpenAIChatCompletionsRequest;
+            try {
+              requestPayload = await buildRequestPayload(retriedWithRefreshedKey);
+            } catch (error) {
+              clearSelectedImageEditReference();
+              throw error;
+            }
+            clearSelectedImageEditReference();
+            const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
               // Handle tool status events
@@ -1583,6 +1916,27 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                   continue;
                 }
+                if (toolEvent.type === "document_citations") {
+                  // Convert Anthropic citations_delta footnotes into
+                  // Sources-panel entries matching the inline [N] markers.
+                  const cits = toolEvent.citations;
+                  if (Array.isArray(cits)) {
+                    cits.forEach((entry, idx) => {
+                      if (!entry || typeof entry !== "object") return;
+                      const part = documentCitationToSource(
+                        entry as Record<string, unknown>,
+                        idx,
+                      );
+                      if (
+                        part &&
+                        !documentCitationParts.some((p) => p.id === part.id)
+                      ) {
+                        documentCitationParts.push(part);
+                      }
+                    });
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "container_invalidated") {
                   if (resolvedThreadId) {
                     const field =
@@ -1591,9 +1945,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         : "openaiCodeExecContainerId";
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: null,
-                    })
-                      .catch(() => {});
+                    }).catch(() => {});
                   }
+                  continue;
+                }
+                if (toolEvent.type === "anthropic_refusal") {
+                  // Latch the backend refusal signal so the final
+                  // message metadata can drive the prune.
+                  anthropicRefusalSeen = true;
                   continue;
                 }
                 if (toolEvent.type === "tool_start") {
@@ -1630,6 +1989,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           size?: string;
                           quality?: string;
                           background?: string;
+                          prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     if (
@@ -1651,6 +2011,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         size: toolEvent.size as string | undefined,
                         quality: toolEvent.quality as string | undefined,
                         background: toolEvent.background as string | undefined,
+                        prompt: toolEvent.prompt as string | undefined,
                       };
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
@@ -1668,16 +2029,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     } else {
                       parsedResult = rawResult;
                     }
+                    const nextArgs =
+                      toolEvent.arguments &&
+                      typeof toolEvent.arguments === "object"
+                        ? (toolEvent.arguments as ToolCallMessagePart["args"])
+                        : undefined;
+                    const mergedArgs = nextArgs
+                      ? { ...(toolCallParts[idx].args ?? {}), ...nextArgs }
+                      : toolCallParts[idx].args;
                     toolCallParts[idx] = {
                       ...toolCallParts[idx],
+                      args: mergedArgs,
+                      argsText: mergedArgs
+                        ? JSON.stringify(mergedArgs)
+                        : toolCallParts[idx].argsText,
                       result: parsedResult,
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates (tools first, text after)
+                // Yield cumulative state so tool UI updates. Search/code tools stay
+                // before the text, while generated images sit after the answer.
                 const textParts = parseAssistantContent(cumulativeText);
                 yield {
-                  content: [...toolCallParts, ...textParts],
+                  content: orderAssistantContent(textParts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -1825,7 +2199,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
               if (parts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: [...toolCallParts, ...parts],
+                  content: orderAssistantContent(parts),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -1881,18 +2255,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Update context usage in store if we got valid server data
+        // Prefer llama-server timings; fall back to provider usage envelope.
+        const cachedTokens =
+          meta?.timings?.cache_n ??
+          meta?.usage?.prompt_tokens_details?.cached_tokens ??
+          meta?.usage?.cache_read_input_tokens ??
+          0;
+        // Anthropic-only (billed at the write premium).
+        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+
+        // Gate on the captured checkpoint still being active so a late
+        // completion from provider A doesn't populate the bar after the
+        // user switched to provider B mid-stream.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number"
+          typeof meta.usage.total_tokens === "number" &&
+          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
-            cachedTokens: meta.timings?.cache_n ?? 0,
+            cachedTokens,
+            cacheWriteTokens,
           });
         }
 
@@ -1908,21 +2295,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            ...orderAssistantContent(parseAssistantContent(cumulativeText)),
             ...sourceParts,
+            ...documentCitationParts,
           ],
           metadata: {
             timing: finalTiming,
             custom: {
               reasoningDuration,
+              // Persisted refusal flag driving the two-pass prune.
+              anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
               contextUsage: meta?.usage
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
-                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    cachedTokens,
+                    cacheWriteTokens,
                     modelId: params.checkpoint,
                   }
                 : undefined,

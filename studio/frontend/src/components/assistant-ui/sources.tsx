@@ -127,6 +127,12 @@ function Source({
 // ── Source badge with hover card ─────────────────────────────
 
 interface SourceData {
+  /**
+   * Stable per-citation key. Two Anthropic document citations into
+   * different spans of the same source share a ``url``, so React keys
+   * on ``id`` to keep each footnote distinct.
+   */
+  id: string;
   url: string;
   title: string;
   description?: string;
@@ -190,8 +196,14 @@ const SourcesGroup: FC = () => {
         "url" in part &&
         part.url
       ) {
+        const url = part.url as string;
+        const partId =
+          typeof (part as { id?: unknown }).id === "string"
+            ? ((part as { id: string }).id)
+            : url;
         sources.push({
-          url: part.url as string,
+          id: partId,
+          url,
           title: (part as { title?: string }).title || "",
           description: (part as { metadata?: { description?: string } })
             .metadata?.description,
@@ -258,7 +270,7 @@ const SourcesGroup: FC = () => {
         className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
       >
         {sources.map((source) => (
-          <span key={source.url} className="inline-block">
+          <span key={source.id} className="inline-block">
             <Source href={source.url}>
               <SourceIcon url={source.url} />
               <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
@@ -270,7 +282,7 @@ const SourcesGroup: FC = () => {
       {/* Visible container */}
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.url} source={source} />
+          <SourceBadge key={source.id} source={source} />
         ))}
         {shouldCollapse && !expanded && (
           <button

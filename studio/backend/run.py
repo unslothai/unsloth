@@ -9,6 +9,7 @@ Works independently and can be moved to any directory.
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -512,10 +513,94 @@ _server = None
 _shutdown_event = None
 
 
+_DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+def _iter_frontend_fallback_candidates() -> "list[Path]":
+    """Yield `studio/frontend/dist` paths to try when the default is missing.
+
+    Covers PATH-shadowed binaries whose __file__ resolves into a
+    site-packages tree that never received a vite build (e.g. plain
+    `pip install unsloth` from PyPI).
+    """
+    import ast
+    import re
+
+    out: list[Path] = []
+    home_str = (
+        os.environ.get("UNSLOTH_STUDIO_HOME")
+        or os.environ.get("STUDIO_HOME")
+        or str(Path.home() / ".unsloth" / "studio")
+    )
+    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
+    # Installer venv site-packages.
+    for pattern in (
+        "lib/python*/site-packages/studio/frontend/dist",
+        "Lib/site-packages/studio/frontend/dist",
+    ):
+        out.extend(venv_dir.glob(pattern))
+    # Editable source roots referenced from the installer venv.
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for finder in sp.glob("__editable___*_finder.py"):
+                try:
+                    src = finder.read_text(encoding = "utf-8")
+                except OSError:
+                    continue
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
+                if not m:
+                    continue
+                try:
+                    mapping = ast.literal_eval(m.group(1))
+                except (SyntaxError, ValueError):
+                    continue
+                # Defensive: literal_eval can return a set / list / None if the
+                # matched literal is not a dict (regex captures `{...}`).
+                if not isinstance(mapping, dict):
+                    continue
+                studio_pkg = mapping.get("studio")
+                if studio_pkg:
+                    out.append(Path(studio_pkg) / "frontend" / "dist")
+    return out
+
+
+def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Path]]:
+    """Pick a frontend dir that actually contains `index.html`.
+
+    Returns (chosen, attempted). `chosen` is None if nothing servable was
+    found; `attempted` is the full ordered list for diagnostics.
+    """
+    attempted: list[Path] = []
+    seen: set[Path] = set()
+
+    def _try(p: Path) -> bool:
+        try:
+            key = p.resolve()
+        except OSError:
+            key = p
+        if key in seen:
+            return False
+        seen.add(key)
+        attempted.append(p)
+        return (p / "index.html").is_file()
+
+    if _try(Path(frontend_path)):
+        return attempted[-1], attempted
+    for alt in _iter_frontend_fallback_candidates():
+        if _try(alt):
+            return attempted[-1], attempted
+    return None, attempted
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
-    frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+    frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
@@ -584,14 +669,48 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend if path provided (skip in api-only mode)
+    # Setup frontend if path provided (skip in api-only mode).
+    # Falls back through alternate locations if the default lacks a built
+    # dist; errors out loudly rather than silently serving 404 on `/`.
     if frontend_path and not api_only:
-        if setup_frontend(app, frontend_path):
+        chosen, attempted = _resolve_frontend_path(Path(frontend_path))
+        if chosen is not None and setup_frontend(app, chosen):
             if not silent:
-                print(f"[OK] Frontend loaded from {frontend_path}")
+                # Resolve so logs always show an absolute path for support.
+                try:
+                    display = chosen.resolve()
+                except OSError:
+                    display = chosen
+                print(f"[OK] Frontend loaded from {display}")
         else:
-            if not silent:
-                print(f"[WARNING] Frontend not found at {frontend_path}")
+            home_str = (
+                os.environ.get("UNSLOTH_STUDIO_HOME")
+                or os.environ.get("STUDIO_HOME")
+                or str(Path.home() / ".unsloth" / "studio")
+            )
+            # Windows ships the user-facing shim at $STUDIO_HOME/bin/unsloth.exe
+            # (a hardlink to the venv exe); Linux/macOS use the venv binary
+            # at $STUDIO_HOME/unsloth_studio/bin/unsloth.
+            home = Path(home_str).expanduser()
+            if sys.platform == "win32":
+                installer_bin = home / "bin" / "unsloth.exe"
+            else:
+                installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
+            tried_lines = "\n".join(f"  - {p}" for p in attempted) or "  (none)"
+            raise SystemExit(
+                "[ERROR] Studio frontend build not found.\n"
+                f"Tried:\n{tried_lines}\n"
+                "\n"
+                "Likely cause: another 'unsloth' on PATH is shadowing the "
+                "installer's binary and points at a site-packages tree with "
+                "no built dist.\n"
+                "\n"
+                "Fix one of:\n"
+                f"  - run the installer's binary directly: {installer_bin} studio\n"
+                "  - pass --frontend <path/to/studio/frontend/dist>\n"
+                "  - pass --api-only to skip serving the web UI\n"
+                "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
+            )
 
     # Resolve once; shared by the log rewrite and the banner.
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
@@ -718,7 +837,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frontend",
         type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        default = _DEFAULT_FRONTEND_PATH,
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")

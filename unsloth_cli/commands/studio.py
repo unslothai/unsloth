@@ -214,6 +214,79 @@ _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
 _PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
 
 
+def _iter_editable_studio_source_roots(venv_dir: Path):
+    """Yield repo roots from setuptools `__editable___*_finder.py` files in
+    *venv_dir*'s site-packages whose MAPPING includes a `studio` entry.
+
+    Returns the parent dir of the mapped `studio` package (i.e. the repo
+    root), so callers can append `/studio/...` to reach any subdir.
+    """
+    import ast
+    import re
+
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for finder in sp.glob("__editable___*_finder.py"):
+                try:
+                    src = finder.read_text(encoding = "utf-8")
+                except OSError:
+                    continue
+                # Tolerate single- or multi-line dict literals; [^}]* still
+                # rejects nested dicts, which the setuptools template never
+                # emits for editable installs.
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
+                if not m:
+                    continue
+                try:
+                    mapping = ast.literal_eval(m.group(1))
+                except (SyntaxError, ValueError):
+                    continue
+                # Defensive: literal_eval can return a set / list / None if the
+                # matched literal is not a dict (regex captures `{...}`).
+                if not isinstance(mapping, dict):
+                    continue
+                studio_pkg = mapping.get("studio")
+                if studio_pkg:
+                    yield Path(studio_pkg).parent
+
+
+def _find_frontend_dist() -> Optional[Path]:
+    """Locate a built `studio/frontend/dist` (containing index.html).
+
+    Probes (in order): package-local default, installer venv site-packages,
+    editable source roots referenced from the installer venv. Returns None
+    if nothing servable is found, so callers can decide to error or proceed
+    in `--api-only` mode.
+
+    Fixes the silent 404 when another `unsloth` on PATH shadows the
+    installer's binary and points `_PACKAGE_ROOT` at a site-packages copy
+    that never received a vite build.
+    """
+    candidates: List[Path] = [_PACKAGE_ROOT / "studio" / "frontend" / "dist"]
+    venv_dir = STUDIO_HOME / "unsloth_studio"
+    for pattern in (
+        "lib/python*/site-packages/studio/frontend/dist",
+        "Lib/site-packages/studio/frontend/dist",
+    ):
+        candidates.extend(venv_dir.glob(pattern))
+    for repo_root in _iter_editable_studio_source_roots(venv_dir):
+        candidates.append(repo_root / "studio" / "frontend" / "dist")
+    seen: set[Path] = set()
+    for c in candidates:
+        try:
+            resolved = c.resolve()
+        except OSError:
+            resolved = c
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (c / "index.html").is_file():
+            return c
+    return None
+
+
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
 
@@ -573,8 +646,14 @@ def studio_default(
                 "--parallel",
                 str(parallel),
             ]
-            if frontend:
-                args.extend(["--frontend", str(frontend)])
+            # Resolve frontend explicitly so the spawned run.py uses a real
+            # built dist regardless of where its __file__ lands. Skip in
+            # --api-only (no UI served).
+            resolved_frontend = frontend
+            if resolved_frontend is None and not api_only:
+                resolved_frontend = _find_frontend_dist()
+            if resolved_frontend is not None:
+                args.extend(["--frontend", str(resolved_frontend)])
             if silent:
                 args.append("--silent")
             if api_only:
