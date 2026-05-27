@@ -146,8 +146,14 @@ class TestHasNvidiaGpu:
     def teardown_method(self):
         wheel_utils.has_nvidia_gpu.cache_clear()
 
-    def test_returns_false_when_nvidia_smi_missing(self):
-        with mock.patch.object(wheel_utils.shutil, "which", return_value = None):
+    def test_returns_false_when_nvidia_smi_missing_and_no_torch_cuda(self):
+        # nvidia-smi absent + torch fallback False -> False.
+        with (
+            mock.patch.object(wheel_utils.shutil, "which", return_value = None),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
+            ),
+        ):
             assert wheel_utils.has_nvidia_gpu() is False
 
     def test_returns_true_when_nvidia_smi_reports_gpu(self):
@@ -163,7 +169,7 @@ class TestHasNvidiaGpu:
         ):
             assert wheel_utils.has_nvidia_gpu() is True
 
-    def test_returns_false_when_nvidia_smi_returns_no_gpus(self):
+    def test_returns_false_when_nvidia_smi_returns_no_gpus_and_no_torch_cuda(self):
         with (
             mock.patch.object(
                 wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
@@ -171,10 +177,13 @@ class TestHasNvidiaGpu:
             mock.patch.object(
                 wheel_utils.subprocess, "run", return_value = _smi_result("")
             ),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
+            ),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
-    def test_returns_false_when_nvidia_smi_fails(self):
+    def test_returns_false_when_nvidia_smi_fails_and_no_torch_cuda(self):
         with (
             mock.patch.object(
                 wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
@@ -184,10 +193,13 @@ class TestHasNvidiaGpu:
                 "run",
                 return_value = _smi_result("", returncode = 1),
             ),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
+            ),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
-    def test_returns_false_on_subprocess_timeout(self):
+    def test_returns_false_on_subprocess_timeout_and_no_torch_cuda(self):
         with (
             mock.patch.object(
                 wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
@@ -197,8 +209,72 @@ class TestHasNvidiaGpu:
                 "run",
                 side_effect = subprocess.TimeoutExpired(cmd = "nvidia-smi", timeout = 10),
             ),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
+            ),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
+
+    def test_falls_back_to_torch_when_nvidia_smi_missing(self):
+        # Containerised CUDA host: no nvidia-smi but torch.cuda is_available.
+        with (
+            mock.patch.object(wheel_utils.shutil, "which", return_value = None),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = True
+            ),
+        ):
+            assert wheel_utils.has_nvidia_gpu() is True
+
+    def test_falls_back_to_torch_when_nvidia_smi_returns_empty(self):
+        # nvidia-smi present but returns no GPUs (driver glitch): torch rescues.
+        with (
+            mock.patch.object(
+                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+            ),
+            mock.patch.object(
+                wheel_utils.subprocess, "run", return_value = _smi_result("")
+            ),
+            mock.patch.object(
+                wheel_utils, "_torch_nvidia_cuda_available", return_value = True
+            ),
+        ):
+            assert wheel_utils.has_nvidia_gpu() is True
+
+
+class TestTorchNvidiaCudaAvailable:
+    def test_returns_false_when_torch_missing(self):
+        # Simulate setup-time call before torch is installed.
+        import sys as _sys
+        saved = _sys.modules.pop("torch", None)
+        _sys.modules["torch"] = None  # forces ImportError on `import torch`
+        try:
+            assert wheel_utils._torch_nvidia_cuda_available() is False
+        finally:
+            if saved is not None:
+                _sys.modules["torch"] = saved
+            else:
+                _sys.modules.pop("torch", None)
+
+    def test_returns_false_on_rocm_torch(self):
+        fake_torch = mock.MagicMock()
+        fake_torch.version.hip = "6.2"
+        fake_torch.cuda.is_available.return_value = True
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            assert wheel_utils._torch_nvidia_cuda_available() is False
+
+    def test_returns_true_on_nvidia_cuda_torch(self):
+        fake_torch = mock.MagicMock()
+        fake_torch.version.hip = None
+        fake_torch.cuda.is_available.return_value = True
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            assert wheel_utils._torch_nvidia_cuda_available() is True
+
+    def test_returns_false_when_cuda_unavailable(self):
+        fake_torch = mock.MagicMock()
+        fake_torch.version.hip = None
+        fake_torch.cuda.is_available.return_value = False
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            assert wheel_utils._torch_nvidia_cuda_available() is False
 
 
 class TestFlashAttnWheelSelection:

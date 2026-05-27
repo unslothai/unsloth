@@ -62,9 +62,36 @@ class KernelPackageSpec:
         )
 
 
+def _torch_nvidia_cuda_available() -> bool:
+    """Best-effort: True iff a CUDA build of torch reports a visible GPU.
+
+    Mirrors the torch-fallback half of ``llama_cpp._get_gpu_free_memory``
+    so containerised CUDA hosts with no ``nvidia-smi`` on PATH are still
+    recognised. Returns False (not raises) when torch is unimportable,
+    so install-time callers running before torch is installed are safe.
+    """
+    try:
+        import torch
+    except Exception:
+        return False
+    try:
+        # ROCm reuses the torch.cuda.* namespace; exclude it explicitly.
+        if getattr(torch.version, "hip", None) is not None:
+            return False
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 @functools.lru_cache(maxsize = 1)
 def has_nvidia_gpu() -> bool:
-    """Return True if `nvidia-smi` reports at least one visible NVIDIA GPU.
+    """Return True if an NVIDIA GPU is visible to this process.
+
+    Probe order mirrors ``llama_cpp._get_gpu_free_memory``:
+      1. ``nvidia-smi --query-gpu=name`` (fast, no torch needed).
+      2. torch.cuda fallback (rescues containerised CUDA hosts where
+         ``nvidia-smi`` is missing from PATH; ROCm filtered out via
+         ``torch.version.hip``).
 
     Used to gate flash-attn / flash-linear-attention installs: AMD ROCm,
     Intel XPU and CPU-only torch builds have no working path through the
@@ -73,22 +100,24 @@ def has_nvidia_gpu() -> bool:
     Cached for process lifetime; tests must call ``cache_clear()`` first.
     """
     exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "--query-gpu=name", "--format=csv,noheader"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-            env = child_env_without_native_path_secret(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    return any(line.strip() for line in result.stdout.splitlines())
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "--query-gpu=name", "--format=csv,noheader"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+            )
+            if result.returncode == 0 and any(
+                line.strip() for line in result.stdout.splitlines()
+            ):
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # nvidia-smi absent / empty / failed: fall through to torch.
+    return _torch_nvidia_cuda_available()
 
 
 @functools.lru_cache(maxsize = 1)
