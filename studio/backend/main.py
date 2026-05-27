@@ -18,6 +18,17 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# `uvicorn main:app` bypasses run.py; seed thread caps here too.
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    _raw = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
+    ) from None
+
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
