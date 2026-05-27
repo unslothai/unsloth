@@ -80,22 +80,31 @@ const TRAINING_UPLOAD_EXTENSIONS = [
   ".docx",
   ".txt",
 ] as const;
-const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(TRAINING_UPLOAD_EXTENSIONS);
+const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(
+  TRAINING_UPLOAD_EXTENSIONS,
+);
 const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
 const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
 const TRAINING_DATASET_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet";
 const DOCUMENT_REDIRECT_LABEL = "PDF/DOCX/TXT open Learning Recipes";
+// sync: TRAINING_DATASET_UPLOAD_MAX_BYTES in studio/backend/routes/datasets.py
 const TRAINING_UPLOAD_MAX_BYTES = 200 * 1024 * 1024;
 const TRAINING_UPLOAD_MAX_LABEL = "200MB";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
-const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+const SEARCH_INPUT_REASONS = new Set([
+  "input-change",
+  "input-paste",
+  "input-clear",
+]);
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
   "data-recipes:open-learning-recipes";
 
 function getFileExtension(fileName: string) {
   const extensionStart = fileName.lastIndexOf(".");
-  return extensionStart >= 0 ? fileName.slice(extensionStart).toLowerCase() : "";
+  return extensionStart >= 0
+    ? fileName.slice(extensionStart).toLowerCase()
+    : "";
 }
 
 function formatUploadSize(bytes: number) {
@@ -212,7 +221,9 @@ export function DatasetSection() {
       setLocalDatasets(response.datasets ?? []);
     } catch (error) {
       setLocalError(
-        error instanceof Error ? error.message : "Failed to load local datasets.",
+        error instanceof Error
+          ? error.message
+          : "Failed to load local datasets.",
       );
     } finally {
       setHasLoadedLocalDatasets(true);
@@ -330,7 +341,11 @@ export function DatasetSection() {
 
   const localResultIds = useMemo(() => {
     const ids = localFilteredDatasets.map((item) => item.id);
-    if (selectedLocalDataset && selectedLocalId && !ids.includes(selectedLocalId)) {
+    if (
+      selectedLocalDataset &&
+      selectedLocalId &&
+      !ids.includes(selectedLocalId)
+    ) {
       ids.push(selectedLocalId);
     }
     return ids;
@@ -357,7 +372,8 @@ export function DatasetSection() {
   ]);
 
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
-  const comboboxItems = pickerTab === "huggingface" ? hfResultIds : localResultIds;
+  const comboboxItems =
+    pickerTab === "huggingface" ? hfResultIds : localResultIds;
   const comboboxValue =
     pickerTab === "huggingface"
       ? datasetSource === "huggingface"
@@ -371,11 +387,14 @@ export function DatasetSection() {
     !!dataset &&
     !isLikelyLocalDatasetRef(dataset);
 
-  const selectedDatasetName = datasetSource === "upload" ? uploadedFile : dataset;
+  const selectedDatasetName =
+    datasetSource === "upload" ? uploadedFile : dataset;
   const selectedLocalMetadata = selectedLocalDataset?.metadata ?? null;
   const selectedLocalColumns = selectedLocalMetadata?.columns ?? [];
   const selectedLocalRows =
-    selectedLocalDataset?.rows ?? selectedLocalMetadata?.actual_num_records ?? null;
+    selectedLocalDataset?.rows ??
+    selectedLocalMetadata?.actual_num_records ??
+    null;
   const selectedLocalUpdatedAt = selectedLocalDataset?.updated_at ?? null;
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -441,7 +460,9 @@ export function DatasetSection() {
     await handleFileUpload(file, selectLocalDataset, "Dataset uploaded");
   };
 
-  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handleDatasetFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -572,11 +593,16 @@ export function DatasetSection() {
                 value={comboboxValue}
                 onOpenChange={(open) => {
                   setSearchQuery("");
-                  if (open && (pickerTab === "local" || activeSourceTab === "local")) {
+                  if (
+                    open &&
+                    (pickerTab === "local" || activeSourceTab === "local")
+                  ) {
                     void refreshLocalDatasets();
                   }
                   if (!open) {
-                    setPickerTab(pendingSourceTabRef.current ?? activeSourceTab);
+                    setPickerTab(
+                      pendingSourceTabRef.current ?? activeSourceTab,
+                    );
                     pendingSourceTabRef.current = null;
                   }
                 }}
@@ -598,9 +624,7 @@ export function DatasetSection() {
                   handleInputChange(value, eventDetails)
                 }
                 itemToStringValue={(id) =>
-                  pickerTab === "local"
-                    ? localLabelById.get(id) ?? id
-                    : id
+                  pickerTab === "local" ? (localLabelById.get(id) ?? id) : id
                 }
                 autoHighlight={true}
               >
@@ -628,7 +652,9 @@ export function DatasetSection() {
                       className="w-full"
                     >
                       <TabsList className=" w-full">
-                        <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
+                        <TabsTrigger value="huggingface">
+                          Hugging Face
+                        </TabsTrigger>
                         <TabsTrigger value="local">Local</TabsTrigger>
                       </TabsList>
 
@@ -647,7 +673,11 @@ export function DatasetSection() {
                           <ComboboxList className="p-1 !max-h-none !overflow-visible">
                             {(id: string) => {
                               return (
-                                <ComboboxItem key={id} value={id} className="gap-2">
+                                <ComboboxItem
+                                  key={id}
+                                  value={id}
+                                  className="gap-2"
+                                >
                                   <Tooltip>
                                     <TooltipTrigger asChild={true}>
                                       <span className="block min-w-0 flex-1 truncate">
@@ -677,12 +707,15 @@ export function DatasetSection() {
                       <TabsContent value="local" className="m-0">
                         {localLoading ? (
                           <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                            <Spinner className="size-4" /> Loading local datasets...
+                            <Spinner className="size-4" /> Loading local
+                            datasets...
                           </div>
                         ) : (
                           <>
                             {localError ? (
-                              <p className="px-2 py-2 text-xs text-destructive">{localError}</p>
+                              <p className="px-2 py-2 text-xs text-destructive">
+                                {localError}
+                              </p>
                             ) : (
                               <ComboboxEmpty className="px-2 py-3">
                                 <div className="flex w-full flex-col items-center gap-2 text-center">
@@ -692,8 +725,14 @@ export function DatasetSection() {
                                       : "No local datasets match search."}
                                   </p>
                                   {localDatasets.length === 0 ? (
-                                    <Button asChild={true} size="sm" variant="outline">
-                                      <a href="/data-recipes">Open Data Recipes</a>
+                                    <Button
+                                      asChild={true}
+                                      size="sm"
+                                      variant="outline"
+                                    >
+                                      <a href="/data-recipes">
+                                        Open Data Recipes
+                                      </a>
                                     </Button>
                                   ) : null}
                                 </div>
@@ -704,7 +743,11 @@ export function DatasetSection() {
                                 {(id: string) => {
                                   const label = localLabelById.get(id) ?? id;
                                   return (
-                                    <ComboboxItem key={id} value={id} className="gap-2">
+                                    <ComboboxItem
+                                      key={id}
+                                      value={id}
+                                      className="gap-2"
+                                    >
                                       <Tooltip>
                                         <TooltipTrigger asChild={true}>
                                           <span className="block min-w-0 flex-1 truncate">
@@ -750,8 +793,10 @@ export function DatasetSection() {
             )}
             {pickerTab !== activeSourceTab && (
               <p className="text-[11px] text-muted-foreground">
-                Browsing {pickerTab === "local" ? "Local datasets" : "Hugging Face"}.
-                Current selection stays {datasetSource === "upload" ? "Local" : "Hugging Face"}.
+                Browsing{" "}
+                {pickerTab === "local" ? "Local datasets" : "Hugging Face"}.
+                Current selection stays{" "}
+                {datasetSource === "upload" ? "Local" : "Hugging Face"}.
               </p>
             )}
           </div>
@@ -816,8 +861,10 @@ export function DatasetSection() {
                   <MetadataRow
                     label="Batches"
                     value={
-                      typeof selectedLocalMetadata?.num_completed_batches === "number" &&
-                      typeof selectedLocalMetadata?.total_num_batches === "number"
+                      typeof selectedLocalMetadata?.num_completed_batches ===
+                        "number" &&
+                      typeof selectedLocalMetadata?.total_num_batches ===
+                        "number"
                         ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
                         : "--"
                     }
@@ -839,7 +886,10 @@ export function DatasetSection() {
               {uploadedEvalFile ? (
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 overflow-hidden">
-                    <HugeiconsIcon icon={FileAttachmentIcon} className="size-3.5 shrink-0 text-muted-foreground" />
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
                     <span className="truncate text-xs">
                       {deriveLocalDatasetName(uploadedEvalFile)}
                     </span>
@@ -865,12 +915,16 @@ export function DatasetSection() {
                     {isUploading ? (
                       <Spinner className="size-3.5" />
                     ) : (
-                      <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                      <HugeiconsIcon
+                        icon={CloudUploadIcon}
+                        className="size-3.5"
+                      />
                     )}
                     {isUploading ? "Uploading..." : "Upload eval file"}
                   </Button>
                   <p className="text-[10px] text-muted-foreground/80">
-                    Optional. If not provided, a small portion will be split from the training data.
+                    Optional. If not provided, a small portion will be split
+                    from the training data.
                   </p>
                 </div>
               )}
@@ -965,7 +1019,9 @@ export function DatasetSection() {
                       placeholder="0"
                       value={datasetSliceStart ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceStart(normalizeSliceInput(e.target.value))
+                        setDatasetSliceStart(
+                          normalizeSliceInput(e.target.value),
+                        )
                       }
                     />
                   </div>
@@ -1021,8 +1077,8 @@ export function DatasetSection() {
                 <div className="flex-1 min-w-0">
                   <p className="font-mono text-sm font-medium truncate">
                     {datasetSource === "upload"
-                      ? selectedLocalDataset?.label ??
-                        deriveLocalDatasetName(selectedDatasetName)
+                      ? (selectedLocalDataset?.label ??
+                        deriveLocalDatasetName(selectedDatasetName))
                       : selectedDatasetName}
                   </p>
                   <p className="text-[10px] text-muted-foreground">
@@ -1078,7 +1134,8 @@ export function DatasetSection() {
                     Drop 1 file here or click to upload
                   </span>
                   <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_DATASET_UPLOAD_LABEL} · up to {TRAINING_UPLOAD_MAX_LABEL}; {DOCUMENT_REDIRECT_LABEL}
+                    {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
+                    {TRAINING_UPLOAD_MAX_LABEL}; {DOCUMENT_REDIRECT_LABEL}
                   </span>
                 </span>
               </button>
@@ -1135,7 +1192,7 @@ export function DatasetSection() {
             fileName={redirectFileName}
             onOpenLearningRecipes={handleOpenLearningRecipes}
           />
-      </div>
+        </div>
       </SectionCard>
     </div>
   );
