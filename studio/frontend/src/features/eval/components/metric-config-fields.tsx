@@ -100,7 +100,7 @@ export function MetricConfigFields({
               id={`mc-${f.name}`}
               value={typeof current === "string" ? current : current == null ? "" : JSON.stringify(current, null, 2)}
               onChange={(e) => set(f.name, e.target.value)}
-              className="min-h-24 font-mono text-xs"
+              className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
               spellCheck={false}
             />
           </div>

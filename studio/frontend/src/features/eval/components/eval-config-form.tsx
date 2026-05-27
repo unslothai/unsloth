@@ -251,7 +251,7 @@ export function EvalConfigForm({
                 id="ecf-system-prompt"
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
-                className="min-h-24 font-mono text-xs"
+                className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
                 spellCheck={false}
               />
             </div>
@@ -261,7 +261,7 @@ export function EvalConfigForm({
                 id="ecf-template"
                 value={template}
                 onChange={(e) => setTemplate(e.target.value)}
-                className="min-h-24 font-mono text-xs"
+                className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
                 spellCheck={false}
               />
               <p className="text-xs text-muted-foreground">
