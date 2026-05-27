@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const MAX_TOTAL_SIZE = 100 * 1024 * 1024;
+const MAX_FILE_SIZE = 500 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 500 * 1024 * 1024;
 
 type FileEntry = {
   id: string;
@@ -42,8 +42,11 @@ export function UnstructuredDropZone({
 }: UnstructuredDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef(files);
-  filesRef.current = files;
   const [isDragOver, setIsDragOver] = useState(false);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
@@ -179,7 +182,7 @@ export function UnstructuredDropZone({
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to 50MB each, 100MB total
+          PDF, DOCX, TXT, MD up to 500MB total
         </p>
       </div>
 
@@ -229,7 +232,7 @@ export function UnstructuredDropZone({
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
             <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
-            <span>{formatSize(totalSize)} / 100MB</span>
+            <span>{formatSize(totalSize)} / 500MB</span>
           </div>
         </div>
       )}

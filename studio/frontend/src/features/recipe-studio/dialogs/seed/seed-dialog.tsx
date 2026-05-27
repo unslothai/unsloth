@@ -73,7 +73,7 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
@@ -741,7 +741,7 @@ export function SeedDialog({
             throw new Error("Select a local CSV/JSON/JSONL file first.");
           }
           if (localFile.size > MAX_UPLOAD_BYTES) {
-            throw new Error("File too large (max 50MB).");
+            throw new Error("File too large (max 500MB).");
           }
           const payload = await fileToBase64Payload(localFile);
           const response = await inspectSeedUpload({
@@ -980,7 +980,7 @@ export function SeedDialog({
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Max 50MB per file.
+                Max 500MB per file.
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">

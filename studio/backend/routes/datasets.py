@@ -140,8 +140,8 @@ DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 # sync: TRAINING_UPLOAD_MAX_BYTES in studio/frontend/src/features/studio/sections/dataset-section.tsx
-TRAINING_DATASET_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
-TRAINING_DATASET_UPLOAD_MAX_LABEL = "200MB"
+TRAINING_DATASET_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+TRAINING_DATASET_UPLOAD_MAX_LABEL = "500MB"
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 

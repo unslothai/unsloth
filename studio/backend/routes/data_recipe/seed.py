@@ -47,8 +47,8 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -448,7 +448,7 @@ async def upload_unstructured_file(
 
     if size_bytes > MAX_FILE_SIZE:
         raise HTTPException(
-            413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
+            413, f"File too large ({size_bytes} bytes). Maximum is 500MB."
         )
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
@@ -595,7 +595,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
     if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
+        raise HTTPException(status_code = 413, detail = "file too large (max 500MB)")
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"
