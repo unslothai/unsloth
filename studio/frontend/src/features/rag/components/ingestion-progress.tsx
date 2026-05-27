@@ -55,10 +55,10 @@ export function IngestionProgress({
   const label = STAGE_LABELS[stage] ?? stage;
 
   return (
-    <div className={cn("flex flex-col gap-1", className)}>
-      <div className="flex justify-between text-xs text-muted-foreground">
-        <span>{label}</span>
-        <span>{Math.round(progress * 100)}%</span>
+    <div className={cn("flex flex-col gap-1.5", className)}>
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <span className="shrink-0 tabular-nums">{Math.round(progress * 100)}%</span>
       </div>
       <Progress value={Math.round(progress * 100)} className="h-1" />
     </div>

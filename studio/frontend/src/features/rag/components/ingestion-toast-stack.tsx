@@ -55,7 +55,7 @@ export function IngestionToastStack() {
   if (visible.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-72 flex-col gap-2">
+    <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-72 flex-col gap-2">
       <AnimatePresence initial={false}>
         {visible.map(([jobId, event]) => {
           const isTerminal =
@@ -74,7 +74,7 @@ export function IngestionToastStack() {
               className="pointer-events-auto rounded-md border border-border bg-popover px-3 py-2 shadow-md"
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="flex min-w-0 flex-col gap-0.5">
+                <div className="flex min-w-0 flex-col gap-1.5">
                   <span className="truncate text-xs font-medium">
                     {isError
                       ? "Ingestion failed"
@@ -82,7 +82,7 @@ export function IngestionToastStack() {
                         ? "Indexed"
                         : "Indexing document"}
                   </span>
-                  <IngestionProgress jobId={jobId} className="mt-0.5" />
+                  <IngestionProgress jobId={jobId} />
                 </div>
                 <Button
                   variant="ghost"
