@@ -215,6 +215,254 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
     assert payloads[-1] == "[DONE]"
 
 
+def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypatch):
+    """Round 12: caller-supplied function tools forwarded into /v1/responses
+    must have their `function_call` output items translated back into Chat
+    Completions delta.tool_calls, and the terminal chunk must emit
+    finish_reason="tool_calls" so the frontend's accumulator runs the
+    function instead of seeing finish_reason="stop"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events = [
+            {"type": "response.created"},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_abc",
+                    "call_id": "call_xyz",
+                    "name": "get_weather",
+                    "arguments": '{"city":"SF"}',
+                },
+            },
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "weather?"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
+    ]
+    tool_call_deltas = [
+        p
+        for p in payloads
+        if isinstance(p, dict)
+        and p.get("choices")
+        and p["choices"][0].get("delta", {}).get("tool_calls")
+    ]
+    assert tool_call_deltas, payloads
+    tc = tool_call_deltas[0]["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["id"] == "call_xyz"
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["function"]["arguments"] == '{"city":"SF"}'
+    # Final chunk reports tool_calls instead of stop.
+    terminal = next(
+        p
+        for p in payloads
+        if isinstance(p, dict)
+        and p.get("choices")
+        and p["choices"][0].get("finish_reason") in ("stop", "tool_calls")
+    )
+    assert terminal["choices"][0]["finish_reason"] == "tool_calls", payloads
+
+
+def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
+    """Round 13: parallel function_call items must land on distinct
+    delta.tool_calls[].index slots so index-keyed clients don't
+    collapse the second call into the first."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events = [
+            {"type": "response.created"},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_a",
+                    "call_id": "call_a",
+                    "name": "lookup_a",
+                    "arguments": "{}",
+                },
+            },
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_b",
+                    "call_id": "call_b",
+                    "name": "lookup_b",
+                    "arguments": "{}",
+                },
+            },
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "x"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_a",
+                            "parameters": {"type": "object"},
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_b",
+                            "parameters": {"type": "object"},
+                        },
+                    },
+                ],
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    indices: list[int] = []
+    for raw in lines:
+        if not raw.startswith("data:"):
+            continue
+        payload = raw[len("data:") :].strip()
+        if payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except Exception:
+            continue
+        delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+        for tc in delta.get("tool_calls") or []:
+            indices.append(tc.get("index"))
+    assert indices == [0, 1], indices
+
+
+def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeypatch):
+    """Round 13: a second turn after a Responses function call must
+    serialize the tool_calls history and tool result as Responses
+    `function_call` / `function_call_output` input items, not as
+    Chat Completions role="tool" content."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse(
+                [
+                    {"type": "response.created"},
+                    {"type": "response.completed", "response": {}},
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        await _collect(
+            client._stream_openai_responses(
+                messages = [
+                    {"role": "user", "content": "weather?"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_xyz",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": '{"city":"SF"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_xyz",
+                        "content": "sunny",
+                    },
+                    {"role": "user", "content": "thanks"},
+                ],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    items = captured["body"]["input"]
+    types = [it.get("type") or it.get("role") for it in items]
+    assert "function_call" in types, items
+    assert "function_call_output" in types, items
+    fc = next(it for it in items if it.get("type") == "function_call")
+    assert fc["call_id"] == "call_xyz"
+    assert fc["name"] == "get_weather"
+    assert fc["arguments"] == '{"city":"SF"}'
+    fco = next(it for it in items if it.get("type") == "function_call_output")
+    assert fco["call_id"] == "call_xyz"
+    assert fco["output"] == "sunny"
+
+
 def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         events = [

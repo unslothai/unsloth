@@ -207,9 +207,12 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
     assert len(ends) == 1, image_events
+    # `_server_tool: True` marks this as a provider-side synthetic
+    # tool card on the frontend's history serializer.
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
+        "_server_tool": True,
         "openai_image_generation_call_id": "img_abc",
     }
     assert ends[0]["image_b64"] == "AAAA"
