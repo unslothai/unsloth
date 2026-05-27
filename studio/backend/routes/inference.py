@@ -1938,7 +1938,15 @@ async def _proxy_to_external_provider(
                 sent_done = False
                 async for line in gen:
                     yield f"{line}\n\n"
-                    if "[DONE]" in line:
+                    # Match the SSE sentinel exactly. The earlier
+                    # substring check (`"[DONE]" in line`) would flip
+                    # the flag when a normal `delta.content` carried
+                    # the literal text "[DONE]" (e.g. an explanation
+                    # of OpenAI's stream terminator), and suppress the
+                    # real `data: [DONE]` frame. OpenAI-compatible
+                    # clients that finalise on the sentinel would
+                    # then hang on stream close.
+                    if line.strip() == "data: [DONE]":
                         sent_done = True
                 if not sent_done:
                     yield "data: [DONE]\n\n"

@@ -2213,3 +2213,146 @@ class TestStreamReplayProtection:
         chunks = asyncio.run(collect())
         assert thread.run_calls == 1
         assert chunks == ["answer"]
+
+
+# ── Round 9: P2 fixes from latest Codex bot review ──────────────────
+
+
+class TestRunStreamingCompletionFallback:
+    """Round 9 fix: legacy SDK exposes ``thread.run_streaming`` but the
+    stream only emits completion-style events (no message deltas). We
+    must still emit the agentMessage text, otherwise the request
+    returns 200 with an empty assistant reply.
+    """
+
+    def test_run_streaming_only_completion_emits_final_text(self):
+        from core.inference.codex_provider import _stream_thread_run
+
+        # Dict shape matching _completed_agent_message_text's accepted
+        # form: type=thread.item.completed, item.type=agentMessage,
+        # item.text=<final answer>. The legacy run_streaming path now
+        # extracts ``.payload`` first (matching the canonical path), so
+        # a plain dict event is the simplest faithful fixture.
+        completed_event = {
+            "type": "thread.item.completed",
+            "item": {"type": "agentMessage", "text": "FINAL_ANSWER"},
+        }
+
+        class _Stream:
+            def __init__(self):
+                self._sent = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._sent:
+                    raise StopAsyncIteration
+                self._sent = True
+                return completed_event
+
+        class _Thread:
+            # No .turn so the canonical path is skipped; only legacy
+            # run_streaming exists, and it yields a completion event
+            # with no streaming deltas.
+            def run_streaming(self_inner, prompt):
+                return _Stream()
+
+            async def run(self_inner, prompt):  # pragma: no cover
+                # Should never be called -- the legacy stream
+                # completed cleanly via the completion event.
+                raise AssertionError("buffered run must not fire")
+
+        thread = _Thread()
+
+        async def collect():
+            return [c async for c in _stream_thread_run(thread, "hi")]
+
+        chunks = asyncio.run(collect())
+        assert chunks == ["FINAL_ANSWER"], chunks
+
+
+class TestParallelSetupErrorPropagation:
+    """Round 9 fix: when CodexUnavailableError takes out every worker
+    in a parallel-calls fan-out, the function re-raises so the route
+    layer can return a proper 503. Per-tab runtime failures (timeout
+    etc.) still get swallowed into codex_tab_error events as before.
+    """
+
+    def test_unavailable_in_every_worker_reraises(self, monkeypatch):
+        from core.inference import codex_provider as cp
+
+        # Force _import_codex to raise CodexUnavailableError. Every
+        # worker hits this on entry so per_tab_texts stays empty and
+        # the function MUST re-raise.
+        def boom():
+            raise cp.CodexUnavailableError("SDK not installed (test)")
+
+        monkeypatch.setattr(cp, "_import_codex", boom)
+
+        async def collect_lines():
+            lines = []
+            try:
+                async for line in cp._stream_codex_parallel(
+                    model = "gpt-5.4-mini",
+                    system = "",
+                    prompt = "hello",
+                    n = 3,
+                    completion_id = "test-completion",
+                ):
+                    lines.append(line)
+            except cp.CodexUnavailableError as exc:
+                return lines, exc
+            return lines, None
+
+        lines, exc = asyncio.run(collect_lines())
+        assert exc is not None, (
+            "CodexUnavailableError did not propagate -- the stream "
+            "returned a 200 with no assistant content"
+        )
+        assert "SDK not installed (test)" in str(exc)
+
+
+class TestCodexDoneSentinelExactMatch:
+    """Round 9 fix: the Codex SSE wrapper's `sent_done` detection now
+    requires an EXACT `data: [DONE]` line match. The substring check
+    was firing on `delta.content` payloads that happened to contain
+    the literal text `[DONE]`.
+
+    The route source is the canonical reference -- this test asserts
+    the source uses an anchored comparison, not a substring `in`
+    check, so the fix is locked in even if the route is restructured.
+    """
+
+    def test_route_uses_exact_done_match(self):
+        with open(
+            _backend_file("routes/inference.py"), "r", encoding = "utf-8"
+        ) as f:
+            src = f.read()
+        # The Codex SSE wrapper is the only place we expect this
+        # comparison style; allow either single or double quotes
+        # around the canonical line for forward compatibility.
+        assert (
+            'line.strip() == "data: [DONE]"' in src
+            or "line.strip() == 'data: [DONE]'" in src
+        ), (
+            "Codex SSE wrapper must terminate on an exact `data: [DONE]` "
+            "line, not on a substring containing `[DONE]`."
+        )
+        # Inspect the Codex stream block specifically. The old
+        # substring check `if "[DONE]" in line: sent_done = True`
+        # must NOT appear as an active comparison. Ignore matches
+        # inside comments (lines starting with `#` or inside string
+        # literals describing the old behavior) by scanning for the
+        # exact statement form.
+        codex_block_start = src.find('async def _codex_stream():')
+        if codex_block_start != -1:
+            window = src[codex_block_start : codex_block_start + 4000]
+            for line in window.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                assert 'if "[DONE]" in line' not in stripped, (
+                    "Codex SSE wrapper still uses substring [DONE] check: "
+                    + stripped
+                )

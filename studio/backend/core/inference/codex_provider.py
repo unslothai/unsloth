@@ -802,6 +802,7 @@ async def _stream_thread_run(
     # 2. Legacy: thread.run_streaming(prompt)
     run_streaming = getattr(thread, "run_streaming", None)
     if run_streaming is not None:
+        agent_message_texts: list[str] = []
         try:
             stream_obj = run_streaming(prompt)
             # Same reasoning as the canonical path above: calling the
@@ -812,10 +813,27 @@ async def _stream_thread_run(
                 stream_obj = await stream_obj
             async for event in stream_obj:
                 turn_started = True
-                text = _coerce_text(event)
+                # Match the canonical path's payload-extraction so the
+                # event-vs-payload shape difference between SDK versions
+                # is handled the same way in both branches.
+                payload = getattr(event, "payload", event)
+                text = _coerce_text(payload)
                 if text:
                     emitted_any = True
                     yield text
+                else:
+                    # Legacy SDK variants can complete a turn purely via
+                    # ``item.completed`` / agentMessage events with no
+                    # streaming deltas. Capture them so we still emit
+                    # SOMETHING when the stream ends; otherwise the
+                    # request returns 200 with an empty assistant reply
+                    # even though Codex produced a final answer.
+                    final_text = _completed_agent_message_text(payload)
+                    if final_text:
+                        agent_message_texts.append(final_text)
+            if not emitted_any and agent_message_texts:
+                yield agent_message_texts[-1]
+                emitted_any = True
             return
         except Exception as exc:
             logger.warning(
@@ -826,6 +844,13 @@ async def _stream_thread_run(
                 turn_started = turn_started,
             )
             if turn_started:
+                # Flush any agent-message text we collected before the
+                # crash. The turn already executed on the SDK side, so
+                # there is no replay risk -- we just want the user to
+                # see the final answer that was completed before the
+                # stream broke.
+                if not emitted_any and agent_message_texts:
+                    yield agent_message_texts[-1]
                 return
 
     # 3. Buffered fallback: await the full TurnResult, emit one chunk.
@@ -1142,11 +1167,19 @@ async def _stream_codex_parallel(
     async def _worker(tab_id: int) -> str:
         """Run one Codex turn, push every chunk into the queue, and
         return the full accumulated text so the synthesis step can
-        consume it. Errors are surfaced as a ``codex_tab_error``
-        tool-event so the tab strip shows which lane failed without
-        aborting the whole fan-out.
+        consume it. Per-turn errors (model rejection, timeout, mid-
+        stream SDK crash) are surfaced as a ``codex_tab_error`` tool
+        event so the tab strip shows which lane failed without
+        aborting the whole fan-out. Setup errors that doom EVERY
+        worker (SDK not importable, safety enums missing) are re-
+        raised so the route layer can translate them into a proper
+        503 instead of returning a 200 stream with only tool events
+        and an empty synthesis -- OpenAI-compatible clients that do
+        not consume ``_toolEvent`` would otherwise see a successful
+        empty reply.
         """
         collected: list[str] = []
+        emit_close = True
         try:
             sdk = _import_codex()
             async_codex_cls = getattr(sdk, "AsyncCodex")
@@ -1166,24 +1199,25 @@ async def _stream_codex_parallel(
                             },
                         )
                     )
+        except CodexUnavailableError:
+            # Setup-level failure. Same root cause hits every worker, so
+            # surfacing it as a per-tab error is misleading: every tab
+            # would emit the same message and the synthesis would be
+            # blank. Skip the close event too -- the outer fan-out gives
+            # up before any tabs can render.
+            emit_close = False
+            raise
         except Exception as exc:
             # CodeQL: never echo str(exc) in client-facing SSE events.
             # Log full reason server-side; surface a generic message plus
             # an exception_type discriminator so the UI can still group
             # failures without leaking file paths / env vars from the
-            # SDK traceback. CodexUnavailableError is the one exception
-            # we DO surface verbatim because it's a user-actionable
-            # install hint with no sensitive content.
+            # SDK traceback.
             logger.warning(
                 "codex_provider.parallel_tab_failed",
                 tab_id = tab_id,
                 exc_type = type(exc).__name__,
                 error = str(exc),
-            )
-            public_error = (
-                str(exc)
-                if isinstance(exc, CodexUnavailableError)
-                else "Codex tab failed"
             )
             await queue.put(
                 _chunk_tool_event(
@@ -1191,21 +1225,22 @@ async def _stream_codex_parallel(
                     {
                         "type": "codex_tab_error",
                         "tab_id": tab_id,
-                        "error": public_error,
+                        "error": "Codex tab failed",
                         "exception_type": type(exc).__name__,
                     },
                 )
             )
         finally:
-            await queue.put(
-                _chunk_tool_event(
-                    completion_id,
-                    {
-                        "type": "codex_tab_close",
-                        "tab_id": tab_id,
-                    },
+            if emit_close:
+                await queue.put(
+                    _chunk_tool_event(
+                        completion_id,
+                        {
+                            "type": "codex_tab_close",
+                            "tab_id": tab_id,
+                        },
+                    )
                 )
-            )
         return "".join(collected)
 
     workers = [asyncio.create_task(_worker(i + 1)) for i in range(n)]
@@ -1220,6 +1255,18 @@ async def _stream_codex_parallel(
 
     async def _await_workers() -> None:
         results = await asyncio.gather(*workers, return_exceptions = True)
+        # If a setup-level failure took out every worker
+        # (CodexUnavailableError -- SDK not importable, safety enums
+        # missing, etc.), re-raise so the route layer turns it into a
+        # 503 instead of letting an empty 200 stream close. Per-tab
+        # runtime failures stay swallowed (they're already surfaced as
+        # codex_tab_error events) so a single bad model in the fan-out
+        # does not kill the others.
+        setup_errors = [
+            r for r in results if isinstance(r, CodexUnavailableError)
+        ]
+        if setup_errors and len(setup_errors) == len(results):
+            raise setup_errors[0]
         for r in results:
             if isinstance(r, BaseException):
                 per_tab_texts.append("")
@@ -1265,6 +1312,12 @@ async def _stream_codex_parallel(
         if not cancelled:
             try:
                 await drain_task
+            except CodexUnavailableError:
+                # Setup-level failure took out every worker. Re-raise so
+                # the route layer translates it into a 503 instead of
+                # silently continuing into the synthesis step (which
+                # would itself fail) and returning an empty 200 stream.
+                raise
             except Exception as exc:
                 logger.warning(
                     "codex_provider.parallel_drain_failed",
