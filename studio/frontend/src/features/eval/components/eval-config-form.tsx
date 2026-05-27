@@ -163,20 +163,96 @@ export function EvalConfigForm({
         />
       </SectionCard>
 
-      <div className="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6">
-        {/* Left column: Dataset */}
-        <SectionCard
-          icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
-          title="Dataset"
-          description="Pick a dataset and map input / output columns"
-          accent="indigo"
-        >
-          <EvalDatasetFields hfToken={hfToken} value={dataset} onChange={setDataset} />
-        </SectionCard>
-
-        {/* Right column: Metric + Generation */}
+      <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
+        {/* Left column: Dataset + Generation (with the run button) */}
         <div className="flex min-w-0 flex-col gap-4 md:gap-6">
-        {/* Metric */}
+          {/* Dataset */}
+          <SectionCard
+            icon={<HugeiconsIcon icon={Database02Icon} className="size-5" />}
+            title="Dataset"
+            description="Pick a dataset and map input / output columns"
+            accent="indigo"
+          >
+            <EvalDatasetFields hfToken={hfToken} value={dataset} onChange={setDataset} />
+          </SectionCard>
+
+          {/* Generation */}
+          <SectionCard
+            icon={<HugeiconsIcon icon={ZapIcon} className="size-5" />}
+            title="Generation"
+            description="Run size & sampling parameters"
+            accent="orange"
+          >
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="ecf-run-all"
+                  checked={runAll}
+                  onCheckedChange={setRunAll}
+                />
+                <Label htmlFor="ecf-run-all">Evaluate all rows</Label>
+              </div>
+              {!runAll && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="ecf-limit">Max rows</Label>
+                  <Input
+                    id="ecf-limit"
+                    type="number"
+                    value={limit}
+                    onChange={(e) => {
+                      const v = e.target.value === "" ? NaN : Number(e.target.value);
+                      setLimit(Number.isNaN(v) ? limit : v);
+                    }}
+                  />
+                </div>
+              )}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ecf-max-tokens">Max new tokens</Label>
+                <Input
+                  id="ecf-max-tokens"
+                  type="number"
+                  value={maxNewTokens}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? NaN : Number(e.target.value);
+                    setMaxNewTokens(Number.isNaN(v) ? maxNewTokens : v);
+                  }}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ecf-temperature">Temperature</Label>
+                <Input
+                  id="ecf-temperature"
+                  type="number"
+                  step="0.1"
+                  value={temperature}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? NaN : Number(e.target.value);
+                    setTemperature(Number.isNaN(v) ? temperature : v);
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  0 = greedy / deterministic
+                </p>
+              </div>
+              {/* Run evaluation */}
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <Button onClick={handleSubmit} disabled={disabled}>
+                  Run evaluation
+                </Button>
+                {disabled && (
+                  <span className="text-sm text-muted-foreground">
+                    An eval is already running.
+                  </span>
+                )}
+              </div>
+              {formError && (
+                <span className="text-sm text-red-500">{formError}</span>
+              )}
+            </div>
+          </SectionCard>
+        </div>
+
+        {/* Right column: Metric — fills the column height */}
         <SectionCard
           icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
           title="Metric"
@@ -226,81 +302,6 @@ export function EvalConfigForm({
             )}
           </div>
         </SectionCard>
-
-        {/* Generation */}
-        <SectionCard
-          icon={<HugeiconsIcon icon={ZapIcon} className="size-5" />}
-          title="Generation"
-          description="Run size & sampling parameters"
-          accent="orange"
-        >
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <Switch
-                id="ecf-run-all"
-                checked={runAll}
-                onCheckedChange={setRunAll}
-              />
-              <Label htmlFor="ecf-run-all">Evaluate all rows</Label>
-            </div>
-            {!runAll && (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ecf-limit">Max rows</Label>
-                <Input
-                  id="ecf-limit"
-                  type="number"
-                  value={limit}
-                  onChange={(e) => {
-                    const v = e.target.value === "" ? NaN : Number(e.target.value);
-                    setLimit(Number.isNaN(v) ? limit : v);
-                  }}
-                />
-              </div>
-            )}
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="ecf-max-tokens">Max new tokens</Label>
-              <Input
-                id="ecf-max-tokens"
-                type="number"
-                value={maxNewTokens}
-                onChange={(e) => {
-                  const v = e.target.value === "" ? NaN : Number(e.target.value);
-                  setMaxNewTokens(Number.isNaN(v) ? maxNewTokens : v);
-                }}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="ecf-temperature">Temperature</Label>
-              <Input
-                id="ecf-temperature"
-                type="number"
-                step="0.1"
-                value={temperature}
-                onChange={(e) => {
-                  const v = e.target.value === "" ? NaN : Number(e.target.value);
-                  setTemperature(Number.isNaN(v) ? temperature : v);
-                }}
-              />
-              <p className="text-xs text-muted-foreground">
-                0 = greedy / deterministic
-              </p>
-            </div>
-          </div>
-        </SectionCard>
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center gap-3">
-        <Button onClick={handleSubmit} disabled={disabled}>
-          Run eval
-        </Button>
-        {disabled && (
-          <span className="text-sm text-muted-foreground">
-            An eval is already running.
-          </span>
-        )}
-        {formError && <span className="text-sm text-red-500">{formError}</span>}
       </div>
     </div>
   );
