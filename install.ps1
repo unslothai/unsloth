@@ -887,12 +887,19 @@ shell.Run cmd, 0, False
     }
 
     # ── Check winget ──
+    # winget is only needed to install Python or uv. If both are
+    # already on PATH (Windows ARM64 GitHub-hosted runners, manual
+    # python.org + Astral uv installs, corporate locked-down hosts
+    # without the Store, etc.) the script can proceed without it.
+    # We defer the hard failure to the Python / uv install branches
+    # below, where winget is actually invoked.
     Write-TauriLog "STEP" "Checking system dependencies"
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        step "winget" "not available" "Red"
-        substep "Install it from https://aka.ms/getwinget" "Yellow"
-        substep "or install Python $PythonVersion and uv manually, then re-run." "Yellow"
-        return (Exit-InstallFailure "winget is not available")
+    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    if ($script:WingetAvailable) {
+        step "winget" "available"
+    } else {
+        step "winget" "not available -- will require Python + uv to be already installed" "Yellow"
+        substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
     # ── Helper: detect a working Python 3.11-3.13 on the system ──
@@ -973,6 +980,12 @@ shell.Run cmd, 0, False
         step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
+        if (-not $script:WingetAvailable) {
+            Write-Host "[ERROR] No compatible Python (3.11-3.13) found and winget is unavailable on this host." -ForegroundColor Red
+            Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
+            return (Exit-InstallFailure "winget required to install Python on this host")
+        }
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
@@ -1024,14 +1037,19 @@ shell.Run cmd, 0, False
     Write-TauriLog "STEP" "Installing uv package manager"
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         substep "installing uv package manager..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
-        $ErrorActionPreference = $prevEAP
-        Refresh-SessionPath
-        # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
+        if ($script:WingetAvailable) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+        }
+        # Fallback: if winget is unavailable or didn't put uv on PATH,
+        # use Astral's official PowerShell installer. This is the only
+        # supported path on hosts without winget (Windows ARM64 runners,
+        # corporate machines without the Store, etc.).
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-            substep "trying alternative uv installer..." "Yellow"
+            substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
             Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
@@ -1300,7 +1318,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -1314,7 +1332,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1352,7 +1370,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
@@ -1364,7 +1382,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.8" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -1392,7 +1410,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.7" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.8" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

@@ -653,10 +653,9 @@ def test_openrouter_stop_cap_is_4(monkeypatch):
     assert body["stop"] == ["S0", "S1", "S2", "S3"], body
 
 
-def test_gemini_stop_cap_is_4(monkeypatch):
-    """Gemini's OpenAI-compatible layer inherits OpenAI's 4-entry stop
-    cap (https://ai.google.dev/gemini-api/docs/openai). The default
-    16-cap is too permissive."""
+def test_gemini_stop_sequences_capped_to_5(monkeypatch):
+    """Native Gemini API forwards `stop` as generationConfig.stopSequences,
+    capped at 5 per https://ai.google.dev/api/generate-content#generationconfig."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
 
     async def run():
@@ -678,8 +677,8 @@ def test_gemini_stop_cap_is_4(monkeypatch):
 
     _drive(run())
     body = captured["body"]
-    assert len(body.get("stop", [])) == 4, body
-    assert body["stop"] == ["S0", "S1", "S2", "S3"], body
+    gen_config = body.get("generationConfig", {})
+    assert gen_config.get("stopSequences") == ["S0", "S1", "S2", "S3", "S4"], body
 
 
 def test_kimi_drops_stop_strings_over_32_bytes(monkeypatch):

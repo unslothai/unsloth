@@ -25,6 +25,7 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  isGeminiCustomOpenAICompatBase,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
@@ -104,6 +105,33 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+// Synthetic provider-side tool names; backend stamps args._server_tool
+// so user functions with the same name aren't dropped. Mirror of
+// _SERVER_SIDE_BUILTIN_TOOL_NAMES on the backend.
+const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
+  "web_search",
+  "web_fetch",
+  "code_execution",
+  "image_generation",
+]);
+
+/**
+ * Whether a persisted tool-call part is provider-side synthetic and
+ * should be stripped from outbound history. Match on the
+ * args._server_tool marker or a Gemini native_part payload — no shape
+ * heuristic, because user functions can legitimately share a name.
+ */
+function isServerSideBuiltinToolPart(
+  toolNameLower: string,
+  _argsObj: Record<string, unknown> | null,
+  hasServerToolMarker: boolean,
+  hasNativePart: boolean,
+): boolean {
+  if (!SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) return false;
+  if (hasServerToolMarker) return true;
+  return hasNativePart;
+}
 
 /**
  * Match error messages that indicate the request filled or would fill
@@ -508,21 +536,200 @@ function isAnthropicRefusalMessage(message: RunMessage): boolean {
   return metadata?.custom?.anthropicRefusal === true;
 }
 
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
-} | null {
+function collectAssistantToolCalls(
+  message: RunMessage,
+): Array<{
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+  extra_content?: unknown;
+}> {
+  const out: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+    extra_content?: unknown;
+  }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type !== "tool-call") continue;
+    const tc = part as ToolCallMessagePart & {
+      argsText?: string;
+      extra_content?: unknown;
+    };
+    const toolNameLower = (tc.toolName ?? "").toLowerCase();
+    const argsObj =
+      tc.args && typeof tc.args === "object"
+        ? (tc.args as Record<string, unknown>)
+        : null;
+    const argsGoogle =
+      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+        ? (argsObj.google as Record<string, unknown>)
+        : null;
+    const hasNativePart = Boolean(
+      argsGoogle &&
+        typeof argsGoogle.native_part === "object" &&
+        argsGoogle.native_part !== null,
+    );
+    const hasServerToolMarker = Boolean(
+      argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
+    );
+    const isServerSideBuiltin = isServerSideBuiltinToolPart(
+      toolNameLower,
+      argsObj,
+      hasServerToolMarker,
+      hasNativePart,
+    );
+    if (isServerSideBuiltin) {
+      // Gemini code_execution / image_generation still need to round-
+      // trip the native_part payload for native replay; drop the rest.
+      if (!hasNativePart) continue;
+    }
+    const argumentsStr =
+      typeof tc.argsText === "string" && tc.argsText.length > 0
+        ? tc.argsText
+        : JSON.stringify(tc.args ?? {});
+    const entry: {
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+      extra_content?: unknown;
+    } = {
+      id: tc.toolCallId,
+      type: "function" as const,
+      function: {
+        name: tc.toolName ?? "",
+        arguments: argumentsStr,
+      },
+    };
+    // Promote args.google to extra_content.google so the backend
+    // native_part replay branch can find it. The backend only inspects
+    // extra_content, not function.arguments.
+    if (tc.extra_content !== undefined) {
+      entry.extra_content = tc.extra_content;
+    } else if (argsGoogle) {
+      entry.extra_content = { google: argsGoogle };
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+function collectToolResultMessages(
+  message: RunMessage,
+): Array<{
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+}> {
+  const out: Array<{
+    role: "tool";
+    content: string;
+    tool_call_id: string;
+    name?: string;
+  }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type !== "tool-call") continue;
+    const tc = part as ToolCallMessagePart;
+    const result = (tc as { result?: unknown }).result;
+    // Skip provider-side builtins; see isServerSideBuiltinToolPart.
+    const argsObj =
+      tc.args && typeof tc.args === "object"
+        ? (tc.args as Record<string, unknown>)
+        : null;
+    const argsGoogle =
+      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+        ? (argsObj.google as Record<string, unknown>)
+        : null;
+    const toolNameLower = (tc.toolName ?? "").toLowerCase();
+    const hasServerToolMarker = Boolean(
+      argsObj && argsObj._server_tool === true,
+    );
+    const hasNativePart = Boolean(
+      argsGoogle &&
+        typeof argsGoogle.native_part === "object" &&
+        argsGoogle.native_part !== null,
+    );
+    if (
+      isServerSideBuiltinToolPart(
+        toolNameLower,
+        argsObj,
+        hasServerToolMarker,
+        hasNativePart,
+      )
+    ) {
+      continue;
+    }
+    if (result === undefined || result === null) continue;
+    let content: string;
+    if (typeof result === "string") {
+      // Backend ChatMessage validator rejects role="tool" with empty
+      // content; serialise a sentinel JSON so legitimately empty tool
+      // outputs still round-trip the follow-up turn to the provider.
+      content = result.length > 0 ? result : JSON.stringify({ result: "" });
+    } else {
+      try {
+        content = JSON.stringify(result);
+      } catch {
+        content = String(result);
+      }
+    }
+    out.push({
+      role: "tool",
+      content,
+      tool_call_id: tc.toolCallId,
+      ...(tc.toolName ? { name: tc.toolName } : {}),
+    });
+  }
+  return out;
+}
+
+type SerializedMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+    extra_content?: unknown;
+  }>;
+  tool_call_id?: string;
+  name?: string;
+  /**
+   * Gemini text-part thoughtSignature stashed during streaming on the
+   * last text MessagePart. Backend reads
+   * `extra_content.google.thought_signature` and attaches it to the
+   * matching Gemini text part on the outbound turn.
+   */
+  extra_content?: unknown;
+};
+
+function collectAssistantTextThoughtSignature(
+  message: RunMessage,
+): string | undefined {
+  if (!Array.isArray(message.content)) return undefined;
+  for (let i = message.content.length - 1; i >= 0; i -= 1) {
+    const part = message.content[i] as { type?: string } & Record<
+      string,
+      unknown
+    >;
+    if (part?.type !== "text") continue;
+    const sig = part._google_thought_signature;
+    if (typeof sig === "string" && sig) return sig;
+  }
+  return undefined;
+}
+
+function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
     message.role !== "assistant"
   ) {
-    return null;
+    return [];
   }
 
   let textContent = collectTextParts(message).join("\n");
-  // Strip inline audio base64 from prior assistant messages to avoid
-  // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
     textContent = textContent.replace(
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
@@ -531,25 +738,70 @@ function toOpenAIMessage(message: RunMessage): {
     if (isAnthropicRefusalMessage(message)) {
       // Prune refused assistant turn from outbound history; the
       // rendered transcript still shows the user-visible notice.
-      return null;
+      return [];
     }
   }
 
   const imageParts = collectImageParts(message);
-  if (imageParts.length > 0) {
-    return {
-      role: message.role,
-      content: [
-        ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
-        ...imageParts,
-      ],
-    };
+  const toolCalls =
+    message.role === "assistant" ? collectAssistantToolCalls(message) : [];
+  const toolResults =
+    message.role === "assistant" ? collectToolResultMessages(message) : [];
+
+  const base: SerializedMessage = {
+    role: message.role,
+    content:
+      imageParts.length > 0
+        ? [{ type: "text", text: textContent }, ...imageParts]
+        : textContent,
+  };
+  if (toolCalls.length > 0) {
+    base.tool_calls = toolCalls;
+    // OpenAI requires content === null on assistant turns whose
+    // payload is entirely tool_calls (matches the wire shape Gemini
+    // expects for the next functionCall replay).
+    if (!textContent && imageParts.length === 0) {
+      base.content = null;
+    }
+  }
+  if (message.role === "assistant") {
+    const sig = collectAssistantTextThoughtSignature(message);
+    if (sig) {
+      base.extra_content = { google: { thought_signature: sig } };
+    }
   }
 
-  if (!textContent) {
+  return toolResults.length > 0 ? [base, ...toolResults] : [base];
+}
+
+// Thin singular wrapper: returns only the first serialized message
+// (without tool_calls or tool follow-ups) so the OpenAI image-edit
+// replay path can map a thread to flat OpenAI chat messages without
+// pulling in tool history.
+function toOpenAIMessage(message: RunMessage): {
+  role: "system" | "user" | "assistant";
+  content: OpenAIMessageContent;
+} | null {
+  const serialized = toOpenAIMessages(message);
+  if (serialized.length === 0) return null;
+  const first = serialized[0];
+  if (
+    first.role !== "system" &&
+    first.role !== "user" &&
+    first.role !== "assistant"
+  ) {
     return null;
   }
-  return { role: message.role, content: textContent };
+  if (first.content === null || first.content === undefined) {
+    return null;
+  }
+  if (typeof first.content === "string" && !first.content) {
+    return null;
+  }
+  return {
+    role: first.role,
+    content: first.content as OpenAIMessageContent,
+  };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -1084,11 +1336,21 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         clearSelectedImageEditReference();
         throw new Error("Connection not found.");
       }
-      // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
+      // Local providers and custom Gemini bases allow an empty key.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
         : false;
-      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
+      const externalProviderIsGeminiCustomBase = Boolean(
+        externalProvider &&
+          externalProvider.providerType === "gemini" &&
+          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
+      );
+      if (
+        isExternalRequest &&
+        !externalApiKey &&
+        !externalProviderIsCustom &&
+        !externalProviderIsGeminiCustomBase
+      ) {
         toast.error("Missing API key for selected connection.", {
           description: "Open Settings → Connections and set the API key again.",
         });
@@ -1096,15 +1358,38 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
+      // Image-generation flag (OpenAI cloud + Responses-capable model).
+      // Computed first so Gemini image mode can suppress Search/Code.
+      const imageGenerationEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          imageToolsEnabled &&
+          providerSupportsBuiltinImageGeneration(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
+      // Per-model Search/Code allowances live in
+      // providerSupportsBuiltin*; this flag just signals image-mode.
+      const geminiImageModeForThisTurn =
+        externalProvider?.providerType === "gemini" &&
+        imageGenerationEnabledForThisTurn;
       const webSearchEnabledForThisTurn = Boolean(
         externalProvider &&
+          externalSelection &&
           toolsEnabled &&
-          providerSupportsBuiltinWebSearch(externalProvider.providerType),
+          providerSupportsBuiltinWebSearch(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
       );
       const codeExecEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
           codeToolsEnabled &&
+          !geminiImageModeForThisTurn &&
           providerSupportsBuiltinCodeExecution(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -1124,20 +1409,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
-      // OpenAI Responses-API image_generation server tool. Pill is
-      // gated on OpenAI cloud + a Responses-API model id; the backend
-      // additionally re-checks is_openai_cloud before appending
-      // {type:"image_generation"} to the request tools array.
-      const imageGenerationEnabledForThisTurn = Boolean(
-        externalProvider &&
-          externalSelection &&
-          imageToolsEnabled &&
-          providerSupportsBuiltinImageGeneration(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
-      );
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -1148,11 +1419,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Image generation edit unavailable.");
       }
 
-      // Two-pass build: a refused assistant turn also drops the user
-      // prompt that triggered it (leaving it in context re-triggers
-      // the classifier). Refusal flag rides assistant
-      // metadata.custom.anthropicRefusal, set out-of-band from the
-      // backend _toolEvent.
+      // Drop refused assistant turns + their triggering user prompt;
+      // otherwise context re-triggers the classifier.
       const survivingMessages: RunMessage[] = [];
       for (const message of messages) {
         if (isAnthropicRefusalMessage(message)) {
@@ -1165,8 +1433,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         survivingMessages.push(message);
       }
 
+      // toOpenAIMessages emits assistant tool_calls + role="tool"
+      // follow-ups; the backend Gemini translator rebuilds the
+      // functionCall/functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .map(toOpenAIMessage)
+        .flatMap(toOpenAIMessages)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -1189,7 +1460,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             break;
           }
         }
-        outboundMessages.splice(insertAt, 0, referenceMessage);
+        // OpenAIChatMessage is a structural superset of SerializedMessage
+        // for the role/content axis the outbound pipeline consumes; cast
+        // through unknown since referenceMessage carries no tool_calls
+        // (the image_edit reference is a plain assistant turn).
+        outboundMessages.splice(
+          insertAt,
+          0,
+          referenceMessage as unknown as SerializedMessage,
+        );
       }
 
       const safeSystemPrompt =
@@ -1271,7 +1550,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             outboundMessages[0] = {
               ...firstMessage,
               content: [
-                ...firstMessage.content,
+                ...(Array.isArray(firstMessage.content)
+                  ? firstMessage.content
+                  : []),
                 { type: "text", text: `\n\n${disabledToolGuard}` },
               ],
             };
@@ -1420,20 +1701,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
-      // Tracks whether we are currently inside a `<think>` block opened by
-      // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
-      // and DeepSeek's reasoner stream their thinking as a separate
-      // `reasoning_content` field on the chat-completion delta — not as
-      // `content`, not as a structured part. We wrap those chunks with
-      // inline `<think>...</think>` so the existing parseAssistantContent
-      // lifts them into the reasoning panel the same way it does for
-      // local Harmony models. State has to live outside the SSE loop
-      // because the close tag fires when the next chunk carries content
-      // (or when the stream ends).
+      // True while wrapping a `delta.reasoning_content` stream in
+      // <think>...</think> for parseAssistantContent. Lives outside
+      // the SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
-      // Tool call content parts — accumulated and yielded cumulatively.
-      // result is set directly on the tool-call part when tool_end arrives.
+      // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: ToolCallMessagePart[] = [];
+      // Latest Gemini text-part thoughtSignature; pinned onto the final
+      // text MessagePart so next-turn replay carries it.
+      let latestTextThoughtSignature: string | undefined;
+      const pinTextThoughtSignature = <T extends { type: string }>(
+        parts: T[],
+      ): T[] => {
+        if (!latestTextThoughtSignature || parts.length === 0) return parts;
+        for (let i = parts.length - 1; i >= 0; i -= 1) {
+          if (parts[i].type === "text") {
+            parts[i] = {
+              ...parts[i],
+              _google_thought_signature: latestTextThoughtSignature,
+            } as T;
+            break;
+          }
+        }
+        return parts;
+      };
       const orderAssistantContent = (
         textParts: ReturnType<typeof parseAssistantContent>,
       ) => {
@@ -1526,6 +1817,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 {
                   isReasoningProvider:
                     externalProvider.isReasoningModel === true,
+                  baseUrl: externalProvider.baseUrl ?? null,
                 },
               )
             : {
@@ -1558,13 +1850,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
-            // OpenAI shell-tool container reuse: pull the per-thread
-            // container_id (if any) so subsequent turns in the same
-            // thread reference the existing container instead of
-            // auto-creating a fresh one. Empty string / undefined →
-            // backend falls back to container_auto. Anthropic uses
-            // the parallel `anthropicCodeExecContainerId` field below
-            // (sent as `container` on /v1/messages).
+            // Per-thread container reuse; empty/undefined falls back to
+            // container_auto. Anthropic uses anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
@@ -1578,17 +1865,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 openaiCodeExecContainerId = null;
                 anthropicCodeExecContainerId = null;
               }
-              // Pre-send container validation (OpenAI only). The list
-              // endpoint already filters status==="expired" server-side
-              // (studio/backend/routes/inference.py — list_openai_containers),
-              // so membership in this set means "OpenAI will accept it
-              // as container_reference". A stale id silently dropped here
-              // falls through to the inheritance + lazy-create logic
-              // below, so the user never sees "Container is expired" in
-              // the chat thread. On list-call failure we leave
-              // activeContainerIds null and skip validation — the
-              // backend's transparent retry path is the safety net for
-              // that case.
+              // Pre-send container validation (OpenAI). Stale ids drop
+              // silently and fall through to lazy-create. On list-call
+              // failure, skip and rely on the backend's retry path.
               let activeContainerIds: Set<string> | null = null;
               if (externalProvider.providerType === "openai") {
                 try {
@@ -1611,15 +1890,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = null;
                 }
               }
-              // Cross-thread inheritance: when the active thread has
-              // no container yet, default to the one most recently
-              // used on *any* other thread (provider-scoped).
-              // Matches what the Code Execution settings section
-              // shows in the picker, and keeps the user from getting
-              // a fresh container on every new thread. The picker
-              // can still be set to "Auto-create per thread"
-              // explicitly to opt into a fresh container — but
-              // that's done via the dropdown, not silently.
+              // Cross-thread inheritance: reuse the most recently used
+              // container from any other thread; opt-out via the picker.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -1652,13 +1924,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   /* fall through to lazy-create below */
                 }
               }
-              // Lazy pre-create when there's no inherited container.
-              // We always POST /v1/containers ourselves (rather than
-              // letting the backend send container_auto) so every
-              // container shows up in the picker with a friendly
-              // English-word name and the user's configured TTL.
-              // Falls back to container_auto only if the POST fails
-              // — keeps the chat moving in that case.
+              // Pre-create our own container (vs container_auto) so it
+              // shows up in the picker with a friendly name and the
+              // configured TTL. Falls back to container_auto on failure.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -1717,10 +1985,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   externalSelection?.modelId,
                 ),
               ),
-              // Only forward sampling knobs the provider actually accepts; the
-              // backend's external-provider proxy is param-permissive and would
-              // surface a 400 from providers that reject unknown fields (e.g.
-              // OpenAI rejects top_k, Anthropic/DeepSeek reject presence_penalty).
+              // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
@@ -1889,14 +2154,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.postSamplingProbs === true
                 ? { post_sampling_probs: true }
                 : {}),
-              // Built-in tools: Search pill maps to provider-side
-              // web_search (currently OpenAI / Anthropic / OpenRouter /
-              // Kimi); Code pill maps to Anthropic's server-side
-              // code_execution_20250825 tool (Anthropic is the only
-              // external provider that ships one today). Backend
-              // translates enabled_tools into each provider's tool
-              // schema — for Anthropic that's the entries appended to
-              // body["tools"] inside _stream_anthropic.
+              // Compose the enabled_tools list from the active pills;
+              // backend maps each name to the provider's tool schema.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
@@ -1905,10 +2164,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // web_fetch has its own pill (Anthropic-only).
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      // image_generation: OpenAI Responses-API only.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
@@ -1944,9 +2201,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider.enablePromptCaching ?? true,
                   }
                 : {}),
-              // Anthropic-only cache TTL. Backend's _stream_anthropic
-              // only attaches cache_control.ttl when value is "5m"/"1h",
-              // so unknown values are a no-op end-to-end.
+              // Anthropic prompt-cache TTL; unknown values no-op on backend.
               ...(supportsProviderPromptCacheTtl(
                 externalProvider.providerType,
               ) &&
@@ -2152,11 +2407,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // OpenAI shell-tool container persistence — see
-                // ThreadRecord.openaiCodeExecContainerId. The backend
-                // emits these synthetic events on the OpenAI Responses
-                // SSE stream after capturing the container_id from a
-                // response, or detecting an expired-container error.
+                // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
                     | string
@@ -2253,12 +2504,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       typeof imageB64 === "string" &&
                       imageB64
                     ) {
-                      // OpenAI Responses image_generation_call: the
-                      // backend stashes the base64 PNG/WebP/JPEG on
-                      // separate `image_b64` / `image_mime` fields on
-                      // the synthetic _toolEvent so the JSON result
-                      // string stays small enough to log. Repackage as
-                      // a structured result for the dedicated tool UI.
+                      // Backend keeps base64 on separate image_b64 /
+                      // image_mime fields so logs stay small; repackage.
                       parsedResult = {
                         image_b64: imageB64,
                         image_mime:
@@ -2285,27 +2532,104 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     } else {
                       parsedResult = rawResult;
                     }
+                    // Merge tool_end args first, then Gemini native_part.
                     const nextArgs =
                       toolEvent.arguments &&
                       typeof toolEvent.arguments === "object"
                         ? (toolEvent.arguments as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs = nextArgs
-                      ? { ...(toolCallParts[idx].args ?? {}), ...nextArgs }
-                      : toolCallParts[idx].args;
+                    const mergedArgs: ToolCallMessagePart["args"] = {
+                      ...(toolCallParts[idx].args ?? {}),
+                      ...(nextArgs ?? {}),
+                    } as ToolCallMessagePart["args"];
+                    // Merge tool_end native_part into args.google so the
+                    // outbound translator replays both start (executableCode)
+                    // and end (result / inlineData) on the same turn.
+                    // Concatenate parts so each keeps its own thoughtSignature.
+                    const endGoogle = (
+                      toolEvent as { google?: { native_part?: unknown } }
+                    ).google;
+                    if (
+                      endGoogle &&
+                      typeof endGoogle === "object" &&
+                      endGoogle.native_part &&
+                      typeof endGoogle.native_part === "object"
+                    ) {
+                      const argsObj = mergedArgs as Record<string, unknown>;
+                      const existingGoogle = (argsObj.google ?? {}) as Record<
+                        string,
+                        unknown
+                      >;
+                      const existingNative =
+                        (existingGoogle.native_part as Record<
+                          string,
+                          unknown
+                        >) ?? {};
+                      const endNative = endGoogle.native_part as Record<
+                        string,
+                        unknown
+                      >;
+                      // Extract part entries from either parts:[...] or
+                      // legacy single-object native_part. Legacy
+                      // thoughtSignature always belongs on executableCode.
+                      const collectParts = (
+                        native: Record<string, unknown>,
+                      ): Record<string, unknown>[] => {
+                        if (Array.isArray(native.parts)) {
+                          return (native.parts as unknown[]).filter(
+                            (entry): entry is Record<string, unknown> =>
+                              Boolean(entry) &&
+                              typeof entry === "object" &&
+                              !Array.isArray(entry),
+                          );
+                        }
+                        const out: Record<string, unknown>[] = [];
+                        const legacySig =
+                          typeof native.thoughtSignature === "string"
+                            ? native.thoughtSignature
+                            : typeof native.thought_signature === "string"
+                              ? (native.thought_signature as string)
+                              : null;
+                        for (const key of [
+                          "executableCode",
+                          "codeExecutionResult",
+                          "inlineData",
+                        ] as const) {
+                          const sub = native[key];
+                          if (sub && typeof sub === "object") {
+                            const entry: Record<string, unknown> = {
+                              [key]: sub,
+                            };
+                            if (key === "executableCode" && legacySig) {
+                              entry.thoughtSignature = legacySig;
+                            }
+                            out.push(entry);
+                          }
+                        }
+                        return out;
+                      };
+                      const mergedParts = [
+                        ...collectParts(existingNative),
+                        ...collectParts(endNative),
+                      ];
+                      argsObj.google = {
+                        ...existingGoogle,
+                        native_part: { parts: mergedParts },
+                      };
+                    }
                     toolCallParts[idx] = {
                       ...toolCallParts[idx],
                       args: mergedArgs,
-                      argsText: mergedArgs
-                        ? JSON.stringify(mergedArgs)
-                        : toolCallParts[idx].argsText,
+                      argsText: JSON.stringify(mergedArgs ?? {}),
                       result: parsedResult,
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates. Search/code tools stay
-                // before the text, while generated images sit after the answer.
-                const textParts = parseAssistantContent(cumulativeText);
+                // Cumulative yield. orderAssistantContent puts search/
+                // code before text and generated images after.
+                const textParts = pinTextThoughtSignature(
+                  parseAssistantContent(cumulativeText),
+                );
                 yield {
                   content: orderAssistantContent(textParts),
                   metadata: {
@@ -2332,11 +2656,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               totalChunks += 1;
-              // OpenRouter's free router (openrouter/free) picks a different
-              // underlying free model per request and reports it in every
-              // chunk's top-level `model` field. Latch the first non-empty
-              // value that differs from the requested checkpoint so the
-              // header chip can render "openrouter/free:<chosen>".
+              // Latch the chunk's `model` field so the openrouter/free
+              // chip can show the chosen underlying model.
               if (
                 isExternalRequest &&
                 externalProvider?.providerType === "openrouter" &&
@@ -2355,30 +2676,37 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
-              // Providers like Mistral's magistral return delta.content as an
-              // array of structured parts; normalize to text (with thinking
-              // parts re-wrapped as inline <think> tags) so the rest of the
-              // accumulator stays string-based.
+              // Normalize structured delta.content (mistral magistral) to text.
               const delta = extractDeltaText(rawDelta);
-              // Kimi (kimi-k2.6, kimi-k2-thinking) and DeepSeek reasoner
-              // stream thinking via `delta.reasoning_content` as a plain
-              // string field — separate from `delta.content` which carries
-              // the answer. Wrap reasoning chunks inline as <think>...
-              // </think> so parseAssistantContent treats them like any
-              // other reasoning. The close tag fires when the next chunk
-              // brings content, or when the stream ends.
+              // Latest Gemini text-part thoughtSignature for next-turn replay.
+              const deltaExtraContent = (
+                chunk.choices?.[0]?.delta as
+                  | { extra_content?: unknown }
+                  | undefined
+              )?.extra_content;
+              if (
+                deltaExtraContent &&
+                typeof deltaExtraContent === "object"
+              ) {
+                const eGoogle = (deltaExtraContent as Record<string, unknown>)
+                  .google;
+                if (eGoogle && typeof eGoogle === "object") {
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
+                  if (typeof sig === "string" && sig) {
+                    latestTextThoughtSignature = sig;
+                  }
+                }
+              }
+              // Kimi / DeepSeek stream thinking via delta.reasoning_content.
+              // Wrap inline as <think>...</think> for parseAssistantContent.
               const rawReasoning = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_content?: unknown }
                   | undefined
               )?.reasoning_content;
-              // OpenRouter uses a third reasoning shape: a structured
-              // `delta.reasoning_details` array of parts (each carrying
-              // `text`). The router emits this regardless of which
-              // underlying provider it picked, so we extract here and
-              // merge into the same <think>...</think> wrap path used
-              // for Kimi / DeepSeek reasoning_content. See
-              //   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+              // OpenRouter ships reasoning as delta.reasoning_details[]
+              // regardless of underlying provider; merge into the same wrap path.
               const rawReasoningDetails = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_details?: unknown }
@@ -2396,6 +2724,138 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+              // OpenAI delta.tool_calls: streams fragments by index;
+              // accumulate into one part. extra_content carries Gemini 3
+              // thoughtSignature for next-turn replay.
+              const rawDeltaToolCalls = (
+                chunk.choices?.[0]?.delta as
+                  | { tool_calls?: unknown }
+                  | undefined
+              )?.tool_calls;
+              if (
+                Array.isArray(rawDeltaToolCalls) &&
+                rawDeltaToolCalls.length > 0
+              ) {
+                for (const tc of rawDeltaToolCalls) {
+                  if (!tc || typeof tc !== "object") continue;
+                  const call = tc as {
+                    id?: string;
+                    index?: number;
+                    function?: { name?: string; arguments?: string };
+                    extra_content?: unknown;
+                  };
+                  const idx =
+                    typeof call.index === "number" ? call.index : undefined;
+                  const stableId = call.id;
+                  // Match an existing fragment by id first (canonical),
+                  // then by index slot. Fall back to a freshly-minted
+                  // tool_call_<n> id for streams that send neither.
+                  let existing = stableId
+                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                    : undefined;
+                  if (!existing && idx !== undefined) {
+                    existing = toolCallParts.find(
+                      (p) =>
+                        (
+                          p as ToolCallMessagePart & { _delta_index?: number }
+                        )._delta_index === idx,
+                    );
+                  }
+                  const argsFragment = call.function?.arguments ?? "";
+                  if (existing) {
+                    const prevName = existing.toolName ?? "";
+                    const nextName = call.function?.name ?? prevName;
+                    const merged =
+                      (existing.argsText ?? "") + argsFragment;
+                    let parsedArgs:
+                      ToolCallMessagePart["args"] = existing.args ?? {};
+                    if (merged) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          merged,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: merged,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const prevExtra = (
+                      existing as ToolCallMessagePart & {
+                        extra_content?: unknown;
+                      }
+                    ).extra_content;
+                    const updated: ToolCallMessagePart & {
+                      _delta_index?: number;
+                      extra_content?: unknown;
+                    } = {
+                      ...(existing as ToolCallMessagePart),
+                      toolName: nextName,
+                      argsText: merged,
+                      args: parsedArgs,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : prevExtra !== undefined
+                        ? { extra_content: prevExtra }
+                        : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    const replaceIdx = toolCallParts.indexOf(existing);
+                    if (replaceIdx >= 0) {
+                      toolCallParts[replaceIdx] = updated;
+                    }
+                  } else {
+                    const callId =
+                      stableId ||
+                      `tool_call_${idx ?? toolCallParts.length}`;
+                    const argsText = argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] = {};
+                    if (argsText) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          argsText,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: argsText,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const fresh: ToolCallMessagePart & {
+                      _delta_index?: number;
+                      extra_content?: unknown;
+                    } = {
+                      type: "tool-call" as const,
+                      toolCallId: callId,
+                      toolName: call.function?.name ?? "",
+                      argsText,
+                      args: parsedArgs,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    toolCallParts.push(fresh);
+                  }
+                }
+                yield {
+                  content: [
+                    ...toolCallParts,
+                    ...pinTextThoughtSignature(
+                      parseAssistantContent(cumulativeText),
+                    ),
+                  ],
+                  metadata: {
+                    timing: buildTiming(
+                      streamStartTime,
+                      totalChunks,
+                      firstTokenTime,
+                    ),
+                    custom: { reasoningDuration },
+                  },
+                };
+                continue;
+              }
               if (!delta && !reasoning) {
                 continue;
               }
@@ -2421,21 +2881,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
                 cumulativeText += delta;
               }
-              // Mistral's magistral occasionally emits a trailing
-              // template-literal artifact (e.g. "${response}") at the end of
-              // an otherwise complete answer. It is never part of a real
-              // reply, so strip a trailing `${...}` token from external
-              // provider streams. The regex anchors to end-of-string and is
-              // idempotent — fragments mid-stream (e.g. "${re") leave the
-              // string untouched and only collapse once the closing brace
-              // arrives. Local-model output is left alone.
+              // Strip a trailing ${...} template-literal artifact from
+              // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(
                   /\s*\$\{[^}]*\}\s*$/,
                   "",
                 );
               }
-              const parts = parseAssistantContent(cumulativeText);
+              const parts = pinTextThoughtSignature(
+                parseAssistantContent(cumulativeText),
+              );
 
               if (
                 parts.some((part) => part.type === "reasoning") &&
@@ -2551,7 +3007,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...orderAssistantContent(parseAssistantContent(cumulativeText)),
+            ...orderAssistantContent(
+              pinTextThoughtSignature(parseAssistantContent(cumulativeText)),
+            ),
             ...sourceParts,
             ...documentCitationParts,
           ],

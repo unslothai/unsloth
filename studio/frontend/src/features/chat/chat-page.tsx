@@ -731,7 +731,10 @@ export function ChatPage(): ReactElement {
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
-      { isReasoningProvider: provider?.isReasoningModel === true },
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
     );
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
@@ -772,6 +775,8 @@ export function ChatPage(): ReactElement {
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
     );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
@@ -971,6 +976,7 @@ export function ChatPage(): ReactElement {
           {
             isReasoningProvider:
               selectedProvider?.isReasoningModel === true,
+            baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
         const preferredEffort = store.reasoningEffort;
@@ -1012,6 +1018,8 @@ export function ChatPage(): ReactElement {
         store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
         );
         const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
           selectedProvider?.providerType,
