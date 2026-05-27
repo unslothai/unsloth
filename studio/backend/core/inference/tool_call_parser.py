@@ -222,11 +222,11 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     """Return OpenAI-format tool calls. Tries each format and returns
     as soon as one matches so we never double-count."""
     for parser in (
-        _parse_tool_call_json,        # Qwen / Hermes
-        _parse_function_xml,          # Qwen3.5 / Hermes XML
-        _parse_llama3_python_tag,     # Llama-3
-        _parse_mistral_tool_calls,    # Mistral
-        _parse_gemma_tool_calls,      # Gemma 4
+        _parse_tool_call_json,  # Qwen / Hermes
+        _parse_function_xml,  # Qwen3.5 / Hermes XML
+        _parse_llama3_python_tag,  # Llama-3
+        _parse_mistral_tool_calls,  # Mistral
+        _parse_gemma_tool_calls,  # Gemma 4
     ):
         calls = parser(content, id_offset = id_offset)
         if calls:
