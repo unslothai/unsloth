@@ -302,6 +302,46 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     return policy if policy is not None else payload.enable_tools
 
 
+def _drop_rag_tool_if_scope_empty(tools: list, rag_scope: Optional[dict]) -> list:
+    """Strip ``search_knowledge_base`` when the request's rag_scope has no docs.
+
+    Exposing the tool to the LLM when there's nothing to retrieve wastes a
+    tool-call turn — the model hits the tool, gets back "no chunks", and
+    has to re-plan. We do the doc count here as defence-in-depth; the
+    frontend also avoids requesting the tool in this case.
+    """
+    if not rag_scope:
+        return tools
+    kb_id = rag_scope.get("kb_id")
+    thread_id = rag_scope.get("thread_id")
+    if not kb_id and not thread_id:
+        return tools
+    try:
+        from storage.studio_db import get_connection
+
+        with get_connection() as conn:
+            if kb_id:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM rag_documents WHERE kb_id = ?",
+                    (kb_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM rag_documents WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+            doc_count = row[0] if row else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG scope-has-docs check failed", error = str(exc))
+        return tools
+    if doc_count > 0:
+        return tools
+    return [
+        t for t in tools
+        if t.get("function", {}).get("name") != "search_knowledge_base"
+    ]
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts
 # so is_disconnected() never fires. POST /inference/cancel looks up
 # in-flight cancel_events here by cancel_id (per-run) or session_id /
@@ -2387,6 +2427,9 @@ async def openai_chat_completions(
                 ]
             else:
                 tools_to_use = ALL_TOOLS
+            tools_to_use = _drop_rag_tool_if_scope_empty(
+                tools_to_use, payload.rag_scope
+            )
 
             # ── Tool-use system prompt nudge ──────────────────────
             _tool_names = {t["function"]["name"] for t in tools_to_use}
@@ -2884,6 +2927,9 @@ async def openai_chat_completions(
             ]
         else:
             _sf_tools_to_use = ALL_TOOLS
+        _sf_tools_to_use = _drop_rag_tool_if_scope_empty(
+            _sf_tools_to_use, payload.rag_scope
+        )
 
         _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
         _sf_has_web = "web_search" in _sf_tool_names

@@ -59,6 +59,8 @@ import {
 import {
   type SearchHit,
   type SearchRequest,
+  listKBDocuments,
+  listThreadDocuments,
   search as ragSearch,
 } from "@/features/rag/api/rag-api";
 import {
@@ -1051,8 +1053,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
+      // Even when RAG is toggled on, the tool + system-prompt nudge are
+      // useless if the active scope has no indexed documents — the model
+      // would call the tool, get back "no chunks", and waste a turn. Do
+      // a lightweight scope-has-docs check up front and treat the empty
+      // scope as effectively "off" for this turn.
+      let ragScopeHasDocs = false;
+      if (ragToolEnabled && ragSource.kind !== "off") {
+        try {
+          if (ragSource.kind === "kb") {
+            const docs = await listKBDocuments(ragSource.kbId);
+            ragScopeHasDocs = docs.length > 0;
+          } else if (ragSource.kind === "thread" && resolvedThreadId) {
+            const docs = await listThreadDocuments(resolvedThreadId);
+            ragScopeHasDocs = docs.length > 0;
+          }
+        } catch (err) {
+          // If the doc-list endpoint is unreachable we err on the side
+          // of letting the tool through — better to attempt retrieval
+          // and surface an error than to silently skip RAG.
+          console.warn("RAG scope-has-docs check failed:", err);
+          ragScopeHasDocs = true;
+        }
+      }
       const ragToolPathTaken =
-        ragToolEnabled && supportsTools && !isExternalRequest;
+        ragToolEnabled
+        && supportsTools
+        && !isExternalRequest
+        && ragScopeHasDocs;
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
