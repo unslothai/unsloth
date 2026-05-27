@@ -826,17 +826,24 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
               completionTokens: number;
               totalTokens: number;
               cachedTokens: number;
+              cacheWriteTokens?: number;
               modelId?: string;
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        if (
-          savedUsage &&
-          store.ggufContextLength &&
-          savedUsage.totalTokens <= store.ggufContextLength &&
-          (!savedUsage.modelId ||
-            savedUsage.modelId === store.params.checkpoint)
-        ) {
+        // Window check applies only when a local GGUF window is known;
+        // external providers have ggufContextLength === null.
+        const withinLocalLimit =
+          !store.ggufContextLength ||
+          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+        // Legacy unscoped usage (no modelId) is only trusted when a
+        // known local window bounds the totals, so we can't misattribute
+        // an old local turn to a newly-selected external provider.
+        const modelMatches = savedUsage?.modelId
+          ? savedUsage.modelId === store.params.checkpoint
+          : typeof store.ggufContextLength === "number" &&
+            store.ggufContextLength > 0;
+        if (savedUsage && withinLocalLimit && modelMatches) {
           store.setContextUsage(savedUsage);
         }
 

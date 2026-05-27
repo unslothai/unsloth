@@ -390,6 +390,8 @@ def cmd_train(args) -> int:
         )
         if k in train_result
     }
+    # logging_steps=1 + max_steps=N -> N callbacks; track config so the
+    # gate auto-follows if max_steps is bumped again.
     expected_logged_steps = int(config.max_steps)
     assert (
         len(losses_per_step) == expected_logged_steps
