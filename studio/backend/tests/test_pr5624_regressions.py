@@ -16,7 +16,7 @@ review:
   dropped rather than surfaced under a numeric name.
 * DeepSeek V3.1 truncated mid-stream produces an empty result without
   raising.
-* ``routes.inference._TOOL_XML_RE`` strips the DeepSeek envelope and
+* ``routes.inference._strip_tool_xml`` strips the DeepSeek envelope and
   the Kimi section markers added by this PR.
 """
 
@@ -195,7 +195,7 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 
 
 def test_routes_layer_strip_removes_deepseek_envelope():
-    from routes.inference import _TOOL_XML_RE
+    from routes.inference import _strip_tool_xml as _routes_strip
 
     text = (
         "before "
@@ -206,12 +206,12 @@ def test_routes_layer_strip_removes_deepseek_envelope():
         "<｜tool▁calls▁end｜>"
         " after"
     )
-    stripped = _TOOL_XML_RE.sub("", text)
+    stripped = _routes_strip(text)
     assert stripped == "before  after"
 
 
 def test_routes_layer_strip_removes_kimi_section():
-    from routes.inference import _TOOL_XML_RE
+    from routes.inference import _strip_tool_xml as _routes_strip
 
     text = (
         "before "
@@ -222,14 +222,14 @@ def test_routes_layer_strip_removes_kimi_section():
         "<|tool_calls_section_end|>"
         " after"
     )
-    stripped = _TOOL_XML_RE.sub("", text)
+    stripped = _routes_strip(text)
     assert stripped == "before  after"
 
 
 def test_routes_layer_strip_removes_glm_block():
     """Pre-existing alternation ``<tool_call>.*?</tool_call>`` should
     handle GLM's emission shape too — guard that this PR didn't break it."""
-    from routes.inference import _TOOL_XML_RE
+    from routes.inference import _strip_tool_xml as _routes_strip
 
     text = (
         "before "
@@ -238,7 +238,7 @@ def test_routes_layer_strip_removes_glm_block():
         "</tool_call>"
         " after"
     )
-    stripped = _TOOL_XML_RE.sub("", text)
+    stripped = _routes_strip(text)
     assert stripped == "before  after"
 
 

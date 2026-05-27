@@ -186,6 +186,20 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        # why: snapshot before TRL's unwrap context manager, which calls
+        # gradient_checkpointing_disable() before yielding; preserve the actual
+        # mode value (e.g. "unsloth") rather than collapsing it to a bool, so
+        # the finally restore matches the caller's configured GC mode.
+        use_gradient_checkpointing = next(
+            (
+                v
+                for v in (
+                    getattr(m, "gradient_checkpointing", False) for m in model.modules()
+                )
+                if v
+            ),
+            False,
+        )
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
             FastLanguageModel.for_inference(model)
@@ -207,7 +221,10 @@ def PatchRL(FastLanguageModel):
             finally:
                 # Restore generate and return
                 unwrapped_model.generate = original_generate
-                FastLanguageModel.for_training(model)
+                FastLanguageModel.for_training(
+                    model,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                )
 
     from transformers import Trainer
     from transformers.trainer_pt_utils import nested_detach
@@ -348,6 +365,22 @@ calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+align_completion_tool_mask = RL_REPLACEMENTS.get("align_completion_tool_mask")
+if align_completion_tool_mask is None:
+
+    def align_completion_tool_mask(
+        tool_mask: torch.Tensor,
+        completion_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if tool_mask is None:
+            return completion_mask
+        raise RuntimeError(
+            "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+            "grpo_accumulated_loss handles tool_mask. Please upgrade "
+            "unsloth_zoo."
+        )
+
+
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 sanitize_logprob = RL_REPLACEMENTS["sanitize_logprob"]
 
@@ -435,6 +468,7 @@ torch_compile_options = {{
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{align_completion_tool_mask_code}
 {autotune_batch_and_chunks_code}
 {sanitize_logprob_code}
 
@@ -1295,7 +1329,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_nan_inf_filter": False,
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
-        "weight_decay": 0.01,
+        # LoRA decays A and B toward 0 so effective W = W_init + (alpha/r) * B @ A is pulled toward W_init, not 0 as in full FT.
+        # 0.001 keeps a small Frobenius prior |A|_F^2 + |B|_F^2 without measurably dragging the merged adapter back to base.
+        "weight_decay": 0.001,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
@@ -1558,6 +1594,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    align_completion_tool_mask_code = inspect.getsource(align_completion_tool_mask)
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     # Get final source code
@@ -1588,6 +1625,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
+        align_completion_tool_mask_code = align_completion_tool_mask_code,
         sanitize_logprob_code = sanitize_logprob_code,
     )
 

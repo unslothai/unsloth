@@ -1807,7 +1807,7 @@ class TestGptOssNameDetection:
 
 
 # ────────────────────────────────────────────────────────────────────
-# Routes-level ``<|python_tag|>`` strip
+# Routes-level python_tag strip (multi-line; stop on next sentinel)
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -1832,9 +1832,9 @@ class TestRoutesPythonTagStrip:
     def _strip(self, text: str) -> str:
         # Import inside the test so a routes-module import error does
         # not blow up the entire test file at collection time.
-        from routes.inference import _TOOL_XML_RE
+        from routes.inference import _strip_tool_xml
 
-        return _TOOL_XML_RE.sub("", text)
+        return _strip_tool_xml(text)
 
     def test_single_line_python_tag_stripped(self):
         # Floor: the original 5620 single-line behaviour still works.

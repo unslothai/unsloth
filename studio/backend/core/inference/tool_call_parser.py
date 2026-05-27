@@ -224,6 +224,106 @@ _GEMMA_TC_END = "<tool_call|>"
 # ── Public API ──────────────────────────────────────────────────────
 
 
+def _balanced_bracket_end(text: str, start: int) -> int | None:
+    """Index of the matching ``]`` for the ``[`` at ``text[start]``.
+
+    Skips brackets inside JSON string literals. Returns ``None`` if no
+    matching close is found.
+    """
+    if start >= len(text) or text[start] != "[":
+        return None
+    depth = 0
+    in_string = False
+    esc = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
+def _strip_mistral_closed_calls(text: str) -> str:
+    """Strip ``[TOOL_CALLS]`` blocks with balanced brace/bracket scanning.
+
+    Handles three Mistral emission shapes:
+
+      - ``[TOOL_CALLS] [ {...}, {...} ]``         (v0.3 / Nemo / Small)
+      - ``[TOOL_CALLS] name { json }``            (v11+ / Magistral)
+      - ``[TOOL_CALLS] name [ARGS] { json }``     (Ministral / Large 3)
+
+    The regex ``\\{.*?\\}`` truncates at the first ``}``, losing nested
+    JSON, so this walks balanced braces/brackets instead. Only matches
+    runs that close cleanly; unclosed trailing markup is left in place
+    for ``final=True`` cleanup via ``_TOOL_ALL_PATS``.
+    """
+    n = len(text)
+    out = []
+    cursor = 0
+    while cursor < n:
+        idx = text.find(_MISTRAL_TRIGGER, cursor)
+        if idx == -1:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor:idx])
+        body_start = idx + len(_MISTRAL_TRIGGER)
+        # Skip whitespace + optional name + optional ``[ARGS]``.
+        i = body_start
+        while i < n and text[i] in " \t\n\r":
+            i += 1
+        # Array shape: [TOOL_CALLS] [ ... ]
+        if i < n and text[i] == "[":
+            end = _balanced_bracket_end(text, i)
+            if end is None:
+                # Truncated mid-array; leave the trigger and everything
+                # after it in place so caller can buffer / final-strip.
+                out.append(text[idx:])
+                break
+            cursor = end + 1
+            # Optional trailing </s> (Mistral EOS).
+            if text.startswith("</s>", cursor):
+                cursor += len("</s>")
+            continue
+        # Named shape: [TOOL_CALLS] name [ARGS]? { json }
+        name_match = _MISTRAL_V11_NAME_RE.match(text, i)
+        if not name_match:
+            out.append(text[idx:body_start])
+            cursor = body_start
+            continue
+        i = name_match.end()
+        while i < n and text[i] in " \t\n\r":
+            i += 1
+        if text.startswith(_MISTRAL_ARGS_MARKER, i):
+            i += len(_MISTRAL_ARGS_MARKER)
+            while i < n and text[i] in " \t\n\r":
+                i += 1
+        if i >= n or text[i] != "{":
+            out.append(text[idx:i])
+            cursor = i
+            continue
+        end = _balanced_brace_end(text, i)
+        if end is None:
+            out.append(text[idx:])
+            break
+        cursor = end + 1
+    return "".join(out)
+
+
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup from streamed text.
 
@@ -231,6 +331,10 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     stays buffered. ``final=True`` also removes trailing unclosed runs
     and trims the result.
     """
+    # Mistral patterns need balanced brace/bracket scanning -- a
+    # non-greedy regex would truncate at the first ``}`` inside a
+    # nested JSON object and leak the rest into user-visible text.
+    text = _strip_mistral_closed_calls(text)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
         text = pat.sub("", text)
@@ -426,9 +530,13 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
         for kv in _LLAMA3_KV_RE.finditer(body):
             k = kv.group(1)
             if kv.group(2) is not None:
+                # json.loads on a wrapped JSON string handles
+                # \n / \t / \uXXXX escapes correctly while preserving
+                # literal UTF-8 bytes (emoji, CJK, etc.) that the older
+                # ``bytes.decode("unicode_escape")`` path mangled.
                 try:
-                    args[k] = bytes(kv.group(2), "utf-8").decode("unicode_escape")
-                except (UnicodeDecodeError, ValueError):
+                    args[k] = json.loads('"' + kv.group(2) + '"')
+                except (json.JSONDecodeError, ValueError):
                     args[k] = kv.group(2)
             elif kv.group(3) is not None:
                 v = kv.group(3)
@@ -512,18 +620,28 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
     out: list[dict] = []
     stripped = content.lstrip()
     # Strip leading Llama-3 sentinel tokens that sometimes precede the
-    # JSON (``<|eot_id|>`` from the prior turn, ``<|start_header_id|>``).
-    for sentinel in (
+    # JSON (``<|eot_id|>`` from the prior turn, ``<|start_header_id|>``,
+    # ``<|begin_of_text|>``). Loop until no sentinel matches: the
+    # tokens can appear in any order and chain, so a single pass would
+    # leave later sentinels behind once an earlier one consumed its
+    # prefix.
+    _sentinels = (
         "<|begin_of_text|>",
         "<|eot_id|>",
         "<|start_header_id|>",
         "<|end_header_id|>",
         "<|eom_id|>",
-    ):
+    )
+    while True:
         stripped = stripped.lstrip()
-        if stripped.startswith(sentinel):
-            stripped = stripped[len(sentinel) :]
-    stripped = stripped.lstrip()
+        matched = False
+        for sentinel in _sentinels:
+            if stripped.startswith(sentinel):
+                stripped = stripped[len(sentinel) :]
+                matched = True
+                break
+        if not matched:
+            break
     if not stripped.startswith("{"):
         return out
 

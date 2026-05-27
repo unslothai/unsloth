@@ -240,6 +240,36 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # /api/providers/registry dropdown — see list_available_providers.
         "hidden": True,
     },
+    "ollama": {
+        "display_name": "Ollama",
+        "base_url": "http://localhost:11434/v1",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": (
+            "Local Ollama server. OpenAI-compatible /v1/chat/completions; "
+            "no API key. Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
+        ),
+        "hidden": True,
+    },
+    "llama_cpp": {
+        "display_name": "llama.cpp",
+        "base_url": "http://localhost:8080/v1",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": (
+            "Local llama.cpp server (llama-server). OpenAI-compatible "
+            "/v1/chat/completions. Surfaced via CUSTOM_PROVIDER_PRESETS."
+        ),
+        "hidden": True,
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
