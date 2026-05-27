@@ -10,6 +10,7 @@ expects), which need not match nvidia-smi order.
 Uses only the standard library so it stays runnable as a bare script without
 importing the backend package.
 """
+
 import ctypes
 import os
 import sys
@@ -30,8 +31,8 @@ def main() -> int:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
     try:
-        ctypes.CDLL(os.path.join(bindir, base_name), mode=ctypes.RTLD_GLOBAL)
-        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode=ctypes.RTLD_GLOBAL)
+        ctypes.CDLL(os.path.join(bindir, base_name), mode = ctypes.RTLD_GLOBAL)
+        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = ctypes.RTLD_GLOBAL)
     except OSError:
         return 0
 
@@ -47,7 +48,9 @@ def main() -> int:
     rows = []
     for i in range(lib.ggml_backend_vk_get_device_count()):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
-        lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
+        lib.ggml_backend_vk_get_device_memory(
+            i, ctypes.byref(free), ctypes.byref(total)
+        )
         rows.append("%d\t%d\t%d" % (i, free.value, total.value))
     sys.stdout.write("\n".join(rows))
     return 0
