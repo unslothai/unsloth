@@ -108,6 +108,7 @@ export const LR_DEFAULT_CPT = 5e-5;
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
+  visionImageSize: null as number | null,
   learningRate: LR_DEFAULT_LORA,
   // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
   embeddingLearningRate: null as number | null,

@@ -2799,6 +2799,97 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(
         assert (release_dir / name).exists(), f"missing {name}"
 
 
+def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(
+    tmp_path: Path,
+) -> None:
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    bundle = archives / "app-b9334-linux-x64-cuda13-newer.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in (
+            "llama-cli",
+            "llama-server",
+            "llama-quantize",
+            "libllama-cli-impl.so",
+            "libllama-server-impl.so",
+            "libllama-quantize-impl.so",
+            "libllama-common.so",
+            "libllama.so",
+            "libggml.so",
+            "libggml-base.so",
+            "libmtmd.so",
+            "libggml-cpu-x64.so",
+            "libggml-cuda.so",
+        ):
+            payload = f"{name}\n".encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+    import hashlib
+    import shutil as _shutil
+
+    bundle_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b9334",
+        name = bundle.name,
+        url = f"https://example.com/{bundle.name}",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        runtime_line = "cuda13",
+        expected_sha256 = bundle_sha,
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (13, 0),
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, *, expected_sha256 = None, label = None, **kw):
+        _shutil.copy2(bundle, target_path)
+        if expected_sha256:
+            actual = hashlib.sha256(Path(target_path).read_bytes()).hexdigest()
+            if actual != expected_sha256:
+                raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                    f"sha256 mismatch on {label}"
+                )
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, host, install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    runtime_dir = install / "build" / "bin"
+    for name in (
+        "libllama-cli-impl.so",
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
+    ):
+        assert (runtime_dir / name).exists(), f"missing {name}"
+    assert not (runtime_dir / "llama-cli").exists()
+
+
 def test_python_runtime_dirs_covers_cu13_and_library_bin(
     monkeypatch, tmp_path: Path
 ) -> None:
