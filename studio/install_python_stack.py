@@ -816,7 +816,9 @@ def _ensure_rocm_torch() -> None:
 
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls
-    # back to PyPI when the pre-release URL is unreachable.
+    # back to PyPI when the pre-release wheel cannot be installed. Use pip for
+    # the pre-release wheel because uv rejects the wheel's filename/metadata
+    # version mismatch.
     if rocm_torch_ready:
         _bnb_url = _bnb_rocm_prerelease_url()
         _bnb_installed = False
@@ -828,11 +830,12 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _bnb_url,
                 constrain = False,
+                force_pip = True,
             )
             if not _bnb_installed:
                 print(
                     _red(
-                        "   bnb pre-release unreachable; falling back to PyPI "
+                        "   bnb pre-release install failed; falling back to PyPI "
                         "(4-bit decode will be broken on ROCm)"
                     )
                 )
@@ -1279,6 +1282,7 @@ def pip_install_try(
     label: str,
     *args: str,
     constrain: bool = True,
+    force_pip: bool = False,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs with a follow-up fallback.
@@ -1289,7 +1293,7 @@ def pip_install_try(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
-    if USE_UV:
+    if USE_UV and not force_pip:
         cmd = _build_uv_cmd(args) + constraint_args_uv
     else:
         cmd = _build_pip_cmd(args) + constraint_args_pip
