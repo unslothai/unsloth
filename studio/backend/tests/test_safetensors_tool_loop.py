@@ -1901,5 +1901,115 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == "<|eom_id|>"
 
 
+# ────────────────────────────────────────────────────────────────────
+# Robustness fixes uncovered while validating against vLLM / sglang.
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestParserRobustness:
+    def test_tool_call_json_accepts_parameters_key(self):
+        # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
+        # ``parameters`` instead of ``arguments``. The bare-JSON and
+        # python_tag paths already accept both keys; this path now does
+        # too. Was extracting name only and silently dropping the args.
+        import json
+
+        text = (
+            "<tool_call>\n"
+            '{"name": "search", "parameters": {"q": "ramen"}}\n'
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"q": "ramen"}
+
+    def test_function_xml_attribute_form(self):
+        # MiniCPM-5 / MiniMax-M2 attribute syntax:
+        # ``<function name="..."><param name="...">v</param></function>``.
+        import json
+
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_xml_attribute_form_multi_param(self):
+        import json
+
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            '<param name="unit">celsius</param>'
+            "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"city": "Tokyo", "unit": "celsius"}
+
+    def test_function_xml_legacy_equals_form_still_works(self):
+        # Regression guard: the old ``<function=name><parameter=k>v``
+        # syntax must keep parsing after the regex broadening.
+        import json
+
+        text = (
+            "<function=get_weather>" "<parameter=city>Tokyo</parameter>" "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_llama3_chat_template_round_trip(self):
+        # Meta's official Llama-3.x chat template prefixes every
+        # assistant turn with
+        # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The
+        # sentinel-strip in ``_parse_llama3_bare_json`` must reach past
+        # the role label to the JSON body, else every round-tripped
+        # tool call in history silently drops.
+        import json
+
+        text = (
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            '{"name": "get_weather", "parameters": {"city": "Tokyo"}}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_llama3_round_trip_all_roles(self):
+        # Same logic must work for every role the chat template inserts.
+        import json
+
+        for role in ("assistant", "user", "system", "tool", "ipython"):
+            text = (
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+                '{"name": "f", "parameters": {"x": 1}}'
+            )
+            result = parse_tool_calls_from_text(text)
+            assert len(result) == 1, f"failed for role={role}"
+            assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
+
+    def test_llama3_round_trip_with_eot_prefix(self):
+        # Prior assistant turn closes with ``<|eot_id|>``, then the
+        # new header opens. Both sentinels + the role must be consumed.
+        import json
+
+        text = (
+            "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            '{"name": "f", "parameters": {}}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "f"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
