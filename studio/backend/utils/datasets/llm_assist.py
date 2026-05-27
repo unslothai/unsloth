@@ -155,7 +155,9 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        backend = LlamaCppBackend()
+        # kill_orphans=False so the helper backend doesn't reap the
+        # parent's chat-model llama-server while loading itself.
+        backend = LlamaCppBackend(kill_orphans = False)
         logger.info(f"Loading helper model: {repo} ({variant})")
 
         ok = backend.load_model(

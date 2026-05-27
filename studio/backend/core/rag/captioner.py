@@ -74,7 +74,12 @@ def _load_helper_vlm() -> Optional[tuple[Any, str, str]]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        backend = LlamaCppBackend()
+        # kill_orphans=False is critical: the global singleton is
+        # already running the user's chat-model llama-server. Killing
+        # "orphans" here would reap that healthy chat process because
+        # the orphan-killer can't tell two LlamaCppBackend instances
+        # apart by PID ownership.
+        backend = LlamaCppBackend(kill_orphans = False)
         logger.info(
             "RAG captioner: loading helper VLM %s (%s) as fallback",
             _HELPER_REPO,

@@ -608,7 +608,19 @@ class LlamaCppBackend:
         3. unload_model() — terminates llama-server subprocess
     """
 
-    def __init__(self):
+    def __init__(self, kill_orphans: bool = True):
+        """Construct a backend wrapper around llama-server.
+
+        ``kill_orphans`` (default True): at construction time, reap any
+        llama-server processes lingering from a prior studio crash. Safe
+        for the global singleton (only one LlamaCppBackend exists at
+        startup). Pass ``False`` for short-lived secondary instances
+        spawned alongside an already-running chat-model server (e.g.
+        the RAG captioner helper, `_run_with_helper`) — otherwise the
+        constructor will kill the parent's healthy chat model because
+        it can't distinguish "another instance's healthy server" from
+        "a stale process".
+        """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_identifier: Optional[str] = None
@@ -691,7 +703,8 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        if kill_orphans:
+            self._kill_orphaned_servers()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
