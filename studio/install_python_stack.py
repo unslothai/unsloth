@@ -38,6 +38,18 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
+IS_LINUX = sys.platform.startswith("linux")
+# torchcodec ships wheels only for manylinux_2_28_x86_64,
+# macosx_12_0_arm64, and win_amd64 (visible in the 0.10.0 PyPI page).
+# Trying to install it on any other host fails the whole
+# extras-no-deps step. `unsloth studio update` does not have a
+# --no-torch flag, so on these hosts the audio extras must be
+# filtered out independent of the NO_TORCH env var.
+PLATFORM_LACKS_TORCHCODEC_WHEEL = (
+    (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
+    or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
+    or IS_MAC_INTEL
+)
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
@@ -604,7 +616,14 @@ WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
 # These packages either *are* torch extensions or have unconditional
 # ``Requires-Dist: torch`` in their published metadata, so installing
-# them would pull torch back into the environment.
+# them would pull torch back into the environment. ``librosa`` also
+# lives in this set even though it does not itself require torch:
+# upstream ``llvmlite`` dropped its macOS x86_64 wheel between 0.42.0
+# and 0.46.0+ (see https://pypi.org/project/llvmlite/0.47.0/#files --
+# only macosx_arm64 / manylinux / win_amd64 remain), so on Intel Mac
+# the librosa -> numba -> llvmlite chain triggers a from-source build
+# that fails inside CI and on the host without LLVM 14/15 headers.
+# Tracked separately in unslothai/unsloth#5046.
 NO_TORCH_SKIP_PACKAGES = {
     "torch-stoi",
     "timm",
@@ -612,6 +631,7 @@ NO_TORCH_SKIP_PACKAGES = {
     "torch-c-dlpack-ext",
     "openai-whisper",
     "transformers-cfg",
+    "librosa",
 }
 
 
@@ -838,6 +858,14 @@ def pip_install(
         temp_reqs.append(actual_req)
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
+        # wheel. `unsloth studio update --local` does not pass
+        # --no-torch, so the NO_TORCH filter above does not fire; do
+        # the targeted skip independently so the audio extras step
+        # does not take down the whole update.
+        actual_req = _filter_requirements(actual_req, {"torchcodec"})
         temp_reqs.append(actual_req)
     req_args_pip: list[str] = []
     req_args_uv: list[str] = []
