@@ -122,6 +122,7 @@ class UnslothTrainer:
         self.training_thread = None
         self.training_progress = TrainingProgress()
         self.progress_callbacks = []
+        self.extra_hf_callbacks: list = []
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
@@ -2903,6 +2904,8 @@ class UnslothTrainer:
                     args = TrainingArguments(**config),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -2944,6 +2947,8 @@ class UnslothTrainer:
                     ),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -2992,6 +2997,8 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3550,6 +3557,8 @@ class UnslothTrainer:
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
+            for _cb in self.extra_hf_callbacks:
+                self.trainer.add_callback(_cb)
 
             num_samples = len(
                 dataset["dataset"] if isinstance(dataset, dict) else dataset

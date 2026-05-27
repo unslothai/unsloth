@@ -114,5 +114,6 @@ export function buildTrainingStartPayload(
     tensorboard_dir: config.enableTensorboard
       ? config.tensorboardDir.trim() || null
       : null,
+    enable_activation_capture: config.enableActivationCapture,
   };
 }

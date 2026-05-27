@@ -30,7 +30,11 @@ try:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
+    from storage.studio_db import (
+        get_resumable_run_by_output_dir,
+        get_activation_metadata,
+        get_activation_records,
+    )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -44,7 +48,11 @@ except ImportError:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
+    from storage.studio_db import (
+        get_resumable_run_by_output_dir,
+        get_activation_metadata,
+        get_activation_records,
+    )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -249,6 +257,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
+            "enable_activation_capture": request.enable_activation_capture,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
@@ -895,3 +904,60 @@ async def stream_training_progress(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/activations")
+def get_activations(
+    job_id: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    since_step: Optional[int] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Return activation data for a training run from the Studio SQLite DB.
+
+    Resolves the job_id from the query param or the active training backend,
+    then reads from ``activation_run_metadata`` and ``activation_records``.
+    Returns ``{"metadata": {...}, "records": [...]}`` with an empty records
+    list when no data is available yet.
+
+    The ``output_dir`` parameter is accepted for API compatibility but ignored
+    — all activation data is stored in the DB.
+    """
+    # Resolve job_id from the query param or from the active training backend.
+    _job_id = job_id
+    if not _job_id:
+        try:
+            backend = get_training_backend()
+            _job_id = getattr(backend, "current_job_id", None) or None
+        except Exception:
+            pass
+
+    if _job_id:
+        try:
+            db_meta = get_activation_metadata(_job_id)
+            if db_meta is not None:
+                db_records = get_activation_records(_job_id, since_step)
+                wire_records = [
+                    {
+                        "step": r["step"],
+                        "loss": r["loss"],
+                        "layers": r["layers"],
+                        **(
+                            {"grad_norms": r["grad_norms"]}
+                            if r.get("grad_norms")
+                            else {}
+                        ),
+                        **(
+                            {"lora_norms": r["lora_norms"]}
+                            if r.get("lora_norms")
+                            else {}
+                        ),
+                    }
+                    for r in db_records
+                ]
+                return {"metadata": db_meta, "records": wire_records}
+        except Exception as exc:
+            logger.warning("DB activation read failed: %s", exc)
+
+    return {"metadata": None, "records": []}

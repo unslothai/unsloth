@@ -6,7 +6,7 @@ import type { LossHistoryItem, OutlierMode, SmoothedLossItem } from "./types";
 export const CHART_SYNC_ID = "train-metrics-sync";
 export const MAX_RENDER_POINTS = 800;
 export const DEFAULT_VISIBLE_POINTS = 160;
-export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
+export const CHART_CONTAINER_CLASS = "h-full min-h-[120px] w-full";
 export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
 export const DEFAULT_Y_AXIS_WIDTH = 45;
 const TRAILING_ZEROES_RE = /\.?0+$/;
