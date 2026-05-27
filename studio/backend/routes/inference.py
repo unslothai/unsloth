@@ -435,7 +435,9 @@ _TOOL_ACTION_NUDGE = (
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
 _TOOL_XML_RE = _re.compile(
-    r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # Hyphen in the name char-class matches MCP tool names with dashes
+    # (mcp__srv__list-issues) which would otherwise leak past this strip.
+    r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
@@ -2648,17 +2650,29 @@ async def openai_chat_completions(
         # ── Tool-calling path (agentic loop) ──────────────────
         # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
         # hard-override the per-request value. Without a CLI override, falls
-        # back to `payload.enable_tools` (existing behavior).
+        # back to `payload.enable_tools` (existing behavior). `mcp_enabled=true`
+        # also opens the tool loop so MCP-only callers do not have to flip a
+        # second flag, BUT must still honor a CLI `--disable-tools` policy --
+        # checking the raw policy here keeps `mcp_enabled` from re-enabling
+        # tools that the operator explicitly forbade.
+        from state.tool_policy import get_tool_policy as _get_tool_policy_g
+
+        _cli_policy = _get_tool_policy_g()
+        _tools_on = _effective_enable_tools(payload)
+        _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
         use_tools = (
-            _effective_enable_tools(payload)
+            (_tools_on or _mcp_allowed)
             and llama_backend.supports_tools
             and not has_gguf_image
         )
 
         if use_tools:
-            from core.inference.tools import ALL_TOOLS
+            from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
-            if payload.enabled_tools is not None:
+            if not _tools_on:
+                # MCP-only request: skip built-ins, leave room for MCP tools.
+                tools_to_use = []
+            elif payload.enabled_tools is not None:
                 tools_to_use = [
                     t
                     for t in ALL_TOOLS
@@ -2667,6 +2681,19 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            if _mcp_allowed:
+                tools_to_use = tools_to_use + await get_enabled_mcp_tools()
+
+            # Skip the tool loop when no tool actually survived, so the
+            # safetensors loop's "empty = allow all" semantic cannot reach
+            # built-in tools the caller did not opt into. Existing callers
+            # who omit enabled_tools still get ALL_TOOLS here, so this
+            # only suppresses the loop when discovery + opt-in left it
+            # genuinely empty.
+            if not tools_to_use:
+                use_tools = False
+
+        if use_tools:
             # ── Tool-use system prompt nudge ──────────────────────
             _tool_names = {t["function"]["name"] for t in tools_to_use}
             _has_web = "web_search" in _tool_names
@@ -3142,8 +3169,15 @@ async def openai_chat_completions(
         else 25
     )
 
+    # Match the GGUF path: mcp_enabled also opens the tool loop on its own
+    # but must still honor a CLI `--disable-tools` policy.
+    from state.tool_policy import get_tool_policy as _get_tool_policy_sf
+
+    _sf_cli_policy = _get_tool_policy_sf()
+    _sf_tools_on = _effective_enable_tools(payload)
+    _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
     _sf_use_tools = (
-        _effective_enable_tools(payload)
+        (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
         and not _sf_is_gptoss
@@ -3151,15 +3185,27 @@ async def openai_chat_completions(
     )
 
     if _sf_use_tools:
-        from core.inference.tools import ALL_TOOLS
+        from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
-        if payload.enabled_tools is not None:
+        if not _sf_tools_on:
+            _sf_tools_to_use = []
+        elif payload.enabled_tools is not None:
             _sf_tools_to_use = [
                 t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]
         else:
             _sf_tools_to_use = ALL_TOOLS
 
+        if _sf_mcp_allowed:
+            _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
+
+        # Mirror the GGUF path: refuse to enter the tool loop when nothing
+        # survived, so a model-emitted built-in call cannot piggy-back on
+        # the empty allow-list.
+        if not _sf_tools_to_use:
+            _sf_use_tools = False
+
+    if _sf_use_tools:
         _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
         _sf_has_web = "web_search" in _sf_tool_names
         _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
