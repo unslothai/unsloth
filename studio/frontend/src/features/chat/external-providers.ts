@@ -37,6 +37,13 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
+// Gemini supports prompt caching, but the wire flow requires a
+// separate POST to /v1beta/cachedContents to create the cache before
+// the generateContent call can reference it; the boolean Studio
+// currently emits on enable_prompt_caching is not enough on its own.
+// Until that two-step orchestration ships we keep the picker off so
+// the toggle does not silently no-op for Gemini users. See
+// https://ai.google.dev/gemini-api/docs/caching.
 const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
 
 export function supportsProviderPromptCaching(
