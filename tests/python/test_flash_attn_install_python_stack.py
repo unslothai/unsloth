@@ -245,6 +245,7 @@ class TestTorchNvidiaCudaAvailable:
     def test_returns_false_when_torch_missing(self):
         # Simulate setup-time call before torch is installed.
         import sys as _sys
+
         saved = _sys.modules.pop("torch", None)
         _sys.modules["torch"] = None  # forces ImportError on `import torch`
         try:
