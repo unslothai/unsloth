@@ -148,10 +148,17 @@ else
         BUILD_CTX="/tmp/unsloth-pr/docker"
         if [[ ! -d /tmp/unsloth-pr/.git ]]; then
             echo "  cloning docker-blackwell-build branch..."
-            git clone --depth 1 -b docker-blackwell-build \
-                https://github.com/unslothai/unsloth.git /tmp/unsloth-pr 2>&1 | tail -3
+            if ! git clone --depth 1 -b docker-blackwell-build \
+                    https://github.com/unslothai/unsloth.git /tmp/unsloth-pr 2>&1 | tail -3; then
+                fail "could not clone docker-blackwell-build into /tmp/unsloth-pr; refusing to build from stale context"
+            fi
         else
-            git -C /tmp/unsloth-pr pull --ff-only 2>&1 | tail -2
+            # `set -e` is not active in this script, so a failing pull would
+            # otherwise be silently masked and we'd build from a stale clone.
+            # Explicitly fail loudly when the fast-forward refresh cannot run.
+            if ! git -C /tmp/unsloth-pr pull --ff-only 2>&1 | tail -2; then
+                fail "git pull --ff-only failed in /tmp/unsloth-pr; refusing to build from stale context (delete /tmp/unsloth-pr to reclone)"
+            fi
         fi
     fi
     echo "  build context: $BUILD_CTX"
@@ -304,7 +311,11 @@ echo "=== fetch + convert notebook ==="
 #      ...` lines) that nbformat dumps verbatim and Python cannot parse.
 #   2. Comment out any stray !cmd / %magic lines in non-install cells.
 pip install -q nbformat
-curl -fsSL 'https://raw.githubusercontent.com/unslothai/notebooks/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb' -o nb.ipynb
+# Pin to an immutable commit so this validation script doesn't silently
+# change semantics when notebooks/main rolls forward. Bump deliberately
+# when the upstream notebook gets a fix you want to verify against.
+NB_REPO_REF="${NB_REPO_REF:-efe20c97a5bba3088b25fe068a4b1c98c0cf3a3a}"
+curl -fsSL "https://raw.githubusercontent.com/unslothai/notebooks/${NB_REPO_REF}/nb/gpt-oss-(20B)-Fine-tuning.ipynb" -o nb.ipynb
 test -s nb.ipynb || { echo "FAIL: nb.ipynb was not downloaded"; exit 1; }
 python - <<'PY'
 import nbformat, re
