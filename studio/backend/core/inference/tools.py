@@ -176,7 +176,9 @@ _SHELLS_WIN = frozenset({"cmd", "cmd.exe"})
 # arbitrary code in that language. `python -c "import os; os.system('rm')"`
 # from the bash tool would bypass the Python AST gate (only the python
 # tool entry point invokes it). awk and gawk take the script positionally.
-_LANG_INTERPRETERS_DASH_C_E = frozenset({"python", "python2", "python3", "perl", "ruby", "node"})
+_LANG_INTERPRETERS_DASH_C_E = frozenset(
+    {"python", "python2", "python3", "perl", "ruby", "node"}
+)
 _LANG_INTERPRETERS_POSITIONAL = frozenset({"awk", "gawk", "mawk", "nawk"})
 # Quick danger-pattern scan for code passed to a language interpreter.
 # The bash-blocklist regex matches at shell separator boundaries and so

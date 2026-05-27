@@ -475,7 +475,8 @@ def _resolve_nproc_limit() -> int:
     if value < _NPROC_FLOOR:
         logger.warning(
             "UNSLOTH_STUDIO_SANDBOX_NPROC=%s below floor %s; clamping",
-            value, _NPROC_FLOOR,
+            value,
+            _NPROC_FLOOR,
         )
         return _NPROC_FLOOR
     return value
@@ -484,9 +485,9 @@ def _resolve_nproc_limit() -> int:
 # Import-time sanity: catch the case where a maintainer accidentally
 # adds a literal `{` to the template (e.g. a dict literal) which would
 # turn .format() into a KeyError at every tool call.
-assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = 12345), (
-    "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
-)
+assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(
+    nproc = 12345
+), "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
 
 
 def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:

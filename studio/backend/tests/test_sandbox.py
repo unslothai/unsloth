@@ -702,7 +702,7 @@ def test_blocklist_catches_language_interpreter_dash_c():
     )
     assert "perl" in _find_blocked_commands("perl -e 'system(\"rm /tmp/x\")'")
     assert "node" in _find_blocked_commands(
-        "node -e 'require(\"child_process\").execSync(\"rm x\")'"
+        'node -e \'require("child_process").execSync("rm x")\''
     )
     assert "ruby" in _find_blocked_commands("ruby -e 'system(\"rm x\")'")
     # Benign interpreter calls must not false-positive.
@@ -767,7 +767,9 @@ def test_sandbox_unavailable_does_not_cache_on_transient_timeout(monkeypatch):
         if call_count["n"] == 1:
             raise subprocess.TimeoutExpired(cmd = args[0], timeout = 5)
         # On the second call, return a "success" CompletedProcess.
-        return subprocess.CompletedProcess(args = args[0], returncode = 0, stdout = b"", stderr = b"")
+        return subprocess.CompletedProcess(
+            args = args[0], returncode = 0, stdout = b"", stderr = b""
+        )
 
     monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
