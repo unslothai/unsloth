@@ -24,6 +24,22 @@ const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
 
+/**
+ * Reject anything that is not a real http(s) URL. Web-search / web-fetch
+ * output is provider-controlled, so hostile ``javascript:`` / ``data:``
+ * lines must not reach the Source badge's <a href>.
+ */
+function isSafeHttpUrl(raw: string): boolean {
+  const value = raw.trim();
+  if (!value || /[\r\n]/.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** Parse the backend's "Title: ...\nURL: ...\nSnippet: ...\n---" format into structured sources. */
 function parseSearchResults(raw: string): ParsedSource[] {
   if (!raw) {
@@ -35,13 +51,14 @@ function parseSearchResults(raw: string): ParsedSource[] {
     const titleMatch = block.match(RE_TITLE);
     const urlMatch = block.match(RE_URL);
     const snippetMatch = block.match(RE_SNIPPET);
-    if (titleMatch && urlMatch) {
-      sources.push({
-        title: titleMatch[1].trim(),
-        url: urlMatch[1].trim(),
-        snippet: snippetMatch?.[1]?.trim() ?? "",
-      });
-    }
+    if (!titleMatch || !urlMatch) continue;
+    const url = urlMatch[1].trim();
+    if (!isSafeHttpUrl(url)) continue;
+    sources.push({
+      title: titleMatch[1].trim(),
+      url,
+      snippet: snippetMatch?.[1]?.trim() ?? "",
+    });
   }
   return sources;
 }
