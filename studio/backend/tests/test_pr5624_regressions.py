@@ -236,8 +236,7 @@ def test_deepseek_v3_1_huge_truncated_body_is_linear():
     import time as _time
 
     text = (
-        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn"
-        "<｜tool▁sep｜>" + "x" * 50_000
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn" "<｜tool▁sep｜>" + "x" * 50_000
     )
     start = _time.time()
     calls = parse_tool_calls_from_text(text)
