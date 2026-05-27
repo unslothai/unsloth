@@ -581,16 +581,28 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
+        # ``parameters`` must be a dict (Llama-3 spec).
+        # ``arguments`` may be a dict or a JSON-string of a dict (OpenAI shape).
+        # Anything looser would fire on prose like ``{"name":"x","parameters":"sentence"}``.
         if "parameters" in obj:
             args = obj.get("parameters")
+            if not isinstance(args, dict):
+                break
+            args_str = json.dumps(args)
         elif "arguments" in obj:
             args = obj.get("arguments")
-        else:
-            break
-        if isinstance(args, dict):
-            args_str = json.dumps(args)
-        elif isinstance(args, str):
-            args_str = args
+            if isinstance(args, dict):
+                args_str = json.dumps(args)
+            elif isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    break
+                if not isinstance(parsed, dict):
+                    break
+                args_str = args
+            else:
+                break
         else:
             break
         out.append(
