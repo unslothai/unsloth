@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { JsonField } from "./json-field";
 import type { MetricConfigField } from "../api/eval-api";
 
 export function MetricConfigFields({
@@ -92,13 +93,32 @@ export function MetricConfigFields({
             </div>
           );
         }
-        // json | string → textarea (json parsed at submit-time by the form)
+        const textValue =
+          typeof current === "string"
+            ? current
+            : current == null
+              ? ""
+              : JSON.stringify(current, null, 2);
+        if (f.type === "json") {
+          // JSON config (e.g. the document schema): Raw + Tree tabs.
+          return (
+            <div key={f.name} className="flex flex-col gap-1.5">
+              <Label htmlFor={`mc-${f.name}`}>{f.label}</Label>
+              <JsonField
+                id={`mc-${f.name}`}
+                value={textValue}
+                onChange={(v) => set(f.name, v)}
+              />
+            </div>
+          );
+        }
+        // plain string config → textarea (parsed at submit-time by the form)
         return (
           <div key={f.name} className="flex flex-col gap-1.5">
             <Label htmlFor={`mc-${f.name}`}>{f.label}</Label>
             <Textarea
               id={`mc-${f.name}`}
-              value={typeof current === "string" ? current : current == null ? "" : JSON.stringify(current, null, 2)}
+              value={textValue}
               onChange={(e) => set(f.name, e.target.value)}
               className="min-h-24 max-h-48 overflow-auto font-mono text-xs"
               spellCheck={false}
