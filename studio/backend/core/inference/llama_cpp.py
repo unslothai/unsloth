@@ -600,6 +600,48 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+# Probe script run in a short-lived subprocess so the Vulkan instance never
+# lives in the long-running backend process. Loads the bundled ggml Vulkan
+# backend and prints "<idx>\t<free_bytes>\t<total_bytes>" per device. The
+# indices are ggml's own Vulkan device ordinals -- the space
+# GGML_VK_VISIBLE_DEVICES expects -- which need not match nvidia-smi order.
+_VULKAN_PROBE_SCRIPT = r"""
+import ctypes, os, sys
+bindir = sys.argv[1]
+if sys.platform == "win32":
+    base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
+    try:
+        os.add_dll_directory(bindir)
+    except Exception:
+        pass
+else:
+    base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
+try:
+    ctypes.CDLL(os.path.join(bindir, base_name), mode=ctypes.RTLD_GLOBAL)
+    lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode=ctypes.RTLD_GLOBAL)
+except OSError:
+    sys.exit(0)
+lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int
+lib.ggml_backend_vk_get_device_count.argtypes = []
+lib.ggml_backend_vk_get_device_memory.restype = None
+lib.ggml_backend_vk_get_device_memory.argtypes = [
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_size_t),
+    ctypes.POINTER(ctypes.c_size_t),
+]
+rows = []
+for i in range(lib.ggml_backend_vk_get_device_count()):
+    free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
+    lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
+    rows.append("%d\t%d\t%d" % (i, free.value, total.value))
+sys.stdout.write("\n".join(rows))
+"""
+
+
+def _vulkan_lib_filename() -> str:
+    return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -1233,7 +1275,41 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _get_gpu_free_memory() -> list[tuple[int, int]]:
+    def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
+        """True if the installed llama.cpp build is the Vulkan one.
+
+        Builds are single-backend, so the presence of the Vulkan ggml
+        backend library next to llama-server is sufficient. Used to keep
+        the free-memory probe and the GPU pin in the same device-index
+        space (ggml's Vulkan ordinals, not nvidia-smi order).
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        return (Path(binary).parent / _vulkan_lib_filename()).is_file()
+
+    @staticmethod
+    def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
+        """Query free memory per GPU across all supported backends.
+
+        On a Vulkan build, the ggml Vulkan probe is authoritative so the
+        returned indices are Vulkan ordinals (the space the GPU pin writes
+        to ``GGML_VK_VISIBLE_DEVICES``). Otherwise ``nvidia-smi`` / torch
+        cover NVIDIA + AMD ROCm, with the Vulkan probe as a last resort.
+
+        Returns list of (gpu_index, free_mib) sorted by index. Empty
+        list if no supported GPU is reachable.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if LlamaCppBackend._is_vulkan_backend(binary):
+            return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        gpus = LlamaCppBackend._get_gpu_free_memory_nvidia_torch()
+        if gpus:
+            return gpus
+        return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+
+    @staticmethod
+    def _get_gpu_free_memory_nvidia_torch() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
         Order:
@@ -1355,6 +1431,64 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    @staticmethod
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int]]:
+        """Query free VRAM per device via the bundled ggml Vulkan backend.
+
+        Loads ``libggml-vulkan`` in a short-lived subprocess and calls
+        ``ggml_backend_vk_get_device_memory`` for each device, so no Vulkan
+        instance is created in this process. Returns list of
+        (device_index, free_mib) sorted by index, where the index is ggml's
+        own Vulkan device ordinal (the space ``GGML_VK_VISIBLE_DEVICES``
+        expects). Returns [] when no Vulkan build is installed or no device
+        is reachable.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return []
+        binary_dir = Path(binary).parent
+        if not (binary_dir / _vulkan_lib_filename()).is_file():
+            return []
+
+        env = child_env_without_native_path_secret()
+        if sys.platform != "win32":
+            # Let the loader resolve sibling ggml libs next to the binary.
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = (
+                f"{binary_dir}:{existing_ld}" if existing_ld else str(binary_dir)
+            )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", _VULKAN_PROBE_SCRIPT, str(binary_dir)],
+                capture_output = True,
+                text = True,
+                timeout = 15,
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"vulkan GPU probe failed: {e}")
+            return []
+
+        gpus: list[tuple[int, int]] = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            try:
+                idx = int(parts[0])
+                free_mib = int(parts[1]) // (1024 * 1024)
+            except ValueError:
+                continue
+            gpus.append((idx, free_mib))
+        gpus.sort(key = lambda g: g[0])
+        if gpus:
+            logger.info(
+                "Vulkan GPU memory detected: "
+                + ", ".join(f"VK{idx}={free}MiB" for idx, free in gpus)
+            )
+        return gpus
 
     # Skip the wait when the last kill is older than this; the GPU
     # driver has already reclaimed the prior process's allocations.
@@ -2670,6 +2804,7 @@ class LlamaCppBackend:
                     "Run setup.sh to build it, install llama.cpp, "
                     "or set LLAMA_SERVER_PATH environment variable."
                 )
+            is_vulkan_backend = self._is_vulkan_backend(binary)
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
@@ -2729,7 +2864,7 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 try:
                     model_size = self._get_gguf_size_bytes(model_path)
-                    gpus = self._get_gpu_free_memory()
+                    gpus = self._get_gpu_free_memory(binary)
 
                     # Resolve effective context: 0 means let llama-server use the
                     # model's native length.  Only expand to a known native length
@@ -3217,17 +3352,23 @@ class LlamaCppBackend:
                 # the full HIP/ROCR set the parent inherited.
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
-                    env["CUDA_VISIBLE_DEVICES"] = pinned
-                    try:
-                        import torch as _torch
+                    if is_vulkan_backend:
+                        # gpu_indices are ggml Vulkan ordinals (see
+                        # _get_gpu_free_memory); the Vulkan backend ignores
+                        # CUDA_VISIBLE_DEVICES, so pin via its own mask.
+                        env["GGML_VK_VISIBLE_DEVICES"] = pinned
+                    else:
+                        env["CUDA_VISIBLE_DEVICES"] = pinned
+                        try:
+                            import torch as _torch
 
-                        if getattr(_torch.version, "hip", None) is not None:
-                            env["HIP_VISIBLE_DEVICES"] = pinned
-                            env["ROCR_VISIBLE_DEVICES"] = pinned
-                    except Exception as e:
-                        logger.debug(
-                            "Failed to set ROCm visibility env vars for child: %s", e
-                        )
+                            if getattr(_torch.version, "hip", None) is not None:
+                                env["HIP_VISIBLE_DEVICES"] = pinned
+                                env["ROCR_VISIBLE_DEVICES"] = pinned
+                        except Exception as e:
+                            logger.debug(
+                                "Failed to set ROCm visibility env vars for child: %s", e
+                            )
 
                 # Defensive kill: if a concurrent load slipped past Phase 1
                 # (because its `self._process` was None at the time) and
