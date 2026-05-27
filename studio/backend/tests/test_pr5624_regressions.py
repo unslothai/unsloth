@@ -201,13 +201,13 @@ def test_kimi_two_sections_in_one_stream_both_parse():
     text = (
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.a:0"
-        "<|tool_call_argument_begin|>{\"x\":1}"
+        '<|tool_call_argument_begin|>{"x":1}'
         "<|tool_call_end|>"
         "<|tool_calls_section_end|>"
         " some prose between sections "
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.b:0"
-        "<|tool_call_argument_begin|>{\"y\":2}"
+        '<|tool_call_argument_begin|>{"y":2}'
         "<|tool_call_end|>"
         "<|tool_calls_section_end|>"
     )
