@@ -129,11 +129,11 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral templates advertise tool handling but the model emits
-# tool calls in <|python_tag|> / [TOOL_CALLS] format -- not the
-# <tool_call> / <function= our parser understands. The route helper must
-# refuse to flip supports_tools=True for those families so the UI does
-# not enable a pill the agentic loop cannot honour.
+# Llama-3 / Mistral / Gemma 4 templates emit tool calls in formats the
+# shared parser now understands (<|python_tag|>, [TOOL_CALLS], and
+# <|tool_call>). The route helper must surface supports_tools=True for
+# all of them so the UI enables the pill. Only templates whose tool
+# format is NONE of the five known markers should be suppressed.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -165,27 +165,88 @@ MISTRAL_TEMPLATE = """
 {%- endfor %}
 """
 
+GEMMA4_TEMPLATE = """
+{%- if tools %}
+  {{- 'Tools available. Emit calls as ' }}
+  {{- '<|tool_call>call:NAME{key:<|"|>val<|"|>}<tool_call|>' }}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+"""
 
-def test_detect_safetensors_features_llama3_template_suppresses_tools():
-    """Llama-3 emits <|python_tag|>; safetensors loop cannot parse it."""
+
+def test_detect_safetensors_features_llama3_template_keeps_tools_on():
+    """Llama-3 emits <|python_tag|>; parser now supports it."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, LLAMA3_TEMPLATE)
-    assert flags["supports_tools"] is False
+    assert flags["supports_tools"] is True
 
 
-def test_detect_safetensors_features_mistral_template_suppresses_tools():
-    """Mistral emits [TOOL_CALLS]; safetensors loop cannot parse it."""
+def test_detect_safetensors_features_mistral_template_keeps_tools_on():
+    """Mistral emits [TOOL_CALLS]; parser now supports it."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
     flags = _detect_safetensors_features(backend, MISTRAL_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+def test_detect_safetensors_features_gemma4_template_keeps_tools_on():
+    """Gemma 4 emits <|tool_call>; parser now supports it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-E2B-it-UD-MLX-4bit")
+    flags = _detect_safetensors_features(backend, GEMMA4_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+LLAMA3_2_BARE_JSON_TEMPLATE = """
+{%- if tools %}
+  {{- 'Given the following functions, respond with JSON for a function call.' }}
+  {{- 'Respond in the format {"name": function name, "parameters": dictionary}.' }}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+  {%- if 'tool_calls' in message %}
+    {{- '{"name": "' + message.tool_calls[0].function.name + '", '}}
+    {{- '"parameters": ' + (message.tool_calls[0].function.arguments | tojson) + '}' }}
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_llama3_2_bare_json_keeps_tools_on():
+    """Llama-3.2 emits bare JSON ``{"name":..., "parameters":...}`` -- the
+    parser now handles that path, so the pill must stay enabled."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, LLAMA3_2_BARE_JSON_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+def test_detect_safetensors_features_unknown_format_suppresses_tools():
+    """A template that advertises tools but uses no known marker must
+    be suppressed so the UI does not enable an unsupported pill."""
+    from routes.inference import _detect_safetensors_features
+
+    tpl = (
+        "{%- if tools %}<|im_start|>system\n"
+        "Emit tool calls as JSON-RPC notifications inside the response."
+        "<|im_end|>{%- endif %}"
+    )
+    backend = SimpleNamespace(active_model_name = "custom/unknown-tool-format")
+    flags = _detect_safetensors_features(backend, tpl)
     assert flags["supports_tools"] is False
 
 
 def test_detect_safetensors_features_qwen_tool_call_keeps_tools_on():
-    """Sanity check: gate only suppresses non-Qwen formats."""
+    """Sanity check: Qwen <tool_call> marker still flips supports_tools."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
