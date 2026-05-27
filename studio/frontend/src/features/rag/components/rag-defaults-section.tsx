@@ -22,7 +22,7 @@ export function RagDefaultsSection() {
 
   const [chunkingStrategy, setChunkingStrategy] =
     useState<ChunkingStrategy>("standard");
-  const [mode, setMode] = useState<KBMode>("multimodal");
+  const [mode, setMode] = useState<KBMode>("text");
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [error, setError] = useState<string | null>(null);
 

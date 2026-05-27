@@ -100,6 +100,34 @@ def precache_helper_gguf():
             logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
+
+        # If the repo also ships an mmproj (vision projection), grab it
+        # so the helper can be used as a vision-language model by the
+        # RAG captioner path. Preference order: F16 → BF16 → F32 → any.
+        # Best-effort — the LLM-assist path doesn't need vision, so a
+        # missing mmproj is fine and only logged.
+        mmproj_files = [
+            f for f in files if "mmproj" in f.lower() and f.endswith(".gguf")
+        ]
+        if mmproj_files:
+            mmproj_target: Optional[str] = None
+            for pref in ("mmproj-f16.gguf", "mmproj-bf16.gguf", "mmproj-f32.gguf"):
+                for cand in mmproj_files:
+                    if cand.lower() == pref:
+                        mmproj_target = cand
+                        break
+                if mmproj_target:
+                    break
+            if mmproj_target is None:
+                mmproj_target = mmproj_files[0]
+            try:
+                logger.info(f"Pre-caching helper mmproj: {repo}/{mmproj_target}")
+                hf_hub_download(repo_id = repo, filename = mmproj_target)
+            except Exception as mmproj_exc:
+                logger.warning(
+                    f"Helper mmproj download failed (vision fallback "
+                    f"will be unavailable until cached): {mmproj_exc}"
+                )
     except Exception as e:
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:

@@ -64,17 +64,38 @@ def _subprocess_worker(
     vlm_model: str | None = None,
 ) -> None:
     try:
+        from core.rag.captioner import caption_images
         from core.rag.chunking import chunk_pages
-        from core.rag.parsers import parse
+        from core.rag.parsers import inline_image_captions, parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        parsed = parse(Path(stored_path), want_images = (mode == "multimodal"))
+        # Always extract images so we can caption + splice for both
+        # modes. Text mode uses the captions inline in markdown; multimodal
+        # additionally embeds the raw images as image-kind chunks.
+        parsed = parse(Path(stored_path), want_images = True)
         pages = parsed.pages
         if not pages and not parsed.images:
             out_queue.put(
                 {"type": "error", "error": "no extractable content in document"}
             )
             return
+
+        # Caption figures once (chat VLM if available, else helper VLM
+        # fallback), then splice captions into the page markdown so the
+        # chunker indexes them like any other text. Multimodal mode also
+        # passes these same captions through to _stream_image_chunks
+        # below — no duplicate VLM calls per image.
+        captions: list[str] = []
+        if parsed.images:
+            out_queue.put(
+                {"type": "progress", "stage": "caption_images", "progress": 0.08}
+            )
+            captions = caption_images(
+                [img.image_bytes for img in parsed.images],
+                vlm_url = vlm_url,
+                vlm_model = vlm_model,
+            )
+            pages = inline_image_captions(pages, parsed.images, captions)
 
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
         from core.rag.embeddings import (
@@ -119,8 +140,7 @@ def _subprocess_worker(
                 model_name = model_name,
                 out_queue = out_queue,
                 first_index = text_count,
-                vlm_url = vlm_url,
-                vlm_model = vlm_model,
+                precomputed_captions = captions,
             )
         out_queue.put({"type": "complete", "num_chunks": text_count + image_count})
     except Exception as exc:  # noqa: BLE001
@@ -194,11 +214,15 @@ def _stream_image_chunks(
     model_name: str,
     out_queue,
     first_index: int,
-    vlm_url: str | None = None,
-    vlm_model: str | None = None,
+    precomputed_captions: list[str] | None = None,
 ) -> int:
-    """Persist images, emit image+caption chunks; pairs share pair_group."""
-    from core.rag.captioner import caption_images
+    """Persist images, emit image+caption chunks; pairs share pair_group.
+
+    ``precomputed_captions`` come from the parent's earlier
+    caption_images call (used so we don't VLM-caption the same images
+    twice — once for markdown splicing, once for the caption-kind chunk).
+    If absent we fall back to each image's nearest_caption (page text).
+    """
     from core.rag.embeddings import encode, encode_images
     from utils.paths.storage_roots import ensure_dir, rag_uploads_root
 
@@ -211,8 +235,9 @@ def _stream_image_chunks(
 
     paths: list[str] = []
     bytes_for_encoding: list[bytes] = []
-    fallback_captions: list[str] = []
+    captions: list[str] = []
     pages: list[int | None] = []
+    pre_caps = precomputed_captions or []
     for idx, img in enumerate(images):
         ext = _MIME_TO_EXT.get(img.mime_type, ".bin")
         path = img_dir / f"img-{idx:04d}{ext}"
@@ -223,29 +248,12 @@ def _stream_image_chunks(
             continue
         paths.append(str(path))
         bytes_for_encoding.append(img.image_bytes)
-        fallback_captions.append(img.nearest_caption or "")
+        vlm_cap = pre_caps[idx].strip() if idx < len(pre_caps) and pre_caps[idx] else ""
+        captions.append(vlm_cap or (img.nearest_caption or ""))
         pages.append(img.page_number)
 
     if not paths:
         return 0
-
-    # VLM-generated captions via the loaded chat VLM (when one is loaded
-    # and vision-capable). Falls back to the parser's nearest_caption
-    # (page-text blob) when no VLM is available or a request fails.
-    out_queue.put({"type": "progress", "stage": "caption_images", "progress": 0.87})
-    vlm_captions = caption_images(
-        bytes_for_encoding,
-        vlm_url = vlm_url,
-        vlm_model = vlm_model,
-    )
-    captions: list[str] = [
-        (
-            vlm_captions[i].strip()
-            if i < len(vlm_captions) and vlm_captions[i].strip()
-            else fallback_captions[i]
-        )
-        for i in range(len(bytes_for_encoding))
-    ]
 
     image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
 
@@ -696,22 +704,24 @@ def enqueue_ingestion(
         or resolve_embedder(mode, chunking_strategy)
         or RAG_EMBEDDING_MODEL
     )
-    # Probe before forking the subprocess so the loaded-model info is
-    # captured in the parent's process state, then passed to the child.
-    vlm_url, vlm_model = (None, None)
-    if mode == "multimodal":
-        vlm_url, vlm_model = _probe_loaded_vlm()
-        if vlm_url:
-            logger.info(
-                "RAG ingest: will caption figures via loaded chat VLM %s at %s",
-                vlm_model,
-                vlm_url,
-            )
-        else:
-            logger.info(
-                "RAG ingest: no vision-capable chat model loaded; "
-                "skipping figure captioning (fallback to page-text)."
-            )
+    # Probe the loaded chat backend so the subprocess can route figure
+    # captioning to the user's own vision model (no extra VRAM). Runs
+    # for both modes — text mode splices captions into markdown, and
+    # multimodal mode additionally feeds them to the image-vector
+    # encoder. If no vision chat model is loaded, the subprocess falls
+    # back to the helper VLM (pre-cached at studio startup).
+    vlm_url, vlm_model = _probe_loaded_vlm()
+    if vlm_url:
+        logger.info(
+            "RAG ingest: will caption figures via loaded chat VLM %s at %s",
+            vlm_model,
+            vlm_url,
+        )
+    else:
+        logger.info(
+            "RAG ingest: no vision-capable chat model loaded; "
+            "subprocess will use the helper gemma-3n VLM fallback."
+        )
     job_id = str(uuid4())
     with get_connection() as conn:
         conn.execute(

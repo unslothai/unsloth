@@ -44,6 +44,62 @@ class UnsupportedFormatError(ValueError):
     pass
 
 
+def inline_image_captions(
+    pages: list[ParsedPage],
+    images: list[ParsedImage],
+    captions: list[str],
+) -> list[ParsedPage]:
+    """Splice per-image captions into the markdown of the pages they came from.
+
+    Mirrors PR #5351's chat-composer pattern: figure captions become
+    inline text in the page markdown so the chunker indexes them like
+    any other content. Captions appear at the end of the page's text
+    block as ``**Figure**: …`` lines.
+
+    ``captions`` is parallel to ``images`` (same length, same order).
+    Empty or whitespace-only captions are skipped. Images without a
+    page_number are bucketed onto the single-page documents (DOCX/HTML/
+    TXT all collapse to one page).
+    """
+    if not images or not captions:
+        return list(pages)
+    if len(captions) != len(images):
+        # Defensive: caller mismatch shouldn't happen but we don't want
+        # to lose pages over it.
+        return list(pages)
+
+    # Bucket captions per page_number (None bucket → single-page docs).
+    per_page: dict[int | None, list[str]] = {}
+    for img, cap in zip(images, captions):
+        cleaned = (cap or "").strip()
+        if not cleaned:
+            continue
+        per_page.setdefault(img.page_number, []).append(cleaned)
+
+    if not per_page:
+        return list(pages)
+
+    out: list[ParsedPage] = []
+    null_bucket = per_page.get(None, [])
+    for page in pages:
+        captions_for_this = per_page.get(page.page_number, [])
+        # If this is the single-page case (no page_number) also flush
+        # the null-bucket so DOCX/HTML/TXT pick up captions correctly.
+        if page.page_number is None and null_bucket:
+            captions_for_this = captions_for_this + null_bucket
+        if not captions_for_this:
+            out.append(page)
+            continue
+        appendix = "\n\n".join(f"**Figure**: {cap}" for cap in captions_for_this)
+        out.append(
+            ParsedPage(
+                text = f"{page.text}\n\n{appendix}",
+                page_number = page.page_number,
+            )
+        )
+    return out
+
+
 def parse(path: Path, *, want_images: bool = False) -> ParseResult:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
