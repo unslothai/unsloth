@@ -214,6 +214,7 @@ export function RegisterCompareHandle({
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
+  const pendingAppendWaitersRef = useRef<Set<() => void>>(new Set());
 
   useEffect(() => {
     if (!handlesRef) {
@@ -255,15 +256,36 @@ export function RegisterCompareHandle({
 
         return new Promise<string | null>((resolve) => {
           const startedAt = Date.now();
+          let settled = false;
+          let timer: number | null = null;
+          let cancel: (() => void) | null = null;
+          const cleanup = () => {
+            if (timer !== null) {
+              window.clearTimeout(timer);
+              timer = null;
+            }
+            if (cancel) {
+              pendingAppendWaitersRef.current.delete(cancel);
+            }
+          };
+          const finish = (messageId: string | null) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(messageId);
+          };
+          cancel = () => finish(null);
           const poll = () => {
+            timer = null;
             const messageId = findAppendedUserMessageId();
             if (messageId || Date.now() - startedAt >= 1000) {
-              resolve(messageId);
+              finish(messageId);
               return;
             }
-            window.setTimeout(poll, 16);
+            timer = window.setTimeout(poll, 16);
           };
-          window.setTimeout(poll, 0);
+          pendingAppendWaitersRef.current.add(cancel);
+          timer = window.setTimeout(poll, 0);
         });
       },
       startRun: (parentId) => {
@@ -287,6 +309,10 @@ export function RegisterCompareHandle({
         }),
     };
     return () => {
+      for (const cancel of pendingAppendWaitersRef.current) {
+        cancel();
+      }
+      pendingAppendWaitersRef.current.clear();
       delete currentHandles[name];
     };
   }, [handlesRef, name, aui]);
