@@ -175,12 +175,20 @@ export function ParamsSection(): ReactElement {
   const isCpt = store.trainingMethod === "cpt";
   const isRawText = isRawTextDatasetFormat(store.datasetFormat);
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  // DeepSeek OCR uses a coupled preset; backend ignores user image size.
+  const _selectedModelLower = (store.selectedModel ?? "").toLowerCase();
+  const isDeepseekOcr =
+    _selectedModelLower.includes("deepseek") &&
+    _selectedModelLower.includes("ocr");
+  const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
   const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
+  // Backend validator allows [256, 2048]; offer the full span.
+  const visionImageSizePresets = [256, 384, 512, 768, 1024, 1536, 2048];
 
   // Keep input in sync when the store value changes externally
   // (e.g. model defaults being applied after model selection).
@@ -947,6 +955,62 @@ export function ParamsSection(): ReactElement {
                 </TabsContent>
 
                 <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
+                  {showVisionImageSize && (
+                    <Row
+                      label="Image Size"
+                      tooltip={
+                        <>
+                          Resize images by maximum side length. Default uses the
+                          model image size. Larger images use up more context. Does not upscale or change aspect ratio.{" "}
+                          <a
+                            href="https://unsloth.ai/docs/basics/vision-fine-tuning"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary underline"
+                          >
+                            Read more
+                          </a>
+                        </>
+                      }
+                    >
+                      <Select
+                        value={
+                          store.visionImageSize == null
+                            ? "default"
+                            : String(store.visionImageSize)
+                        }
+                        onValueChange={(value) => {
+                          if (value === "default") {
+                            store.setVisionImageSize(null);
+                            return;
+                          }
+                          store.setVisionImageSize(Number(value));
+                        }}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default</SelectItem>
+                          {store.visionImageSize != null &&
+                            !visionImageSizePresets.includes(
+                              store.visionImageSize,
+                            ) && (
+                              <SelectItem
+                                value={String(store.visionImageSize)}
+                              >
+                                {store.visionImageSize}
+                              </SelectItem>
+                            )}
+                          {visionImageSizePresets.map((size) => (
+                            <SelectItem key={size} value={String(size)}>
+                              {size}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                  )}
                   <Row
                     label={t("studio.params.gradCheckpoint")}
                     tooltip={

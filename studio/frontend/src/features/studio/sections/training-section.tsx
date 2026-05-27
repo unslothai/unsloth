@@ -81,7 +81,24 @@ export function TrainingSection() {
   };
 
   const handleSaveConfig = () => {
-    const yamlStr = serializeConfigToYaml(store, store.isVisionModel);
+    // isDatasetImage is null in three windows: before a dataset check
+    // completes, after dataset edits, and on import. Treat all three as
+    // "save it" so the user's choice is never silently dropped while we
+    // wait to confirm the dataset type. Only a confirmed text-only dataset
+    // (=== false) suppresses the vision fields.
+    const includeVisionFields =
+      store.isVisionModel && store.isDatasetImage !== false;
+    // DeepSeek OCR ignores vision_image_size; don't emit it to YAML either,
+    // or a later import on a non-DeepSeek model would activate the stale value.
+    const selectedModelLower = (store.selectedModel ?? "").toLowerCase();
+    const isDeepseekOcr =
+      selectedModelLower.includes("deepseek") &&
+      selectedModelLower.includes("ocr");
+    const yamlStr = serializeConfigToYaml(
+      store,
+      includeVisionFields,
+      includeVisionFields && !isDeepseekOcr,
+    );
     const blob = new Blob([yamlStr], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
