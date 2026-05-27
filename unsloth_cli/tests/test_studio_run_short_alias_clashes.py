@@ -218,7 +218,9 @@ def test_legacy_frontend_alias_still_promotes_to_frontend(monkeypatch):
     captured = _invoke(monkeypatch, ["--model", "X", "-f", "/tmp/dist"])
     assert len(captured) == 1
     argv = captured[0]
-    assert argv[argv.index("--frontend") + 1] == "/tmp/dist", argv
+    # Compare via Path so Windows's str(Path("/tmp/dist")) = "\tmp\dist"
+    # doesn't trip the assertion on the same logical path.
+    assert Path(argv[argv.index("--frontend") + 1]) == Path("/tmp/dist"), argv
     assert "-f" not in argv, f"-f leaked into child argv: {argv}"
 
 

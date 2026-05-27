@@ -83,12 +83,26 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     running llama-server."""
     studio_mod = _load_run_command()
     import inspect
-    import sys as _sys
+    import importlib.util
 
-    backend = Path(__file__).resolve().parents[2] / "studio" / "backend"
-    if str(backend) not in _sys.path:
-        _sys.path.insert(0, str(backend))
-    from core.inference.llama_server_args import _DENYLIST_GROUPS
+    # Load llama_server_args.py directly so the test doesn't need the
+    # backend's full runtime chain (fastapi / structlog / loggers /
+    # utils.hardware) installed -- the invariant is just about the
+    # _DENYLIST_GROUPS tuple.
+    lsa_path = (
+        Path(__file__).resolve().parents[2]
+        / "studio"
+        / "backend"
+        / "core"
+        / "inference"
+        / "llama_server_args.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_lsa_for_subset_test", lsa_path
+    )
+    lsa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lsa)
+    _DENYLIST_GROUPS = lsa._DENYLIST_GROUPS
 
     parallel_group = next((g for g in _DENYLIST_GROUPS if "--parallel" in g), None)
     assert parallel_group is not None, "denylist must include a --parallel group"
