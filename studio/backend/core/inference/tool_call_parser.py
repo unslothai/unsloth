@@ -85,12 +85,18 @@ BUDGET_EXHAUSTED_NUDGE = (
 
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 / Hermes XML ``<function=name><parameter=k>v``.
-_TC_FUNC_START_RE = re.compile(r"<function=([\w\.\-]+)>\s*")
+# Qwen3.5 / Hermes ``<function=name><parameter=k>v`` AND the attribute
+# form ``<function name="name"><param name="k">v`` used by MiniCPM-5,
+# MiniMax-M2, etc. Name lands in group(1) or group(2).
+_TC_FUNC_START_RE = re.compile(
+    r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*'
+)
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r"<parameter=([\w\.\-]+)>\s*")
-_TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
+_TC_PARAM_START_RE = re.compile(
+    r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*'
+)
+_TC_PARAM_CLOSE_RE = re.compile(r"\s*</(?:parameter|param)>\s*$")
 
 # Llama-3 ``<|python_tag|>NAME.call(...)``.
 _LLAMA3_PYTHON_TAG = "<|python_tag|>"
@@ -250,7 +256,12 @@ def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
         except (json.JSONDecodeError, ValueError):
             continue
         name = obj.get("name", "")
-        args = obj.get("arguments", {})
+        # Accept both ``arguments`` (Hermes/Qwen) and ``parameters``
+        # (Llama-3 template drift) so a fine-tune that swaps the key
+        # keeps its payload instead of silently parsing to ``{}``.
+        args = obj.get("arguments")
+        if args is None:
+            args = obj.get("parameters", {})
         if isinstance(args, dict):
             args_str = json.dumps(args)
         elif isinstance(args, str):
@@ -273,7 +284,8 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
     out: list[dict] = []
     func_starts = list(_TC_FUNC_START_RE.finditer(content))
     for idx, fm in enumerate(func_starts):
-        func_name = fm.group(1)
+        # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
+        func_name = fm.group(1) or fm.group(2)
         body_start = fm.end()
         next_func = (
             func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
@@ -291,7 +303,7 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
         if len(param_starts) == 1:
             pm = param_starts[0]
             val = _TC_PARAM_CLOSE_RE.sub("", body[pm.end() :])
-            args[pm.group(1)] = val.strip()
+            args[pm.group(1) or pm.group(2)] = val.strip()
         else:
             for pidx, pm in enumerate(param_starts):
                 val_start = pm.end()
@@ -301,7 +313,7 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
                     else len(body)
                 )
                 val = _TC_PARAM_CLOSE_RE.sub("", body[val_start:next_param])
-                args[pm.group(1)] = val.strip()
+                args[pm.group(1) or pm.group(2)] = val.strip()
 
         out.append(
             {
@@ -438,12 +450,23 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
         "<|end_header_id|>",
         "<|eom_id|>",
     )
+    # Role labels Meta's Llama-3 chat template inserts between
+    # ``<|start_header_id|>`` and ``<|end_header_id|>`` -- consume so a
+    # round-trip like
+    # ``<|start_header_id|>assistant<|end_header_id|>\n\n{json}``
+    # reaches the JSON body.
+    _header_roles = ("assistant", "user", "system", "tool", "ipython")
     while True:
         stripped = stripped.lstrip()
         matched = False
         for sentinel in _sentinels:
             if stripped.startswith(sentinel):
                 stripped = stripped[len(sentinel) :]
+                if sentinel == "<|start_header_id|>":
+                    for role in _header_roles:
+                        if stripped.startswith(role):
+                            stripped = stripped[len(role) :]
+                            break
                 matched = True
                 break
         if not matched:
