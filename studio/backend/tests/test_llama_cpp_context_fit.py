@@ -84,7 +84,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
-from core.inference.llama_server_args import parse_ctx_override
+from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +150,11 @@ def _drive(
     inst._can_estimate_kv = lambda: can_estimate_kv
 
     context_length = inst._context_length
+    # Use the production helper instead of reimplementing the conditional
+    # locally; reimplementing makes the test pass for the test's own logic
+    # rather than production's, and silent drift won't be caught.
     ctx_override = parse_ctx_override(extra_args)
-    requested_ctx = ctx_override if ctx_override is not None else n_ctx
+    requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
 
     effective_ctx = requested_ctx if requested_ctx > 0 else (context_length or 0)
     max_available_ctx = context_length or effective_ctx

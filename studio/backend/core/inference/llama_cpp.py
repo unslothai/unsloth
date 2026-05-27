@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from core.inference.llama_server_args import parse_ctx_override
+from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -2726,7 +2726,7 @@ class LlamaCppBackend:
                 # Seed safe defaults before GPU probing so the except path
                 # still has valid state to publish.
                 ctx_override = parse_ctx_override(extra_args)
-                requested_ctx = ctx_override if ctx_override is not None else n_ctx
+                requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(
                         f"User --ctx-size {ctx_override} honored; "

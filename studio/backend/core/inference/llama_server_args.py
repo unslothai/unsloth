@@ -212,6 +212,21 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return override
 
 
+def resolve_requested_ctx(
+    args: Optional[Iterable[str]],
+    fallback_n_ctx: int,
+) -> int:
+    """Return the context size load_model should treat as requested.
+
+    Single source of truth for the two-line ``ctx_override = parse_ctx_override(...);
+    requested_ctx = ctx_override if ctx_override is not None else n_ctx`` pattern
+    used by ``load_model`` so tests don't have to reimplement the conditional
+    locally and then assert against their own reimplementation.
+    """
+    override = parse_ctx_override(args)
+    return override if override is not None else fallback_n_ctx
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,
