@@ -215,6 +215,9 @@ Then to launch every time:
 unsloth studio -p 8888
 ```
 
+#### Advanced launch options
+On high core-count systems, set `UNSLOTH_CPU_THREADS=<N>` (e.g. `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`) to cap Studio's native CPU thread pools (OpenMP, MKL, OpenBLAS, NumExpr) and reduce idle worker threads. Unset = current behaviour (each runtime picks its own pool size based on detected cores). Explicit per-library env vars (`OMP_NUM_THREADS=...` etc.) always take precedence over `UNSLOTH_CPU_THREADS`.
+
 #### Uninstall
 The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):
 
