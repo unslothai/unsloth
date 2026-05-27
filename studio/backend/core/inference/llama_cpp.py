@@ -600,44 +600,6 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
-# Probe script run in a short-lived subprocess so the Vulkan instance never
-# lives in the long-running backend process. Loads the bundled ggml Vulkan
-# backend and prints "<idx>\t<free_bytes>\t<total_bytes>" per device. The
-# indices are ggml's own Vulkan device ordinals -- the space
-# GGML_VK_VISIBLE_DEVICES expects -- which need not match nvidia-smi order.
-_VULKAN_PROBE_SCRIPT = r"""
-import ctypes, os, sys
-bindir = sys.argv[1]
-if sys.platform == "win32":
-    base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
-    try:
-        os.add_dll_directory(bindir)
-    except Exception:
-        pass
-else:
-    base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
-try:
-    ctypes.CDLL(os.path.join(bindir, base_name), mode=ctypes.RTLD_GLOBAL)
-    lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode=ctypes.RTLD_GLOBAL)
-except OSError:
-    sys.exit(0)
-lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int
-lib.ggml_backend_vk_get_device_count.argtypes = []
-lib.ggml_backend_vk_get_device_memory.restype = None
-lib.ggml_backend_vk_get_device_memory.argtypes = [
-    ctypes.c_int,
-    ctypes.POINTER(ctypes.c_size_t),
-    ctypes.POINTER(ctypes.c_size_t),
-]
-rows = []
-for i in range(lib.ggml_backend_vk_get_device_count()):
-    free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
-    lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-    rows.append("%d\t%d\t%d" % (i, free.value, total.value))
-sys.stdout.write("\n".join(rows))
-"""
-
-
 def _vulkan_lib_filename() -> str:
     return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
 
@@ -1460,9 +1422,10 @@ class LlamaCppBackend:
             env["LD_LIBRARY_PATH"] = (
                 f"{binary_dir}:{existing_ld}" if existing_ld else str(binary_dir)
             )
+        probe_script = Path(__file__).with_name("_vulkan_probe.py")
         try:
             result = subprocess.run(
-                [sys.executable, "-c", _VULKAN_PROBE_SCRIPT, str(binary_dir)],
+                [sys.executable, str(probe_script), str(binary_dir)],
                 capture_output = True,
                 text = True,
                 timeout = 15,
