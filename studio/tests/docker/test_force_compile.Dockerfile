@@ -1,0 +1,2 @@
+FROM unsloth_studio_base_test_img
+ENV UNSLOTH_LLAMA_FORCE_COMPLIE=1

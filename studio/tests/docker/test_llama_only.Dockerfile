@@ -1,0 +1,3 @@
+FROM unsloth_studio_base_test_img
+ENV UNSLOTH_STUDIO_LLAMA_ONLY=1
+user tester
