@@ -134,7 +134,12 @@ jobs:
             # scheduled runs: bake the triggering commit SHA. Falls back
             # to `main` for any other event class.
             UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
-            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || 'main' }}
+            # UNSLOTH_ZOO_REF mirrors the tag case (unsloth-zoo cuts the same
+            # release tag, e.g. 2026.5.8, alongside unsloth) so release-tag
+            # images install a matched zoo. SHA-based branch pushes can't be
+            # mirrored -- the SHA doesn't exist in the zoo repo -- so they
+            # fall through to `main`. Workflow-dispatch can override.
+            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'main' }}
 
       # Stash the per-arch digest as an artifact for the merge job to pick up.
       # Filenames need to be unique across the matrix; `platform` contains a
