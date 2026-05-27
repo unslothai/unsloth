@@ -2130,8 +2130,10 @@ def vllm_generation_init_patch():
 
         def replace_sync_weights(match):
             body = match.group("body")
+            # Chain getattr so server mode (where self.llm is not set) does
+            # not raise AttributeError before the default kicks in.
             guard = (
-                "    if getattr(self.llm, 'shared_weights', False) or "
+                "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
                 "getattr(self, 'unsloth_fast_inference_lora', False):\n"
                 "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
                 "        return\n\n"
@@ -2153,8 +2155,9 @@ def vllm_generation_init_patch():
 
         def replace_reload_weights(match):
             indent = match.group("indent")
+            # Chain getattr so server mode (no self.llm) is safe here too.
             return (
-                f"{indent}if not (getattr(self.llm, 'shared_weights', False) or "
+                f"{indent}if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
                 f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
                 f'{indent}    self.llm.collective_rpc("reload_weights")'
             )
@@ -2192,13 +2195,13 @@ def vllm_generation_init_patch():
         sync_patched = patch_vllm_generation_method(
             "sync_weights",
             patch_sync_weights,
-            "if getattr(self.llm, 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
+            "if getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
             "sync_weights",
         )
         generate_patched = patch_vllm_generation_method(
             "generate",
             patch_generate,
-            "if not (getattr(self.llm, 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
+            "if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
             "generate",
         )
     except RuntimeError as e:
