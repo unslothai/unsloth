@@ -148,13 +148,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
         )
     if "forked_from_thread_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (

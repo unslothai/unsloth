@@ -447,7 +447,9 @@ async def fork_thread(
     if source.get("openaiCodeExecContainerId") or source.get(
         "anthropicCodeExecContainerId"
     ):
-        warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+        warning = (
+            "Sandbox starts fresh in fork; files from parent are not carried over."
+        )
     return ChatForkResponse(
         thread = ChatThread(**forked),
         messages = [ChatMessage(**m) for m in messages],
@@ -464,9 +466,7 @@ async def get_fork_count(
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    return ChatForkCountResponse(
-        count = count_forks_for_message(thread_id, message_id)
-    )
+    return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
 
 
 @router.get("/export", response_model = ChatExportResponse)

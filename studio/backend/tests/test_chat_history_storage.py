@@ -326,18 +326,23 @@ def _msg(mid: str, parent: str | None, t: int) -> dict:
 
 def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_thread({**_thread("src"), "title": "Original",
-                                  "openaiCodeExecContainerId": "cnt-x"})
+    studio_db.upsert_chat_thread(
+        {**_thread("src"), "title": "Original", "openaiCodeExecContainerId": "cnt-x"}
+    )
     # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
     # be copied since we fork at m3).
-    studio_db.sync_chat_messages("src", [
-        _msg("m1", None, 1),
-        _msg("m2", "m1", 2),
-        _msg("m3", "m2", 3),
-        _msg("m4", "m2", 4),  # sibling — must be excluded
-    ])
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _msg("m1", None, 1),
+            _msg("m2", "m1", 2),
+            _msg("m3", "m2", 3),
+            _msg("m4", "m2", 4),  # sibling — must be excluded
+        ],
+    )
 
     counter = {"i": 0}
+
     def id_factory():
         counter["i"] += 1
         return f"new-{counter['i']}"
@@ -388,18 +393,25 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
     assert studio_db.count_forks_for_message("src", "m1") == 0
 
     counter = {"i": 0}
+
     def id_factory():
         counter["i"] += 1
         return f"id-{counter['i']}"
 
     studio_db.fork_chat_thread(
-        source_thread_id = "src", branch_message_id = "m1",
-        new_thread_id = "f1", new_title = "f1", created_at = 2,
+        source_thread_id = "src",
+        branch_message_id = "m1",
+        new_thread_id = "f1",
+        new_title = "f1",
+        created_at = 2,
         id_factory = id_factory,
     )
     studio_db.fork_chat_thread(
-        source_thread_id = "src", branch_message_id = "m1",
-        new_thread_id = "f2", new_title = "f2", created_at = 3,
+        source_thread_id = "src",
+        branch_message_id = "m1",
+        new_thread_id = "f2",
+        new_title = "f2",
+        created_at = 3,
         id_factory = id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2
