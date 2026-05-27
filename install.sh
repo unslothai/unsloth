@@ -1335,6 +1335,14 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
+        # bubblewrap provides the OS-level sandbox the studio backend wraps
+        # python/bash tool execution in. If missing, tool execution falls
+        # back to the existing AST/blocklist/env-whitelist defences and the
+        # startup banner warns the operator (set UNSLOTH_STUDIO_SANDBOX_STRICT=1
+        # to refuse instead of falling back). On Ubuntu 23.10+ bwrap still
+        # needs apparmor_restrict_unprivileged_userns=0; that hint is in
+        # the banner too.
+        command -v bwrap >/dev/null 2>&1 || MISSING="$MISSING bubblewrap"
         ;;
 esac
 
@@ -1365,9 +1373,9 @@ if [ -n "$MISSING" ]; then
                 echo "    $MISSING"
                 echo ""
                 echo "    Examples:"
-                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
-                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
-                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
+                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel bubblewrap"
+                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl bubblewrap"
+                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel bubblewrap"
                 exit 1
             fi
             ;;
