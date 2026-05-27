@@ -9,6 +9,11 @@ export type ServiceTier =
   | "scale"
   | "standard_only";
 
+// All `number | null` / `boolean | null` fields below follow the same
+// convention: `null` = field omitted from the wire request (provider
+// uses its own default). Per-provider capability gating lives in
+// provider-capabilities.ts; the chat-adapter forwards only when the
+// active provider's bucket has the matching flag set true.
 export interface InferenceParams {
   temperature: number;
   topP: number;
@@ -16,150 +21,80 @@ export interface InferenceParams {
   minP: number;
   repetitionPenalty: number;
   presencePenalty: number;
-  /** OpenAI Chat Completions only; rejected by Responses + Anthropic. */
+  /** OpenAI Chat only; rejected by Responses + Anthropic. */
   frequencyPenalty: number;
-  /**
-   * Best-effort determinism seed. OpenAI Chat Completions only; the
-   * Responses family and Anthropic reject it (silently dropped server-side).
-   * `null` = unset (no `seed` field on the wire).
-   */
+  /** Determinism seed. OpenAI Chat + most OAI-compat backends only. */
   seed: number | null;
-  /**
-   * Custom stop sequences. Maps to `stop` on OpenAI Chat Completions and
-   * `stop_sequences` on Anthropic Messages. OpenAI caps the array at 4
-   * entries; backend truncates with a warning. Empty array = unset.
-   */
+  /** OAI Chat `stop` / Anthropic `stop_sequences`. OAI caps at 4. */
   stop: string[];
-  /**
-   * Provider service tier. Each provider accepts a different enum set;
-   * `getServiceTierOptions(providerType)` resolves the legal values. `null`
-   * means "let the provider pick its default" and is the safe choice on
-   * provider switch.
-   */
+  /** Per-provider enum via `getServiceTierOptions`. `null` = provider default. */
   serviceTier: ServiceTier | null;
-  /**
-   * Whether the provider may dispatch tool calls in parallel. Maps to
-   * `parallel_tool_calls` on both OpenAI APIs and is inverted into
-   * `disable_parallel_tool_use` for Anthropic. Default true matches the
-   * upstream defaults across all three.
-   */
+  /** Anthropic inverts to `disable_parallel_tool_use`. */
   parallelToolCalls: boolean;
-  /**
-   * Locally typical sampling (llama.cpp `typ_p`). Local llama-server
-   * only — no SaaS provider currently accepts this. 1.0 disables (and
-   * is the llama-server default). `null` = unset (not forwarded).
-   */
+  /** llama.cpp `typ_p`. 1.0 disables. */
   typicalP: number | null;
-  /** llama.cpp `top_n_sigma`. -1 disables. `null` = unset. */
+  /** llama.cpp `top_n_sigma`. -1 disables. */
   topNSigma: number | null;
-  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. `null` = unset. */
+  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. */
   repeatLastN: number | null;
-  /** llama.cpp `dynatemp_range`. 0.0 disables. `null` = unset. */
+  /** llama.cpp `dynatemp_range`. 0 disables. */
   dynatempRange: number | null;
-  /** llama.cpp `dynatemp_exponent`. `null` = unset. */
+  /** llama.cpp `dynatemp_exponent`. Pairs with dynatempRange. */
   dynatempExponent: number | null;
-  /** llama.cpp `mirostat` mode (0/1/2). 0 disables. `null` = unset. */
+  /** llama.cpp `mirostat` (0/1/2). 0 disables. */
   mirostat: number | null;
-  /** llama.cpp `mirostat_tau` target entropy. `null` = unset. */
   mirostatTau: number | null;
-  /** llama.cpp `mirostat_eta` learning rate. `null` = unset. */
   mirostatEta: number | null;
-  /**
-   * OpenRouter `top_a` alternate dynamic-top-P. OpenRouter-only.
-   * Range [0, 1]. `null` = unset.
-   */
+  /** OpenRouter `top_a`. Range [0, 1]. */
   topA: number | null;
   /**
-   * llama.cpp DRY (Don't Repeat Yourself) penalty multiplier.
-   * 0.0 disables (server default). `null` = unset.
-   * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+   * llama.cpp DRY sampler — multiplier is the master switch (0 disables
+   * the 4-field chain). See llama.cpp/tools/server/README.md.
    */
   dryMultiplier: number | null;
-  /** llama.cpp DRY base value (exponential growth base). Default 1.75. `null` = unset. */
+  /** Default 1.75. */
   dryBase: number | null;
-  /** llama.cpp DRY allowed token-extension threshold. Default 2. `null` = unset. */
+  /** Default 2. */
   dryAllowedLength: number | null;
-  /** llama.cpp DRY penalty scan window. 0 disables, -1 = ctx-size. `null` = unset. */
+  /** 0 disables, -1 = ctx-size. */
   dryPenaltyLastN: number | null;
-  /** llama.cpp XTC sampler probability. 0.0 disables. `null` = unset. */
+  /** llama.cpp XTC — probability is the master switch (0 disables). */
   xtcProbability: number | null;
-  /** llama.cpp XTC sampler threshold. Default 0.1. `null` = unset. */
+  /** Default 0.1. */
   xtcThreshold: number | null;
-  /** llama.cpp `min_keep` (force min N tokens past filters). 0 disables. `null` = unset. */
+  /** llama.cpp `min_keep` — min tokens past all filters. 0 disables. */
   minKeep: number | null;
-  /**
-   * Force generation past the EOS token. llama.cpp + vLLM accept this.
-   * `null` = unset; `false` matches upstream default.
-   */
+  /** Continue past EOS. llama.cpp + vLLM. */
   ignoreEos: boolean | null;
-  /**
-   * Minimum output tokens before stop sequences / EOS can fire.
-   * vLLM + llama.cpp accept this. 0 disables. `null` = unset.
-   */
+  /** Min tokens before stop / EOS can fire. llama.cpp + vLLM. */
   minTokens: number | null;
-  /**
-   * vLLM `skip_special_tokens`. Default true. Forward only when false
-   * (i.e. user wants to see raw special tokens in the output).
-   * https://docs.vllm.ai/en/latest/api/vllm/sampling_params/
-   */
+  /** vLLM only. Default true; forward only when false. */
   skipSpecialTokens: boolean | null;
-  /**
-   * vLLM `spaces_between_special_tokens`. Default true. Forward only
-   * when false.
-   */
+  /** vLLM only. Default true; forward only when false. */
   spacesBetweenSpecialTokens: boolean | null;
-  /**
-   * vLLM `include_stop_str_in_output`. Default false. Useful for
-   * agentic tools that need the matched stop string echoed back.
-   */
+  /** vLLM only. Useful for agentic tools needing the matched stop string echoed. */
   includeStopStrInOutput: boolean | null;
-  /**
-   * vLLM `truncate_prompt_tokens` — left-truncate the prompt to this
-   * many tokens. Useful for long-context overflow. `null` = unset.
-   */
+  /** vLLM only. Left-truncate the prompt. */
   truncatePromptTokens: number | null;
-  /**
-   * llama.cpp `n_keep` — tokens to retain when context overflows.
-   * 0 disables, -1 keeps all. `null` = unset.
-   */
+  /** llama.cpp `n_keep`. 0 disables, -1 = keep all. */
   nKeep: number | null;
-  /**
-   * llama.cpp `n_probs` — return top-N token probabilities per
-   * generated token. 0 disables. `null` = unset.
-   */
+  /** llama.cpp `n_probs` — top-N token probabilities per token. */
   nProbs: number | null;
-  /**
-   * llama.cpp `cache_prompt` — reuse KV cache from previous prompts
-   * with a shared prefix. Default true upstream. Forward only when
-   * explicitly false (e.g. for deterministic benchmarks).
-   */
+  /** llama.cpp `cache_prompt`. Default true; forward only when false. */
   cachePrompt: boolean | null;
-  /**
-   * llama.cpp `return_tokens` — include raw token IDs in the response.
-   * Debug. Default false.
-   */
+  /** llama.cpp `return_tokens` (debug). */
   returnTokens: boolean | null;
-  /**
-   * llama.cpp `timings_per_token` — include per-token speed metrics.
-   * Default false.
-   */
+  /** llama.cpp `timings_per_token` (perf debug). */
   timingsPerToken: boolean | null;
-  /**
-   * llama.cpp `post_sampling_probs` — return token probabilities AFTER
-   * the sampler chain runs. Debug. Default false.
-   */
+  /** llama.cpp `post_sampling_probs` (sampler debug). */
   postSamplingProbs: boolean | null;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
   checkpoint: string;
-  /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
+  /** Trust custom model code (e.g. NVIDIA Nemotron). Only for trusted repos. */
   trustRemoteCode?: boolean;
-  /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at
-   * 6x standard Opus pricing. Default false.
-   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
-   */
+  /** Anthropic Opus 4.6 / 4.7 only. 6x pricing for higher OTPS. */
   fastMode?: boolean;
 }
 

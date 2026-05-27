@@ -1748,29 +1748,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.parallelToolCalls === false
                 ? { parallel_tool_calls: false }
                 : {}),
-              // llama.cpp `typ_p`. External providers all have
-              // capabilities.typicalP=false; only the permissive local
-              // buckets (custom/vllm/ollama/llama_cpp) opt in. `null`
-              // (unset) or `1.0` (llama-server default) is a no-op.
+              // llama.cpp / vLLM / OpenRouter extras. Each is gated by
+              // (a) the active provider's capability flag and (b) a
+              // non-default value, so only meaningful knobs hit the wire.
               ...(externalCapabilities?.typicalP &&
               params.typicalP !== null &&
               params.typicalP !== 1
                 ? { typical_p: params.typicalP }
                 : {}),
-              // llama.cpp `top_n_sigma`. -1 disables (server default);
-              // only forward meaningful values.
               ...(externalCapabilities?.topNSigma &&
               params.topNSigma !== null &&
               params.topNSigma !== -1
                 ? { top_n_sigma: params.topNSigma }
                 : {}),
-              // llama.cpp `repeat_last_n`. Pairs with repetition_penalty.
               ...(externalCapabilities?.repeatLastN &&
               params.repeatLastN !== null
                 ? { repeat_last_n: params.repeatLastN }
                 : {}),
-              // llama.cpp dynamic-temperature. Only forward when the
-              // user opted in (range > 0).
+              // Dynatemp: range>0 unlocks both fields.
               ...(externalCapabilities?.dynatempRange &&
               params.dynatempRange !== null &&
               params.dynatempRange > 0
@@ -1782,8 +1777,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {}),
                   }
                 : {}),
-              // llama.cpp Mirostat. Mode 0 disables; only forward the
-              // sub-params when mode is enabled.
+              // Mirostat: mode!=0 unlocks tau + eta.
               ...(externalCapabilities?.mirostat &&
               params.mirostat !== null &&
               params.mirostat !== 0
@@ -1799,16 +1793,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {}),
                   }
                 : {}),
-              // OpenRouter `top_a` (alternate dynamic top-P). Documented
-              // range [0, 1]; 0 disables.
               ...(externalCapabilities?.topA &&
               params.topA !== null &&
               params.topA > 0
                 ? { top_a: params.topA }
                 : {}),
-              // llama.cpp DRY sampler. dry_multiplier=0 disables the
-              // whole chain; only forward the paired fields when the
-              // master is set to a meaningful value.
+              // DRY: multiplier>0 unlocks the 4-field chain.
               ...(externalCapabilities?.dryMultiplier &&
               params.dryMultiplier !== null &&
               params.dryMultiplier > 0
@@ -1828,7 +1818,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {}),
                   }
                 : {}),
-              // llama.cpp XTC sampler. xtc_probability=0 disables.
+              // XTC: probability>0 unlocks threshold.
               ...(externalCapabilities?.xtcProbability &&
               params.xtcProbability !== null &&
               params.xtcProbability > 0
@@ -1840,29 +1830,21 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {}),
                   }
                 : {}),
-              // llama.cpp `min_keep` (force min N tokens past filters).
-              // 0 is the upstream default; only forward when set higher.
               ...(externalCapabilities?.minKeep &&
               params.minKeep !== null &&
               params.minKeep > 0
                 ? { min_keep: params.minKeep }
                 : {}),
-              // Continue past EOS. llama.cpp + vLLM only; forward only
-              // when explicitly true (false matches upstream default).
               ...(externalCapabilities?.ignoreEos && params.ignoreEos === true
                 ? { ignore_eos: true }
                 : {}),
-              // Minimum output tokens before stop / EOS can fire.
-              // 0 = upstream default; only forward when set higher.
               ...(externalCapabilities?.minTokens &&
               params.minTokens !== null &&
               params.minTokens > 0
                 ? { min_tokens: params.minTokens }
                 : {}),
-              // vLLM output-shape knobs. Upstream defaults:
-              //   skip_special_tokens=true, spaces_between_special_tokens=true,
-              //   include_stop_str_in_output=false. Forward only when user
-              //   opted away from the default to avoid no-op wire bloat.
+              // vLLM output-shape: default true for skip/spaces, false
+              // for include-stop. Forward only on user opt-out.
               ...(externalCapabilities?.skipSpecialTokens &&
               params.skipSpecialTokens === false
                 ? { skip_special_tokens: false }
@@ -1880,8 +1862,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.truncatePromptTokens > 0
                 ? { truncate_prompt_tokens: params.truncatePromptTokens }
                 : {}),
-              // llama.cpp-only context / KV-cache / instrumentation knobs.
-              // n_keep accepts -1 (= keep all) so the gate is != 0.
+              // n_keep accepts -1 (keep all), so the gate is != 0.
               ...(externalCapabilities?.nKeep &&
               params.nKeep !== null &&
               params.nKeep !== 0
@@ -1924,14 +1905,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // web_fetch has its own Fetch pill, independent
-                      // of Search. Anthropic-only today.
+                      // web_fetch has its own pill (Anthropic-only).
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      // OpenAI Responses-API only: `image_generation`
-                      // returns inline image_generation_call output
-                      // items; the backend's _stream_openai_responses
-                      // path translates them to assistant tool events.
+                      // image_generation: OpenAI Responses-API only.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
@@ -1967,11 +1944,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider.enablePromptCaching ?? true,
                   }
                 : {}),
-              // Anthropic-only: pass the cache TTL the user picked in
-              // Configuration → Provider. Omitted = inherit the default
-              // 5-minute pool. The backend's `_stream_anthropic` only
-              // attaches `cache_control.ttl` when the value is one of
-              // "5m" / "1h" (see external_provider.py near line 1375),
+              // Anthropic-only cache TTL. Backend's _stream_anthropic
+              // only attaches cache_control.ttl when value is "5m"/"1h",
               // so unknown values are a no-op end-to-end.
               ...(supportsProviderPromptCacheTtl(
                 externalProvider.providerType,
@@ -1980,9 +1954,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
-              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
-              // silently drops on unsupported models as a second
-              // line of defence.
+              // Fast mode (Anthropic Opus 4.6 / 4.7). Backend drops on
+              // unsupported models as second defence.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,
@@ -2015,24 +1988,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
-            // Optional sampling extensions; local llama-server already
-            // accepts `stop` / `seed` / `frequency_penalty` via
-            // _build_passthrough_payload (routes/inference.py:4884) and
-            // silently ignores fields it does not recognise. llama-server
-            // documents `parallel_tool_calls` defaulting to FALSE
-            // (https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md);
-            // forward the user's preference unconditionally so the
-            // default-on UI state actually enables parallel tool calls
-            // there. External providers default to true everywhere; the
-            // external branch above keeps its opt-in-on-false shape.
+            // llama-server accepts the standard OAI extensions via
+            // _build_passthrough_payload and silently ignores unknown
+            // fields. parallel_tool_calls defaults to false upstream so
+            // we forward unconditionally to honour the default-on UI.
             ...(params.frequencyPenalty !== 0
               ? { frequency_penalty: params.frequencyPenalty }
               : {}),
             ...(params.seed !== null ? { seed: params.seed } : {}),
             ...(params.stop.length > 0 ? { stop: params.stop } : {}),
-            // llama.cpp `typ_p`. Local only — external providers gate
-            // it off via capability map. `null` (unset) or 1.0 (server
-            // default) is a no-op so we forward only meaningful values.
             ...(params.typicalP !== null && params.typicalP !== 1
               ? { typical_p: params.typicalP }
               : {}),
@@ -2061,7 +2025,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     : {}),
                 }
               : {}),
-            // llama.cpp DRY sampler — dry_multiplier=0 disables the chain.
+            // DRY: multiplier>0 unlocks the 4-field chain.
             ...(params.dryMultiplier !== null && params.dryMultiplier > 0
               ? {
                   dry_multiplier: params.dryMultiplier,
@@ -2076,7 +2040,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     : {}),
                 }
               : {}),
-            // llama.cpp XTC sampler — xtc_probability=0 disables.
+            // XTC: probability>0 unlocks threshold.
             ...(params.xtcProbability !== null && params.xtcProbability > 0
               ? {
                   xtc_probability: params.xtcProbability,
@@ -2088,15 +2052,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(params.minKeep !== null && params.minKeep > 0
               ? { min_keep: params.minKeep }
               : {}),
-            // ignore_eos / min_tokens are shared with vLLM but local
-            // llama-server accepts them too.
             ...(params.ignoreEos === true ? { ignore_eos: true } : {}),
             ...(params.minTokens !== null && params.minTokens > 0
               ? { min_tokens: params.minTokens }
               : {}),
-            // Local llama-server / vLLM / Ollama route. Per-backend
-            // capability gating handles the silent-drop story; here we
-            // forward only when the value diverges from upstream default.
+            // Forward only when value diverges from upstream default;
+            // per-backend capability gating decides whether the wire
+            // even sees these.
             ...(params.skipSpecialTokens === false
               ? { skip_special_tokens: false }
               : {}),

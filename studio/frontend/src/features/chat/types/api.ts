@@ -282,33 +282,16 @@ export interface OpenAIChatCompletionsRequest {
    * the Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
-  /**
-   * OpenAI Chat Completions only; rejected by the Responses family and
-   * silently dropped by Anthropic. Range -2.0 .. 2.0.
-   */
+  /** OpenAI Chat only. Range -2..2. */
   frequency_penalty?: number;
-  /**
-   * Best-effort determinism seed. OpenAI Chat / OpenAI-compat backends
-   * forward it; Responses + Anthropic drop it server-side.
-   */
+  /** OAI Chat + most OAI-compat. Responses + Anthropic drop. */
   seed?: number;
-  /**
-   * Custom stop sequences. Backend translates to `stop_sequences` for
-   * Anthropic; OpenAI Chat caps at 4 entries (server-side truncates
-   * with a warning). Empty arrays are omitted.
-   */
+  /** OAI Chat caps at 4; Anthropic mapped to `stop_sequences`. */
   stop?: string[];
   /**
-   * Provider service tier. Anthropic accepts `auto|standard_only`;
-   * OpenAI Chat + Responses both accept
-   * `auto|default|flex|scale|priority` per the live `openai-python`
-   * SDK (`src/openai/types/responses/response_create_params.py`
-   * declares `Optional[Literal["auto", "default", "flex", "scale",
-   * "priority"]]`). The wire-side helper in
-   * `studio/backend/core/inference/external_provider.py` drops values
-   * that a given provider does not accept; this union stays permissive
-   * so the request-builder typechecks against
-   * `InferenceParams.serviceTier` without per-provider narrowing.
+   * Per-provider enum (see getServiceTierOptions). Union stays
+   * permissive; external_provider.py drops values the active provider
+   * doesn't accept.
    */
   service_tier?:
     | "auto"
@@ -317,94 +300,66 @@ export interface OpenAIChatCompletionsRequest {
     | "priority"
     | "scale"
     | "standard_only";
-  /**
-   * Whether the provider may dispatch tool calls in parallel.
-   * OpenAI: forwarded as `parallel_tool_calls`. Anthropic: inverted
-   * into `disable_parallel_tool_use` server-side. Default `undefined`
-   * keeps each provider's upstream default.
-   */
+  /** Anthropic inverts to `disable_parallel_tool_use`. */
   parallel_tool_calls?: boolean;
-  /**
-   * llama.cpp `typ_p` (locally typical sampling). Local llama-server
-   * only — no SaaS provider currently accepts this. 1.0 disables
-   * (llama-server default). External-provider capability map already
-   * gates this off, so on the wire it only appears for local + the
-   * permissive {custom, vllm, ollama, llama_cpp} buckets.
-   */
+  /** llama.cpp `typ_p`. 1.0 disables. */
   typical_p?: number;
-  /** llama.cpp `top_n_sigma`. -1 disables. Local only. */
+  /** llama.cpp `top_n_sigma`. -1 disables. */
   top_n_sigma?: number;
-  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. Local only. */
+  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. */
   repeat_last_n?: number;
-  /** llama.cpp `dynatemp_range`. 0 disables. Local only. */
+  /** llama.cpp `dynatemp_range`. 0 disables. */
   dynatemp_range?: number;
-  /** llama.cpp `dynatemp_exponent`. Local only, paired with dynatemp_range. */
+  /** llama.cpp `dynatemp_exponent`. Pairs with dynatemp_range. */
   dynatemp_exponent?: number;
-  /** llama.cpp `mirostat` (0/1/2). 0 disables. Local only. */
+  /** llama.cpp `mirostat` (0/1/2). 0 disables. */
   mirostat?: number;
-  /** llama.cpp `mirostat_tau` target entropy. Local only. */
   mirostat_tau?: number;
-  /** llama.cpp `mirostat_eta` learning rate. Local only. */
   mirostat_eta?: number;
-  /**
-   * OpenRouter `top_a` (alternate dynamic-top-P).
-   * https://openrouter.ai/docs/api/reference/parameters — gateway-only.
-   */
+  /** OpenRouter `top_a`. https://openrouter.ai/docs/api/reference/parameters */
   top_a?: number;
-  /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
-   * silently on every other model + provider. See
-   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
-   */
+  /** Anthropic Opus 4.6 / 4.7 only. https://platform.claude.com/docs/en/build-with-claude/fast-mode */
   fast_mode?: boolean | null;
   /**
-   * llama.cpp DRY (Don't Repeat Yourself) sampler family. All four
-   * fields documented at
+   * llama.cpp DRY sampler (4 fields). `dry_multiplier=0` disables.
    * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
-   * 0.0 / null on `dry_multiplier` disables the whole chain. Local only.
    */
   dry_multiplier?: number;
-  /** llama.cpp DRY base. Default 1.75. Local only. */
+  /** Default 1.75. */
   dry_base?: number;
-  /** llama.cpp DRY allowed length threshold. Default 2. Local only. */
+  /** Default 2. */
   dry_allowed_length?: number;
-  /** llama.cpp DRY penalty scan window. 0 disables, -1 = ctx-size. Local only. */
+  /** 0 disables, -1 = ctx-size. */
   dry_penalty_last_n?: number;
-  /** llama.cpp XTC sampler probability. 0.0 disables. Local only. */
+  /** llama.cpp XTC. 0 disables. */
   xtc_probability?: number;
-  /** llama.cpp XTC sampler threshold. Default 0.1. Local only. */
+  /** Default 0.1. */
   xtc_threshold?: number;
-  /** llama.cpp `min_keep` (force min N tokens past filters). Local only. */
+  /** llama.cpp `min_keep`. */
   min_keep?: number;
-  /**
-   * Continue generating past the model's EOS token. llama.cpp + vLLM only.
-   * `false` matches each backend's upstream default.
-   */
+  /** Continue past EOS. llama.cpp + vLLM. */
   ignore_eos?: boolean;
-  /**
-   * Minimum output tokens before stop / EOS can fire. vLLM + llama.cpp only.
-   * 0 disables.
-   */
+  /** Min tokens before stop / EOS. llama.cpp + vLLM. */
   min_tokens?: number;
-  /** vLLM `skip_special_tokens` — default true; forward only when false. */
+  /** vLLM only. */
   skip_special_tokens?: boolean;
-  /** vLLM `spaces_between_special_tokens` — default true; forward only when false. */
+  /** vLLM only. */
   spaces_between_special_tokens?: boolean;
-  /** vLLM `include_stop_str_in_output` — default false; forward only when true. */
+  /** vLLM only. Useful for agentic tools. */
   include_stop_str_in_output?: boolean;
-  /** vLLM `truncate_prompt_tokens` — left-truncate the prompt. > 0 only. */
+  /** vLLM only. Left-truncate the prompt. */
   truncate_prompt_tokens?: number;
-  /** llama.cpp `n_keep` — tokens to retain on context overflow. -1 = all. */
+  /** llama.cpp `n_keep`. -1 = keep all. */
   n_keep?: number;
-  /** llama.cpp `n_probs` — return top-N token probabilities. > 0 only. */
+  /** llama.cpp `n_probs`. */
   n_probs?: number;
-  /** llama.cpp `cache_prompt` — KV-cache reuse. Default true upstream; forward only when false. */
+  /** llama.cpp `cache_prompt`. */
   cache_prompt?: boolean;
-  /** llama.cpp `return_tokens` — include raw token IDs in response. Default false. */
+  /** llama.cpp `return_tokens` (debug). */
   return_tokens?: boolean;
-  /** llama.cpp `timings_per_token` — include per-token speed metrics. Default false. */
+  /** llama.cpp `timings_per_token` (perf debug). */
   timings_per_token?: boolean;
-  /** llama.cpp `post_sampling_probs` — token probs after the sampler chain. Default false. */
+  /** llama.cpp `post_sampling_probs` (sampler debug). */
   post_sampling_probs?: boolean;
 }
 

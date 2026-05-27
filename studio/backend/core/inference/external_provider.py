@@ -71,32 +71,23 @@ def _normalize_stop_for_provider(
     return None
 
 
-# Claude 4.7 Opus removed temperature, top_p, and top_k — the API
-# returns 400 "<param> is deprecated for this model" if any of them is
-# set to a non-default value. The "Sampling parameters removed" section
-# of the 4.7 release notes is the authoritative reference:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
-# Only Opus shipped in the 4.7 generation (Sonnet stops at 4.6, Haiku at
-# 4.5 per https://platform.claude.com/docs/en/about-claude/models/overview),
-# so the regex is anchored to opus-4-7 only. 3.x and 4.5/4.6 still accept
-# all three knobs; the trailing -4-7[-.]/EOL anchor keeps future versions
-# (e.g. claude-opus-5) unaffected.
+# Opus 4.7 removed temperature/top_p/top_k (400s on any non-default).
+# Only Opus shipped in 4.7; 3.x and 4.5/4.6 still accept all three.
+# Trailing -4-7[-.]/EOL anchor keeps future families (claude-opus-5
+# etc) unaffected.
+# https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
-    Anchored to the URL host so an attacker can't bypass the gate with a
-    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
-    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
-    substring-sanitization). Used to scope cloud-only Responses-API
-    extensions (prompt_cache_retention, context_management compaction,
-    container shell tool) that 400 on non-cloud OpenAI-compatible
-    servers (ollama / llama.cpp / vLLM).
+    Host-anchored to avoid subdomain-injection bypass
+    (https://evil.com/api.openai.com/v1, https://api.openai.com.attacker.com/v1).
+    Used to gate cloud-only Responses-API extensions
+    (prompt_cache_retention, context_management compaction, container
+    shell tool) that 400 on non-cloud OAI-compat servers.
 
-    Azure Foundry resources are scoped to
-    ``<resource-name>.openai.azure.com``; match any subdomain via an
-    `endswith` on the lowercased hostname, with the leading dot so
-    `openai.azure.com` itself doesn't slip through (there is no
-    apex-hosted Azure Foundry endpoint).
+    Azure Foundry uses <resource>.openai.azure.com; match via endswith
+    with the leading dot so the apex `openai.azure.com` can't slip
+    through (no apex Foundry endpoint exists).
     """
     if not base_url:
         return False

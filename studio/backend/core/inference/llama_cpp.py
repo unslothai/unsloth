@@ -4327,22 +4327,17 @@ class LlamaCppBackend:
                 _cleaned = [s for s in stop if isinstance(s, str) and s]
                 if _cleaned:
                     payload["stop"] = _cleaned
-        # Optional sampling extensions, gated on `is not None` so 0,
-        # 0.0, and False all reach the wire.
+        # Each field gated `is not None` so explicit 0 / 0.0 / False
+        # values reach the wire. llama-server silently ignores fields
+        # it doesn't recognise.
         if frequency_penalty is not None:
             payload["frequency_penalty"] = frequency_penalty
         if seed is not None:
             payload["seed"] = seed
         if parallel_tool_calls is not None:
             payload["parallel_tool_calls"] = parallel_tool_calls
-        # Locally typical sampling. llama-server default 1.0 disables it;
-        # the field is llama.cpp-specific (no cloud provider accepts it),
-        # so we only forward it when the caller explicitly sets one.
         if typical_p is not None:
             payload["typical_p"] = typical_p
-        # Extended llama.cpp sampler chain (top_n_sigma, repeat_last_n,
-        # dynatemp_*, mirostat_*). All llama.cpp-specific; the frontend
-        # capability map gates them to local backends only.
         if top_n_sigma is not None:
             payload["top_n_sigma"] = top_n_sigma
         if repeat_last_n is not None:
@@ -4357,9 +4352,6 @@ class LlamaCppBackend:
             payload["mirostat_tau"] = mirostat_tau
         if mirostat_eta is not None:
             payload["mirostat_eta"] = mirostat_eta
-        # DRY / XTC / min_keep / ignore_eos / min_tokens — same llama.cpp-
-        # only fields as above. Each is gated `is not None` so explicit
-        # 0 / False values still reach the wire.
         if dry_multiplier is not None:
             payload["dry_multiplier"] = dry_multiplier
         if dry_base is not None:
@@ -4378,8 +4370,6 @@ class LlamaCppBackend:
             payload["ignore_eos"] = ignore_eos
         if min_tokens is not None:
             payload["min_tokens"] = min_tokens
-        # vLLM output-shape knobs — forwarded `is not None` so user
-        # opt-outs (skip_special_tokens=False etc) still reach the wire.
         if skip_special_tokens is not None:
             payload["skip_special_tokens"] = skip_special_tokens
         if spaces_between_special_tokens is not None:
@@ -4388,7 +4378,6 @@ class LlamaCppBackend:
             payload["include_stop_str_in_output"] = include_stop_str_in_output
         if truncate_prompt_tokens is not None:
             payload["truncate_prompt_tokens"] = truncate_prompt_tokens
-        # llama.cpp context / KV-cache / instrumentation knobs.
         if n_keep is not None:
             payload["n_keep"] = n_keep
         if n_probs is not None:

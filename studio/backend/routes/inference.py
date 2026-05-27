@@ -5148,21 +5148,18 @@ def _build_passthrough_payload(
         body["presence_penalty"] = presence_penalty
     # llama-server's /v1/chat/completions accepts the standard OpenAI
     # fields. parallel_tool_calls is a no-op on llama-server today but
-    # is forwarded so a future release picks it up automatically.
+    # forwarded so a future release picks it up automatically.
+    # Each field below gated `is not None` so explicit 0 / False reach
+    # the wire; llama-server silently ignores unknown fields, Ollama's
+    # OAI translator drops everything outside the OAI subset.
     if frequency_penalty is not None:
         body["frequency_penalty"] = frequency_penalty
     if seed is not None:
         body["seed"] = seed
     if parallel_tool_calls is not None:
         body["parallel_tool_calls"] = parallel_tool_calls
-    # llama.cpp-specific locally-typical sampling (typ_p in the sampler
-    # chain). No SaaS provider accepts this; the frontend capability map
-    # gates it to local only.
     if typical_p is not None:
         body["typical_p"] = typical_p
-    # Extended llama.cpp sampler chain. All llama.cpp-specific; the
-    # frontend capability map gates them to local backends only. Server
-    # silently ignores fields it doesn't recognise.
     if top_n_sigma is not None:
         body["top_n_sigma"] = top_n_sigma
     if repeat_last_n is not None:
@@ -5177,10 +5174,6 @@ def _build_passthrough_payload(
         body["mirostat_tau"] = mirostat_tau
     if mirostat_eta is not None:
         body["mirostat_eta"] = mirostat_eta
-    # DRY / XTC / min_keep / ignore_eos / min_tokens — llama-server
-    # specific (DRY+XTC+min_keep) plus vLLM-shared (ignore_eos+min_tokens).
-    # Forwarded `is not None` so explicit 0 / False values still reach
-    # the wire; the OAI translator on Ollama drops these silently.
     if dry_multiplier is not None:
         body["dry_multiplier"] = dry_multiplier
     if dry_base is not None:
@@ -5199,10 +5192,6 @@ def _build_passthrough_payload(
         body["ignore_eos"] = ignore_eos
     if min_tokens is not None:
         body["min_tokens"] = min_tokens
-    # vLLM output-shape knobs + llama.cpp context / KV / instrumentation
-    # knobs. Per-backend capability gating on the frontend prevents these
-    # from being forwarded to wires that don't recognise them; here we
-    # only enforce the `is not None` rule so explicit defaults still pass.
     if skip_special_tokens is not None:
         body["skip_special_tokens"] = skip_special_tokens
     if spaces_between_special_tokens is not None:
@@ -5224,15 +5213,12 @@ def _build_passthrough_payload(
     if post_sampling_probs is not None:
         body["post_sampling_probs"] = post_sampling_probs
     if response_format is not None:
-        # llama-server applies a GBNF grammar derived from the JSON schema
-        # when response_format is present. Field is documented flat at the
-        # request root (tools/server/README.md), which is also what the
-        # OpenAI SDK produces by spreading extra_body into the body top.
+        # llama-server applies a GBNF grammar from the JSON schema.
+        # Field is documented flat at the request root.
         body["response_format"] = response_format
     if chat_template_kwargs is not None:
-        # Propagate reasoning / template overrides (e.g. enable_thinking)
-        # so llama-server renders the Jinja template in the mode the caller
-        # asked for instead of whatever default the model was loaded with.
+        # Reasoning / template overrides (e.g. enable_thinking) so
+        # llama-server renders the Jinja template in the requested mode.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
 
