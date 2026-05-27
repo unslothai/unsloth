@@ -1469,6 +1469,11 @@ class LlamaCppBackend:
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
+            if result.returncode != 0:
+                logger.debug(
+                    f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
+                )
+                return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
             return []
