@@ -111,6 +111,34 @@ export interface ProviderCapabilities {
    * gateways silently drop it; we surface it only for openrouter.
    */
   topA: boolean;
+  /**
+   * llama.cpp DRY (Don't Repeat Yourself) repetition multiplier.
+   * Master switch for the 4-field DRY sampler family. Local llama-
+   * server only — vLLM / Ollama do not implement DRY.
+   */
+  dryMultiplier: boolean;
+  /** llama.cpp DRY base value (exponential growth base). Local only. */
+  dryBase: boolean;
+  /** llama.cpp DRY allowed token-extension threshold. Local only. */
+  dryAllowedLength: boolean;
+  /** llama.cpp DRY penalty scan window. Local only. */
+  dryPenaltyLastN: boolean;
+  /** llama.cpp XTC (eXclude Top Choice) sampler probability. Local only. */
+  xtcProbability: boolean;
+  /** llama.cpp XTC sampler probability threshold. Local only. */
+  xtcThreshold: boolean;
+  /** llama.cpp `min_keep` (force min N tokens past every filter). Local only. */
+  minKeep: boolean;
+  /**
+   * Continue generating past EOS. llama.cpp + vLLM accept this on the
+   * /v1/chat/completions surface; Ollama's OAI translator drops it.
+   */
+  ignoreEos: boolean;
+  /**
+   * Minimum output tokens before stop sequences / EOS can fire.
+   * llama.cpp + vLLM accept this; Ollama's OAI translator drops it.
+   */
+  minTokens: boolean;
 }
 
 /**
@@ -558,6 +586,15 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   mirostatTau: false,
   mirostatEta: false,
   topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
 };
 
 // Unsloth's first-party llama-server runtime (provider type `llama_cpp`)
@@ -586,6 +623,15 @@ const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   mirostatTau: true,
   mirostatEta: true,
   topA: false,
+  dryMultiplier: true,
+  dryBase: true,
+  dryAllowedLength: true,
+  dryPenaltyLastN: true,
+  xtcProbability: true,
+  xtcThreshold: true,
+  minKeep: true,
+  ignoreEos: true,
+  minTokens: true,
 };
 
 // vLLM's OpenAI-compat endpoint accepts the OpenAI subset plus top_k /
@@ -602,6 +648,16 @@ const VLLM_CAPABILITIES: ProviderCapabilities = {
   mirostat: false,
   mirostatTau: false,
   mirostatEta: false,
+  // vLLM's SamplingParams has no DRY / XTC / min_keep fields (only
+  // llama-server implements them). Keep ignoreEos + minTokens on:
+  // both are documented vLLM SamplingParams fields.
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
 };
 
 // Ollama is stricter than vLLM. Studio reaches Ollama via the OpenAI-
@@ -616,6 +672,11 @@ const OLLAMA_CAPABILITIES: ProviderCapabilities = {
   topK: false,
   minP: false,
   repetitionPenalty: false,
+  // Ollama's OAI translator (openai/openai.go FromChatRequest) doesn't
+  // forward ignore_eos or min_tokens either — both fields silently drop
+  // on the /v1/chat/completions path Studio uses.
+  ignoreEos: false,
+  minTokens: false,
 };
 
 // OpenRouter is a router-of-routers: the gateway accepts a wider set
@@ -646,6 +707,15 @@ const OPENROUTER_CAPABILITIES: ProviderCapabilities = {
   mirostatTau: false,
   mirostatEta: false,
   topA: true,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
 };
 
 // Reasoning-class OpenAI models served via /v1/responses fix temperature
@@ -677,6 +747,15 @@ const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
   mirostatTau: false,
   mirostatEta: false,
   topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
 };
 const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
@@ -701,6 +780,15 @@ const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
   mirostatTau: false,
   mirostatEta: false,
   topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
 };
 
 // Prefix list for OpenAI reasoning-class model ids. Kept in sync with
@@ -797,6 +885,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     mirostatTau: false,
     mirostatEta: false,
     topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
@@ -833,6 +930,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     mirostatTau: false,
     mirostatEta: false,
     topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
   },
   // DeepSeek deprecated presence/frequency penalty and never published
   // `seed` or `parallel_tool_calls` in the current chat-completion
@@ -867,6 +973,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     mirostatTau: false,
     mirostatEta: false,
     topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,

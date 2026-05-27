@@ -1806,6 +1806,59 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.topA > 0
                 ? { top_a: params.topA }
                 : {}),
+              // llama.cpp DRY sampler. dry_multiplier=0 disables the
+              // whole chain; only forward the paired fields when the
+              // master is set to a meaningful value.
+              ...(externalCapabilities?.dryMultiplier &&
+              params.dryMultiplier !== null &&
+              params.dryMultiplier > 0
+                ? {
+                    dry_multiplier: params.dryMultiplier,
+                    ...(externalCapabilities?.dryBase &&
+                    params.dryBase !== null
+                      ? { dry_base: params.dryBase }
+                      : {}),
+                    ...(externalCapabilities?.dryAllowedLength &&
+                    params.dryAllowedLength !== null
+                      ? { dry_allowed_length: params.dryAllowedLength }
+                      : {}),
+                    ...(externalCapabilities?.dryPenaltyLastN &&
+                    params.dryPenaltyLastN !== null
+                      ? { dry_penalty_last_n: params.dryPenaltyLastN }
+                      : {}),
+                  }
+                : {}),
+              // llama.cpp XTC sampler. xtc_probability=0 disables.
+              ...(externalCapabilities?.xtcProbability &&
+              params.xtcProbability !== null &&
+              params.xtcProbability > 0
+                ? {
+                    xtc_probability: params.xtcProbability,
+                    ...(externalCapabilities?.xtcThreshold &&
+                    params.xtcThreshold !== null
+                      ? { xtc_threshold: params.xtcThreshold }
+                      : {}),
+                  }
+                : {}),
+              // llama.cpp `min_keep` (force min N tokens past filters).
+              // 0 is the upstream default; only forward when set higher.
+              ...(externalCapabilities?.minKeep &&
+              params.minKeep !== null &&
+              params.minKeep > 0
+                ? { min_keep: params.minKeep }
+                : {}),
+              // Continue past EOS. llama.cpp + vLLM only; forward only
+              // when explicitly true (false matches upstream default).
+              ...(externalCapabilities?.ignoreEos && params.ignoreEos === true
+                ? { ignore_eos: true }
+                : {}),
+              // Minimum output tokens before stop / EOS can fire.
+              // 0 = upstream default; only forward when set higher.
+              ...(externalCapabilities?.minTokens &&
+              params.minTokens !== null &&
+              params.minTokens > 0
+                ? { min_tokens: params.minTokens }
+                : {}),
               // Built-in tools: Search pill maps to provider-side
               // web_search (currently OpenAI / Anthropic / OpenRouter /
               // Kimi); Code pill maps to Anthropic's server-side
@@ -1958,6 +2011,39 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ? { mirostat_eta: params.mirostatEta }
                     : {}),
                 }
+              : {}),
+            // llama.cpp DRY sampler — dry_multiplier=0 disables the chain.
+            ...(params.dryMultiplier !== null && params.dryMultiplier > 0
+              ? {
+                  dry_multiplier: params.dryMultiplier,
+                  ...(params.dryBase !== null
+                    ? { dry_base: params.dryBase }
+                    : {}),
+                  ...(params.dryAllowedLength !== null
+                    ? { dry_allowed_length: params.dryAllowedLength }
+                    : {}),
+                  ...(params.dryPenaltyLastN !== null
+                    ? { dry_penalty_last_n: params.dryPenaltyLastN }
+                    : {}),
+                }
+              : {}),
+            // llama.cpp XTC sampler — xtc_probability=0 disables.
+            ...(params.xtcProbability !== null && params.xtcProbability > 0
+              ? {
+                  xtc_probability: params.xtcProbability,
+                  ...(params.xtcThreshold !== null
+                    ? { xtc_threshold: params.xtcThreshold }
+                    : {}),
+                }
+              : {}),
+            ...(params.minKeep !== null && params.minKeep > 0
+              ? { min_keep: params.minKeep }
+              : {}),
+            // ignore_eos / min_tokens are shared with vLLM but local
+            // llama-server accepts them too.
+            ...(params.ignoreEos === true ? { ignore_eos: true } : {}),
+            ...(params.minTokens !== null && params.minTokens > 0
+              ? { min_tokens: params.minTokens }
               : {}),
             parallel_tool_calls: params.parallelToolCalls,
             image_base64: imageBase64,

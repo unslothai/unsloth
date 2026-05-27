@@ -2579,6 +2579,15 @@ async def openai_chat_completions(
                     seed = payload.seed,
                     parallel_tool_calls = payload.parallel_tool_calls,
                     typical_p = payload.typical_p,
+                    dry_multiplier = payload.dry_multiplier,
+                    dry_base = payload.dry_base,
+                    dry_allowed_length = payload.dry_allowed_length,
+                    dry_penalty_last_n = payload.dry_penalty_last_n,
+                    xtc_probability = payload.xtc_probability,
+                    xtc_threshold = payload.xtc_threshold,
+                    min_keep = payload.min_keep,
+                    ignore_eos = payload.ignore_eos,
+                    min_tokens = payload.min_tokens,
                     top_n_sigma = payload.top_n_sigma,
                     repeat_last_n = payload.repeat_last_n,
                     dynatemp_range = payload.dynatemp_range,
@@ -2760,6 +2769,15 @@ async def openai_chat_completions(
                 seed = payload.seed,
                 parallel_tool_calls = payload.parallel_tool_calls,
                 typical_p = payload.typical_p,
+                dry_multiplier = payload.dry_multiplier,
+                dry_base = payload.dry_base,
+                dry_allowed_length = payload.dry_allowed_length,
+                dry_penalty_last_n = payload.dry_penalty_last_n,
+                xtc_probability = payload.xtc_probability,
+                xtc_threshold = payload.xtc_threshold,
+                min_keep = payload.min_keep,
+                ignore_eos = payload.ignore_eos,
+                min_tokens = payload.min_tokens,
                 top_n_sigma = payload.top_n_sigma,
                 repeat_last_n = payload.repeat_last_n,
                 dynatemp_range = payload.dynatemp_range,
@@ -5048,6 +5066,15 @@ def _build_passthrough_payload(
     mirostat = None,
     mirostat_tau = None,
     mirostat_eta = None,
+    dry_multiplier = None,
+    dry_base = None,
+    dry_allowed_length = None,
+    dry_penalty_last_n = None,
+    xtc_probability = None,
+    xtc_threshold = None,
+    min_keep = None,
+    ignore_eos = None,
+    min_tokens = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -5120,6 +5147,28 @@ def _build_passthrough_payload(
         body["mirostat_tau"] = mirostat_tau
     if mirostat_eta is not None:
         body["mirostat_eta"] = mirostat_eta
+    # DRY / XTC / min_keep / ignore_eos / min_tokens — llama-server
+    # specific (DRY+XTC+min_keep) plus vLLM-shared (ignore_eos+min_tokens).
+    # Forwarded `is not None` so explicit 0 / False values still reach
+    # the wire; the OAI translator on Ollama drops these silently.
+    if dry_multiplier is not None:
+        body["dry_multiplier"] = dry_multiplier
+    if dry_base is not None:
+        body["dry_base"] = dry_base
+    if dry_allowed_length is not None:
+        body["dry_allowed_length"] = dry_allowed_length
+    if dry_penalty_last_n is not None:
+        body["dry_penalty_last_n"] = dry_penalty_last_n
+    if xtc_probability is not None:
+        body["xtc_probability"] = xtc_probability
+    if xtc_threshold is not None:
+        body["xtc_threshold"] = xtc_threshold
+    if min_keep is not None:
+        body["min_keep"] = min_keep
+    if ignore_eos is not None:
+        body["ignore_eos"] = ignore_eos
+    if min_tokens is not None:
+        body["min_tokens"] = min_tokens
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema
         # when response_format is present. Field is documented flat at the

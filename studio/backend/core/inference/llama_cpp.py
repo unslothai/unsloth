@@ -4258,6 +4258,15 @@ class LlamaCppBackend:
         mirostat: Optional[int] = None,
         mirostat_tau: Optional[float] = None,
         mirostat_eta: Optional[float] = None,
+        dry_multiplier: Optional[float] = None,
+        dry_base: Optional[float] = None,
+        dry_allowed_length: Optional[int] = None,
+        dry_penalty_last_n: Optional[int] = None,
+        xtc_probability: Optional[float] = None,
+        xtc_threshold: Optional[float] = None,
+        min_keep: Optional[int] = None,
+        ignore_eos: Optional[bool] = None,
+        min_tokens: Optional[int] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -4338,6 +4347,27 @@ class LlamaCppBackend:
             payload["mirostat_tau"] = mirostat_tau
         if mirostat_eta is not None:
             payload["mirostat_eta"] = mirostat_eta
+        # DRY / XTC / min_keep / ignore_eos / min_tokens — same llama.cpp-
+        # only fields as above. Each is gated `is not None` so explicit
+        # 0 / False values still reach the wire.
+        if dry_multiplier is not None:
+            payload["dry_multiplier"] = dry_multiplier
+        if dry_base is not None:
+            payload["dry_base"] = dry_base
+        if dry_allowed_length is not None:
+            payload["dry_allowed_length"] = dry_allowed_length
+        if dry_penalty_last_n is not None:
+            payload["dry_penalty_last_n"] = dry_penalty_last_n
+        if xtc_probability is not None:
+            payload["xtc_probability"] = xtc_probability
+        if xtc_threshold is not None:
+            payload["xtc_threshold"] = xtc_threshold
+        if min_keep is not None:
+            payload["min_keep"] = min_keep
+        if ignore_eos is not None:
+            payload["ignore_eos"] = ignore_eos
+        if min_tokens is not None:
+            payload["min_tokens"] = min_tokens
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -4491,6 +4521,15 @@ class LlamaCppBackend:
         mirostat: Optional[int] = None,
         mirostat_tau: Optional[float] = None,
         mirostat_eta: Optional[float] = None,
+        dry_multiplier: Optional[float] = None,
+        dry_base: Optional[float] = None,
+        dry_allowed_length: Optional[int] = None,
+        dry_penalty_last_n: Optional[int] = None,
+        xtc_probability: Optional[float] = None,
+        xtc_threshold: Optional[float] = None,
+        min_keep: Optional[int] = None,
+        ignore_eos: Optional[bool] = None,
+        min_tokens: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4604,6 +4643,24 @@ class LlamaCppBackend:
                 payload["mirostat_tau"] = mirostat_tau
             if mirostat_eta is not None:
                 payload["mirostat_eta"] = mirostat_eta
+            if dry_multiplier is not None:
+                payload["dry_multiplier"] = dry_multiplier
+            if dry_base is not None:
+                payload["dry_base"] = dry_base
+            if dry_allowed_length is not None:
+                payload["dry_allowed_length"] = dry_allowed_length
+            if dry_penalty_last_n is not None:
+                payload["dry_penalty_last_n"] = dry_penalty_last_n
+            if xtc_probability is not None:
+                payload["xtc_probability"] = xtc_probability
+            if xtc_threshold is not None:
+                payload["xtc_threshold"] = xtc_threshold
+            if min_keep is not None:
+                payload["min_keep"] = min_keep
+            if ignore_eos is not None:
+                payload["ignore_eos"] = ignore_eos
+            if min_tokens is not None:
+                payload["min_tokens"] = min_tokens
 
             try:
                 _auth_headers = (
@@ -5312,6 +5369,24 @@ class LlamaCppBackend:
             stream_payload["mirostat_tau"] = mirostat_tau
         if mirostat_eta is not None:
             stream_payload["mirostat_eta"] = mirostat_eta
+        if dry_multiplier is not None:
+            stream_payload["dry_multiplier"] = dry_multiplier
+        if dry_base is not None:
+            stream_payload["dry_base"] = dry_base
+        if dry_allowed_length is not None:
+            stream_payload["dry_allowed_length"] = dry_allowed_length
+        if dry_penalty_last_n is not None:
+            stream_payload["dry_penalty_last_n"] = dry_penalty_last_n
+        if xtc_probability is not None:
+            stream_payload["xtc_probability"] = xtc_probability
+        if xtc_threshold is not None:
+            stream_payload["xtc_threshold"] = xtc_threshold
+        if min_keep is not None:
+            stream_payload["min_keep"] = min_keep
+        if ignore_eos is not None:
+            stream_payload["ignore_eos"] = ignore_eos
+        if min_tokens is not None:
+            stream_payload["min_tokens"] = min_tokens
         stream_payload["stream_options"] = {"include_usage": True}
 
         cumulative = ""

@@ -1056,6 +1056,68 @@ def test_local_passthrough_forwards_extended_llama_cpp_samplers():
         assert key not in body2, body2
 
 
+def test_local_passthrough_forwards_dry_xtc_min_keep_eos_min_tokens():
+    """The local llama.cpp passthrough payload builder must forward the
+    DRY (4-field) + XTC (2-field) + min_keep + ignore_eos + min_tokens
+    chain when set. Each is gated `is not None` so an explicit
+    upstream-default value (e.g. min_keep=0, ignore_eos=False) still
+    reaches the wire when the caller opted in.
+    """
+    from routes import inference as route_mod
+
+    body = route_mod._build_passthrough_payload(
+        openai_messages = [{"role": "user", "content": "hi"}],
+        openai_tools = None,
+        temperature = 0.6,
+        top_p = 0.95,
+        top_k = 20,
+        max_tokens = 64,
+        stream = True,
+        dry_multiplier = 0.8,
+        dry_base = 1.75,
+        dry_allowed_length = 3,
+        dry_penalty_last_n = -1,
+        xtc_probability = 0.5,
+        xtc_threshold = 0.1,
+        min_keep = 1,
+        ignore_eos = True,
+        min_tokens = 16,
+    )
+    assert body.get("dry_multiplier") == 0.8
+    assert body.get("dry_base") == 1.75
+    assert body.get("dry_allowed_length") == 3
+    assert body.get("dry_penalty_last_n") == -1
+    assert body.get("xtc_probability") == 0.5
+    assert body.get("xtc_threshold") == 0.1
+    assert body.get("min_keep") == 1
+    assert body.get("ignore_eos") is True
+    assert body.get("min_tokens") == 16
+
+    # Unset = absent from body. Matches the upstream "use default"
+    # contract — llama-server / vLLM apply their own defaults instead.
+    body2 = route_mod._build_passthrough_payload(
+        openai_messages = [{"role": "user", "content": "hi"}],
+        openai_tools = None,
+        temperature = 0.6,
+        top_p = 0.95,
+        top_k = 20,
+        max_tokens = 64,
+        stream = True,
+    )
+    for key in (
+        "dry_multiplier",
+        "dry_base",
+        "dry_allowed_length",
+        "dry_penalty_last_n",
+        "xtc_probability",
+        "xtc_threshold",
+        "min_keep",
+        "ignore_eos",
+        "min_tokens",
+    ):
+        assert key not in body2, body2
+
+
 def test_local_passthrough_forwards_typical_p_when_set():
     """`typical_p` is a llama.cpp-specific sampler (`typ_p` in the
     sampler chain). The local-llama-cpp passthrough payload builder must

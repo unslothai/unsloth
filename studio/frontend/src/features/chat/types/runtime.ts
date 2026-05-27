@@ -69,6 +69,34 @@ export interface InferenceParams {
    * Range [0, 1]. `null` = unset.
    */
   topA: number | null;
+  /**
+   * llama.cpp DRY (Don't Repeat Yourself) penalty multiplier.
+   * 0.0 disables (server default). `null` = unset.
+   * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+   */
+  dryMultiplier: number | null;
+  /** llama.cpp DRY base value (exponential growth base). Default 1.75. `null` = unset. */
+  dryBase: number | null;
+  /** llama.cpp DRY allowed token-extension threshold. Default 2. `null` = unset. */
+  dryAllowedLength: number | null;
+  /** llama.cpp DRY penalty scan window. 0 disables, -1 = ctx-size. `null` = unset. */
+  dryPenaltyLastN: number | null;
+  /** llama.cpp XTC sampler probability. 0.0 disables. `null` = unset. */
+  xtcProbability: number | null;
+  /** llama.cpp XTC sampler threshold. Default 0.1. `null` = unset. */
+  xtcThreshold: number | null;
+  /** llama.cpp `min_keep` (force min N tokens past filters). 0 disables. `null` = unset. */
+  minKeep: number | null;
+  /**
+   * Force generation past the EOS token. llama.cpp + vLLM accept this.
+   * `null` = unset; `false` matches upstream default.
+   */
+  ignoreEos: boolean | null;
+  /**
+   * Minimum output tokens before stop sequences / EOS can fire.
+   * vLLM + llama.cpp accept this. 0 disables. `null` = unset.
+   */
+  minTokens: number | null;
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
@@ -104,6 +132,15 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   mirostatTau: null,
   mirostatEta: null,
   topA: null,
+  dryMultiplier: null,
+  dryBase: null,
+  dryAllowedLength: null,
+  dryPenaltyLastN: null,
+  xtcProbability: null,
+  xtcThreshold: null,
+  minKeep: null,
+  ignoreEos: null,
+  minTokens: null,
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",

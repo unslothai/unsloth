@@ -357,6 +357,35 @@ export interface OpenAIChatCompletionsRequest {
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fast_mode?: boolean | null;
+  /**
+   * llama.cpp DRY (Don't Repeat Yourself) sampler family. All four
+   * fields documented at
+   * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+   * 0.0 / null on `dry_multiplier` disables the whole chain. Local only.
+   */
+  dry_multiplier?: number;
+  /** llama.cpp DRY base. Default 1.75. Local only. */
+  dry_base?: number;
+  /** llama.cpp DRY allowed length threshold. Default 2. Local only. */
+  dry_allowed_length?: number;
+  /** llama.cpp DRY penalty scan window. 0 disables, -1 = ctx-size. Local only. */
+  dry_penalty_last_n?: number;
+  /** llama.cpp XTC sampler probability. 0.0 disables. Local only. */
+  xtc_probability?: number;
+  /** llama.cpp XTC sampler threshold. Default 0.1. Local only. */
+  xtc_threshold?: number;
+  /** llama.cpp `min_keep` (force min N tokens past filters). Local only. */
+  min_keep?: number;
+  /**
+   * Continue generating past the model's EOS token. llama.cpp + vLLM only.
+   * `false` matches each backend's upstream default.
+   */
+  ignore_eos?: boolean;
+  /**
+   * Minimum output tokens before stop / EOS can fire. vLLM + llama.cpp only.
+   * 0 disables.
+   */
+  min_tokens?: number;
 }
 
 export interface OpenAIChatDelta {

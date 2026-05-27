@@ -203,6 +203,14 @@ function sanitizeInferenceParams(
     "mirostatTau",
     "mirostatEta",
     "topA",
+    "dryMultiplier",
+    "dryBase",
+    "dryAllowedLength",
+    "dryPenaltyLastN",
+    "xtcProbability",
+    "xtcThreshold",
+    "minKeep",
+    "minTokens",
   ] as const) {
     const raw = value[key];
     if (raw === null) {
@@ -210,6 +218,12 @@ function sanitizeInferenceParams(
     } else if (typeof raw === "number" && Number.isFinite(raw)) {
       (params as Record<string, unknown>)[key] = raw;
     }
+  }
+  // ignoreEos is the only nullable BOOLEAN in the new batch.
+  if (value.ignoreEos === null) {
+    params.ignoreEos = null;
+  } else if (typeof value.ignoreEos === "boolean") {
+    params.ignoreEos = value.ignoreEos;
   }
   // Mirror trustRemoteCode handling so the toggle survives reload
   // and the /api/chat/settings round-trip.

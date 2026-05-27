@@ -935,6 +935,82 @@ class ChatCompletionRequest(BaseModel):
             "OpenRouter-only; other gateways silently drop it."
         ),
     )
+    dry_multiplier: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = (
+            "llama.cpp DRY (Don't Repeat Yourself) penalty multiplier. "
+            "0.0 disables (server default). Master switch for the 4-field "
+            "DRY family — backend only forwards dry_base / dry_allowed_"
+            "length / dry_penalty_last_n when multiplier > 0. Local only."
+        ),
+    )
+    dry_base: Optional[float] = Field(
+        None,
+        ge = 1.0,
+        description = (
+            "llama.cpp DRY base value (exponential growth base). Default "
+            "1.75. Local only; only meaningful when dry_multiplier > 0."
+        ),
+    )
+    dry_allowed_length: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = (
+            "llama.cpp DRY allowed-length threshold. Default 2. Local "
+            "only; only meaningful when dry_multiplier > 0."
+        ),
+    )
+    dry_penalty_last_n: Optional[int] = Field(
+        None,
+        description = (
+            "llama.cpp DRY penalty scan window. 0 disables, -1 = ctx-size. "
+            "Local only; only meaningful when dry_multiplier > 0."
+        ),
+    )
+    xtc_probability: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "llama.cpp XTC (eXclude Top Choice) sampler probability. "
+            "0.0 disables. Master switch for xtc_threshold. Local only."
+        ),
+    )
+    xtc_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "llama.cpp XTC sampler probability threshold. Default 0.1. "
+            "Local only; only meaningful when xtc_probability > 0."
+        ),
+    )
+    min_keep: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = (
+            "llama.cpp `min_keep` — force min N tokens past every "
+            "sampler filter. 0 disables (server default). Local only."
+        ),
+    )
+    ignore_eos: Optional[bool] = Field(
+        None,
+        description = (
+            "Continue generation past the model's EOS token. Accepted by "
+            "llama.cpp + vLLM; Ollama's OAI translator drops it. False "
+            "matches each backend's upstream default."
+        ),
+    )
+    min_tokens: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = (
+            "Minimum output tokens before stop sequences / EOS can fire. "
+            "Accepted by llama.cpp + vLLM; Ollama's OAI translator drops "
+            "it. 0 disables (server default)."
+        ),
+    )
     fast_mode: Optional[bool] = Field(
         None,
         description = (
