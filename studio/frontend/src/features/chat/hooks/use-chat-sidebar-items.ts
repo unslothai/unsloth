@@ -23,6 +23,7 @@ export interface SidebarItem {
   id: string;
   title: string;
   createdAt: number;
+  isFork?: boolean;
 }
 
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
@@ -50,6 +51,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
+        isFork: Boolean(t.forkedFromThreadId),
       });
     }
   }

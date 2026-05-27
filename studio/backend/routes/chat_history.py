@@ -16,7 +16,9 @@ from storage.studio_db import (
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
+    count_forks_for_message,
     delete_chat_threads,
+    fork_chat_thread,
     get_chat_thread,
     get_chat_message,
     list_chat_legacy_imports,
@@ -45,6 +47,8 @@ class ChatThread(BaseModel):
     createdAt: int
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    forkedFromThreadId: Optional[str] = None
+    forkedFromMessageId: Optional[str] = None
 
 
 class ChatThreadPatch(BaseModel):
@@ -380,6 +384,89 @@ async def put_settings(
         )
     except CorruptSettingsError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+class ChatForkRequest(BaseModel):
+    messageId: str
+    newThreadId: str
+    createdAt: int
+
+
+class ChatForkResponse(BaseModel):
+    thread: ChatThread
+    messages: list[ChatMessage]
+    containerSnapshotWarning: Optional[str] = None
+
+
+class ChatForkCountResponse(BaseModel):
+    count: int
+
+
+@router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
+async def fork_thread(
+    thread_id: str,
+    payload: ChatForkRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Fork a thread at `messageId` -- creates a new thread with
+    ancestor msgs [root..messageId] copied with fresh ids. Both
+    code-exec container ids reset on the fork. OpenAI snapshot is a
+    best-effort enhancement; failure surfaces as
+    `containerSnapshotWarning` and the fork still succeeds with a
+    clean sandbox.
+    """
+    import uuid
+
+    source = get_chat_thread(thread_id)
+    if source is None:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    if get_chat_message(thread_id, payload.messageId) is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Message {payload.messageId} not found in thread {thread_id}",
+        )
+    base_title = source.get("title") or "New Chat"
+    new_title = f"fork · {base_title}"
+    forked = fork_chat_thread(
+        source_thread_id = thread_id,
+        branch_message_id = payload.messageId,
+        new_thread_id = payload.newThreadId,
+        new_title = new_title,
+        created_at = payload.createdAt,
+        id_factory = lambda: str(uuid.uuid4()),
+    )
+    if forked is None:
+        raise HTTPException(status_code = 500, detail = "Fork failed")
+    messages = list_chat_messages(payload.newThreadId)
+    # Best-effort OpenAI container snapshot. Stub: a follow-up patch can
+    # call /v1/containers list+download / create+upload here and patch
+    # the new openaiCodeExecContainerId. For v1 we always start clean
+    # and surface the same warning regardless of provider so the UI can
+    # show a consistent "sandbox starts fresh" toast.
+    warning: Optional[str] = None
+    if source.get("openaiCodeExecContainerId") or source.get(
+        "anthropicCodeExecContainerId"
+    ):
+        warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+    return ChatForkResponse(
+        thread = ChatThread(**forked),
+        messages = [ChatMessage(**m) for m in messages],
+        containerSnapshotWarning = warning,
+    )
+
+
+@router.get(
+    "/threads/{thread_id}/messages/{message_id}/forks",
+    response_model = ChatForkCountResponse,
+)
+async def get_fork_count(
+    thread_id: str,
+    message_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    return ChatForkCountResponse(
+        count = count_forks_for_message(thread_id, message_id)
+    )
 
 
 @router.get("/export", response_model = ChatExportResponse)

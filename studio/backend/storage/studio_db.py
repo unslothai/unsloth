@@ -130,7 +130,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             openai_code_exec_container_id TEXT,
-            anthropic_code_exec_container_id TEXT
+            anthropic_code_exec_container_id TEXT,
+            forked_from_thread_id TEXT,
+            forked_from_message_id TEXT
         )
         """
     )
@@ -144,6 +146,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "anthropic_code_exec_container_id" not in chat_thread_cols:
         conn.execute(
             "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
+        )
+    if "forked_from_thread_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT"
+        )
+    if "forked_from_message_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT"
         )
     conn.execute(
         """
@@ -685,6 +695,8 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "createdAt": data["created_at"],
         "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
+        "forkedFromThreadId": data.get("forked_from_thread_id"),
+        "forkedFromMessageId": data.get("forked_from_message_id"),
     }
 
 
@@ -713,8 +725,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -723,7 +735,9 @@ def upsert_chat_thread(thread: dict) -> dict:
                 archived = excluded.archived,
                 created_at = excluded.created_at,
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
-                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id
+                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
+                forked_from_thread_id = excluded.forked_from_thread_id,
+                forked_from_message_id = excluded.forked_from_message_id
             """,
             (
                 thread["id"],
@@ -735,6 +749,8 @@ def upsert_chat_thread(thread: dict) -> dict:
                 int(thread["createdAt"]),
                 thread.get("openaiCodeExecContainerId"),
                 thread.get("anthropicCodeExecContainerId"),
+                thread.get("forkedFromThreadId"),
+                thread.get("forkedFromMessageId"),
             ),
         )
         conn.commit()
@@ -758,6 +774,14 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "anthropicCodeExecContainerId": (
             "anthropic_code_exec_container_id",
             patch.get("anthropicCodeExecContainerId"),
+        ),
+        "forkedFromThreadId": (
+            "forked_from_thread_id",
+            patch.get("forkedFromThreadId"),
+        ),
+        "forkedFromMessageId": (
+            "forked_from_message_id",
+            patch.get("forkedFromMessageId"),
         ),
     }
     assignments = []
@@ -1026,6 +1050,125 @@ def sync_chat_messages(
         logger.exception("Failed to sync chat messages for thread %s", thread_id)
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def fork_chat_thread(
+    source_thread_id: str,
+    branch_message_id: str,
+    new_thread_id: str,
+    new_title: str,
+    created_at: int,
+    id_factory,
+) -> Optional[dict]:
+    """Atomically clone thread + ancestor msgs `[root..branch_message_id]`
+    into a new thread. Returns the new thread dict (with messages copied)
+    or None if source missing.
+
+    Reset both code-exec container ids -- per-provider snapshot is handled
+    by the route layer (best-effort, OpenAI only).
+
+    `id_factory()` produces fresh message uuids; injected for testability.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        src = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ?", (source_thread_id,)
+        ).fetchone()
+        if src is None:
+            conn.rollback()
+            return None
+        # Verify branch msg belongs to source thread.
+        branch_row = conn.execute(
+            "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (source_thread_id, branch_message_id),
+        ).fetchone()
+        if branch_row is None:
+            conn.rollback()
+            return None
+        # Walk ancestry from branch msg back to root via parent_id chain.
+        ancestry: list[sqlite3.Row] = []
+        cursor_row = branch_row
+        seen: set[str] = set()
+        while cursor_row is not None and cursor_row["id"] not in seen:
+            ancestry.append(cursor_row)
+            seen.add(cursor_row["id"])
+            parent = cursor_row["parent_id"]
+            if not parent:
+                break
+            cursor_row = conn.execute(
+                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
+                (source_thread_id, parent),
+            ).fetchone()
+        ancestry.reverse()  # root .. branch msg
+        # Map old msg id -> new msg id for parent_id rewriting.
+        id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
+        src_dict = dict(src)
+        conn.execute(
+            """
+            INSERT INTO chat_threads
+                (id, title, model_type, model_id, pair_id, archived, created_at,
+                 openai_code_exec_container_id, anthropic_code_exec_container_id,
+                 forked_from_thread_id, forked_from_message_id)
+            VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                new_thread_id,
+                new_title,
+                src_dict["model_type"],
+                src_dict.get("model_id") or "",
+                None,  # pairId: forks always standalone (compare-mode disabled v1)
+                int(created_at),
+                source_thread_id,
+                branch_message_id,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO chat_messages
+                (id, thread_id, parent_id, role, content_json, attachments_json,
+                 metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    row["role"],
+                    row["content_json"],
+                    row["attachments_json"],
+                    row["metadata_json"],
+                    int(row["created_at"]),
+                )
+                for row in ancestry
+            ],
+        )
+        conn.commit()
+        thread_row = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ?", (new_thread_id,)
+        ).fetchone()
+        return _chat_thread_from_row(thread_row) if thread_row is not None else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def count_forks_for_message(thread_id: str, message_id: str) -> int:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM chat_threads
+            WHERE forked_from_thread_id = ? AND forked_from_message_id = ?
+            """,
+            (thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
     finally:
         conn.close()
 

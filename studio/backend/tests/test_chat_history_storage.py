@@ -306,3 +306,100 @@ def test_legacy_imports_ignores_empty(tmp_path, monkeypatch):
     assert studio_db.upsert_chat_legacy_imports([]) == (0, 0)
     assert studio_db.upsert_chat_legacy_imports(["", None]) == (0, 0)  # type: ignore[list-item]
     assert studio_db.list_chat_legacy_imports() == []
+
+
+# ---------------------------------------------------------------------------
+# fork_chat_thread
+# ---------------------------------------------------------------------------
+
+
+def _msg(mid: str, parent: str | None, t: int) -> dict:
+    return {
+        "id": mid,
+        "threadId": "src",
+        "parentId": parent,
+        "role": "user",
+        "content": [{"type": "text", "text": mid}],
+        "createdAt": t,
+    }
+
+
+def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Original",
+                                  "openaiCodeExecContainerId": "cnt-x"})
+    # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
+    # be copied since we fork at m3).
+    studio_db.sync_chat_messages("src", [
+        _msg("m1", None, 1),
+        _msg("m2", "m1", 2),
+        _msg("m3", "m2", 3),
+        _msg("m4", "m2", 4),  # sibling — must be excluded
+    ])
+
+    counter = {"i": 0}
+    def id_factory():
+        counter["i"] += 1
+        return f"new-{counter['i']}"
+
+    forked = studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m3",
+        new_thread_id = "fork-1",
+        new_title = "fork · Original",
+        created_at = 99,
+        id_factory = id_factory,
+    )
+    assert forked is not None
+    assert forked["id"] == "fork-1"
+    assert forked["forkedFromThreadId"] == "src"
+    assert forked["forkedFromMessageId"] == "m3"
+    # Container ids reset on fork.
+    assert forked["openaiCodeExecContainerId"] is None
+
+    copied = studio_db.list_chat_messages("fork-1")
+    # 3 ancestors (m1, m2, m3); m4 excluded.
+    assert len(copied) == 3
+    # parent_id rewritten using new ids; root has parentId None.
+    assert copied[0]["parentId"] is None
+    assert copied[1]["parentId"] == copied[0]["id"]
+    assert copied[2]["parentId"] == copied[1]["id"]
+    # All new ids regenerated.
+    assert {m["id"] for m in copied}.isdisjoint({"m1", "m2", "m3"})
+
+
+def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    result = studio_db.fork_chat_thread(
+        source_thread_id = "nope",
+        branch_message_id = "m1",
+        new_thread_id = "fork",
+        new_title = "f",
+        created_at = 1,
+        id_factory = lambda: "x",
+    )
+    assert result is None
+
+
+def test_count_forks_for_message(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    assert studio_db.count_forks_for_message("src", "m1") == 0
+
+    counter = {"i": 0}
+    def id_factory():
+        counter["i"] += 1
+        return f"id-{counter['i']}"
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src", branch_message_id = "m1",
+        new_thread_id = "f1", new_title = "f1", created_at = 2,
+        id_factory = id_factory,
+    )
+    studio_db.fork_chat_thread(
+        source_thread_id = "src", branch_message_id = "m1",
+        new_thread_id = "f2", new_title = "f2", created_at = 3,
+        id_factory = id_factory,
+    )
+    assert studio_db.count_forks_for_message("src", "m1") == 2
