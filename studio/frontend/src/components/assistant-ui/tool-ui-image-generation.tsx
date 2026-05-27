@@ -64,6 +64,8 @@ type GeneratedImagePart = {
 };
 
 const CAPTION_COLLAPSED_LINES = 4;
+const INLINE_IMAGE_MAX_WIDTH = 520;
+const INLINE_IMAGE_MAX_HEIGHT = 620;
 
 const extensionForMime = (mime: string): string => {
   switch (mime.toLowerCase()) {
@@ -109,6 +111,21 @@ const parseImageSize = (
   const height = Number(match[2]);
   return width > 0 && height > 0 ? { width, height } : null;
 };
+
+const getInlineImageFrameWidth = ({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}): number =>
+  Math.round(
+    Math.min(
+      width,
+      INLINE_IMAGE_MAX_WIDTH,
+      (INLINE_IMAGE_MAX_HEIGHT * width) / height,
+    ),
+  );
 
 const loadingDots = Array.from({ length: 64 }, (_, index) => {
   const row = Math.floor(index / 8);
@@ -161,6 +178,15 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     typeof (result as ImageGenerationResult).image_b64 === "string";
   const imageResult = isImageResult ? (result as ImageGenerationResult) : null;
   const imageDimensions = parseImageSize(imageResult?.size);
+  const imageFrameStyle: CSSProperties = {
+    width: imageDimensions
+      ? getInlineImageFrameWidth(imageDimensions)
+      : INLINE_IMAGE_MAX_WIDTH,
+    maxWidth: "100%",
+  };
+  const imageBoxStyle: CSSProperties | undefined = imageDimensions
+    ? { aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }
+    : undefined;
   const mime = imageResult?.image_mime || "image/png";
   const imageSrc = imageResult?.image_b64
     ? `data:${mime};base64,${imageResult.image_b64}`
@@ -299,11 +325,20 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {imagePart ? (
-          <figure className="m-0 inline-flex w-min max-w-full flex-col items-start gap-2 align-top">
-            <div className="group/generated-image relative inline-block max-w-full overflow-hidden rounded-2xl align-top">
+          <figure
+            className="m-0 flex max-w-full flex-col items-start gap-2 align-top"
+            style={imageFrameStyle}
+          >
+            <div
+              className="group/generated-image relative w-full overflow-hidden rounded-2xl align-top"
+              style={imageBoxStyle}
+            >
               <button
                 type="button"
-                className="block max-w-full cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                className={cn(
+                  "block cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  imageDimensions ? "size-full" : "max-w-full",
+                )}
                 onClick={showPreview}
                 aria-label="Open generated image preview"
               >
@@ -312,7 +347,12 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   alt={imageTitle}
                   width={imageDimensions?.width}
                   height={imageDimensions?.height}
-                  className="block h-auto max-h-[min(70vh,620px)] max-w-[min(100%,520px)] rounded-2xl object-contain"
+                  className={cn(
+                    "block rounded-2xl object-contain",
+                    imageDimensions
+                      ? "size-full"
+                      : "h-auto max-h-[min(70vh,620px)] max-w-full",
+                  )}
                 />
               </button>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
@@ -339,7 +379,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             </div>
             {captionPrompt ? (
-              <figcaption className="w-full max-w-[min(100%,520px)] text-xs leading-5 text-muted-foreground">
+              <figcaption className="w-full text-xs leading-5 text-muted-foreground">
                 <div
                   ref={captionRef}
                   className={cn(
