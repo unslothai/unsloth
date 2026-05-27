@@ -155,6 +155,7 @@ def _sdk_importable() -> bool:
     """
     try:
         from core.inference import codex_spoof
+
         if codex_spoof.is_spoof_enabled():
             return True
     except Exception:
@@ -357,6 +358,7 @@ async def probe_codex_availability() -> dict[str, Any]:
     spoof_active = False
     try:
         from core.inference import codex_spoof
+
         spoof_active = codex_spoof.is_spoof_enabled()
     except Exception:
         pass
