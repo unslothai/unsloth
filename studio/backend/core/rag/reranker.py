@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import gc
+import sys
 import threading
 import time
 from typing import Any
@@ -37,21 +38,45 @@ def _resolve_device() -> str:
 
 
 def _load(model_name: str) -> Any:
+    # Stderr print is unconditional so we can see this line even when
+    # structlog routing is misbehaving — diagnostics for a previously
+    # invisible hang.
+    print(
+        f"[rag.reranker] _load entered: model={model_name}",
+        file = sys.stderr,
+        flush = True,
+    )
     from sentence_transformers import CrossEncoder
 
     device = _resolve_device()
+    print(
+        f"[rag.reranker] device resolved: {device}",
+        file = sys.stderr,
+        flush = True,
+    )
     logger.info(
         "Loading RAG reranker",
         model = model_name,
         device = device,
     )
     started = time.perf_counter()
+    print(
+        f"[rag.reranker] calling CrossEncoder(...) on {device}",
+        file = sys.stderr,
+        flush = True,
+    )
     model = CrossEncoder(model_name, device = device)
+    elapsed = round(time.perf_counter() - started, 2)
+    print(
+        f"[rag.reranker] CrossEncoder returned in {elapsed}s",
+        file = sys.stderr,
+        flush = True,
+    )
     logger.info(
         "RAG reranker loaded",
         model = model_name,
         device = device,
-        elapsed_seconds = round(time.perf_counter() - started, 2),
+        elapsed_seconds = elapsed,
     )
     return model
 
@@ -129,9 +154,25 @@ def rerank(
     text_pairs = [(h, t) for h, t in pairs if h.kind != "image"]
     image_hits = [h for h, _t in pairs if h.kind == "image"]
 
+    print(
+        f"[rag.reranker] rerank entered: n_pairs={len(text_pairs)}",
+        file = sys.stderr,
+        flush = True,
+    )
     model = get_reranker(model_name)
+    print(
+        "[rag.reranker] reranker model in hand",
+        file = sys.stderr,
+        flush = True,
+    )
     if text_pairs:
         inputs = [(query, text) for _, text in text_pairs]
+        print(
+            f"[rag.reranker] predict starting: n_inputs={len(inputs)} "
+            f"batch_size={RAG_RERANK_BATCH_SIZE}",
+            file = sys.stderr,
+            flush = True,
+        )
         logger.info(
             "RAG reranker predict starting",
             n_inputs = len(inputs),
@@ -143,10 +184,16 @@ def rerank(
             batch_size = RAG_RERANK_BATCH_SIZE,
             show_progress_bar = False,
         )
+        elapsed = round(time.perf_counter() - started, 2)
+        print(
+            f"[rag.reranker] predict done in {elapsed}s",
+            file = sys.stderr,
+            flush = True,
+        )
         logger.info(
             "RAG reranker predict done",
             n_inputs = len(inputs),
-            elapsed_seconds = round(time.perf_counter() - started, 2),
+            elapsed_seconds = elapsed,
         )
         ranked = sorted(
             zip(text_pairs, scores),
