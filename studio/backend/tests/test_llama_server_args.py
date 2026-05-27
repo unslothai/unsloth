@@ -3,21 +3,35 @@
 
 """Unit tests for the llama-server pass-through args validator.
 
-The validator is the security boundary between user-supplied CLI / HTTP
-input and the llama-server subprocess command. These tests pin the
-denylist behavior so the boundary doesn't quietly regress when new
-managed flags are added.
+The validator is the boundary between user CLI/HTTP input and the
+llama-server subprocess. These tests pin denylist behaviour so it
+doesn't quietly regress when new managed flags are added.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import re
+from pathlib import Path
+
 import pytest
 
-from core.inference.llama_server_args import (
-    is_managed_flag,
-    strip_shadowing_flags,
-    validate_extra_args,
+# Load llama_server_args.py directly so this test doesn't drag in the
+# full backend chain (fastapi / structlog / loggers / utils.hardware)
+# via core/inference/__init__.py. The validator is intentionally
+# dependency-free and unit-tests should reflect that.
+_LSA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "core"
+    / "inference"
+    / "llama_server_args.py"
 )
+_spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
+_lsa = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_lsa)
+is_managed_flag = _lsa.is_managed_flag
+strip_shadowing_flags = _lsa.strip_shadowing_flags
+validate_extra_args = _lsa.validate_extra_args
 
 
 # ── Pass-through (allowed) ───────────────────────────────────────────
@@ -60,13 +74,12 @@ from core.inference.llama_server_args import (
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed flags the user may want to override on the CLI;
-        # llama.cpp's last-wins parsing means these win over Studio's
-        # auto-set version.
+        # Soft-managed: user-supplied flags last-wins-override Studio's
+        # auto-set version. --parallel / -np / --n-parallel are NOT
+        # here -- they're hard-denied (KV-cache + slot count would
+        # desync). Use `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
-        ["--parallel", "1"],
-        ["-np", "8"],
         ["--flash-attn", "off"],
         ["-fa", "on"],
         ["--no-context-shift"],
@@ -99,8 +112,7 @@ def test_value_with_equals_form_passes_through():
 
 
 def test_non_flag_token_passes_through():
-    # A bare positional value (not preceded by a flag) is preserved
-    # verbatim. llama-server may reject it, but that's not our job.
+    # Bare positionals are passed through; llama-server can reject them.
     assert validate_extra_args(["foo"]) == ["foo"]
 
 
@@ -110,18 +122,33 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
-        # Model identity
+        # Parallel slots -- owned by the typer --parallel flag.
+        "-np",
+        "--parallel",
+        "--n-parallel",
+        # Model identity (every alias; bumping llama.cpp must keep
+        # every form rejected, not just the long).
         "-m",
         "--model",
+        "-mu",
+        "--model-url",
+        "-dr",
+        "--docker-repo",
         "-hf",
         "-hfr",
         "--hf-repo",
         "-hff",
         "--hf-file",
+        "-hfv",
+        "-hfrv",
+        "--hf-repo-v",
+        "-hffv",
+        "--hf-file-v",
         "-hft",
         "--hf-token",
         "-mm",
         "--mmproj",
+        "-mmu",
         "--mmproj-url",
         # Networking (Studio binds + proxies)
         "--host",
@@ -134,11 +161,28 @@ def test_non_flag_token_passes_through():
         "--api-key-file",
         "--ssl-key-file",
         "--ssl-cert-file",
-        # Single-model server
+        # Single-model server (legacy --webui + current --ui group)
         "--webui",
         "--no-webui",
+        "--ui",
+        "--no-ui",
+        "--ui-config",
+        "--ui-config-file",
+        "--ui-mcp-proxy",
+        "--no-ui-mcp-proxy",
         "--models-dir",
+        "--models-preset",
         "--models-max",
+        "--models-autoload",
+        "--no-models-autoload",
+        # Server-mode flips: --embedding / --rerank would restrict
+        # llama-server to those endpoints and break Studio's chat hop.
+        "--embedding",
+        "--embeddings",
+        "--rerank",
+        "--reranking",
+        # llama-server's own --tools clashes with Studio's tool policy.
+        "--tools",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
@@ -146,14 +190,65 @@ def test_denylist_rejects_all_aliases(denied):
         validate_extra_args([denied, "value"])
 
 
+@pytest.mark.parametrize(
+    "args,offending",
+    [
+        # Pass-through --parallel would last-wins-override the real
+        # slot count while Studio's KV-cache fit + llama_parallel_slots
+        # stay at the typer value -- plan vs. process disagree.
+        (["--parallel", "8"], "--parallel"),
+        (["--parallel=8"], "--parallel"),
+        (["--n-parallel", "16"], "--n-parallel"),
+        (["--n-parallel=16"], "--n-parallel"),
+        (["-np", "32"], "-np"),
+        # Attached short form: Click clusters it CLI-side; HTTP /load
+        # with `["-np8"]` must still resolve to managed.
+        (["-np8"], "-np"),
+        (["-np64"], "-np"),
+        # Out-of-range values that would bypass the typer 1..64 guard.
+        (["--parallel", "999"], "--parallel"),
+        (["-np", "0"], "-np"),
+        (["-np999"], "-np"),
+        # Signed attached forms; `-np-1` must not slip past.
+        (["-np-1"], "-np"),
+        (["-np+1"], "-np"),
+    ],
+)
+def test_parallel_flags_are_managed(args, offending):
+    with pytest.raises(ValueError, match = re.escape(offending)):
+        validate_extra_args(args)
+
+
 def test_denylist_rejects_equals_form():
     with pytest.raises(ValueError, match = "--port"):
         validate_extra_args(["--port=9000"])
 
 
+@pytest.mark.parametrize(
+    "padded",
+    [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np \n", "-np\t"],
+)
+def test_denylist_rejects_whitespace_padded_forms(padded):
+    # `_flag_name` trims whitespace before lookup; otherwise a trailing
+    # space could slip a managed flag past the boundary.
+    with pytest.raises(ValueError, match = "parallel|np"):
+        validate_extra_args([padded, "8"])
+
+
+@pytest.mark.parametrize(
+    "attached",
+    ["-np8x", "-np-1foo", "-np+1bar", "-np9zzz"],
+)
+def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
+    # Backend `_flag_name` must classify the same forms the CLI
+    # rewriter expands, else HTTP /load could smuggle `-np8x` through.
+    with pytest.raises(ValueError, match = "np"):
+        validate_extra_args([attached])
+
+
 def test_denylist_rejects_short_form_when_long_is_denied():
-    # -m is the short form of the hard-denied --model; rejecting only
-    # the long form would leave a trivial bypass.
+    # `-m` is the short form of --model; rejecting only the long
+    # form would leave a trivial bypass.
     with pytest.raises(ValueError, match = "-m"):
         validate_extra_args(["-m", "/some/other/path.gguf"])
 
@@ -165,9 +260,7 @@ def test_denylist_message_names_offending_flag():
 
 
 def test_first_denied_flag_short_circuits():
-    # Validation stops at the first denied flag; later denied flags
-    # in the same call don't matter for behaviour, but the message
-    # should name the first one we hit.
+    # Validation stops at the first denied flag; the message names it.
     with pytest.raises(ValueError, match = "--port"):
         validate_extra_args(["--port", "1", "--host", "x"])
 
@@ -177,8 +270,7 @@ def test_first_denied_flag_short_circuits():
 
 @pytest.mark.parametrize("value", ["-1", "-0.5", "-42", "-.5"])
 def test_negative_number_value_is_not_flag(value):
-    # ``--seed -1`` is a value, not a flag. Validator must not try
-    # to look up "-1" in the denylist.
+    # `--seed -1`: the -1 is a value, not a flag.
     assert validate_extra_args(["--seed", value]) == ["--seed", value]
 
 
@@ -190,6 +282,15 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
+    # Parallel slots owned by the typer --parallel flag.
+    assert is_managed_flag("--parallel") is True
+    assert is_managed_flag("--n-parallel") is True
+    assert is_managed_flag("-np") is True
+    # Normalised forms must classify like the canonical token so
+    # is_managed_flag filtering stays in sync with validate_extra_args.
+    assert is_managed_flag("-np8") is True
+    assert is_managed_flag("--parallel=8") is True
+    assert is_managed_flag("--port=9000") is True
 
 
 def test_is_managed_flag_false_for_pass_through():
@@ -199,7 +300,6 @@ def test_is_managed_flag_false_for_pass_through():
     # Soft-managed flags pass through (last-wins override)
     assert is_managed_flag("-c") is False
     assert is_managed_flag("--ctx-size") is False
-    assert is_managed_flag("--parallel") is False
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
@@ -231,8 +331,8 @@ def test_strip_shadowing_flags_keeps_context_when_not_requested():
 
 
 def test_strip_shadowing_flags_keeps_chat_template_when_template_disabled():
-    # Caller did not supply chat_template_override; the inherited
-    # --chat-template-file must survive the strip.
+    # No chat_template_override supplied; inherited
+    # --chat-template-file must survive.
     out = strip_shadowing_flags(
         ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"],
         strip_context = True,
@@ -282,7 +382,7 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
-    # MTP / draft-mtp flags must be stripped when speculative_type is re-applied.
+    # MTP / draft-mtp flags must drop when speculative_type re-applies.
     out = strip_shadowing_flags(
         [
             "--spec-type",
@@ -311,8 +411,7 @@ def test_is_managed_flag_false_for_mtp_pass_through():
 
 
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():
-    # --spec-default is a boolean shadowing flag; the value-skipping
-    # heuristic must skip just the flag, not the following positional.
+    # `--spec-default` is boolean; drop just the flag, keep the next token.
     out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec = True)
     assert out == ["ngram-mod"]
 
@@ -343,8 +442,8 @@ def test_strip_shadowing_flags_handles_empty_input():
 
 
 def test_strip_shadowing_flags_defaults_strip_everything():
-    # The route's already-loaded comparator calls strip_shadowing_flags
-    # with no kwargs to detect ANY shadowing flag in stored extras.
+    # The route's already-loaded comparator calls with no kwargs to
+    # detect ANY shadowing flag in stored extras.
     out = strip_shadowing_flags(
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
