@@ -331,17 +331,11 @@ def cmd_train(args) -> int:
             lr_scheduler_type = "constant",
             optim = "adamw",
             weight_decay = 0.0,
-            # max_grad_value (elementwise) is materially cheaper than
-            # max_grad_norm on MLX -- norm clip needs a cross-tree
-            # reduction + materializing all grad tensors at full
-            # precision, value clip is tree_map(mx.clip) per leaf.
-            # MLXTrainingConfig defaults to max_grad_value=1.0 for
-            # exactly this reason; pin both explicitly here so the
-            # configured clip matches what runs (the trainer prints a
-            # notice when both > 0 and value wins, so disable norm).
-            # Empirical 13-seed pass rate at this fixture: value=1.0
-            # 62%, norm=1.0 46%, value=5.0 33%, value=0.5 77% -- the
-            # cheaper default is also the higher-pass-rate default.
+            # Pin the elementwise clip explicitly to match the existing
+            # 13-seed-tested smoke fixture (value=1.0 -> 62% pass; norm=1.0
+            # -> 46%). New MLX default is max_grad_leaf_norm=1.0 (per-leaf
+            # L2 rescale, same memory profile as elementwise, preserves
+            # direction). max_grad_norm pays a cross-tree reduction cost.
             max_grad_norm = 0.0,
             max_grad_value = 1.0,
             logging_steps = 1,
