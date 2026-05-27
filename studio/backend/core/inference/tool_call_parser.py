@@ -122,7 +122,11 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # with hyphens (mcp__srv__list-issues) and dotted module names parse
 # the same as the built-ins. Name lands in group(1) or group(2).
 _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
-_TC_END_TAG_RE = re.compile(r"</tool_call>")
+# Body terminates at either ``</tool_call>`` (Hermes wrapper) OR
+# ``</function>`` (Qwen3.5 / MiniCPM-5 standalone) so the parser stops
+# at the close tag even when prose follows. Without ``</function>``,
+# trailing prose leaked into the last parameter value.
+_TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(
     r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*'
