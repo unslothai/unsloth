@@ -84,6 +84,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_server_args import parse_ctx_override
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,7 @@ def _drive(
     native_ctx = 131072,
     kv_per_token_bytes = 325_000,
     can_estimate_kv = True,
+    extra_args = None,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
@@ -148,11 +150,13 @@ def _drive(
     inst._can_estimate_kv = lambda: can_estimate_kv
 
     context_length = inst._context_length
+    ctx_override = parse_ctx_override(extra_args)
+    requested_ctx = ctx_override if ctx_override is not None else n_ctx
 
-    effective_ctx = n_ctx if n_ctx > 0 else (context_length or 0)
+    effective_ctx = requested_ctx if requested_ctx > 0 else (context_length or 0)
     max_available_ctx = context_length or effective_ctx
-    if n_ctx > 0:
-        effective_ctx = n_ctx
+    if requested_ctx > 0:
+        effective_ctx = requested_ctx
     elif context_length is not None:
         effective_ctx = context_length
     else:
@@ -161,7 +165,7 @@ def _drive(
     max_available_ctx = context_length or effective_ctx
 
     gpu_indices, use_fit = None, True
-    explicit_ctx = n_ctx > 0
+    explicit_ctx = requested_ctx > 0
 
     if gpus and inst._can_estimate_kv() and effective_ctx > 0:
         native_ctx_for_cap = context_length or effective_ctx
@@ -236,6 +240,7 @@ def _drive(
         "gpu_indices": gpu_indices,
         "max_available_ctx": max_available_ctx,
         "original_ctx": original_ctx,
+        "ctx_override": ctx_override,
     }
 
 
@@ -347,6 +352,48 @@ class TestExplicitCtxRespectsUser:
             gpus = [(0, 24_000)],
         )
         assert plan["c_arg"] == 2048
+
+
+# ---------------------------------------------------------------------------
+# Pass-through --ctx-size participates in context fit (#5676).
+# ---------------------------------------------------------------------------
+
+
+class TestExtraArgsCtxOverride:
+    def test_ctx_size_extra_honored_over_auto(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["--ctx-size", "128000"],
+        )
+        assert plan["ctx_override"] == 128000
+        assert plan["original_ctx"] == 128000
+        assert plan["c_arg"] == 128000
+        assert plan["use_fit"] is True
+
+    def test_ctx_size_short_alias_honored_over_auto(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["-c", "128000"],
+        )
+        assert plan["c_arg"] == 128000
+        assert plan["use_fit"] is True
+
+    def test_ctx_size_extra_wins_over_first_class_field(self):
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            extra_args = ["--ctx-size", "128000"],
+        )
+        assert plan["original_ctx"] == 128000
+        assert plan["c_arg"] == 128000
 
 
 # ---------------------------------------------------------------------------

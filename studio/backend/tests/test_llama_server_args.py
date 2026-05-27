@@ -30,6 +30,7 @@ _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
+parse_ctx_override = _lsa.parse_ctx_override
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 validate_extra_args = _lsa.validate_extra_args
 
@@ -408,6 +409,46 @@ def test_is_managed_flag_false_for_mtp_pass_through():
     assert is_managed_flag("--spec-ngram-mod-n-match") is False
     assert is_managed_flag("--spec-ngram-mod-n-min") is False
     assert is_managed_flag("--spec-ngram-mod-n-max") is False
+
+
+# ── parse_ctx_override ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--ctx-size", "128000"], 128000),
+        (["--ctx-size=128000"], 128000),
+        (["-c", "128000"], 128000),
+        (["-c=128000"], 128000),
+        (["-c", "4096", "--ctx-size", "128000"], 128000),
+    ],
+)
+def test_parse_ctx_override(args, expected):
+    assert parse_ctx_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--ctx-size"],
+        ["--ctx-size", "--top-k"],
+        ["--ctx-size", "abc"],
+        ["--ctx-size=abc"],
+        ["-c", "-1"],
+    ],
+)
+def test_parse_ctx_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "ctx-size|'-c'"):
+        parse_ctx_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_ctx_override():
+    with pytest.raises(ValueError, match = "ctx-size"):
+        validate_extra_args(["--ctx-size", "abc"])
 
 
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():

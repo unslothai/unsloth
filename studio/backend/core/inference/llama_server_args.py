@@ -110,6 +110,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"and cannot be passed as an extra arg"
             )
         out.append(token)
+    parse_ctx_override(out)
     return out
 
 
@@ -164,6 +165,51 @@ _SHADOWING_FLAGS: frozenset[str] = (
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
     {"--spec-default", "--jinja", "--no-jinja"}
 )
+
+
+def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``-c`` / ``--ctx-size`` value.
+
+    Mirrors llama.cpp's last-wins flag parsing for the one pass-through
+    numeric knob Studio's load-time fit logic needs to see.
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[int] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _CONTEXT_FLAGS:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                raise ValueError(
+                    f"llama-server flag '{flag}' requires an integer value"
+                )
+            raw_value = tokens[i + 1]
+            i += 2
+
+        try:
+            value = int(str(raw_value).strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"llama-server flag '{flag}' requires an integer value"
+            ) from exc
+        if value < 0:
+            raise ValueError(
+                f"llama-server flag '{flag}' requires a non-negative integer value"
+            )
+        override = value
+
+    return override
 
 
 def strip_shadowing_flags(
