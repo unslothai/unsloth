@@ -2117,10 +2117,34 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     if ($StudioHomeIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
     }
+    # Standardize the llama.cpp version across every platform: use the version
+    # the latest unslothai/llama.cpp release was built from for all prebuilt
+    # downloads (Linux CUDA from unsloth, Windows/macOS/CPU from ggml-org at that
+    # same version) so platforms don't each pick their own newest. The version is
+    # the upstream_tag in that release's published manifest. Skipped when a
+    # tag/release is explicitly pinned.
+    $PrebuiltLlamaTag = $RequestedLlamaTag
+    if ($PrebuiltLlamaTag -eq "latest" -and -not $env:UNSLOTH_LLAMA_RELEASE_TAG) {
+        try {
+            $manifestResp = Invoke-WebRequest -Uri "https://github.com/unslothai/llama.cpp/releases/latest/download/llama-prebuilt-manifest.json" -TimeoutSec 20 -UseBasicParsing
+            # Release assets are served as octet-stream, so .Content is a byte[]
+            # on PowerShell 7; decode to text before parsing as JSON.
+            $manifestText = $manifestResp.Content
+            if ($manifestText -is [byte[]]) {
+                $manifestText = [System.Text.Encoding]::UTF8.GetString($manifestText)
+            }
+            $canonTag = ($manifestText | ConvertFrom-Json).upstream_tag
+        } catch {
+            $canonTag = ""
+        }
+        if (-not [string]::IsNullOrWhiteSpace($canonTag)) {
+            $PrebuiltLlamaTag = $canonTag
+        }
+    }
     $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
-            "--llama-tag", $RequestedLlamaTag,
+            "--llama-tag", $PrebuiltLlamaTag,
             "--published-repo", $HelperReleaseRepo,
             "--simple-policy"
         )

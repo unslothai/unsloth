@@ -739,10 +739,28 @@ else
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
+    # Standardize the llama.cpp version across every platform: use the version
+    # the latest unslothai/llama.cpp release was built from for all prebuilt
+    # downloads (Linux CUDA from unsloth, Windows/macOS/CPU from ggml-org at that
+    # same version), so platforms don't each pick their own newest. The version
+    # is the upstream_tag in that release's published manifest. Skipped when a
+    # tag/release is explicitly pinned.
+    _PREBUILT_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
+    if [ "$_PREBUILT_LLAMA_TAG" = "latest" ] && [ -z "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        set +e
+        _CANON_TAG="$(curl -fsSL --max-time 20 \
+            "https://github.com/unslothai/llama.cpp/releases/latest/download/llama-prebuilt-manifest.json" 2>/dev/null \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("upstream_tag",""))' 2>/dev/null)"
+        set -e
+        if [ -n "${_CANON_TAG:-}" ]; then
+            _PREBUILT_LLAMA_TAG="$_CANON_TAG"
+            verbose_substep "standardized llama.cpp version: $_PREBUILT_LLAMA_TAG (latest unslothai/llama.cpp release)"
+        fi
+    fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
-        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --llama-tag "$_PREBUILT_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
         --simple-policy
     )
@@ -873,18 +891,12 @@ else
                     _RESOLVED_SOURCE_REF_KIND="tag"
                 fi
             elif [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
-                _RESOLVE_TAG_ARGS=(--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp" --output-format json)
                 set +e
-                _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
-                _RESOLVE_TAG_STATUS=$?
+                _GGML_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+                    --resolve-llama-tag latest --published-repo "ggml-org/llama.cpp" --output-format json 2>/dev/null)"
                 set -e
-                if [ "$_RESOLVE_TAG_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
-                    _RESOLVED_SOURCE_REF="$(
-                        printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
-                    )"
-                else
-                    _RESOLVED_SOURCE_REF=""
-                fi
+                _RESOLVED_SOURCE_REF="$(printf '%s' "${_GGML_JSON:-}" \
+                    | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null)"
                 if [ -z "$_RESOLVED_SOURCE_REF" ]; then
                     _RESOLVED_SOURCE_REF="latest"
                 fi
