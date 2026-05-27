@@ -576,6 +576,17 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _get_text_only_config(model_config, model_name):
+    text_config = None
+    if hasattr(model_config, "get_text_config"):
+        text_config = model_config.get_text_config()
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None:
+        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    return text_config
+
+
 class FastBaseModel:
     @staticmethod
     def from_pretrained(
@@ -608,6 +619,7 @@ class FastBaseModel:
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
+        _force_text_only = False,
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -622,6 +634,11 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
+        if _force_text_only and auto_model in [
+            AutoModelForVision2Seq,
+            AutoModelForImageTextToText,
+        ]:
+            auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         is_whisper = whisper_language is not None and whisper_task is not None
         auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
@@ -781,6 +798,8 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
+        if _force_text_only and hasattr(auto_config, "vision_config"):
+            auto_config = _get_text_only_config(auto_config, model_name)
         model_class = resolve_model_class(auto_model, auto_config)
         attn_impl = resolve_attention_implementation(
             model_class,

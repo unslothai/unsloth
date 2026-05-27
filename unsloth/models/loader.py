@@ -81,6 +81,19 @@ SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq).
 # See _fix_rope_inv_freq() below for details.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
+
+
+def _get_text_only_config(model_config, model_name):
+    text_config = None
+    if hasattr(model_config, "get_text_config"):
+        text_config = model_config.get_text_config()
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None:
+        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    return text_config
+
+
 if SUPPORTS_GEMMA:
     from .gemma import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -358,6 +371,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                _force_text_only = True,
                 *args,
                 **kwargs,
             )
@@ -708,6 +722,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                _force_text_only = True,
                 *args,
                 **kwargs,
             )
@@ -895,6 +910,7 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        _force_text_only = kwargs.pop("_force_text_only", False)
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1458,6 +1474,15 @@ class FastModel(FastBaseModel):
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        load_text_only = _force_text_only and auto_model is None
+        if load_text_only:
+            if hasattr(model_config, "vision_config"):
+                logger.warning_once(
+                    f"Loading {old_model_name} as text-only; vision tower skipped. "
+                    "Use FastVisionModel for image inputs."
+                )
+                model_config = _get_text_only_config(model_config, old_model_name)
+            is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
         _num_labels = kwargs.get("num_labels", None)
         if auto_model is None:
@@ -1517,6 +1542,7 @@ class FastModel(FastBaseModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
+            _force_text_only = load_text_only,
             *args,
             **kwargs,
         )
