@@ -320,11 +320,7 @@ export interface OpenAIChatCompletionsRequest {
   seed?: number;
   /** OAI Chat caps at 4; Anthropic mapped to `stop_sequences`. */
   stop?: string[];
-  /**
-   * Per-provider enum (see getServiceTierOptions). Union stays
-   * permissive; external_provider.py drops values the active provider
-   * doesn't accept.
-   */
+  /** Per-provider enum (see getServiceTierOptions); external_provider.py drops unsupported values. */
   service_tier?:
     | "auto"
     | "default"

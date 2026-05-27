@@ -4316,10 +4316,8 @@ class LlamaCppBackend:
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
         payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
-        # Strip empty / non-string stop entries before forwarding to
-        # llama-server (matches `_normalize_stop_for_provider` for the
-        # external path). Without this a stale `stop=["", "END"]` can
-        # 400 the upstream.
+        # Strip empty/non-string stop entries (mirrors
+        # `_normalize_stop_for_provider`); stale `stop=["", "END"]` 400s.
         if stop:
             if isinstance(stop, str):
                 payload["stop"] = stop
@@ -4327,9 +4325,8 @@ class LlamaCppBackend:
                 _cleaned = [s for s in stop if isinstance(s, str) and s]
                 if _cleaned:
                     payload["stop"] = _cleaned
-        # Each field gated `is not None` so explicit 0 / 0.0 / False
-        # values reach the wire. llama-server silently ignores fields
-        # it doesn't recognise.
+        # `is not None` gate so explicit 0/False reach the wire;
+        # llama-server ignores unknown fields.
         if frequency_penalty is not None:
             payload["frequency_penalty"] = frequency_penalty
         if seed is not None:
@@ -5195,12 +5192,9 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
-                # When the caller opted out of parallel tool calls
-                # (parallel_tool_calls=False), enforce at most one call
-                # per assistant turn even if llama-server emitted more.
-                # llama.cpp's parallel_tool_calls flag isn't enforced by
-                # every jinja template (see ggml-org/llama.cpp#22043),
-                # so this client-side cap is the only guarantee.
+                # parallel_tool_calls=False: client-side cap to 1
+                # (llama.cpp flag isn't enforced by every jinja template,
+                # ggml-org/llama.cpp#22043).
                 if parallel_tool_calls is False and tool_calls:
                     tool_calls = tool_calls[:1]
 
@@ -5414,8 +5408,8 @@ class LlamaCppBackend:
                 _cleaned = [s for s in stop if isinstance(s, str) and s]
                 if _cleaned:
                     stream_payload["stop"] = _cleaned
-        # Match the per-iteration tool loop above so sampling behavior
-        # stays consistent when the cap-exhausted final-answer pass runs.
+        # Match per-iteration tool-loop sampling for the cap-exhausted
+        # final-answer pass.
         if frequency_penalty is not None:
             stream_payload["frequency_penalty"] = frequency_penalty
         if seed is not None:

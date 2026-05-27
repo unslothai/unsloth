@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-provider sampling capability matrix. Sourced from each
-// provider's chat-completion docs (2026-05). The panel hides params
-// the active provider does not accept so users never move a knob that
-// would be silently dropped or rejected.
-// When adding a new knob: default it to false on every SaaS bucket;
-// only local backends + the permissive openrouter bucket should
-// expose llama.cpp-specific samplers.
+// Per-provider sampling capability matrix sourced from each provider's
+// chat-completion docs (2026-05); panel hides params the active
+// provider would silently drop or reject.
+// New knobs: default to false on every SaaS bucket; only local +
+// openrouter expose llama.cpp samplers.
 export interface ProviderCapabilities {
   /** OpenAI gpt-5.x / o-series reject via /v1/responses. */
   temperature: boolean;
@@ -76,17 +74,12 @@ export interface ProviderCapabilities {
 }
 
 /**
- * Per-provider stop-sequence max count. Resolved by
- * `getProviderStopMax(providerType)`. Mirrors the backend's
- * `provider_info.stop_max` for the same provider type.
- *   - openai:     4   (Chat Completions hard cap; Responses drops stop)
- *   - anthropic:  16  (client-side guard; docs publish no max)
- *   - kimi:       5   (https://platform.kimi.ai/docs/api/chat)
- *   - deepseek:   16  (https://api-docs.deepseek.com/api/create-chat-completion)
- *   - mistral:    16  (no documented max; widen to permissive default)
- *   - gemini:     4   (https://ai.google.dev/gemini-api/docs/openai inherits OAI cap)
- *   - openrouter: 4   (normalises to OpenAI's chat schema)
- *   - default:    16  (covers ollama, vllm, llama.cpp, custom)
+ * Per-provider stop-sequence max count. Mirrors backend `stop_max`.
+ *   openai 4 (Chat hard cap; Responses drops stop)
+ *   anthropic 16 (client-side guard, docs no max)
+ *   kimi 5 (https://platform.kimi.ai/docs/api/chat)
+ *   deepseek 16 (https://api-docs.deepseek.com/api/create-chat-completion)
+ *   mistral 16, gemini 4, openrouter 4, default 16 (ollama/vllm/llama.cpp/custom)
  */
 const PROVIDER_STOP_MAX: Record<string, number> = {
   openai: 4,
@@ -114,13 +107,9 @@ export type ServiceTierOption =
   | "standard_only";
 
 /**
- * Legal `service_tier` values per provider. Anthropic exposes only
- * `auto` and `standard_only`. OpenAI in Studio is routed through
- * `/v1/responses`, which the live docs list as
- * `auto|default|flex|priority`; `scale` is excluded here even though
- * the openai-python SDK type happens to include it. Other providers
- * fall through to a permissive `auto` / `default` pair so the picker
- * stays usable for OpenAI-compat backends.
+ * Legal `service_tier` per provider. anthropic=auto|standard_only;
+ * openai (/v1/responses)=auto|default|flex|priority (scale excluded
+ * though SDK lists it); others fall through to auto|default.
  */
 export function getServiceTierOptions(
   providerType: string | null | undefined,
@@ -179,13 +168,12 @@ export function clampReasoningEffortToLevels(
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
-// Per-model max-output caps from each provider's docs (verified May 2026):
+// Per-model max-output caps (verified May 2026). Longer prefixes first
+// so .startsWith() picks the specific id over the family root.
 //   OpenAI:    developers.openai.com/api/docs/models/<model>
 //   Anthropic: platform.claude.com/docs/en/about-claude/models/overview
 //   Gemini:    ai.google.dev/gemini-api/docs/models
 //   DeepSeek:  api-docs.deepseek.com/quick_start/pricing
-// Order matters: list specific chat-class ids before broader gpt-5 /
-// claude-opus-4 entries so the longer prefix wins via .startsWith().
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
   prefixes: readonly string[];
@@ -262,16 +250,13 @@ function _inferProviderFromOpenrouterId(
   return null;
 }
 
-// Gates the composer's Search button. Backend translates
-// enable_tools:["web_search"] into each provider's tool schema:
-//   OpenAI:     tools:[{type:"web_search"}] on /v1/responses
-//   Anthropic:  tools:[{type:"web_search_20250305", max_uses:5}] on /v1/messages
-//   OpenRouter: plugins:[{id:"web"}] (router's universal shape)
-//   Kimi:       $web_search builtin (two-call round trip via
-//               _stream_kimi_web_search)
-// Mistral excluded: their web_search is on the Agents API, not chat
-// completions, and 400s if injected. Gemini grounded-search needs
-// matching backend translation first.
+// Gates the composer's Search button. Backend maps
+// enable_tools:["web_search"] to each provider's tool schema:
+//   OpenAI: tools:[{type:"web_search"}] on /v1/responses
+//   Anthropic: tools:[{type:"web_search_20250305", max_uses:5}]
+//   OpenRouter: plugins:[{id:"web"}]
+//   Kimi: $web_search builtin (2-call via _stream_kimi_web_search)
+// Mistral excluded (web_search lives on Agents API, 400s on /v1/chat).
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
@@ -418,9 +403,8 @@ export function providerSupportsBuiltinCodeExecution(
   return false;
 }
 
-// OpenAI Responses-API image_generation tool. OpenAI cloud +
-// Responses-family ids only; backend mirrors via is_openai_cloud so
-// custom OAI-compat servers reporting provider_type="openai" don't 400.
+// OpenAI Responses-API image_generation. OpenAI cloud +
+// Responses-family ids only; backend mirrors via is_openai_cloud.
 const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
   "gpt-5.5-pro",
   "gpt-5.5",
@@ -510,10 +494,8 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
   );
 }
 
-// Per-provider min on outbound max_tokens. Kimi thinking models need
-// >=16000 or the response truncates mid-stream. Other providers fall
-// through to the generic 64. chat-adapter bumps the user's stored
-// maxTokens up to the floor on send; the slider min mirrors the same.
+// Per-provider min on outbound max_tokens. Kimi thinking needs >=16000
+// (truncates mid-stream below); chat-adapter bumps on send.
 const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = {
   kimi: 16000,
 };
@@ -902,12 +884,9 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     postSamplingProbs: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  // Gemini's native generationConfig accepts temperature, topP, topK,
-  // presencePenalty, frequencyPenalty (not surfaced today), seed and
-  // stopSequences. minP and repetitionPenalty are not part of the
-  // contract -- see https://ai.google.dev/api/rest/v1beta/GenerationConfig.
-  // Backend request shaping lives in _stream_gemini in
-  // studio/backend/core/inference/external_provider.py.
+  // Gemini generationConfig: temperature/topP/topK/presencePenalty/
+  // frequencyPenalty/seed/stopSequences. No minP/repetitionPenalty.
+  // https://ai.google.dev/api/rest/v1beta/GenerationConfig
   gemini: {
     temperature: true,
     topP: true,
@@ -1053,14 +1032,9 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
-// Per-model specialisations:
-//   openai + chat-class (gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5):
-//     full sampling surface (OPENAI_CHAT_CAPABILITIES).
-//   openai + reasoning (gpt-5.x, o1, o3, o4): OPENAI_REASONING_CAPABILITIES.
-//   anthropic + claude-opus-4-7: strips temp/top_p/top_k (Opus only
-//     in 4.7; Sonnet/Haiku don't ship).
-//   deepseek reasoner: hides temp/top_p (silently ignored upstream).
-// Returns null for local models (caller treats as "every knob applies").
+// Per-model overrides: openai+chat-class -> OPENAI_CHAT_CAPABILITIES;
+// anthropic claude-opus-4-7 strips temp/top_p/top_k; deepseek reasoner
+// hides temp/top_p. Local (no providerType) returns null = every knob.
 export function getProviderCapabilities(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
@@ -1114,12 +1088,9 @@ const NO_REASONING_CAPS: ReasoningCaps = {
   reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
 };
 
-// Order matters: longest prefixes first so find() picks the right
-// bucket before the bare-family fallback ("claude-opus-4") sweeps.
-// Levels per platform.claude.com/docs/en/about-claude/models/overview;
-// 4.5 line uses budget_tokens mapped by the backend. Legacy 4.x
-// (opus-4-1 / opus-4 / sonnet-4) supports Extended thinking per the
-// overview table; sonnet-4 / opus-4 retire 2026-06-15.
+// Longest prefixes first (find() must match before the bare-family
+// fallback). Levels per platform.claude.com/docs/en/about-claude/models/overview.
+// 4.5 line maps to budget_tokens; sonnet-4/opus-4 retire 2026-06-15.
 const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-7"],
@@ -1373,10 +1344,9 @@ function resolveGeminiReasoningCapabilities(
 }
 
 function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
-  // magistral-* is native always-on (no reasoning_effort param; 422 if
-  // injected). mistral-{small,medium,vibe-cli}-latest is adjustable
-  // none/low/medium/high. See docs.mistral.ai/studio-api/conversations/
-  // reasoning + mistral.ai/news/magistral.
+  // magistral-*: native always-on (422 on reasoning_effort).
+  // mistral-{small,medium,vibe-cli}-latest: none/low/medium/high.
+  // https://docs.mistral.ai/studio-api/conversations/reasoning
   if (
     modelId === "magistral-medium-latest" ||
     modelId === "magistral-small-latest"

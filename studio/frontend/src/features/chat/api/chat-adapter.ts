@@ -1991,10 +1991,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Optional sampling extensions. Each gate is per-provider
-              // (see provider-capabilities.ts); the backend additionally
-              // drops fields the upstream API does not accept, so a
-              // stale frontend cannot 400 the request.
+              // Optional sampling extras. Per-provider gates live in
+              // provider-capabilities.ts; backend drops unknown fields.
               ...(externalCapabilities?.frequencyPenalty
                 ? { frequency_penalty: params.frequencyPenalty }
                 : {}),
@@ -2007,16 +2005,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.serviceTier && params.serviceTier
                 ? { service_tier: params.serviceTier }
                 : {}),
-              // Forward parallel_tool_calls when the user explicitly
-              // turned it off (the upstream default is `true` on every
-              // provider we ship, so default true is a no-op).
+              // Upstream default is true on every shipped provider;
+              // forward only on explicit opt-out.
               ...(externalCapabilities?.parallelToolCalls &&
               params.parallelToolCalls === false
                 ? { parallel_tool_calls: false }
                 : {}),
-              // llama.cpp / vLLM / OpenRouter extras. Each is gated by
-              // (a) the active provider's capability flag and (b) a
-              // non-default value, so only meaningful knobs hit the wire.
+              // llama.cpp / vLLM / OpenRouter extras: cap-flag plus
+              // non-default value gates so only meaningful knobs hit wire.
               ...(externalCapabilities?.typicalP &&
               params.typicalP !== null &&
               params.typicalP !== 1
@@ -2244,10 +2240,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
-            // llama-server accepts the standard OAI extensions via
-            // _build_passthrough_payload and silently ignores unknown
-            // fields. parallel_tool_calls defaults to false upstream so
-            // we forward unconditionally to honour the default-on UI.
+            // llama-server (_build_passthrough_payload) accepts OAI
+            // extras and ignores unknown; parallel_tool_calls default
+            // false upstream so forward unconditionally.
             ...(params.frequencyPenalty !== 0
               ? { frequency_penalty: params.frequencyPenalty }
               : {}),
@@ -2312,9 +2307,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(params.minTokens !== null && params.minTokens > 0
               ? { min_tokens: params.minTokens }
               : {}),
-            // Forward only when value diverges from upstream default;
-            // per-backend capability gating decides whether the wire
-            // even sees these.
+            // Forward only on non-default; per-backend cap-gates wire visibility.
             ...(params.skipSpecialTokens === false
               ? { skip_special_tokens: false }
               : {}),

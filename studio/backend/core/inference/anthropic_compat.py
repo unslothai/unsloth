@@ -410,11 +410,10 @@ class AnthropicPassthroughEmitter:
         self._tool_call_states: dict = {}  # delta index -> {block_index, id, name}
         self._usage: dict = {}
         self._stop_reason: str = "end_turn"
-        # When the caller opted out of parallel tool calls (Anthropic
-        # `tool_choice.disable_parallel_tool_use=true` mapped to local
-        # `parallel_tool_calls=false`), only emit the first tool-call
-        # index and drop later siblings. llama.cpp may not enforce the
-        # flag on every jinja template (ggml-org/llama.cpp#22043).
+        # parallel_tool_calls=False (Anthropic
+        # tool_choice.disable_parallel_tool_use=true): emit only the first
+        # tool-call index; llama.cpp's flag isn't enforced by every jinja
+        # template (ggml-org/llama.cpp#22043).
         self._serial_tool_calls: bool = parallel_tool_calls is False
         self._first_tool_call_idx: Optional[int] = None
 

@@ -413,15 +413,11 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  // For non-external (local) models we show every knob — providerCapabilities
-  // is only consulted when `isExternalModel` is true. An external model with an
-  // unknown provider falls back to the OpenAI-compat shape via
-  // getProviderCapabilities, so these flags never undercount support.
-  // GGUF (llama-server) honours frequency_penalty/seed/stop/parallel_tool_calls;
-  // the safetensors / HF transformers path does not, so we hide those toggles
-  // on local non-GGUF backends to keep the UI honest. Anything still set in
-  // params from a prior GGUF session is harmlessly ignored by the safetensors
-  // worker, so this is purely a presentation gate.
+  // Local models show every knob (providerCapabilities only consulted
+  // when isExternalModel; unknown providers fall back to OPENAI_COMPAT_BASE).
+  // GGUF llama-server honours frequency_penalty/seed/stop/parallel_tool_calls;
+  // HF transformers path doesn't, so hide on local non-GGUF (stale params
+  // are harmlessly ignored by the safetensors worker).
   const localSamplerSupportsExtras = !isExternalModel ? isGguf : true;
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
@@ -446,9 +442,7 @@ export function ChatSettingsPanel({
   const showParallelToolCalls = isExternalModel
     ? Boolean(providerCapabilities?.parallelToolCalls)
     : localSamplerSupportsExtras;
-  // Extended llama.cpp / vLLM / OpenRouter samplers. Same gate as the
-  // core knobs above: external → providerCapabilities flag; local →
-  // GGUF-only (safetensors transformers ignores these).
+  // Extended samplers: external uses cap flag, local is GGUF-only.
   const capAdv = (k: keyof ProviderCapabilities): boolean =>
     isExternalModel
       ? Boolean(providerCapabilities?.[k])
@@ -484,9 +478,8 @@ export function ChatSettingsPanel({
     postSamplingProbs: capAdv("postSamplingProbs"),
   };
   const showAdvancedSamplingSection = Object.values(advCaps).some(Boolean);
-  // Per-provider stop cap from provider-capabilities.ts; backend
-  // re-trims on the wire if a stale UI sends more than the upstream
-  // accepts.
+  // Per-provider stop cap; backend re-trims on the wire if a stale
+  // UI sends more than the upstream accepts.
   const stopMaxEntries = getProviderStopMax(externalProviderType);
   const serviceTierOptions = getServiceTierOptions(externalProviderType);
   const hasModelContent =
@@ -1379,10 +1372,9 @@ export function ChatSettingsPanel({
                     Seed
                   </span>
                   <InfoHint>
-                    Best-effort determinism seed. Same seed + prompt =
-                    same output (approximately). OpenAI Chat Completions
-                    and OpenAI-compat local backends honor it; OpenAI
-                    Responses and Anthropic silently drop it.
+                    Best-effort determinism. OpenAI Chat and OAI-compat
+                    local backends honor it; OpenAI Responses and Anthropic
+                    silently drop it.
                   </InfoHint>
                 </div>
                 <Input
@@ -1413,11 +1405,9 @@ export function ChatSettingsPanel({
                     Stop sequences
                   </span>
                   <InfoHint>
-                    Strings that halt generation as soon as the model
-                    emits them. Enter a value and press Enter or comma
-                    to commit a chip. Backend translates to
-                    `stop_sequences` on Anthropic and `stop` on OpenAI
-                    Chat (capped at 4 entries).
+                    Strings that halt generation. Enter or comma to commit.
+                    Maps to `stop_sequences` (Anthropic) / `stop` (OpenAI,
+                    cap 4).
                   </InfoHint>
                 </div>
                 <StopSequencesInput
@@ -1435,22 +1425,16 @@ export function ChatSettingsPanel({
                     Service tier
                   </span>
                   <InfoHint>
-                    Provider routing tier. `auto` (default) lets the
-                    provider choose. `flex` / `priority` / `scale` route
-                    to higher-latency-tolerant or premium queues on
-                    OpenAI; `standard_only` opts out of Anthropic's
-                    priority tier.
+                    Provider routing tier. `auto` = provider default.
+                    OpenAI: flex / priority / scale. Anthropic:
+                    `standard_only` opts out of Priority Tier.
                   </InfoHint>
                 </div>
                 <Select
                   value={params.serviceTier ?? "auto"}
                   onValueChange={(value) => {
-                    // Store every selected tier verbatim, including the
-                    // explicit "auto". On Anthropic the docs distinguish
-                    // omitting service_tier (provider default) from
-                    // setting "auto" (opt into Priority Tier when
-                    // available); preserve the user's choice through to
-                    // the adapter so the wire reflects it.
+                    // Store "auto" verbatim: Anthropic distinguishes
+                    // omitted (provider default) from auto (Priority Tier opt-in).
                     const allowed: readonly ServiceTier[] = serviceTierOptions;
                     if (allowed.includes(value as ServiceTier)) {
                       set("serviceTier")(value as ServiceTier);
@@ -1480,11 +1464,8 @@ export function ChatSettingsPanel({
                     Parallel tool calls
                   </span>
                   <InfoHint>
-                    When on, the model may dispatch multiple tool calls
-                    in a single turn (default). Turn off to force one
-                    tool call at a time. Anthropic implements this as
-                    `disable_parallel_tool_use`; OpenAI as
-                    `parallel_tool_calls`.
+                    Allow multiple tool calls per turn (default).
+                    Anthropic uses inverse `disable_parallel_tool_use`.
                   </InfoHint>
                 </div>
                 <Switch
@@ -1623,7 +1604,7 @@ export function ChatSettingsPanel({
                   max={5}
                   step={0.1}
                   onChange={(v) => set("dynatempExponent")(v)}
-                  info="llama.cpp `dynatemp_exponent`. Curve exponent for dynamic temperature. Paired with Dynatemp Range."
+                  info="llama.cpp `dynatemp_exponent`. Curve exponent, pairs with Dynatemp Range."
                 />
               ) : null}
               {advCaps.mirostat ? (
@@ -1699,7 +1680,7 @@ export function ChatSettingsPanel({
                       ? "Off"
                       : undefined
                   }
-                  info="llama.cpp DRY sampler. Master switch for the 4-field DRY chain (base / allowed length / penalty last N). 0 = off."
+                  info="llama.cpp DRY master switch (unlocks base / allowed length / penalty last N). 0 = off."
                 />
               ) : null}
               {advCaps.dryBase && (params.dryMultiplier ?? 0) > 0 ? (
@@ -1892,9 +1873,8 @@ export function ChatSettingsPanel({
                       Skip Special Tokens
                     </span>
                     <InfoHint>
-                      vLLM `skip_special_tokens`. Default on. Turn off to keep
-                      chat-template markers (e.g. `&lt;|im_end|&gt;`) in the
-                      decoded output.
+                      vLLM `skip_special_tokens` (default on). Off keeps
+                      chat-template markers like `&lt;|im_end|&gt;` in output.
                     </InfoHint>
                   </div>
                   <Switch

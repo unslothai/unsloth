@@ -137,19 +137,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
             r")$"
         ),
-        # Gemini's OpenAI-compatible layer inherits OpenAI's 4-stop cap
-        # (https://ai.google.dev/gemini-api/docs/openai). Without the
-        # explicit cap the default 16 leaks through and the upstream
-        # silently drops the overflow.
+        # Gemini OAI-compat inherits OpenAI's 4-stop cap; default 16
+        # silently truncates upstream.
+        # https://ai.google.dev/gemini-api/docs/openai
         "stop_max": 4,
     },
     "deepseek": {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
-        # Legacy aliases (deepseek-chat / deepseek-reasoner) retire
-        # 2026-07-24 per https://api-docs.deepseek.com/updates. Surface
-        # the new canonical ids (deepseek-v4-flash / deepseek-v4-pro)
-        # alongside so the picker keeps working on cutover.
+        # deepseek-chat / deepseek-reasoner retire 2026-07-24; list
+        # v4-pro / v4-flash alongside for cutover.
+        # https://api-docs.deepseek.com/updates
         "default_models": [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
@@ -217,13 +215,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
-        # Both k2.6 and k2.5 are reasoning-class. The API rejects
-        # custom sampling ("invalid temperature: only 1 is allowed for
-        # this model", same for top_p). frequency_penalty follows the
-        # same lock on those models. seed and parallel_tool_calls are
-        # not in Kimi's documented chat schema; strip them too so a
-        # stale client or direct API caller cannot smuggle them onto
-        # the wire and 400 the request.
+        # k2.5/k2.6 are reasoning-class: API locks temperature=1, top_p=1,
+        # frequency_penalty; seed and parallel_tool_calls are undocumented
+        # and 400.
         "body_omit": (
             "temperature",
             "top_p",

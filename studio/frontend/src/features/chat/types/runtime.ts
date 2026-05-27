@@ -9,11 +9,8 @@ export type ServiceTier =
   | "scale"
   | "standard_only";
 
-// All `number | null` / `boolean | null` fields below follow the same
-// convention: `null` = field omitted from the wire request (provider
-// uses its own default). Per-provider capability gating lives in
-// provider-capabilities.ts; the chat-adapter forwards only when the
-// active provider's bucket has the matching flag set true.
+// null = field omitted from wire (provider default).
+// Per-provider gates in provider-capabilities.ts.
 export interface InferenceParams {
   temperature: number;
   topP: number;
@@ -47,10 +44,7 @@ export interface InferenceParams {
   mirostatEta: number | null;
   /** OpenRouter `top_a`. Range [0, 1]. */
   topA: number | null;
-  /**
-   * llama.cpp DRY sampler — multiplier is the master switch (0 disables
-   * the 4-field chain). See llama.cpp/tools/server/README.md.
-   */
+  /** llama.cpp DRY: multiplier is master switch (0 disables 4-field chain). See llama.cpp/tools/server/README.md. */
   dryMultiplier: number | null;
   /** Default 1.75. */
   dryBase: number | null;

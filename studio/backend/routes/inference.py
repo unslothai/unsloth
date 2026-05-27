@@ -240,12 +240,9 @@ studio_router = APIRouter()
 
 
 def _clean_local_stop_list(stop) -> Optional[list[str]]:
-    """Strip empty / non-string entries from a stop sequence input.
-
-    Mirrors `_normalize_stop_for_provider` (external_provider.py) so
-    local llama-server callers cannot ship `stop=["", "END"]` and
-    get a 400. Returns `None` when nothing survives, so the caller
-    can omit the field entirely.
+    """Strip empty/non-string stop entries; returns None when empty so
+    callers can omit. Mirrors `_normalize_stop_for_provider` so
+    `stop=["", "END"]` cannot 400 llama-server.
     """
     if isinstance(stop, str):
         return [stop] if stop else None
@@ -4185,9 +4182,7 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
-    # parallel_tool_calls is first-class on ChatCompletionRequest and
-    # the OpenAI-compat passthrough builder forwards it. Translate it
-    # so a Responses API caller's preference reaches llama-server.
+    # Forward parallel_tool_calls from Responses caller through to llama-server.
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
@@ -4250,9 +4245,8 @@ async def _responses_non_streaming(
         msg = choices[0].get("message", {}) or {}
         text = msg.get("content", "") or ""
         tool_calls = msg.get("tool_calls") or []
-    # Match the cap applied on GGUF / Anthropic / safetensors tool
-    # paths: when the caller opted out of parallel tool calls, surface
-    # at most one. llama.cpp may not enforce the flag.
+    # parallel_tool_calls=False -> cap to 1 (llama.cpp flag isn't enforced;
+    # mirrors GGUF/Anthropic/safetensors paths).
     if payload.parallel_tool_calls is False and tool_calls:
         tool_calls = tool_calls[:1]
 
@@ -4376,10 +4370,9 @@ async def _responses_stream(
         tool_call_state: dict[int, dict] = {}
         # Text message lives at output_index 0; tool calls claim 1, 2, ...
         next_output_index = 1
-        # When the caller opted out of parallel tool calls, latch the
-        # first index we see and drop subsequent siblings — mirrors the
-        # GGUF agentic-loop / Anthropic-passthrough caps; llama.cpp may
-        # not enforce the upstream flag (ggml-org/llama.cpp#22043).
+        # parallel_tool_calls=False: latch the first tc index, drop the
+        # rest; llama.cpp flag isn't enforced by every jinja template
+        # (ggml-org/llama.cpp#22043).
         serial_tool_calls = payload.parallel_tool_calls is False
         first_serial_idx: Optional[int] = None
 
@@ -4872,10 +4865,9 @@ async def anthropic_messages(
     if openai_tool_choice is None:
         openai_tool_choice = "auto"
 
-    # Anthropic nests `disable_parallel_tool_use` inside `tool_choice`
-    # (https://docs.claude.com/en/docs/agents-and-tools/tool-use/implement-tool-use).
-    # Flip it into the OpenAI-shaped `parallel_tool_calls` toggle so the
-    # local GGUF tool loop respects clients that opt out of parallel calls.
+    # Anthropic nests `disable_parallel_tool_use` under `tool_choice`;
+    # flip to OAI `parallel_tool_calls` so the local GGUF tool loop honors it.
+    # https://docs.claude.com/en/docs/agents-and-tools/tool-use/implement-tool-use
     anthropic_parallel_tool_calls: Optional[bool] = None
     if isinstance(payload.tool_choice, dict):
         _disable = payload.tool_choice.get("disable_parallel_tool_use")
@@ -5393,10 +5385,8 @@ def _build_passthrough_payload(
         else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
-    # Strip empty / non-string stop entries before forwarding to
-    # llama-server; the external-provider helper does this via
-    # `_normalize_stop_for_provider`, and the local path needs the same
-    # defensive shape so a stale `stop=["", "END"]` cannot 400 upstream.
+    # Strip empty stop entries (mirrors `_normalize_stop_for_provider`);
+    # stale `stop=["", "END"]` would 400 llama-server.
     if stop:
         if isinstance(stop, str):
             if stop:
@@ -5412,12 +5402,9 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
-    # llama-server's /v1/chat/completions accepts the standard OpenAI
-    # fields. parallel_tool_calls is a no-op on llama-server today but
-    # forwarded so a future release picks it up automatically.
-    # Each field below gated `is not None` so explicit 0 / False reach
-    # the wire; llama-server silently ignores unknown fields, Ollama's
-    # OAI translator drops everything outside the OAI subset.
+    # parallel_tool_calls is a no-op on llama-server today but forwarded
+    # for future support. `is not None` gate lets explicit 0/False through;
+    # llama-server ignores unknowns, Ollama drops non-OAI fields.
     if frequency_penalty is not None:
         body["frequency_penalty"] = frequency_penalty
     if seed is not None:
@@ -5705,11 +5692,8 @@ async def _anthropic_passthrough_non_streaming(
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
     tool_calls = message.get("tool_calls") or []
-    # Mirror the GGUF agentic-loop client-side cap: when the caller
-    # opted out of parallel tool calls, surface at most one tool_use
-    # block even if llama-server returned more than one. llama.cpp may
-    # not enforce the flag on every jinja template (see
-    # ggml-org/llama.cpp#22043).
+    # parallel_tool_calls=False: cap to 1 tool_use block; llama.cpp flag
+    # isn't enforced by every jinja template (ggml-org/llama.cpp#22043).
     if parallel_tool_calls is False and tool_calls:
         tool_calls = tool_calls[:1]
     for tc in tool_calls:

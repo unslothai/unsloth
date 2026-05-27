@@ -876,10 +876,8 @@ class ChatCompletionRequest(BaseModel):
     seed: Optional[int] = Field(
         None,
         description = (
-            "Best-effort determinism seed. Forwarded to OpenAI Chat "
-            "Completions and OpenAI-compatible local backends. The "
-            "Responses family rejects it server-side and Anthropic does "
-            "not implement it, so it is silently dropped on those routes."
+            "Best-effort determinism seed. Forwarded to OpenAI Chat and "
+            "OAI-compat local backends; dropped on Anthropic and OpenAI Responses."
         ),
     )
     service_tier: Optional[
@@ -887,22 +885,18 @@ class ChatCompletionRequest(BaseModel):
     ] = Field(
         None,
         description = (
-            "Provider service tier. Anthropic accepts only `auto` and "
-            "`standard_only`; OpenAI Chat accepts "
-            "`auto|default|flex|priority|scale`; OpenAI Responses accepts "
-            "`auto|default|flex|priority`. Unsupported values per provider "
-            "are dropped in the per-provider stream helper instead of "
-            "422'ing here so a stale frontend never breaks a request."
+            "Provider service tier. Anthropic: auto|standard_only. "
+            "OpenAI Chat: auto|default|flex|priority|scale. "
+            "OpenAI Responses: auto|default|flex|priority. "
+            "Unsupported values are dropped per provider rather than 422'd here."
         ),
     )
     parallel_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "Whether the provider may dispatch tool calls in parallel. "
-            "OpenAI: forwarded as `parallel_tool_calls`. Anthropic: "
-            "inverted into `disable_parallel_tool_use` on the Messages "
-            "body. Default `None` preserves each provider's upstream "
-            "default (which is `true` everywhere today)."
+            "Allow parallel tool calls. Forwarded as `parallel_tool_calls` "
+            "on OpenAI; inverted to `disable_parallel_tool_use` on Anthropic. "
+            "None preserves upstream default (currently true everywhere)."
         ),
     )
     typical_p: Optional[float] = Field(
@@ -958,8 +952,8 @@ class ChatCompletionRequest(BaseModel):
         None,
         ge = 0.0,
         description = (
-            "llama.cpp DRY multiplier. 0 disables the 4-field chain "
-            "(dry_base / dry_allowed_length / dry_penalty_last_n). Local only."
+            "llama.cpp DRY multiplier. 0 disables the dry_base / "
+            "dry_allowed_length / dry_penalty_last_n chain. Local only."
         ),
     )
     dry_base: Optional[float] = Field(

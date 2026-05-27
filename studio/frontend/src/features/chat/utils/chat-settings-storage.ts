@@ -45,12 +45,9 @@ const NUMERIC_INFERENCE_FIELDS = [
   "maxTokens",
 ] as const satisfies readonly (keyof PersistedInferenceParams)[];
 
-// `seed` is numeric but nullable (null = no seed on the wire) so it
-// can't go through the NUMERIC_INFERENCE_FIELDS finite-number filter.
-// Keep this set in sync with `ServiceTier` in ../types/runtime.ts and
-// `getServiceTierOptions` in ../provider-capabilities.ts. `scale` is
-// kept in the allowlist for forward-compat with legacy persisted data
-// even though the resolver no longer surfaces it for OpenAI Responses.
+// `seed` is nullable so it skips NUMERIC_INFERENCE_FIELDS' finite-number filter.
+// Keep in sync with ServiceTier (../types/runtime.ts) and getServiceTierOptions.
+// "scale" stays for forward-compat with legacy persisted data.
 const VALID_SERVICE_TIERS = new Set([
   "auto",
   "default",
@@ -162,15 +159,12 @@ function sanitizeInferenceParams(
   } else if (typeof value.seed === "number" && Number.isInteger(value.seed)) {
     params.seed = value.seed;
   }
-  // stop: cap at 16 (Anthropic's widest supported). The backend's
-  // per-provider stream helper re-truncates to the wire cap. An EMPTY
-  // array must persist (not be sanitized away) so clearing the last
-  // chip actually saves; otherwise the old stops come back on reload.
+  // stop: cap at 16 (Anthropic widest); backend re-truncates per provider.
+  // Empty array MUST persist or clearing the last chip is reverted on reload.
   if (Array.isArray(value.stop)) {
     const stops = value.stop.filter((s): s is string => typeof s === "string");
     params.stop = stops.slice(0, 16);
   }
-  // serviceTier: nullable enum string.
   if (value.serviceTier === null) {
     params.serviceTier = null;
   } else if (
@@ -182,8 +176,8 @@ function sanitizeInferenceParams(
   if (typeof value.parallelToolCalls === "boolean") {
     params.parallelToolCalls = value.parallelToolCalls;
   }
-  // typicalP: nullable float (null = no typ_p on the wire, matching
-  // llama-server's default 1.0). Mirror seed's nullable-float handling.
+  // typicalP: nullable float (null = no typ_p on wire, matches
+  // llama-server default 1.0). Mirrors seed handling.
   if (value.typicalP === null) {
     params.typicalP = null;
   } else if (
@@ -192,8 +186,7 @@ function sanitizeInferenceParams(
   ) {
     params.typicalP = value.typicalP;
   }
-  // New llama.cpp / OpenRouter samplers — all nullable numbers with
-  // the same handling as `typicalP` / `seed`.
+  // Nullable numeric samplers (same handling as typicalP/seed).
   for (const key of [
     "topNSigma",
     "repeatLastN",

@@ -7,14 +7,8 @@ import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 
-/**
- * Chips editor for the `stop` / `stop_sequences` array.
- *
- * Commit a chip with Enter or comma; press Backspace on an empty input
- * to delete the most recent chip. Caps at `maxEntries` -- OpenAI Chat
- * Completions documents a hard cap of 4 stop sequences; Anthropic
- * Messages accepts arbitrarily many. Pass `Infinity` to disable the cap.
- */
+/** Chips editor for stop/stop_sequences. Enter or comma commits; Backspace
+ *  on empty deletes the last. OpenAI Chat caps at 4; pass Infinity to disable. */
 export interface StopSequencesInputProps {
   value: string[];
   onChange: (next: string[]) => void;
@@ -38,12 +32,9 @@ export function StopSequencesInput({
   const atCap = value.length >= maxEntries;
 
   function commitDraft() {
-    // Reject only the empty draft; preserve whitespace exactly (stop
-    // matching is byte-exact). OpenAI-compat / llama-server backends
-    // accept whitespace-only stops like "\n\n" for blank-line halts;
-    // pasting such a value into the input should round-trip rather
-    // than be silently dropped. Anthropic's helper strips whitespace
-    // entries on the wire so a chip that's invalid there cannot 400.
+    // Preserve whitespace exactly (stops are byte-exact); llama-server
+    // accepts "\n\n" for blank-line halts. Anthropic strips whitespace
+    // entries on the wire.
     if (!draft) return;
     if (atCap) return;
     if (value.includes(draft)) {
@@ -85,9 +76,7 @@ export function StopSequencesInput({
     >
       {value.map((entry, index) => (
         <Badge
-          // Stop sequences are not guaranteed unique across edits (the
-          // user could enter "END" twice if the previous one was just
-          // deleted), so combine value + index for a stable key.
+          // Not unique across edits (re-typed value); combine value+index for a stable key.
           key={`${entry}-${index}`}
           variant="secondary"
           className="gap-1 pl-2 pr-1"
