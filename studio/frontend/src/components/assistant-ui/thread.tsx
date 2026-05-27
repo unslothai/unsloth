@@ -1348,9 +1348,12 @@ const ForkCountBadge: FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const remoteId = aui.threadListItem().getState().remoteId;
-    if (!remoteId) return;
     const refresh = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) {
+        if (!cancelled) setCount(0);
+        return;
+      }
       void getForkCount(remoteId, messageId)
         .then((n) => {
           if (!cancelled) setCount(n);
