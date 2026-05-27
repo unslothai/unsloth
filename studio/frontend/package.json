@@ -14,8 +14,9 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
-    "biome:check": "biome check .",
-    "biome:fix": "biome check . --write"
+    "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
+    "biome:check": "biome check",
+    "biome:fix": "biome check --write"
   },
   "dependencies": {
     "@assistant-ui/core": "0.1.17",
