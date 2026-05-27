@@ -260,16 +260,24 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # Our safetensors loop only parses <tool_call>{json}</tool_call>
-    # and <function=name>...</function>. Llama uses <|python_tag|>,
-    # Mistral uses [TOOL_CALLS]; advertising tools for those would
-    # enable a pill the parser cannot honour. GGUF is unaffected --
-    # llama-server normalises every format into structured deltas.
+    # Markers the safetensors / MLX parser recognises. If the template
+    # advertises tools but uses none of them, drop the pill (parser
+    # can't honour the emission). The two ``{"name":`` variants cover
+    # Llama-3.2 ``custom_tools`` whose template prompts the bare-JSON
+    # form without a ``<|python_tag|>`` prefix.
+    _PARSER_MARKERS = (
+        "<tool_call>",
+        "<function=",
+        "<|python_tag|>",
+        "[TOOL_CALLS]",
+        "<|tool_call>",
+        '{"name":',
+        '{\\"name\\":',
+    )
     if (
         flags.get("supports_tools")
         and chat_template
-        and "<tool_call>" not in chat_template
-        and "<function=" not in chat_template
+        and not any(m in chat_template for m in _PARSER_MARKERS)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -427,19 +435,43 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
-# split across the visible/DRAIN boundary. Four leak shapes:
-#   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
-#   2. orphan opening to EOF (close was DRAINED)
-#   3. bare orphan close (open was DRAINED)
-#   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
-#      `\Z` so mid-text `<parameter>` in user code samples survives.
+# Strip leaked tool-call markup. Covers every shared-parser format AND
+# the four leak shapes the speculative buffer in ``llama_cpp.py`` splits
+# across the visible/DRAIN boundary (closed pair, orphan open to EOF,
+# bare orphan close, tail-only ``</parameter>``). Mistral ``[TOOL_CALLS]``
+# is delegated to the parser's balanced-brace helper -- a non-greedy
+# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
 _TOOL_XML_RE = _re.compile(
-    r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)"
-    r"|</(?:tool_call|function)>"
-    r"|</parameter>\s*\Z",
+    "|".join(
+        [
+            # Tool-call / function XML: closed pair OR orphan open to EOF.
+            r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)",
+            # Bare orphan close (open was DRAINED upstream).
+            r"</(?:tool_call|function)>",
+            # Gemma 4.
+            r"<\|tool_call>.*?<tool_call\|>",
+            # Llama-3 ``<|python_tag|>...`` to the next ``<|`` sentinel
+            # or EOF. ``(?:[^<]|<(?!\|))*`` (not ``[^\n<]*`` or
+            # ``[^\n]*``) keeps literal ``<``, newlines, and embedded
+            # JSON inside the strip.
+            r"<\|python_tag\|>(?:[^<]|<(?!\|))*",
+            # Tail-only ``</parameter>`` (anchored so mid-text survives).
+            r"</parameter>\s*\Z",
+        ]
+    ),
     _re.DOTALL,
 )
+
+
+def _strip_tool_xml(text: str) -> str:
+    """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
+    from studio.backend.core.inference.tool_call_parser import (
+        _strip_mistral_closed_calls,
+    )
+
+    return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))
+
+
 logger = get_logger(__name__)
 
 
@@ -2736,7 +2768,7 @@ async def openai_chat_completions(
                 if _msg.get("role") == "assistant" and isinstance(
                     _msg.get("content"), str
                 ):
-                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                    _msg["content"] = _strip_tool_xml(_msg["content"]).strip()
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -2837,7 +2869,7 @@ async def openai_chat_completions(
                         # the last sanitized snapshot so cross-chunk XML
                         # tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        clean_cumulative = _strip_tool_xml(raw_cumulative)
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -3222,7 +3254,7 @@ async def openai_chat_completions(
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                        "content": _strip_tool_xml(_msg["content"]).strip(),
                     }
                 )
             else:
@@ -3309,7 +3341,7 @@ async def openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    clean_cumulative = _strip_tool_xml(raw_cumulative)
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -3381,7 +3413,7 @@ async def openai_chat_completions(
                     if cancel_event.is_set():
                         break
                     if event.get("type") == "content":
-                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                        full_text = _strip_tool_xml(event.get("text", ""))
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
@@ -4913,7 +4945,7 @@ async def anthropic_messages(
         # Strip stale tool-call XML from conversation
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                _msg["content"] = _strip_tool_xml(_msg["content"]).strip()
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
@@ -5005,7 +5037,7 @@ async def _anthropic_tool_stream(
                 # Strip leaked tool-call XML from content events
                 if event.get("type") == "content":
                     event = dict(event)
-                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
+                    event["text"] = _strip_tool_xml(event["text"])
                 for line in emitter.feed(event):
                     yield line
         except Exception as e:
@@ -5096,7 +5128,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
         etype = event.get("type", "")
         if etype == "content":
             # Strip leaked tool-call XML
-            clean = _TOOL_XML_RE.sub("", event["text"])
+            clean = _strip_tool_xml(event["text"])
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -5433,7 +5465,7 @@ async def _anthropic_passthrough_non_streaming(
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _TOOL_XML_RE.sub("", text).strip()
+        text = _strip_tool_xml(text).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
