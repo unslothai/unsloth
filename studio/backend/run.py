@@ -19,6 +19,16 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    configured = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}"
+    ) from None
+
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
