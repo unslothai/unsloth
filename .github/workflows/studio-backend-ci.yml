@@ -144,9 +144,16 @@ jobs:
           # versions ship a CPU build that imports cleanly on Linux.
           pip install 'bitsandbytes>=0.45'
           # unsloth.device_type imports unsloth_zoo.utils.Version at module
-          # scope, so the conftest preload needs unsloth_zoo even though
-          # it is an optional dep of unsloth.
-          pip install 'unsloth_zoo>=2026.5.1'
+          # scope, so the conftest preload needs unsloth_zoo. Pull from
+          # git main so this job sees the same zoo HEAD as Core / MLX /
+          # install.sh do (otherwise a fix on zoo main hides until release).
+          for attempt in 1 2 3; do
+            if pip install --no-deps "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
+            sleep $((5 * attempt))
+          done
           pip install -e . --no-deps
 
       - name: Repo tests (CPU, auto-discovered)
