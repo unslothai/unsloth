@@ -26,6 +26,10 @@ def _block_around(src: str, anchor: str, radius: int = 600) -> str:
 
 
 def test_main_composer_has_dir_auto():
+    # PR #5784 rewrote the literal attribute into a JSX conditional
+    # (`aria-label={overlay ? "Image edit instructions" : "Message input"}`),
+    # so anchor on the inner string literal instead -- it survives both
+    # the old and new spellings.
     block = _block_around(THREAD_TSX.read_text(), '"Message input"')
     assert 'dir="auto"' in block, 'main composer is missing dir="auto"'
 
