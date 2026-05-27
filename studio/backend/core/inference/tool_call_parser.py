@@ -38,19 +38,14 @@ TOOL_XML_SIGNALS = (
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
-    # DeepSeek R1 / V3 / V3.1 (full-width pipes + lower-one-eighth-block).
+    # DeepSeek R1 / V3 / V3.1 -- 5 opener variants llama.cpp keeps.
     "<｜tool▁calls▁begin｜>",
     "<｜tool▁call▁begin｜>",
-    # Alternative DeepSeek openers llama.cpp also recognises -- some
-    # checkpoints emit ASCII underscores, others a short form, and
-    # llama.cpp keeps two more legacy variants (literal-space and
-    # backslash-escaped) that we mirror for streaming-gate parity with
-    # ``_DEEPSEEK_BEGIN_RE`` below.
     "<｜tool_calls_begin｜>",
     "<｜tool▁calls｜>",
     "<｜tool calls begin｜>",
     "<｜tool\\_calls\\_begin｜>",
-    # Kimi K2 / Moonshot section start.
+    # Kimi K2 / Moonshot.
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
 )
@@ -172,33 +167,22 @@ _DEEPSEEK_V3_FUNC_RE = re.compile(
     + re.escape(_DEEPSEEK_SEP),
 )
 
-# GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>[\n]
-# <arg_value>V</arg_value>...</tool_call>`` per chat_template.jinja.
-# GLM 4.5 / 4.6 emit a ``\n`` between the name and the first
-# ``<arg_key>``; GLM 4.7's template strips trailing whitespace from
-# the name line so the marker follows the name directly. The lookahead
-# below terminates the name on EITHER ``\n`` or the next ``<arg_key>``.
-# First-char ``[^\n<{]`` keeps Qwen's ``<tool_call>{json}`` form from
-# matching here. Strings come through raw; non-strings JSON-encoded.
+# GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>...``.
+# GLM 4.7 strips the ``\n`` after the name, so lookahead allows either
+# ``\n`` or ``<arg_key>``. First-char ``[^\n<{]`` excludes Qwen.
 _GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>)")
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_PAIR_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
     re.DOTALL,
 )
-# Without tool-schema access at the parse site we use a structural
-# heuristic: only deserialize an ``<arg_value>`` body when it
-# unambiguously looks like a JSON literal. Template rule is
-# ``{{ v | tojson(ensure_ascii=False) if v is not string else v }}``,
-# so string args arrive raw and non-strings JSON-encoded. Bare
-# ``42`` / ``true`` / ``null`` remain ambiguous with strings that
-# happen to look like primitives -- inherent limitation without schema.
+# Template emits string args raw and non-strings via tojson; without
+# tool schema we can only safely decode unambiguous JSON literals.
+# Bare ``42`` / ``true`` / ``null`` remain ambiguous with strings.
 _GLM_JSON_NUMERIC_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 
-# Kimi K2 / Moonshot (ASCII pipes, NOT full-width). Name arrives as
-# ``functions.NAME:IDX`` between ``<|tool_call_begin|>`` and
-# ``<|tool_call_argument_begin|>``; strip the ``functions.`` prefix
-# and ``:N`` suffix to recover the bare name.
+# Kimi K2 / Moonshot (ASCII pipes). Id between begin and arg_begin is
+# ``functions.NAME:IDX``; strip ``functions.`` and ``:N`` for the name.
 _KIMI_SECTION_BEGIN = "<|tool_calls_section_begin|>"
 _KIMI_SECTION_END = "<|tool_calls_section_end|>"
 _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
@@ -316,60 +300,27 @@ def has_tool_signal(text: str) -> bool:
 
 
 def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
-    """Return OpenAI-format tool calls. Tries each format in turn and
-    returns as soon as one matches so we never double-count. New
-    families (DeepSeek / Kimi / GLM) are interleaved so their dispatch
-    order is explicit -- see comments per parser below."""
-    # DeepSeek R1 / V3 / V3.1 ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
-    # Run early -- full-width markers cannot collide with any other
-    # family, and R1's code-fence body would fail Qwen's JSON-start
-    # regex anyway.
-    calls = _parse_deepseek_tool_calls(content, id_offset = id_offset)
-    if calls:
-        return calls
+    """Return OpenAI-format tool calls. First match wins.
 
-    # Kimi K2 ``<|tool_calls_section_begin|>...``. Markers cannot
-    # collide with any other family.
-    calls = _parse_kimi_tool_calls(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Qwen / Hermes ``<tool_call>{json}``.
-    calls = _parse_tool_call_json(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # GLM 4.x ``<tool_call>NAME\n<arg_key>...</tool_call>``. Marker
-    # collides with Qwen but Qwen requires ``\s*{`` after the tag while
-    # GLM has a bare name then ``\n``; running GLM AFTER Qwen keeps
-    # both paths' behaviour unchanged.
-    calls = _parse_glm_tool_calls(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Qwen3.5 / Hermes ``<function=name><parameter=k>v``.
-    calls = _parse_function_xml(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Llama-3 ``<|python_tag|>...``.
-    calls = _parse_llama3_python_tag(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Mistral ``[TOOL_CALLS]...``.
-    calls = _parse_mistral_tool_calls(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Gemma 4 ``<|tool_call>...<tool_call|>``.
-    calls = _parse_gemma_tool_calls(content, id_offset = id_offset)
-    if calls:
-        return calls
-
-    # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict: only
-    # fires on content that starts with ``{`` and parses as the right
-    # shape, so plain prose stays untouched.
+    Order: DeepSeek / Kimi (full-width or unique markers, no collision)
+    -&gt; Qwen JSON -&gt; GLM (shares ``<tool_call>`` opener with Qwen but
+    Qwen needs ``\\s*{`` after the tag, GLM has a bare name) -&gt;
+    Qwen3.5 XML -&gt; Llama-3 python_tag -&gt; Mistral -&gt; Gemma -&gt;
+    Llama-3.2 bare JSON (strict ``{`` start).
+    """
+    for parser in (
+        _parse_deepseek_tool_calls,
+        _parse_kimi_tool_calls,
+        _parse_tool_call_json,
+        _parse_glm_tool_calls,
+        _parse_function_xml,
+        _parse_llama3_python_tag,
+        _parse_mistral_tool_calls,
+        _parse_gemma_tool_calls,
+    ):
+        calls = parser(content, id_offset = id_offset)
+        if calls:
+            return calls
     return _parse_llama3_bare_json(content, id_offset = id_offset)
 
 
@@ -963,17 +914,14 @@ def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
 
 
 def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """DeepSeek emissions:
-      R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
-      V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
+    """DeepSeek R1 / V3 / V3.1.
 
-    Mirrors llama.cpp's common_chat_parse_deepseek_r1 / _v3_1 (at
-    pre-autoparser-refactor commit ``51fa458a92d6``, where the logic
-    lived in ``common/chat-parser.cpp`` lines 801-879; the upstream has
-    since been split into ``common/chat.cpp`` + ``common/chat-peg-
-    parser.cpp`` by llama.cpp PR #18675) and vLLM's
-    ``vllm/tool_parsers/deepseekv31_tool_parser.py``. Tolerates the
-    five outer-marker variants llama.cpp keeps for real checkpoints.
+    R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
+    V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
+
+    Ports llama.cpp ``common_chat_parse_deepseek_r1`` / ``_v3_1`` at
+    commit ``51fa458a92d6`` (pre-autoparser refactor); tolerates the 5
+    opener variants llama.cpp keeps.
     """
     out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
@@ -1070,18 +1018,11 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """GLM 4.x emission:
-      ``<tool_call>NAME\\n<arg_key>K1</arg_key>\\n<arg_value>V1</arg_value>...
-      <arg_key>Kn</arg_key>\\n<arg_value>Vn</arg_value>\\n</tool_call>``
+    """GLM 4.5 / 4.6 / 4.7.
 
-    Strings come through raw; non-string args are JSON-encoded per the
-    template's ``{{ v | tojson(ensure_ascii=False) if v is not string
-    else v }}`` rule. Multi-call is back-to-back ``<tool_call>...
-    </tool_call>`` blocks with no outer envelope. Mirrors llama.cpp's
-    ``common_chat_parse_glm_4_5`` (pre-autoparser-refactor commit
-    ``51fa458a92d6``, ``common/chat-parser.cpp`` lines 1040-1052; see
-    note in ``_parse_deepseek_tool_calls`` re: post-refactor paths)
-    and vLLM's ``vllm/tool_parsers/glm4_moe_tool_parser.py``.
+    ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>
+    ...</tool_call>``. Multi-call is back-to-back blocks, no envelope.
+    Ports llama.cpp ``common_chat_parse_glm_4_5`` at ``51fa458a92d6``.
     """
     out: list[dict] = []
     pos = 0
@@ -1099,12 +1040,8 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         for pair in _GLM_ARG_PAIR_RE.finditer(body):
             key = pair.group(1).strip()
             raw_val = pair.group(2).strip()
-            # Only try to decode when the body unambiguously looks like a
-            # JSON literal. Prose, code, and arbitrary string values stay
-            # raw (the template emits string args verbatim). Numeric /
-            # boolean / null shapes are still ambiguous with strings that
-            # happen to look like primitives -- this is an inherent
-            # limitation of the template without per-arg schema access.
+            # Only decode unambiguous JSON literals; arbitrary strings
+            # stay raw. Bare numerics / bool / null remain ambiguous.
             if (
                 raw_val[:1] in '{["'
                 or raw_val in ("true", "false", "null")
@@ -1136,20 +1073,14 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """Kimi K2 emission:
-      ``<|tool_calls_section_begin|>
-        <|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>
-        ...
-        <|tool_calls_section_end|>``
+    """Kimi K2.
 
-    Name arrives as ``functions.NAME:IDX``. Strip the ``functions.``
-    prefix and ``:N`` suffix to recover the bare name. The full id
-    string is preserved as ``tool_calls[i].id`` so the conversation
-    replay round-trips the exact form the model emitted (vLLM and
-    SGLang both do this). Mirrors llama.cpp's
-    ``common_chat_parse_kimi_k2`` (pre-autoparser-refactor commit
-    ``51fa458a92d6`` of ``common/chat-parser.cpp``) and vLLM's
-    ``vllm/tool_parsers/kimi_k2_tool_parser.py``.
+    ``<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:IDX
+    <|tool_call_argument_begin|>{json}<|tool_call_end|>...
+    <|tool_calls_section_end|>``. Full id is preserved on ``tool_calls
+    [i].id`` for round-trip through the chat template. Outer loop walks
+    every section in the stream (vLLM / SGLang parity); ports llama.cpp
+    ``common_chat_parse_kimi_k2`` at ``51fa458a92d6``.
     """
     out: list[dict] = []
     outer_pos = 0
@@ -1161,9 +1092,7 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         section_end = content.find(_KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
-        # Advance past this section for the next outer iteration. If
-        # the section is unterminated (truncated stream) we exit after
-        # this iteration since there is no further content to scan.
+        # Truncated tail: parse what we have, then exit.
         if section_end < 0:
             outer_pos = len(content)
         else:
@@ -1176,8 +1105,7 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 
 
 def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
-    """Parse the inner content of a single Kimi K2
-    ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>`` block."""
+    """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
     pos = 0
     while pos < len(body):
@@ -1194,12 +1122,8 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
             name = m.group(1).split(".")[-1]
         else:
             name = full_id.split(":")[0].split(".")[-1]
-        # Drop bare-counter ids (e.g. ``3``) -- SGLang infers the function
-        # name from the tool schema in this case, but we don't have the
-        # schema at the parse site. Surfacing a tool literally named ``"3"``
-        # would only be rejected by the dispatcher, so we match vLLM and
-        # skip the call. Per the Kimi K2 tool-call guidance real models
-        # emit ``functions.NAME:IDX``, so this path is the exception.
+        # Drop bare-counter ids (``3``, ``42``) -- matches vLLM; SGLang
+        # infers name from tool schema, which we don't have here.
         if name.isdigit():
             json_start = arg_begin + len(_KIMI_ARG_BEGIN)
             brace_end = (
@@ -1214,9 +1138,8 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
                 pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
             continue
         json_start = arg_begin + len(_KIMI_ARG_BEGIN)
-        # Walk a balanced brace so streaming truncation that drops the
-        # trailing ``<|tool_call_end|>`` still surfaces a call.
-        # Skip whitespace before the ``{``.
+        # Balanced brace lets truncated trailing ``<|tool_call_end|>``
+        # still surface a call.
         while json_start < len(body) and body[json_start] in " \t\n\r":
             json_start += 1
         if json_start >= len(body) or body[json_start] != "{":

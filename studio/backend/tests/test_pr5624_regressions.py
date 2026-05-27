@@ -130,13 +130,8 @@ def test_glm_arg_value_with_literal_less_than():
 
 
 def test_glm_4_7_no_newlines_between_name_and_arg_key():
-    """GLM 4.7's ``chat_template.jinja`` line 65 uses
-    ``{{- '<tool_call>' + tc.name -}}`` which strips trailing whitespace,
-    so the literal ``<arg_key>`` follows the name directly with no
-    ``\\n``. The 4.5 / 4.6 templates emit ``<tool_call>NAME\\n<arg_key>...``
-    with a newline. The parser must handle both shapes -- the lookahead
-    in ``_GLM_TC_OPEN_RE`` terminates the name on ``\\n`` OR ``<arg_key>``.
-    """
+    """GLM 4.7 strips the ``\\n`` after the name (``{{- ... -}}`` in the
+    template) so ``<arg_key>`` follows directly. Parser must accept both."""
     text = (
         "<tool_call>get_weather"
         "<arg_key>city</arg_key><arg_value>London</arg_value>"
@@ -163,10 +158,8 @@ def test_glm_4_7_no_newlines_multi_call():
 
 
 def test_glm_4_7_does_not_break_qwen_path():
-    """Confirm Qwen ``<tool_call>{json}`` still dispatches to Qwen even
-    after the GLM regex was relaxed -- the first-char restriction
-    ``[^\\n<{]`` excludes ``{`` so GLM's regex still cannot match a Qwen
-    body."""
+    """Qwen ``<tool_call>{json}`` still dispatches to Qwen; GLM's
+    first-char ``[^\\n<{]`` excludes ``{``."""
     text = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>'
     calls = parse_tool_calls_from_text(text)
     assert len(calls) == 1
@@ -193,11 +186,8 @@ def test_kimi_dotted_namespace_resolves_to_last_segment():
 
 
 def test_kimi_two_sections_in_one_stream_both_parse():
-    """vLLM and SGLang use ``re.findall`` and so collect every section in
-    a single stream. The PR's original implementation stopped at the
-    first ``<|tool_calls_section_end|>``; the outer-loop refactor walks
-    every section. Kimi K2 doesn't emit multi-section in practice, but
-    parity with vLLM / SGLang is cheap to maintain."""
+    """Outer loop walks every ``<|tool_calls_section_begin|>...end|>``
+    so vLLM / SGLang parity holds even on multi-section streams."""
     text = (
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.a:0"
@@ -220,10 +210,8 @@ def test_kimi_two_sections_in_one_stream_both_parse():
 
 
 def test_kimi_bare_counter_id_is_dropped():
-    """A Kimi K2 emission with a bare-digit id (no ``functions.`` prefix,
-    no ``:IDX`` suffix) cannot be dispatched: surfacing a call literally
-    named ``"3"`` would be rejected by the tool dispatcher. Matches vLLM
-    behaviour (drop) rather than SGLang (schema-infer)."""
+    """Bare-digit id (``3``) is dropped (matches vLLM); SGLang infers
+    name from schema, which we don't have at parse time."""
     text = (
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>3"
@@ -303,8 +291,7 @@ def test_routes_layer_strip_removes_kimi_section():
 
 
 def test_routes_layer_strip_removes_glm_block():
-    """Pre-existing alternation ``<tool_call>.*?</tool_call>`` should
-    handle GLM's emission shape too — guard that this PR didn't break it."""
+    """``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern."""
     from routes.inference import _strip_tool_xml as _routes_strip
 
     text = (

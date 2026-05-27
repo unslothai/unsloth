@@ -260,16 +260,10 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # Markers the safetensors / MLX parser recognises (Qwen ``<tool_call>``,
-    # Qwen3.5 ``<function=``, Llama-3 ``<|python_tag|>``, Mistral
-    # ``[TOOL_CALLS]``, Gemma 4 ``<|tool_call>``, DeepSeek R1 / V3 / V3.1
-    # ``<｜tool▁calls▁begin｜>``, Kimi K2 ``<|tool_calls_section_begin|>``,
-    # GLM 4.x ``<arg_key>``). If the template advertises tools but uses
-    # none of them, drop the pill (parser can't honour the emission).
-    # The two ``{"name":`` variants cover Llama-3.2 ``custom_tools``
-    # whose template prompts the bare-JSON form without a
-    # ``<|python_tag|>`` prefix. ``<arg_key>`` is the unique GLM signal
-    # (GLM shares ``<tool_call>`` with Qwen but adds per-arg tags).
+    # Markers any supported parser recognises. If the template advertises
+    # tools but uses none, drop the pill. ``{"name":`` covers Llama-3.2
+    # ``custom_tools`` bare-JSON. ``<arg_key>`` is GLM's unique signal
+    # (GLM and Qwen share ``<tool_call>``).
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -278,12 +272,9 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         "<|tool_call>",
         '{"name":',
         '{\\"name\\":',
-        # DeepSeek R1 / V3 / V3.1 (full-width pipes + lower-1/8-block).
         "<｜tool▁calls▁begin｜>",
         "<｜tool▁call▁begin｜>",
-        # GLM 4.x: arg_key is unique to GLM's emission shape.
         "<arg_key>",
-        # Kimi K2 / Moonshot.
         "<|tool_calls_section_begin|>",
         "<|tool_call_begin|>",
     )
@@ -448,36 +439,24 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Strip leaked tool-call markup from assistant messages / stream.
-# Covers every shared-parser format (Qwen ``<tool_call>``, Qwen3.5
-# ``<function=``, Llama-3 ``<|python_tag|>``, Gemma 4 ``<|tool_call>``,
-# DeepSeek R1 / V3 / V3.1 ``<｜tool▁calls▁begin｜>``, Kimi K2
-# ``<|tool_calls_section_begin|>``; GLM 4.x ``<tool_call>NAME\n
-# <arg_key>...`` rides on the Qwen pattern) AND the four leak shapes
-# the speculative buffer in ``llama_cpp.py`` splits across the
+# Strip leaked tool-call markup. Mistral is handled by the parser's
+# balanced-brace helper (nested JSON breaks ``\{.*?\}``); everything
+# else fits in the regex below. Patterns also cover the 4 leak shapes
+# the speculative buffer in ``llama_cpp.py`` can split across the
 # visible/DRAIN boundary: closed pair, orphan open to EOF, bare orphan
-# close, tail-only ``</parameter>``. Mistral ``[TOOL_CALLS]`` is
-# delegated to the parser's balanced-brace helper -- a non-greedy
-# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
+# close, tail-only ``</parameter>``.
 _TOOL_XML_RE = _re.compile(
     "|".join(
         [
-            # Tool-call / function XML: closed pair OR orphan open to EOF.
             r"<(?:tool_call|function=\w+)>.*?(?:</(?:tool_call|function)>|\Z)",
-            # Bare orphan close (open was DRAINED upstream).
             r"</(?:tool_call|function)>",
-            # Gemma 4.
             r"<\|tool_call>.*?<tool_call\|>",
-            # Llama-3 ``<|python_tag|>...`` to the next ``<|`` sentinel
-            # or EOF. ``(?:[^<]|<(?!\|))*`` (not ``[^\n<]*`` or
-            # ``[^\n]*``) keeps literal ``<``, newlines, and embedded
-            # JSON inside the strip.
+            # ``(?:[^<]|<(?!\|))*`` keeps newlines, literal ``<``, and
+            # embedded JSON inside the python_tag strip.
             r"<\|python_tag\|>(?:[^<]|<(?!\|))*",
-            # DeepSeek R1 / V3 / V3.1 envelope.
             r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>",
-            # Kimi K2 / Moonshot section.
             r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
-            # Tail-only ``</parameter>`` (anchored so mid-text survives).
+            # Tail-only </parameter>; anchored so mid-text survives.
             r"</parameter>\s*\Z",
         ]
     ),
@@ -486,7 +465,7 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
+    """Apply Mistral balanced-brace helper, then ``_TOOL_XML_RE``."""
     from studio.backend.core.inference.tool_call_parser import (
         _strip_mistral_closed_calls,
     )
