@@ -18,7 +18,10 @@ from .retrieval import Hit
 
 logger = get_logger(__name__)
 
-_lock = threading.Lock()
+# Reentrant: get_reranker() holds the lock while calling unload(), which
+# also enters `with _lock`. A plain Lock would deadlock the same thread on
+# the second acquisition; RLock allows re-entry from the holding thread.
+_lock = threading.RLock()
 _model: Any | None = None
 _model_name: str | None = None
 
