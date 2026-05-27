@@ -44,6 +44,11 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import {
@@ -53,194 +58,46 @@ import {
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   parseExternalModelId,
   supportsProviderPromptCaching,
+  supportsProviderPromptCacheTtl,
 } from "./external-providers";
 import {
-  applyPresetParams,
-  BUILTIN_PRESET_NAMES,
   BUILTIN_PRESETS,
-  defaultInferenceParams,
+  BUILTIN_PRESET_NAMES,
+  applyPresetParams,
   getBuiltinVariantName,
   getOrderedPresets,
-  getPresetOwnedConfigKey,
   getPresetSaveState,
   getPresetSource,
-  getUniquePresetName,
   isSamePresetConfig,
-  normalizeCustomPresets,
   toPresetParams,
-  type Preset,
 } from "./presets/preset-policy";
-import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
+  type ProviderCapabilities,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
-  type ProviderCapabilities,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
 
-interface LegacySystemPromptTemplate {
-  name: string;
-  content: string;
-}
-
-const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
-const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
-const LEGACY_CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
-const LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY =
-  "unsloth_chat_system_prompts_migrated";
-
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
-}
-
-function saveCustomPresets(presets: Preset[]): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(CHAT_PRESETS_KEY, JSON.stringify(presets));
-  } catch {
-    // ignore
-  }
-}
-
-function migrateLegacySystemPromptTemplates(presets: Preset[]): Preset[] {
-  if (!canUseStorage()) return presets;
-  try {
-    const raw = localStorage.getItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
-    if (!raw) return presets;
-    if (localStorage.getItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY) === raw) {
-      return presets;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
-      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
-      return presets;
-    }
-    if (!Array.isArray(parsed)) {
-      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
-      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
-      return presets;
-    }
-    const usedNames = new Set([
-      ...BUILTIN_PRESETS.map((preset) => preset.name),
-      ...presets.map((preset) => preset.name),
-    ]);
-    const seenImportedConfigKeys = new Set(
-      [...BUILTIN_PRESETS, ...presets].map((preset) =>
-        getPresetOwnedConfigKey(preset.params),
-      ),
-    );
-    const importedPresets = parsed
-      .filter((item): item is LegacySystemPromptTemplate => {
-        if (!item || typeof item !== "object") return false;
-        const maybe = item as Partial<LegacySystemPromptTemplate>;
-        return (
-          typeof maybe.name === "string" && typeof maybe.content === "string"
-        );
-      })
-      .map((template) => ({
-        template,
-        importedParams: {
-          ...defaultInferenceParams,
-          systemPrompt: template.content,
-        },
-      }))
-      .filter(({ importedParams }) => {
-        const configKey = getPresetOwnedConfigKey(importedParams);
-        if (seenImportedConfigKeys.has(configKey)) return false;
-        seenImportedConfigKeys.add(configKey);
-        return true;
-      })
-      .map(({ template, importedParams }) => ({
-        name: getUniquePresetName(`${template.name} Prompt`, usedNames),
-        params: importedParams,
-      }));
-    if (importedPresets.length === 0) {
-      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
-      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
-      return presets;
-    }
-    const mergedPresets = normalizeCustomPresets([
-      ...presets,
-      ...importedPresets,
-    ]);
-    saveCustomPresets(mergedPresets);
-    try {
-      localStorage.setItem(LEGACY_CHAT_SYSTEM_PROMPTS_MIGRATED_KEY, raw);
-      localStorage.removeItem(LEGACY_CHAT_SYSTEM_PROMPTS_KEY);
-    } catch {
-      // ignore cleanup failure after successful import write
-    }
-    return mergedPresets;
-  } catch {
-    return presets;
-  }
-}
-
-function loadSavedCustomPresets(): Preset[] {
-  if (!canUseStorage()) return [];
-  try {
-    const raw = localStorage.getItem(CHAT_PRESETS_KEY);
-    if (!raw) {
-      return migrateLegacySystemPromptTemplates([]);
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return migrateLegacySystemPromptTemplates([]);
-    }
-    const presets = parsed
-      .filter((item): item is Preset => {
-        if (!item || typeof item !== "object") return false;
-        const maybe = item as Partial<Preset>;
-        return typeof maybe.name === "string" && !!maybe.params;
-      })
-      .map((preset) => ({
-        name: preset.name.trim(),
-        params: {
-          ...defaultInferenceParams,
-          ...preset.params,
-        },
-      }))
-      .filter((preset) => preset.name.length > 0);
-    const normalized = normalizeCustomPresets(presets);
-    if (JSON.stringify(normalized) !== JSON.stringify(presets)) {
-      saveCustomPresets(normalized);
-    }
-    return migrateLegacySystemPromptTemplates(normalized);
-  } catch {
-    return migrateLegacySystemPromptTemplates([]);
-  }
-}
-
-function loadSavedActivePreset(): string {
-  if (!canUseStorage()) return "Default";
-  try {
-    return localStorage.getItem(CHAT_ACTIVE_PRESET_KEY) ?? "Default";
-  } catch {
-    return "Default";
-  }
 }
 
 export function InfoHint({ children }: { children: ReactNode }) {
@@ -607,6 +464,11 @@ export function ChatSettingsPanel({
     (s) => s.setActivePresetSource,
   );
   const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
+  const customPresets = useChatRuntimeStore((s) => s.customPresets);
+  const setCustomPresets = useChatRuntimeStore((s) => s.setCustomPresets);
+  const activePreset = useChatRuntimeStore((s) => s.activePreset);
+  const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
+  const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
   const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
   const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
@@ -625,15 +487,7 @@ export function ChatSettingsPanel({
     (s) => s.setChatTemplateOverride,
   );
   const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
-  const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
-    loadSavedCustomPresets(),
-  );
-  const [activePreset, setActivePreset] = useState(() =>
-    loadSavedActivePreset(),
-  );
-  const [presetNameInput, setPresetNameInput] = useState(() =>
-    loadSavedActivePreset(),
-  );
+  const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
@@ -680,6 +534,10 @@ export function ChatSettingsPanel({
     Boolean(currentCheckpoint) &&
     modelRequiresTrustRemoteCode &&
     !(params.trustRemoteCode ?? false);
+  const showPromptCacheTtlControl = Boolean(
+    activeExternalProvider &&
+      supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
+  );
   const showPromptCachingControl =
     activeExternalProvider != null &&
     supportsProviderPromptCaching(activeExternalProvider.providerType);
@@ -696,6 +554,12 @@ export function ChatSettingsPanel({
       activeExternalProvider.baseUrl,
     ) &&
     activeExternalProvider.providerType === "openai";
+  const showFastModeControl =
+    activeExternalProvider != null &&
+    providerSupportsFastMode(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+    );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const openAiApiKeyForSection = activeExternalProvider
     ? getExternalProviderApiKey(activeExternalProvider.id) || null
@@ -713,6 +577,9 @@ export function ChatSettingsPanel({
   }
 
   function applyPreset(name: string) {
+    if (!settingsHydrated) {
+      return;
+    }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
       onParamsChange({
@@ -720,17 +587,13 @@ export function ChatSettingsPanel({
       });
       setActivePreset(name);
       setActivePresetSource(getPresetSource(name));
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, name);
-        } catch {
-          // ignore
-        }
-      }
     }
   }
 
   function savePresetWithName(rawName: string) {
+    if (!settingsHydrated) {
+      return;
+    }
     const trimmed = rawName.trim();
     if (!trimmed) {
       toast.error("Enter a preset name");
@@ -743,28 +606,21 @@ export function ChatSettingsPanel({
     const saveName = BUILTIN_PRESET_NAMES.has(trimmed)
       ? getBuiltinVariantName(trimmed, usedNames)
       : trimmed;
-    setCustomPresets((prev) => {
-      const next = prev.filter((p) => p.name !== saveName);
-      const merged = [
-        ...next,
-        { name: saveName, params: toPresetParams(params) },
-      ];
-      saveCustomPresets(merged);
-      return merged;
-    });
-    if (canUseStorage()) {
-      try {
-        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, saveName);
-      } catch {
-        // ignore
-      }
-    }
+    const next = customPresets.filter((p) => p.name !== saveName);
+    const merged = [
+      ...next,
+      { name: saveName, params: toPresetParams(params) },
+    ];
+    setCustomPresets(merged);
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);
   }
 
   function deletePreset(name: string) {
+    if (!settingsHydrated) {
+      return;
+    }
     const hasCustomPreset = customPresets.some(
       (preset) => preset.name === name,
     );
@@ -774,11 +630,8 @@ export function ChatSettingsPanel({
     const fallbackPreset =
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
       null;
-    setCustomPresets((prev) => {
-      const next = prev.filter((preset) => preset.name !== name);
-      saveCustomPresets(next);
-      return next;
-    });
+    const next = customPresets.filter((preset) => preset.name !== name);
+    setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange({
@@ -786,13 +639,6 @@ export function ChatSettingsPanel({
         });
         setActivePreset(fallbackPreset.name);
         setActivePresetSource("builtin-default");
-        if (canUseStorage()) {
-          try {
-            localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, fallbackPreset.name);
-          } catch {
-            // ignore
-          }
-        }
       }
     }
   }
@@ -814,6 +660,9 @@ export function ChatSettingsPanel({
   }, [activePresetSource, params]);
 
   useEffect(() => {
+    if (!settingsHydrated) {
+      return;
+    }
     if (presets.some((preset) => preset.name === activePreset)) {
       const expectedSource = getPresetSource(activePreset);
       if (
@@ -826,18 +675,13 @@ export function ChatSettingsPanel({
     }
     setActivePreset("Default");
     setActivePresetSource("builtin-default");
-    if (canUseStorage()) {
-      try {
-        localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, "Default");
-      } catch {
-        // ignore
-      }
-    }
   }, [
     activePreset,
     activePresetSource,
     presets,
+    setActivePreset,
     setActivePresetSource,
+    settingsHydrated,
   ]);
 
   useEffect(() => {
@@ -1152,7 +996,11 @@ export function ChatSettingsPanel({
                       onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && presetSaveState.canSubmit) {
+                        if (
+                          e.key === "Enter" &&
+                          settingsHydrated &&
+                          presetSaveState.canSubmit
+                        ) {
                           e.preventDefault();
                           savePresetWithName(presetNameInput);
                         }
@@ -1194,7 +1042,14 @@ export function ChatSettingsPanel({
                 {presets.map((p, index) => (
                   <Fragment key={p.name}>
                     <DropdownMenuItem
-                      onSelect={() => applyPreset(p.name)}
+                      disabled={!settingsHydrated}
+                      onSelect={(event) => {
+                        if (!settingsHydrated) {
+                          event.preventDefault();
+                          return;
+                        }
+                        applyPreset(p.name);
+                      }}
                       className="flex min-h-9 items-center px-3 py-0 text-[13px] font-medium leading-[1.4] tracking-nav"
                     >
                       {p.name}
@@ -1211,7 +1066,7 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
-                disabled={!presetSaveState.canSubmit}
+                disabled={!(settingsHydrated && presetSaveState.canSubmit)}
                 variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
                 className={cn(
@@ -1227,7 +1082,7 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={() => deletePreset(activePreset)}
-                disabled={!activeCustomPreset}
+                disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
                 className="h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav text-muted-foreground"
@@ -1268,6 +1123,65 @@ export function ChatSettingsPanel({
                 aria-label="Enable prompt caching"
               />
             </div>
+            {showPromptCacheTtlControl && promptCachingEnabled ? (
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Cache TTL
+                  </span>
+                  <InfoHint>
+                    Anthropic exposes a 5 minute and a 1 hour ephemeral
+                    cache pool. The 1 hour pool costs 2x base input on
+                    write vs 1.25x for 5 minute, but reads stay 0.1x for
+                    both, so a single read landing more than 5 minutes
+                    after the write pays off the premium.
+                  </InfoHint>
+                </div>
+                <Select
+                  value={activeExternalProvider.promptCacheTtl ?? "5m"}
+                  onValueChange={(value) => {
+                    if (value !== "5m" && value !== "1h") return;
+                    onExternalProviderChange?.({
+                      ...activeExternalProvider,
+                      promptCacheTtl: value,
+                    });
+                  }}
+                >
+                  <SelectTrigger
+                    className="panel-select-trigger h-8 w-[124px] shrink-0"
+                    aria-label="Prompt cache TTL"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5m">5 minutes</SelectItem>
+                    <SelectItem value="1h">1 hour</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {showFastModeControl ? (
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Fast mode
+                  </span>
+                  <InfoHint>
+                    Beta. Up to 2.5x higher output tokens per second on
+                    Claude Opus 4.6 and 4.7 at 6x standard Opus pricing.
+                    Switching between fast and standard invalidates the
+                    prompt cache and is incompatible with the Priority
+                    service tier.
+                  </InfoHint>
+                </div>
+                <Switch
+                  className="panel-switch shrink-0"
+                  checked={Boolean(params.fastMode)}
+                  onCheckedChange={set("fastMode")}
+                  aria-label="Fast mode"
+                />
+              </div>
+            ) : null}
           </CollapsibleSection>
         ) : null}
 
@@ -1396,7 +1310,10 @@ export function ChatSettingsPanel({
               }
               max={
                 isExternalModel
-                  ? EXTERNAL_MAX_OUTPUT_TOKENS
+                  ? getExternalMaxOutputTokens(
+                      externalProviderType,
+                      externalSelection?.modelId,
+                    )
                   : isGguf && ggufContextLength
                     ? ggufContextLength
                     : 32768

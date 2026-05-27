@@ -15,6 +15,7 @@ const ExportPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/export",
+  staticData: { title: "Export" },
   beforeLoad: () => requireAuth(),
   component: ExportPage,
 });
