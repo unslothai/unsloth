@@ -8,14 +8,14 @@ Covers the emission formats so the safetensors + MLX agentic loop sees
 the same call shape llama-server normalises for GGUF:
 
   - ``<tool_call>{json}</tool_call>``           (Qwen / Hermes)
-  - ``<function=name><parameter=k>v</parameter></function>``  (Qwen3.5 xml)
+  - ``<function=name><parameter=k>v</parameter></function>``  (Qwen3-Coder XML; nested in <tool_call>)
   - ``<|python_tag|>NAME.call(k="v", ...)``     (Llama-3 built-in tools)
   - ``<|python_tag|>{"name":..., "parameters":...}``  (Llama-3 custom)
   - ``{"name":..., "parameters":...}``          (Llama-3.2 bare JSON)
-  - ``[TOOL_CALLS] [{...}, ...]``               (Mistral v0.3 / Nemo / Small)
-  - ``[TOOL_CALLS]name{json}``                  (Mistral v11+ / Magistral)
-  - ``[TOOL_CALLS]name[ARGS]{json}``            (Ministral / Mistral Large 3)
-  - ``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>``  (Gemma 4)
+  - ``[TOOL_CALLS] [{...}, ...]``               (Mistral V3 tokenizer: v0.3, Nemo, Small, Ministral-8B-2410, Large-2411)
+  - ``[TOOL_CALLS]name{json}``                  (Mistral V11+ Tekken: Magistral)
+  - ``[TOOL_CALLS]name[ARGS]{json}``            (Mistral V13 Tekken: Devstral, Magistral-Small-2509)
+  - ``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>``  (Gemma 4; forward-looking, no shipping Gemma model emits this yet)
 
 Closing tags / brackets are tolerated when missing because models
 frequently truncate them mid-stream.
@@ -85,7 +85,7 @@ BUDGET_EXHAUSTED_NUDGE = (
 
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 / Hermes XML ``<function=name><parameter=k>v``.
+# Qwen3-Coder XML ``<function=name><parameter=k>v``, nested inside <tool_call>.
 _TC_FUNC_START_RE = re.compile(r"<function=([\w\.\-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
@@ -102,14 +102,17 @@ _LLAMA3_KV_RE = re.compile(
     re.VERBOSE,
 )
 
-# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by
-# a bare name plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral
-# / Large 3).
+# Mistral ``[TOOL_CALLS]`` trigger. V11+ Tekken chains them, each
+# followed by a bare name plus ``{json}`` (Magistral) or
+# ``[ARGS]{json}`` (V13 Tekken: Devstral, Magistral-Small-2509).
+# V3 tokenizer models (v0.3, Nemo, Small, Ministral-8B-2410,
+# Large-2411) emit the ``[TOOL_CALLS] [...]`` array form instead.
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
 
-# Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
+# Gemma 4 (forward-looking; Gemma 3 does not emit this shape yet):
+# ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_STR_BEGIN = '<|"|>'
 _GEMMA_STR_END = '<|"|>'
@@ -223,10 +226,10 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     as soon as one matches so we never double-count."""
     for parser in (
         _parse_tool_call_json,  # Qwen / Hermes
-        _parse_function_xml,  # Qwen3.5 / Hermes XML
+        _parse_function_xml,  # Qwen3-Coder XML
         _parse_llama3_python_tag,  # Llama-3
         _parse_mistral_tool_calls,  # Mistral
-        _parse_gemma_tool_calls,  # Gemma 4
+        _parse_gemma_tool_calls,  # Gemma 4 (forward-looking)
     ):
         calls = parser(content, id_offset = id_offset)
         if calls:
@@ -642,7 +645,9 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
 
 
 def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``."""
+    """Gemma 4 (forward-looking; no shipping Gemma 3 model emits this):
+    ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``.
+    Capability gate suppresses the tools pill on real Gemma 3 templates."""
     out: list[dict] = []
     for m in _GEMMA_TC_RE.finditer(content):
         name = m.group(1)
