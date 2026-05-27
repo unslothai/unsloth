@@ -444,6 +444,44 @@ export function ChatSettingsPanel({
   const showParallelToolCalls = isExternalModel
     ? Boolean(providerCapabilities?.parallelToolCalls)
     : localSamplerSupportsExtras;
+  // Extended llama.cpp / vLLM / OpenRouter samplers. Same gate as the
+  // core knobs above: external → providerCapabilities flag; local →
+  // GGUF-only (safetensors transformers ignores these).
+  const capAdv = (k: keyof ProviderCapabilities): boolean =>
+    isExternalModel
+      ? Boolean(providerCapabilities?.[k])
+      : localSamplerSupportsExtras;
+  const advCaps = {
+    typicalP: capAdv("typicalP"),
+    topNSigma: capAdv("topNSigma"),
+    repeatLastN: capAdv("repeatLastN"),
+    dynatempRange: capAdv("dynatempRange"),
+    dynatempExponent: capAdv("dynatempExponent"),
+    mirostat: capAdv("mirostat"),
+    mirostatTau: capAdv("mirostatTau"),
+    mirostatEta: capAdv("mirostatEta"),
+    topA: capAdv("topA"),
+    dryMultiplier: capAdv("dryMultiplier"),
+    dryBase: capAdv("dryBase"),
+    dryAllowedLength: capAdv("dryAllowedLength"),
+    dryPenaltyLastN: capAdv("dryPenaltyLastN"),
+    xtcProbability: capAdv("xtcProbability"),
+    xtcThreshold: capAdv("xtcThreshold"),
+    minKeep: capAdv("minKeep"),
+    ignoreEos: capAdv("ignoreEos"),
+    minTokens: capAdv("minTokens"),
+    skipSpecialTokens: capAdv("skipSpecialTokens"),
+    spacesBetweenSpecialTokens: capAdv("spacesBetweenSpecialTokens"),
+    includeStopStrInOutput: capAdv("includeStopStrInOutput"),
+    truncatePromptTokens: capAdv("truncatePromptTokens"),
+    nKeep: capAdv("nKeep"),
+    nProbs: capAdv("nProbs"),
+    cachePrompt: capAdv("cachePrompt"),
+    returnTokens: capAdv("returnTokens"),
+    timingsPerToken: capAdv("timingsPerToken"),
+    postSamplingProbs: capAdv("postSamplingProbs"),
+  };
+  const showAdvancedSamplingSection = Object.values(advCaps).some(Boolean);
   // Per-provider stop cap from provider-capabilities.ts; backend
   // re-trims on the wire if a stale UI sends more than the upstream
   // accepts.
@@ -1497,6 +1535,504 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
+
+        {showAdvancedSamplingSection ? (
+          <CollapsibleSection label="Advanced Sampling" defaultOpen={false}>
+            <div className="flex flex-col gap-5 pt-1">
+              {advCaps.typicalP ? (
+                <ParamSlider
+                  label="Typical P"
+                  value={params.typicalP ?? 1}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  onChange={(v) =>
+                    set("typicalP")(v >= 1 ? null : v)
+                  }
+                  displayValue={
+                    params.typicalP == null || params.typicalP >= 1
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp `typ_p`. Locally typical sampling. 1.0 = off."
+                />
+              ) : null}
+              {advCaps.topNSigma ? (
+                <ParamSlider
+                  label="Top N Sigma"
+                  value={params.topNSigma ?? -1}
+                  min={-1}
+                  max={5}
+                  step={0.1}
+                  onChange={(v) =>
+                    set("topNSigma")(v <= -1 ? null : v)
+                  }
+                  displayValue={
+                    params.topNSigma == null || params.topNSigma <= -1
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp `top_n_sigma`. Sigma-based truncation. -1 = off."
+                />
+              ) : null}
+              {advCaps.repeatLastN ? (
+                <ParamSlider
+                  label="Repeat Last N"
+                  value={params.repeatLastN ?? 0}
+                  min={-1}
+                  max={2048}
+                  step={1}
+                  onChange={(v) =>
+                    set("repeatLastN")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.repeatLastN == null
+                      ? "Off"
+                      : params.repeatLastN === -1
+                        ? "Ctx"
+                        : undefined
+                  }
+                  info="llama.cpp `repeat_last_n`. Token window the repetition penalty considers. 0 = off, -1 = full context."
+                />
+              ) : null}
+              {advCaps.dynatempRange ? (
+                <ParamSlider
+                  label="Dynatemp Range"
+                  value={params.dynatempRange ?? 0}
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  onChange={(v) =>
+                    set("dynatempRange")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.dynatempRange == null || params.dynatempRange === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp `dynatemp_range`. Dynamic temperature swing around base temperature. 0 = off."
+                />
+              ) : null}
+              {advCaps.dynatempExponent ? (
+                <ParamSlider
+                  label="Dynatemp Exponent"
+                  value={params.dynatempExponent ?? 1}
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  onChange={(v) => set("dynatempExponent")(v)}
+                  info="llama.cpp `dynatemp_exponent`. Curve exponent for dynamic temperature. Paired with Dynatemp Range."
+                />
+              ) : null}
+              {advCaps.mirostat ? (
+                <ParamSlider
+                  label="Mirostat"
+                  value={params.mirostat ?? 0}
+                  min={0}
+                  max={2}
+                  step={1}
+                  onChange={(v) =>
+                    set("mirostat")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.mirostat == null || params.mirostat === 0
+                      ? "Off"
+                      : params.mirostat === 1
+                        ? "v1"
+                        : "v2"
+                  }
+                  info="llama.cpp `mirostat`. Target-entropy sampler. 0 = off, 1 = Mirostat v1, 2 = Mirostat v2."
+                />
+              ) : null}
+              {advCaps.mirostatTau ? (
+                <ParamSlider
+                  label="Mirostat Tau"
+                  value={params.mirostatTau ?? 5}
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  onChange={(v) => set("mirostatTau")(v)}
+                  info="llama.cpp `mirostat_tau`. Target entropy. Higher = more diverse."
+                />
+              ) : null}
+              {advCaps.mirostatEta ? (
+                <ParamSlider
+                  label="Mirostat Eta"
+                  value={params.mirostatEta ?? 0.1}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={(v) => set("mirostatEta")(v)}
+                  info="llama.cpp `mirostat_eta`. Learning rate for the entropy controller."
+                />
+              ) : null}
+              {advCaps.topA ? (
+                <ParamSlider
+                  label="Top A"
+                  value={params.topA ?? 0}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  onChange={(v) =>
+                    set("topA")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.topA == null || params.topA === 0 ? "Off" : undefined
+                  }
+                  info="OpenRouter `top_a`. Tail-cut sampler scaled by the top token's probability. 0 = off."
+                />
+              ) : null}
+              {advCaps.dryMultiplier ? (
+                <ParamSlider
+                  label="DRY Multiplier"
+                  value={params.dryMultiplier ?? 0}
+                  min={0}
+                  max={3}
+                  step={0.1}
+                  onChange={(v) =>
+                    set("dryMultiplier")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.dryMultiplier == null || params.dryMultiplier === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp DRY sampler. Master switch for the 4-field DRY chain (base / allowed length / penalty last N). 0 = off."
+                />
+              ) : null}
+              {advCaps.dryBase && (params.dryMultiplier ?? 0) > 0 ? (
+                <ParamSlider
+                  label="DRY Base"
+                  value={params.dryBase ?? 1.75}
+                  min={0}
+                  max={5}
+                  step={0.05}
+                  onChange={(v) => set("dryBase")(v)}
+                  info="llama.cpp `dry_base`. Exponential base for the DRY penalty. Default 1.75."
+                />
+              ) : null}
+              {advCaps.dryAllowedLength && (params.dryMultiplier ?? 0) > 0 ? (
+                <ParamSlider
+                  label="DRY Allowed Length"
+                  value={params.dryAllowedLength ?? 2}
+                  min={0}
+                  max={20}
+                  step={1}
+                  onChange={(v) => set("dryAllowedLength")(v)}
+                  info="llama.cpp `dry_allowed_length`. Repeats up to this length are not penalised. Default 2."
+                />
+              ) : null}
+              {advCaps.dryPenaltyLastN && (params.dryMultiplier ?? 0) > 0 ? (
+                <ParamSlider
+                  label="DRY Penalty Last N"
+                  value={params.dryPenaltyLastN ?? 0}
+                  min={-1}
+                  max={2048}
+                  step={1}
+                  onChange={(v) =>
+                    set("dryPenaltyLastN")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.dryPenaltyLastN == null
+                      ? "Off"
+                      : params.dryPenaltyLastN === -1
+                        ? "Ctx"
+                        : undefined
+                  }
+                  info="llama.cpp `dry_penalty_last_n`. Token window the DRY penalty considers. 0 = off, -1 = full context."
+                />
+              ) : null}
+              {advCaps.xtcProbability ? (
+                <ParamSlider
+                  label="XTC Probability"
+                  value={params.xtcProbability ?? 0}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={(v) =>
+                    set("xtcProbability")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.xtcProbability == null || params.xtcProbability === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp XTC (eXclude Top Choices). Master switch. 0 = off."
+                />
+              ) : null}
+              {advCaps.xtcThreshold && (params.xtcProbability ?? 0) > 0 ? (
+                <ParamSlider
+                  label="XTC Threshold"
+                  value={params.xtcThreshold ?? 0.1}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={(v) => set("xtcThreshold")(v)}
+                  info="llama.cpp `xtc_threshold`. Minimum probability for a token to be removable by XTC. Default 0.1."
+                />
+              ) : null}
+              {advCaps.minKeep ? (
+                <ParamSlider
+                  label="Min Keep"
+                  value={params.minKeep ?? 0}
+                  min={0}
+                  max={10}
+                  step={1}
+                  onChange={(v) =>
+                    set("minKeep")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.minKeep == null || params.minKeep === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp `min_keep`. Minimum tokens retained past all sampler filters."
+                />
+              ) : null}
+              {advCaps.minTokens ? (
+                <ParamSlider
+                  label="Min Tokens"
+                  value={params.minTokens ?? 0}
+                  min={0}
+                  max={512}
+                  step={1}
+                  onChange={(v) =>
+                    set("minTokens")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.minTokens == null || params.minTokens === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp + vLLM. Minimum tokens before stop / EOS can fire."
+                />
+              ) : null}
+              {advCaps.truncatePromptTokens ? (
+                <ParamSlider
+                  label="Truncate Prompt"
+                  value={params.truncatePromptTokens ?? 0}
+                  min={0}
+                  max={32768}
+                  step={64}
+                  onChange={(v) =>
+                    set("truncatePromptTokens")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.truncatePromptTokens == null ||
+                    params.truncatePromptTokens === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="vLLM `truncate_prompt_tokens`. Left-truncate the prompt to this many tokens. 0 = off."
+                />
+              ) : null}
+              {advCaps.nKeep ? (
+                <ParamSlider
+                  label="N Keep"
+                  value={params.nKeep ?? 0}
+                  min={-1}
+                  max={1024}
+                  step={1}
+                  onChange={(v) =>
+                    set("nKeep")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.nKeep == null
+                      ? "Off"
+                      : params.nKeep === -1
+                        ? "All"
+                        : undefined
+                  }
+                  info="llama.cpp `n_keep`. Tokens to retain when the context is shifted. 0 = off, -1 = keep all."
+                />
+              ) : null}
+              {advCaps.nProbs ? (
+                <ParamSlider
+                  label="N Probs"
+                  value={params.nProbs ?? 0}
+                  min={0}
+                  max={20}
+                  step={1}
+                  onChange={(v) =>
+                    set("nProbs")(v === 0 ? null : v)
+                  }
+                  displayValue={
+                    params.nProbs == null || params.nProbs === 0
+                      ? "Off"
+                      : undefined
+                  }
+                  info="llama.cpp `n_probs`. Return the top-N token probabilities per token (diagnostic)."
+                />
+              ) : null}
+              {advCaps.ignoreEos ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Ignore EOS
+                    </span>
+                    <InfoHint>
+                      llama.cpp + vLLM. Keep generating past the model's
+                      end-of-sequence token. Useful for forcing long replies.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={Boolean(params.ignoreEos)}
+                    onCheckedChange={(v) => set("ignoreEos")(v ? true : null)}
+                    aria-label="Ignore EOS"
+                  />
+                </div>
+              ) : null}
+              {advCaps.skipSpecialTokens ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Skip Special Tokens
+                    </span>
+                    <InfoHint>
+                      vLLM `skip_special_tokens`. Default on. Turn off to keep
+                      chat-template markers (e.g. `&lt;|im_end|&gt;`) in the
+                      decoded output.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={params.skipSpecialTokens ?? true}
+                    onCheckedChange={(v) =>
+                      set("skipSpecialTokens")(v ? null : false)
+                    }
+                    aria-label="Skip special tokens"
+                  />
+                </div>
+              ) : null}
+              {advCaps.spacesBetweenSpecialTokens ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Spaces Between Special Tokens
+                    </span>
+                    <InfoHint>
+                      vLLM `spaces_between_special_tokens`. Default on.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={params.spacesBetweenSpecialTokens ?? true}
+                    onCheckedChange={(v) =>
+                      set("spacesBetweenSpecialTokens")(v ? null : false)
+                    }
+                    aria-label="Spaces between special tokens"
+                  />
+                </div>
+              ) : null}
+              {advCaps.includeStopStrInOutput ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Include Stop String
+                    </span>
+                    <InfoHint>
+                      vLLM `include_stop_str_in_output`. Echo the matched stop
+                      string back in the response (useful for agentic tools).
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={Boolean(params.includeStopStrInOutput)}
+                    onCheckedChange={(v) =>
+                      set("includeStopStrInOutput")(v ? true : null)
+                    }
+                    aria-label="Include stop string in output"
+                  />
+                </div>
+              ) : null}
+              {advCaps.cachePrompt ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Cache Prompt
+                    </span>
+                    <InfoHint>
+                      llama.cpp `cache_prompt`. Default on. Reuses the KV cache
+                      across requests with shared prefixes.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={params.cachePrompt ?? true}
+                    onCheckedChange={(v) =>
+                      set("cachePrompt")(v ? null : false)
+                    }
+                    aria-label="Cache prompt"
+                  />
+                </div>
+              ) : null}
+              {advCaps.returnTokens ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Return Tokens
+                    </span>
+                    <InfoHint>
+                      llama.cpp `return_tokens`. Include the raw token ids in
+                      the response (debug).
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={Boolean(params.returnTokens)}
+                    onCheckedChange={(v) =>
+                      set("returnTokens")(v ? true : null)
+                    }
+                    aria-label="Return tokens"
+                  />
+                </div>
+              ) : null}
+              {advCaps.timingsPerToken ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Timings Per Token
+                    </span>
+                    <InfoHint>
+                      llama.cpp `timings_per_token`. Per-token wall-clock
+                      timings in the response (perf debug).
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={Boolean(params.timingsPerToken)}
+                    onCheckedChange={(v) =>
+                      set("timingsPerToken")(v ? true : null)
+                    }
+                    aria-label="Timings per token"
+                  />
+                </div>
+              ) : null}
+              {advCaps.postSamplingProbs ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Post-Sampling Probs
+                    </span>
+                    <InfoHint>
+                      llama.cpp `post_sampling_probs`. Report the
+                      post-sampling distribution (sampler debug).
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={Boolean(params.postSamplingProbs)}
+                    onCheckedChange={(v) =>
+                      set("postSamplingProbs")(v ? true : null)
+                    }
+                    aria-label="Post-sampling probs"
+                  />
+                </div>
+              ) : null}
+            </div>
+          </CollapsibleSection>
+        ) : null}
 
         {!isExternalModel ? (
           <CollapsibleSection label="Tools">
