@@ -34,7 +34,7 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
             "you must ground your reply in. Do not answer from your own "
             "knowledge until you have called this tool with a focused query "
             "derived from the user's latest message. Returns chunks wrapped in "
-            '<chunk id="N" source="..." page="..." score="...">...</chunk> '
+            '<chunk id="N" source="..." page="...">...</chunk> '
             "tags. CITE each chunk you use with its LITERAL id attribute, "
             'e.g. `<chunk id="7">` is cited as `[7]`. IDs are unique across '
             "all calls in this turn — never renumber, never reuse."
@@ -96,12 +96,6 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
         page = hit.get("page_number")
         if page is not None:
             attrs.append(f'page="{page}"')
-        score = hit.get("score")
-        if score is not None:
-            attrs.append(f'score="{float(score):.3f}"')
-        dense = hit.get("dense_score")
-        if dense is not None and dense != score:
-            attrs.append(f'dense_score="{float(dense):.3f}"')
         chunk_index = hit.get("chunk_index")
         if chunk_index is not None:
             attrs.append(f'chunk_index="{chunk_index}"')

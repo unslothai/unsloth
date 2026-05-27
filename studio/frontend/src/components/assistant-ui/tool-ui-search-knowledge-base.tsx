@@ -21,8 +21,6 @@ export interface ParsedChunk {
   id: string;
   source: string;
   page?: string;
-  score?: string;
-  denseScore?: string;
   chunkIndex?: string;
   tokens?: string;
   kind?: string;
@@ -59,8 +57,6 @@ export function parseChunks(raw: string): ParsedChunk[] {
         id: attrs.id,
         source: attrs.source ?? "unknown",
         page: attrs.page,
-        score: attrs.score,
-        denseScore: attrs.dense_score,
         chunkIndex: attrs.chunk_index,
         tokens: attrs.tokens,
         kind: attrs.kind,
@@ -129,10 +125,6 @@ function ChunkImage({ url, alt }: { url: string; alt: string }) {
 function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
   const meta: string[] = [];
   if (chunk.page) meta.push(`page ${chunk.page}`);
-  if (chunk.score) meta.push(`score ${chunk.score}`);
-  if (chunk.denseScore && chunk.denseScore !== chunk.score) {
-    meta.push(`dense ${chunk.denseScore}`);
-  }
   if (chunk.tokens) meta.push(`${chunk.tokens} tok`);
   if (chunk.chunkIndex) meta.push(`#${chunk.chunkIndex}`);
   if (chunk.kind && chunk.kind !== "text") meta.push(chunk.kind);

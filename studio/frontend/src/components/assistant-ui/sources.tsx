@@ -139,7 +139,6 @@ interface DocSourceData {
   chunkId: string;
   filename: string;
   page?: string;
-  score?: string;
   text: string;
 }
 
@@ -193,7 +192,6 @@ const SourceBadge: FC<{ source: UrlSourceData }> = ({ source }) => {
 const DocumentSourceBadge: FC<{ source: DocSourceData }> = ({ source }) => {
   const metaParts: string[] = [];
   if (source.page) metaParts.push(`page ${source.page}`);
-  if (source.score) metaParts.push(`score ${source.score}`);
 
   return (
     <HoverCard openDelay={0} closeDelay={0}>
@@ -273,7 +271,6 @@ const SourcesGroup: FC = () => {
           chunkId?: string;
           filename?: string;
           page?: string;
-          score?: string;
           text?: string;
         };
         if (docPart.chunkId && docPart.filename) {
@@ -282,7 +279,6 @@ const SourcesGroup: FC = () => {
             chunkId: docPart.chunkId,
             filename: docPart.filename,
             page: docPart.page,
-            score: docPart.score,
             text: docPart.text ?? "",
           });
         }

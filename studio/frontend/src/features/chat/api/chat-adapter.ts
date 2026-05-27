@@ -252,7 +252,6 @@ interface DocumentSourcePart {
   chunkId: string;
   filename: string;
   page?: string;
-  score?: string;
   text: string;
 }
 
@@ -296,7 +295,6 @@ function buildDocumentSourceParts(
       chunkId: id,
       filename: chunk.source,
       ...(chunk.page ? { page: chunk.page } : {}),
-      ...(chunk.score ? { score: chunk.score } : {}),
       text: chunk.text,
     });
   }

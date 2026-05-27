@@ -449,8 +449,6 @@ export function ChatSettingsPanel({
   const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
   const setRagTopK = useChatRuntimeStore((s) => s.setRagTopK);
-  const ragMinScore = useChatRuntimeStore((s) => s.ragMinScore);
-  const setRagMinScore = useChatRuntimeStore((s) => s.setRagMinScore);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const { knowledgeBases, deleteKB } = useKnowledgeBases();
   const { documents: threadDocs, remove: removeThreadDoc } = useThreadDocuments(
@@ -1566,30 +1564,6 @@ export function ChatSettingsPanel({
                 Number of retrieved chunks passed to the model as context
                 (distinct from the sampling Top K below). Higher = more
                 grounding, more tokens.
-              </p>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-[12px] font-medium text-muted-foreground">
-                  Min relevance
-                </label>
-                <span className="text-[12px] tabular-nums text-muted-foreground">
-                  {ragMinScore === 0 ? "off" : ragMinScore.toFixed(2)}
-                </span>
-              </div>
-              <Slider
-                value={[ragMinScore]}
-                min={0}
-                max={1}
-                step={0.05}
-                onValueChange={([v]) => v != null && setRagMinScore(v)}
-                disabled={!ragEnabled}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                Cosine-similarity floor for retrieved chunks (0 = off).
-                Set above 0 so unrelated docs are dropped — useful when
-                your query is off-topic from what's indexed. Try 0.3 as
-                a starting point.
               </p>
             </div>
             <div className="flex items-center justify-between">
