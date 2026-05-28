@@ -147,49 +147,9 @@ export const usePreviewStore = create<PreviewState>((set) => ({
       return;
     }
 
-    // DOCX: fetch the raw bytes so the panel can render a DOMPurify-
-    // sanitized inline preview (docx-preview). We deliberately keep
-    // previewBlobUrl = null — the bytes flow through `previewBlob` to the
-    // renderer only; no object URL is created, so the "open original
-    // inline" path stays disabled (Risk #3) and Download remains the only
-    // way to get the raw file.
-    if (target.mediaKind === "docx") {
-      let docxBlob: Blob;
-      try {
-        docxBlob = await fetchPreviewFileBlob(req.documentId, controller.signal);
-      } catch (err) {
-        if (controller.signal.aborted || myKey !== activeOpenKey) return;
-        if (activeAbortController === controller) activeAbortController = null;
-        set({
-          target,
-          previewBlobUrl: null,
-          previewBlob: null,
-          previewFileUrl: null,
-          previewFileUrlExpiresAt: null,
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-          openKey: myKey,
-        });
-        return;
-      }
-      if (myKey !== activeOpenKey) return;
-      if (activeAbortController === controller) activeAbortController = null;
-      set({
-        target,
-        previewBlobUrl: null,
-        previewBlob: docxBlob,
-        previewFileUrl: null,
-        previewFileUrlExpiresAt: null,
-        status: "ready",
-        error: null,
-        openKey: myKey,
-      });
-      return;
-    }
-
-    // For mediaKinds outside the allowlist (html / unknown), skip the
-    // blob fetch entirely — the panel mounts the extracted-text fallback
-    // (contracts §5.4 + Risk #3).
+    // For mediaKinds outside the allowlist (docx / html / unknown),
+    // skip the blob fetch entirely — the panel mounts the
+    // extracted-text fallback (contracts §5.4 + Risk #3).
     if (!isInlineBlobAllowed(target.mediaKind)) {
       if (activeAbortController === controller) activeAbortController = null;
       set({

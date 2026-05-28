@@ -7,9 +7,7 @@
  * - Opening doc B while doc A is loaded revokes doc A's URL.
  * - PDFs use a signed range URL instead of a full blob download.
  * - Inline object URLs are created ONLY for safe non-PDF mediaKind (text/image).
- * - For html/unknown blob fetch is skipped; previewBlobUrl = null.
- * - docx fetches bytes (for the sanitized inline render) but still never
- *   creates an object URL (previewBlobUrl = null).
+ * - For unsafe mediaKind (html/docx/unknown) blob fetch is skipped; previewBlobUrl = null.
  * - isInlineBlobAllowed pure predicate matches contracts §5.4 allowlist.
  * - __previewStoreInternals() verifies module-scoped cleanup.
  */
@@ -227,28 +225,18 @@ describe("preview-store open/close lifecycle (contracts §5)", () => {
     expect(status).toBe("ready");
   });
 
-  it("docx mediaKind fetches bytes for sanitized render but never creates an object URL (Risk #3)", async () => {
+  it("docx mediaKind skips blob fetch and sets previewBlobUrl = null (Risk #3)", async () => {
     mockFetchPreviewTarget.mockResolvedValue(
       makeTarget({ mediaKind: "docx", filename: "report.docx" }),
-    );
-    mockFetchPreviewFileBlob.mockResolvedValue(
-      new Blob(["PK"], {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      }),
     );
 
     await usePreviewStore.getState().open({ documentId: "doc-docx" });
 
-    // Bytes ARE fetched (the DOMPurify-sanitized docx-preview renderer
-    // needs them) but no object URL is created — the raw file is never
-    // exposed as an inline blob: URL.
-    expect(mockFetchPreviewFileBlob).toHaveBeenCalled();
+    expect(mockFetchPreviewFileBlob).not.toHaveBeenCalled();
     expect(mockFetchPreviewFileUrl).not.toHaveBeenCalled();
     expect(URL.createObjectURL).not.toHaveBeenCalled();
-    const { previewBlob, previewBlobUrl, status } = usePreviewStore.getState();
-    expect(previewBlob).not.toBeNull();
-    expect(previewBlobUrl).toBeNull();
-    expect(status).toBe("ready");
+    expect(usePreviewStore.getState().previewBlob).toBeNull();
+    expect(usePreviewStore.getState().previewBlobUrl).toBeNull();
   });
 
   it("unknown mediaKind skips blob fetch and sets previewBlobUrl = null", async () => {
