@@ -28,6 +28,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.llama_server_args import (
+    parse_cache_override,
+    parse_ctx_override,
+    resolve_cache_type_kv,
+    resolve_requested_ctx,
+)
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -60,7 +66,9 @@ _INTENT_SIGNAL = re.compile(
     # Handles both straight and curly apostrophes.
     # Excludes "I can", "I should", "I want to", "let's" which
     # appear frequently in direct answers / explanations.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    # Negative lookahead drops negated forms ("I will not", "I'll never")
+    # so a refusal doesn't trigger a re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -683,6 +691,13 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        # True once a probe has completed; cleared on transient failure.
+        self._is_audio: bool = False
+        self._audio_type: Optional[str] = None
+        self._audio_probed: bool = False
+        # Monotonic timestamp set in _kill_process; read by load_model
+        # to decide whether to wait for the VRAM reclaim to finish.
+        self._last_kill_monotonic: float = 0.0
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -1346,6 +1361,76 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    # Skip the wait when the last kill is older than this; the GPU
+    # driver has already reclaimed the prior process's allocations.
+    _VRAM_SETTLE_WINDOW_S: float = 15.0
+
+    @staticmethod
+    def _wait_for_vram_settle(
+        max_wait: float = 2.0,
+        interval: float = 0.25,
+        tolerance_mib: int = 256,
+        since_kill: float = 0.0,
+    ) -> None:
+        """Poll ``_get_gpu_free_memory`` until free VRAM stabilises.
+
+        The GPU driver reclaims a dead process's allocations
+        asynchronously, so sampling free memory in the kill-to-spawn
+        window reads artificially low and pushes ``_select_gpus`` /
+        ``_fit_context_to_vram`` toward needless CPU offload -- on a
+        tight VRAM card this is the Apply-reload OOM that bare-shell
+        launches with the same flags never see.
+
+        Short-circuits on cold start (``since_kill`` zero) or stale
+        kill (older than ``_VRAM_SETTLE_WINDOW_S``); also on CPU-only
+        hosts (empty probe), probe exceptions, and GPU-set changes.
+        ``max_wait`` is a wall-clock bound that includes probe time,
+        so a wedged ``nvidia-smi`` cannot extend the reload.
+        """
+        now = time.monotonic()
+        if since_kill <= 0.0:
+            return
+        if now - since_kill > LlamaCppBackend._VRAM_SETTLE_WINDOW_S:
+            return
+        deadline = now + max_wait
+
+        def _probe_or_none():
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                return LlamaCppBackend._get_gpu_free_memory()
+            except Exception:
+                return None
+
+        prev = _probe_or_none()
+        if prev is None or not prev:
+            return
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            # Clip the nap so a near-zero ``max_wait`` is respected.
+            time.sleep(min(interval, remaining))
+            curr = _probe_or_none()
+            if curr is None or not curr or len(curr) != len(prev):
+                return
+            prev_map = dict(prev)
+            stable = True
+            for idx, free in curr:
+                if idx not in prev_map:
+                    stable = False
+                    break
+                prev_free = prev_map[idx]
+                # Adaptive: 2 % of the larger sample dominates the
+                # 256 MiB floor on large-VRAM cards.
+                per_gpu_tol = max(tolerance_mib, int(max(free, prev_free) * 0.02))
+                if abs(free - prev_free) >= per_gpu_tol:
+                    stable = False
+                    break
+            if stable:
+                return
+            prev = curr
 
     # Free-VRAM fraction at which Studio pins the GPU directly instead
     # of deferring to ``--fit on``. 5% headroom covers CUDA context +
@@ -2542,6 +2627,40 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
+                # Retry probe only if a prior attempt didn't complete.
+                if not self._audio_probed:
+                    try:
+                        detected = self._detect_audio_type_strict()
+                        self._audio_probed = True
+                    except Exception as exc:
+                        logger.debug("Fast-path audio probe failed: %s", exc)
+                        detected = None
+                    if detected in ("snac", "bicodec", "dac"):
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            try:
+                                self.init_audio_codec(detected)
+                                self._is_audio = True
+                                self._audio_type = detected
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to init audio codec '%s': %s",
+                                    detected,
+                                    exc,
+                                )
+                                self._audio_probed = False
+                                return False
+                    elif detected:
+                        # csm / whisper / audio_vlm: track type but keep
+                        # _is_audio False -- GGUF TTS routing only fires
+                        # for snac/bicodec/dac.
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            self._audio_type = detected
+                if not self._healthy:
+                    return False
                 return True
 
             self._cancel_event.clear()
@@ -2593,6 +2712,12 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # Outside ``self._lock`` so /unload, /cancel, /status are
+            # not blocked. ``unload_model`` also records the kill, so
+            # the frontend /unload+/load Apply path engages the wait
+            # here even though no in-process kill happened.
+            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
                 # Re-check cancel inside lock
@@ -2605,7 +2730,23 @@ class LlamaCppBackend:
                 # Select GPU(s) based on model size + estimated KV cache.
                 # Seed safe defaults before GPU probing so the except path
                 # still has valid state to publish.
-                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+                ctx_override = parse_ctx_override(extra_args)
+                requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
+                cache_override = parse_cache_override(extra_args)
+                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                if ctx_override is not None and ctx_override > 0:
+                    logger.info(
+                        f"User --ctx-size {ctx_override} honored; "
+                        "skipping auto-reduce"
+                    )
+                if cache_override is not None:
+                    logger.info(
+                        f"User --cache-type-k/-v {cache_override} "
+                        "honored for KV estimate"
+                    )
+                effective_ctx = (
+                    requested_ctx if requested_ctx > 0 else (self._context_length or 0)
+                )
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 try:
@@ -2615,8 +2756,8 @@ class LlamaCppBackend:
                     # Resolve effective context: 0 means let llama-server use the
                     # model's native length.  Only expand to a known native length
                     # if metadata is available; otherwise preserve 0 as a sentinel.
-                    if n_ctx > 0:
-                        effective_ctx = n_ctx
+                    if requested_ctx > 0:
+                        effective_ctx = requested_ctx
                     elif self._context_length is not None:
                         effective_ctx = self._context_length
                     else:
@@ -2669,7 +2810,7 @@ class LlamaCppBackend:
                     #   since multi-GPU is slower and the user didn't ask for a
                     #   specific context length.
                     gpu_indices, use_fit = None, True
-                    explicit_ctx = n_ctx > 0
+                    explicit_ctx = requested_ctx > 0
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
@@ -2726,7 +2867,7 @@ class LlamaCppBackend:
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total, gpus
                             )
-                            # No silent shrink: effective_ctx stays == n_ctx.
+                            # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap context
                             # to fit. Same headroom threshold as
@@ -2815,7 +2956,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
-                    effective_ctx = n_ctx  # fall back to original
+                    effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
                     model_path = model_path,
@@ -3251,7 +3392,45 @@ class LlamaCppBackend:
                     f"llama-server ready on port {self._port} "
                     f"for model '{model_identifier}'"
                 )
-                return True
+
+            # Probe outside _lock (interruptible by /unload); init inside.
+            self._is_audio = False
+            self._audio_type = None
+            self._audio_probed = False
+            try:
+                detected = self._detect_audio_type_strict()
+                self._audio_probed = True
+            except Exception as exc:
+                logger.debug("Audio probe failed: %s", exc)
+                detected = None
+            if detected in ("snac", "bicodec", "dac"):
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    try:
+                        self.init_audio_codec(detected)
+                        self._is_audio = True
+                        self._audio_type = detected
+                    except Exception as exc:
+                        # Surface as HTTP 500 -- matches pre-PR contract.
+                        logger.warning(
+                            "Failed to init audio codec '%s': %s",
+                            detected,
+                            exc,
+                        )
+                        self._audio_probed = False
+                        return False
+            elif detected:
+                # csm / whisper / audio_vlm: track type but keep _is_audio
+                # False -- GGUF TTS routing only fires for snac/bicodec/dac.
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    self._audio_type = detected
+
+            if not self._healthy:
+                return False
+            return True
 
     def _build_speculative_flags(
         self,
@@ -3591,6 +3770,7 @@ class LlamaCppBackend:
             self._is_vision = False
             self._is_audio = False
             self._audio_type = None
+            self._audio_probed = False
             self._port = None
             self._healthy = False
             self._context_length = None
@@ -3664,6 +3844,10 @@ class LlamaCppBackend:
             # server's warm-up window cannot short-circuit against the
             # previous server's health (#5401).
             self._healthy = False
+            # Drives _wait_for_vram_settle in the next load_model;
+            # set in finally so both in-process and frontend
+            # /unload+/load Apply paths record the kill.
+            self._last_kill_monotonic = time.monotonic()
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
@@ -4914,13 +5098,30 @@ class LlamaCppBackend:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
                         )
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                        )
+                        # Guard against the model emitting a tool not in the
+                        # per-request advertised set: filtered MCP names, a
+                        # built-in the caller opted out of, or a stale name
+                        # from a prior turn. Mirrors the safetensors loop's
+                        # allowed_tool_names check.
+                        _allowed = {
+                            (t.get("function") or {}).get("name")
+                            for t in (tools or [])
+                            if (t.get("function") or {}).get("name")
+                        }
+                        if _allowed and tool_name not in _allowed:
+                            result = (
+                                f"Error: tool '{tool_name}' is not enabled "
+                                "for this request. Use one of the enabled "
+                                "tools or provide a final answer."
+                            )
+                        else:
+                            result = execute_tool(
+                                tool_name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                            )
 
                     yield {
                         "type": "tool_end",
@@ -5167,48 +5368,57 @@ class LlamaCppBackend:
     # ── TTS support ────────────────────────────────────────────
 
     def detect_audio_type(self) -> Optional[str]:
-        """Detect audio/TTS codec by probing the loaded model's vocabulary."""
-        if not self.is_loaded:
-            return None
+        """Detect audio/TTS codec; swallows errors (use _strict variant to distinguish)."""
         try:
-            _auth_headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            )
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
-
-                def _detok(tid: int) -> str:
-                    r = client.post(
-                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
-                    )
-                    return r.json().get("content", "") if r.status_code == 200 else ""
-
-                def _tok(text: str) -> list[int]:
-                    r = client.post(
-                        f"{self.base_url}/tokenize",
-                        json = {"content": text, "add_special": False},
-                    )
-                    return r.json().get("tokens", []) if r.status_code == 200 else []
-
-                # Check codec-specific tokens (not generic ones that may exist in non-audio models)
-                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
-                    128259
-                ):
-                    return "snac"
-                if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
-                    return "csm"
-                if len(_tok("<|startoftranscript|>")) == 1:
-                    return "whisper"
-                if len(_tok("<audio_soft_token>")) == 1:
-                    return "audio_vlm"
-                if (
-                    len(_tok("<|bicodec_semantic_0|>")) == 1
-                    and len(_tok("<|bicodec_global_0|>")) == 1
-                ):
-                    return "bicodec"
-                if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
-                    return "dac"
+            return self._detect_audio_type_strict()
         except Exception as e:
             logger.debug(f"Audio type detection failed: {e}")
+            return None
+
+    def _detect_audio_type_strict(self) -> Optional[str]:
+        """Codec name on match, None on definitive non-audio, raises on transport/JSON errors."""
+        if not self.is_loaded:
+            return None
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        )
+        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+            def _detok(tid: int) -> str:
+                # Non-200 means "marker not in vocab" -- keep probing.
+                # Transport / JSON errors still raise.
+                r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
+                if r.status_code != 200:
+                    return ""
+                return r.json().get("content", "")
+
+            def _tok(text: str) -> list[int]:
+                r = client.post(
+                    f"{self.base_url}/tokenize",
+                    json = {"content": text, "add_special": False},
+                )
+                if r.status_code != 200:
+                    return []
+                return r.json().get("tokens", [])
+
+            # Check codec-specific tokens (not generic ones that may exist in non-audio models)
+            if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                128259
+            ):
+                return "snac"
+            if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
+                return "csm"
+            if len(_tok("<|startoftranscript|>")) == 1:
+                return "whisper"
+            if len(_tok("<audio_soft_token>")) == 1:
+                return "audio_vlm"
+            if (
+                len(_tok("<|bicodec_semantic_0|>")) == 1
+                and len(_tok("<|bicodec_global_0|>")) == 1
+            ):
+                return "bicodec"
+            if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
+                return "dac"
         return None
 
     # Prompt format per codec: (template, stop_tokens, needs_token_ids)

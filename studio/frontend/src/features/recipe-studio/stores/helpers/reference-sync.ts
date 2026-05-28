@@ -97,7 +97,9 @@ export function applyRenameToConfig(
       next = {
         ...base,
         // biome-ignore lint/style/useNamingConvention: api schema
-        target_columns: targets.map((target) => (target === from ? to : target)),
+        target_columns: targets.map((target) =>
+          target === from ? to : target,
+        ),
       };
     }
   }
@@ -137,14 +139,12 @@ export function applyRemovalToConfig(
   }
   if (config.kind === "model_config" && config.provider === ref) {
     const base = next as ModelConfig;
-    // Clear the synthetic "local" placeholder when the provider that was
-    // a local provider is removed; otherwise the stale placeholder would
-    // pass validation against a future external provider and then fail
-    // at runtime against a real API ("model not found").
     next = {
       ...base,
       provider: "",
-      model: base.model === "local" ? "" : base.model,
+      model: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gguf_variant: undefined,
     };
   }
   if (config.kind === "llm" && config.model_alias === ref) {
@@ -156,7 +156,9 @@ export function applyRemovalToConfig(
     next = { ...base, tool_alias: "" };
   }
   if (config.kind === "validator") {
-    const targets = (config.target_columns ?? []).filter((target) => target !== ref);
+    const targets = (config.target_columns ?? []).filter(
+      (target) => target !== ref,
+    );
     if (targets.length !== (config.target_columns ?? []).length) {
       const base = next as typeof config;
       next = {
@@ -206,5 +208,7 @@ export function applyRemovalToConfigs(
   if (!ref) {
     return configs;
   }
-  return applyConfigTransform(configs, (config) => applyRemovalToConfig(config, ref));
+  return applyConfigTransform(configs, (config) =>
+    applyRemovalToConfig(config, ref),
+  );
 }
