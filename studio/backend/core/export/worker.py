@@ -439,6 +439,102 @@ def run_export_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1c. Stub torchao on Windows ROCm ──
+    # torchao (pulled in by transformers.quantizers) imports
+    # torch.distributed._functional_collectives at module level, which imports
+    # distributed_c10d.py unconditionally — that file crashes on Windows ROCm
+    # because torch._C._distributed_c10d (the RCCL backend) is absent.
+    # Stubbing torchao short-circuits the crash entirely.
+    # Must run before any import of transformers / unsloth_zoo.
+    import types as _types
+    import importlib.machinery as _ilm
+    import importlib.abc as _ilabc
+
+    _STUB_SENTINEL = object()
+
+    class _StubTypeMeta(type):
+        def __instancecheck__(cls, instance):
+            return False
+
+        def __subclasscheck__(cls, subclass):
+            return False
+
+        def __getattr__(cls, attr):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _StubTypeMeta(attr, (), {})
+            setattr(cls, attr, child)
+            return child
+
+        def __call__(cls, *args, **kwargs):
+            return None
+
+    def _make_stub_type(name):
+        return _StubTypeMeta(name, (), {})
+
+    def _make_mod_stub(mod_name):
+        m = _types.ModuleType(mod_name)
+        m.__path__ = []
+        m.__package__ = mod_name
+        m._unsloth_stub = _STUB_SENTINEL
+        m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
+
+        def _ga(attr, _m=m, _n=mod_name):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _make_stub_type(f"{_n}.{attr}")
+            setattr(_m, attr, child)
+            return child
+
+        m.__getattr__ = _ga
+        return m
+
+    class _StubSubpackageLoader(_ilabc.Loader):
+        def __init__(self, mod_name):
+            self._mod_name = mod_name
+
+        def create_module(self, spec):
+            return _make_mod_stub(self._mod_name)
+
+        def exec_module(self, module):
+            pass
+
+    class _StubSubpackageFinder(_ilabc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if "." not in fullname:
+                return None
+            parent = sys.modules.get(fullname.rsplit(".", 1)[0])
+            if parent is None:
+                return None
+            if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
+                return None
+            return _ilm.ModuleSpec(
+                fullname, _StubSubpackageLoader(fullname), is_package=True
+            )
+
+    _is_win32_rocm = False
+    if sys.platform == "win32":
+        try:
+            import torch as _torch_probe
+            _is_win32_rocm = bool(
+                getattr(getattr(_torch_probe, "version", None), "hip", None)
+                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+            )
+            del _torch_probe
+        except Exception:
+            pass
+    if _is_win32_rocm:
+        sys.meta_path.append(_StubSubpackageFinder())
+        for _tao_name in (
+            "torchao",
+            "torchao.quantization",
+            "torchao.dtypes",
+            "torchao.float8",
+            "torchao.utils",
+        ):
+            if _tao_name not in sys.modules:
+                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
