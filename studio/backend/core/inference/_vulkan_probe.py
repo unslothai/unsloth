@@ -33,8 +33,9 @@ def main() -> int:
     try:
         ctypes.CDLL(os.path.join(bindir, base_name), mode = ctypes.RTLD_GLOBAL)
         lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = ctypes.RTLD_GLOBAL)
-    except OSError:
-        return 0
+    except OSError as e:
+        print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
+        return 1
 
     lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int
     lib.ggml_backend_vk_get_device_count.argtypes = []
