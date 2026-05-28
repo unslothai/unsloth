@@ -77,7 +77,7 @@ def _parse_chunks(xml_output: str) -> list[dict]:
 def test_format_hits_emits_document_id_and_chunk_id():
     """T3: tool XML <chunk> must carry document_id and chunk_id attributes."""
     chunk_id, doc_id = _uid(), _uid()
-    hits = [_hit(chunk_id=chunk_id, document_id=doc_id)]
+    hits = [_hit(chunk_id = chunk_id, document_id = doc_id)]
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
     assert len(chunks) == 1, output
@@ -88,8 +88,8 @@ def test_format_hits_emits_document_id_and_chunk_id():
 def test_citation_id_is_sequential_counter_not_uuid():
     """Visible id='N' is a 1-based counter — never equal to the backend chunk UUID."""
     chunk_id, doc_id = _uid(), _uid()
-    hits = [_hit(chunk_id=chunk_id, document_id=doc_id)]
-    output = _format_hits_for_llm(hits, start_id=0)
+    hits = [_hit(chunk_id = chunk_id, document_id = doc_id)]
+    output = _format_hits_for_llm(hits, start_id = 0)
     chunks = _parse_chunks(output)
     visible_id = chunks[0]["id"]
     # Must be a small integer string, NOT the UUID
@@ -99,13 +99,13 @@ def test_citation_id_is_sequential_counter_not_uuid():
 
 def test_citation_ids_are_globally_sequential_across_calls():
     """start_id offset ensures IDs stay unique across multiple tool calls per turn."""
-    hits_call1 = [_hit(chunk_id=_uid(), document_id=_uid(), filename="a.pdf")]
+    hits_call1 = [_hit(chunk_id = _uid(), document_id = _uid(), filename = "a.pdf")]
     hits_call2 = [
-        _hit(chunk_id=_uid(), document_id=_uid(), filename="b.pdf"),
-        _hit(chunk_id=_uid(), document_id=_uid(), filename="c.pdf"),
+        _hit(chunk_id = _uid(), document_id = _uid(), filename = "b.pdf"),
+        _hit(chunk_id = _uid(), document_id = _uid(), filename = "c.pdf"),
     ]
-    out1 = _format_hits_for_llm(hits_call1, start_id=0)
-    out2 = _format_hits_for_llm(hits_call2, start_id=1)
+    out1 = _format_hits_for_llm(hits_call1, start_id = 0)
+    out2 = _format_hits_for_llm(hits_call2, start_id = 1)
 
     chunks1 = _parse_chunks(out1)
     chunks2 = _parse_chunks(out2)
@@ -125,8 +125,8 @@ def test_same_filename_docs_have_distinct_document_ids():
     chunk_a, doc_a = _uid(), _uid()
     chunk_b, doc_b = _uid(), _uid()
     hits = [
-        _hit(chunk_id=chunk_a, document_id=doc_a, filename=filename),
-        _hit(chunk_id=chunk_b, document_id=doc_b, filename=filename),
+        _hit(chunk_id = chunk_a, document_id = doc_a, filename = filename),
+        _hit(chunk_id = chunk_b, document_id = doc_b, filename = filename),
     ]
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
@@ -143,8 +143,8 @@ def test_same_filename_docs_have_distinct_citation_ids():
     chunk_a, doc_a = _uid(), _uid()
     chunk_b, doc_b = _uid(), _uid()
     hits = [
-        _hit(chunk_id=chunk_a, document_id=doc_a, filename=filename),
-        _hit(chunk_id=chunk_b, document_id=doc_b, filename=filename),
+        _hit(chunk_id = chunk_a, document_id = doc_a, filename = filename),
+        _hit(chunk_id = chunk_b, document_id = doc_b, filename = filename),
     ]
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
@@ -163,7 +163,7 @@ def test_empty_hits_returns_no_chunks_message():
 def test_page_number_attribute_present_when_page_exists():
     """page attribute is emitted when page_number is not None."""
     chunk_id, doc_id = _uid(), _uid()
-    hits = [_hit(chunk_id=chunk_id, document_id=doc_id, page_number=5)]
+    hits = [_hit(chunk_id = chunk_id, document_id = doc_id, page_number = 5)]
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
     assert chunks[0].get("page") == "5"
@@ -172,7 +172,7 @@ def test_page_number_attribute_present_when_page_exists():
 def test_page_number_attribute_absent_when_null():
     """page attribute is omitted when page_number is None."""
     chunk_id, doc_id = _uid(), _uid()
-    hits = [_hit(chunk_id=chunk_id, document_id=doc_id, page_number=None)]
+    hits = [_hit(chunk_id = chunk_id, document_id = doc_id, page_number = None)]
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
     assert "page" not in chunks[0], f"unexpected page attr: {chunks[0]}"
@@ -181,7 +181,7 @@ def test_page_number_attribute_absent_when_null():
 def test_locator_attributes_are_additive_when_present():
     """T10: tool XML carries nullable locator metadata without changing visible ids."""
     chunk_id, doc_id = _uid(), _uid()
-    hit = _hit(chunk_id=chunk_id, document_id=doc_id, page_number=5)
+    hit = _hit(chunk_id = chunk_id, document_id = doc_id, page_number = 5)
     hit.update(
         {
             "source_page_index": 4,
@@ -207,9 +207,9 @@ def test_xml_special_chars_in_filename_escaped():
     chunk_id, doc_id = _uid(), _uid()
     hits = [
         _hit(
-            chunk_id=chunk_id,
-            document_id=doc_id,
-            filename='report <2025> "final" & draft.pdf',
+            chunk_id = chunk_id,
+            document_id = doc_id,
+            filename = 'report <2025> "final" & draft.pdf',
         )
     ]
     output = _format_hits_for_llm(hits)
@@ -229,7 +229,7 @@ def test_multiple_hits_carry_independent_ids():
         (_uid(), _uid()),
     ]
     hits = [
-        _hit(chunk_id=cid, document_id=did, filename=f"doc{i}.pdf")
+        _hit(chunk_id = cid, document_id = did, filename = f"doc{i}.pdf")
         for i, (cid, did) in enumerate(hit_data)
     ]
     output = _format_hits_for_llm(hits)

@@ -42,13 +42,15 @@ from auth.authentication import get_current_subject
 # ── App import (deferred to avoid import-time side-effects) ───────────
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def app():
     import sys
+
     backend_dir = str(Path(__file__).resolve().parent.parent)
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     from main import app as _app
+
     return _app
 
 
@@ -70,7 +72,7 @@ def _uid() -> str:
 def _make_client(app, subject: str = "alice"):
     """Return a TestClient with get_current_subject overridden to return subject."""
     app.dependency_overrides[get_current_subject] = lambda: subject
-    client = TestClient(app, raise_server_exceptions=True)
+    client = TestClient(app, raise_server_exceptions = True)
     return client
 
 
@@ -128,18 +130,20 @@ class TestPreviewTarget:
         """GET /preview-target?chunk_id=<id> returns page + snippet when chunk valid."""
         doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
         stored = db_env / "rag" / "uploads" / "report.pdf"
-        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.parent.mkdir(parents = True, exist_ok = True)
         stored.write_bytes(b"%PDF-1.4 dummy")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
             _insert_doc(conn, doc_id, kb_id, str(stored))
-            _insert_chunk(conn, chunk_id, doc_id, page_number=7, chunk_index=14)
+            _insert_chunk(conn, chunk_id, doc_id, page_number = 7, chunk_index = 14)
 
         client = _make_client(app, "alice")
         try:
-            resp = client.get(f"/api/rag/documents/{doc_id}/preview-target?chunk_id={chunk_id}")
+            resp = client.get(
+                f"/api/rag/documents/{doc_id}/preview-target?chunk_id={chunk_id}"
+            )
         finally:
             _clear_overrides(app)
 
@@ -152,18 +156,20 @@ class TestPreviewTarget:
         assert body["snippet"] is not None and len(body["snippet"]) > 0
         assert body["mediaKind"] == "pdf"
 
-    def test_preview_target_returns_pdf_regions_when_present(self, app, db_env, monkeypatch):
+    def test_preview_target_returns_pdf_regions_when_present(
+        self, app, db_env, monkeypatch
+    ):
         """Chunk preview includes only stored confident PDF regions."""
         doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
         stored = db_env / "rag" / "uploads" / "report.pdf"
-        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.parent.mkdir(parents = True, exist_ok = True)
         stored.write_bytes(b"%PDF-1.4 dummy")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
             _insert_doc(conn, doc_id, kb_id, str(stored))
-            _insert_chunk(conn, chunk_id, doc_id, page_number=7, chunk_index=14)
+            _insert_chunk(conn, chunk_id, doc_id, page_number = 7, chunk_index = 14)
             conn.execute(
                 """
                 UPDATE rag_chunks
@@ -180,7 +186,9 @@ class TestPreviewTarget:
 
         client = _make_client(app, "alice")
         try:
-            resp = client.get(f"/api/rag/documents/{doc_id}/preview-target?chunk_id={chunk_id}")
+            resp = client.get(
+                f"/api/rag/documents/{doc_id}/preview-target?chunk_id={chunk_id}"
+            )
         finally:
             _clear_overrides(app)
 
@@ -199,11 +207,13 @@ class TestPreviewTarget:
             }
         ]
 
-    def test_without_chunk_id_returns_all_null_chunk_fields(self, app, db_env, monkeypatch):
+    def test_without_chunk_id_returns_all_null_chunk_fields(
+        self, app, db_env, monkeypatch
+    ):
         """GET /preview-target without chunk_id returns metadata-only (decision Q2)."""
         doc_id, kb_id = _uid(), _uid()
         stored = db_env / "rag" / "uploads" / "annual.pdf"
-        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.parent.mkdir(parents = True, exist_ok = True)
         stored.write_bytes(b"%PDF-1.4 dummy")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
@@ -243,12 +253,12 @@ class TestPreviewTarget:
         """Document owned by alice returns 404 when accessed by mallory."""
         doc_id, kb_id = _uid(), _uid()
         stored = db_env / "rag" / "uploads" / "secret.pdf"
-        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.parent.mkdir(parents = True, exist_ok = True)
         stored.write_bytes(b"data")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
-            _insert_kb(conn, kb_id, owner="alice")
+            _insert_kb(conn, kb_id, owner = "alice")
             _insert_doc(conn, doc_id, kb_id, str(stored))
 
         client = _make_client(app, "mallory")
@@ -265,7 +275,7 @@ class TestPreviewTarget:
         chunk_a = _uid()
         stored_a = db_env / "rag" / "uploads" / "a.pdf"
         stored_b = db_env / "rag" / "uploads" / "b.pdf"
-        stored_a.parent.mkdir(parents=True, exist_ok=True)
+        stored_a.parent.mkdir(parents = True, exist_ok = True)
         stored_a.write_bytes(b"data")
         stored_b.write_bytes(b"data")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -291,7 +301,7 @@ class TestPreviewTarget:
         """No bearer token → 401."""
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
         # No override — let the real dependency raise
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions = False)
         resp = client.get(f"/api/rag/documents/{_uid()}/preview-target")
         assert resp.status_code == 401
 
@@ -304,14 +314,16 @@ class TestFileRoute:
         """GET /file for a PDF returns 200 with nosniff, Cache-Control, inline disposition."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "annual.pdf"
         stored.write_bytes(b"%PDF-1.4\n%%EOF")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
-            _insert_doc(conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf")
+            _insert_doc(
+                conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf"
+            )
 
         client = _make_client(app, "alice")
         try:
@@ -325,11 +337,13 @@ class TestFileRoute:
         ct = resp.headers.get("content-type", "")
         assert "pdf" in ct.lower()
 
-    def test_signed_file_url_supports_range_without_bearer_query(self, app, db_env, monkeypatch):
+    def test_signed_file_url_supports_range_without_bearer_query(
+        self, app, db_env, monkeypatch
+    ):
         """Short-lived signed URL is redeemable without Authorization and supports ranges."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "annual.pdf"
         stored.write_bytes(b"%PDF-1.4\n%%EOF")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -337,7 +351,9 @@ class TestFileRoute:
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
-            _insert_doc(conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf")
+            _insert_doc(
+                conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf"
+            )
 
         client = _make_client(app, "alice")
         try:
@@ -347,13 +363,16 @@ class TestFileRoute:
             assert "Bearer" not in signed_url
             assert "Authorization" not in signed_url
 
-            file_resp = client.get(signed_url, headers={"Range": "bytes=0-3"})
+            file_resp = client.get(signed_url, headers = {"Range": "bytes=0-3"})
         finally:
             _clear_overrides(app)
 
         assert file_resp.status_code == 206
         assert file_resp.content == b"%PDF"
-        assert file_resp.headers.get("content-range") == f"bytes 0-3/{stored.stat().st_size}"
+        assert (
+            file_resp.headers.get("content-range")
+            == f"bytes 0-3/{stored.stat().st_size}"
+        )
         assert file_resp.headers.get("accept-ranges") == "bytes"
         assert file_resp.headers.get("x-content-type-options") == "nosniff"
 
@@ -361,7 +380,7 @@ class TestFileRoute:
         """Signed file route is not public without a valid preview token."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "annual.pdf"
         stored.write_bytes(b"%PDF-1.4\n%%EOF")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -369,17 +388,21 @@ class TestFileRoute:
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
-            _insert_doc(conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf")
+            _insert_doc(
+                conn, doc_id, kb_id, str(stored), "annual.pdf", "application/pdf"
+            )
 
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions = False)
         resp = client.get(f"/api/rag/documents/{doc_id}/file-signed?token=bogus")
         assert resp.status_code == 401
 
-    def test_html_file_served_as_text_plain_with_attachment(self, app, db_env, monkeypatch):
+    def test_html_file_served_as_text_plain_with_attachment(
+        self, app, db_env, monkeypatch
+    ):
         """HTML uploads must be served as text/plain + attachment (Risk #3 — no XSS)."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "malicious.html"
         stored.write_bytes(b"<script>alert(1)</script>")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -407,15 +430,21 @@ class TestFileRoute:
         """DOCX files must be served with Content-Disposition: attachment."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "report.docx"
         stored.write_bytes(b"PK\x03\x04fake-docx")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
-            _insert_doc(conn, doc_id, kb_id, str(stored), "report.docx",
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            _insert_doc(
+                conn,
+                doc_id,
+                kb_id,
+                str(stored),
+                "report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
         client = _make_client(app, "alice")
         try:
@@ -441,13 +470,13 @@ class TestFileRoute:
         """Document accessible to alice is 404 for mallory (auth-collapse)."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "private.pdf"
         stored.write_bytes(b"data")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
-            _insert_kb(conn, kb_id, owner="alice")
+            _insert_kb(conn, kb_id, owner = "alice")
             _insert_doc(conn, doc_id, kb_id, str(stored))
 
         client = _make_client(app, "mallory")
@@ -457,11 +486,13 @@ class TestFileRoute:
             _clear_overrides(app)
         assert resp.status_code == 404
 
-    def test_deleted_file_returns_404_with_doc_file_not_found(self, app, db_env, monkeypatch):
+    def test_deleted_file_returns_404_with_doc_file_not_found(
+        self, app, db_env, monkeypatch
+    ):
         """File gone from disk returns 404 with 'Document file not found' detail."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "gone.pdf"
         stored.write_bytes(b"data")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -483,14 +514,16 @@ class TestFileRoute:
         detail = resp.json().get("detail", "")
         assert "file not found" in detail.lower() or "not found" in detail.lower()
 
-    def test_outside_root_stored_path_returns_404(self, app, db_env, monkeypatch, tmp_path):
+    def test_outside_root_stored_path_returns_404(
+        self, app, db_env, monkeypatch, tmp_path
+    ):
         """stored_path outside rag_uploads_root returns 404 — path containment (Risk #2)."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         # A legitimate-looking path that is outside the RAG uploads root
         outside = tmp_path / "etc" / "passwd"
-        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.parent.mkdir(parents = True, exist_ok = True)
         outside.write_bytes(b"root:x:0:0")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
@@ -518,7 +551,7 @@ class TestFileRoute:
         """Safety headers present on every 200 response, including plain text."""
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
+        uploads.mkdir(parents = True, exist_ok = True)
         stored = uploads / "notes.txt"
         stored.write_bytes(b"hello world")
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
@@ -548,7 +581,7 @@ class TestImageRoute:
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
         images = uploads / "images" / doc_id
-        images.mkdir(parents=True, exist_ok=True)
+        images.mkdir(parents = True, exist_ok = True)
         image = images / "figure.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n")
         stored = uploads / "report.pdf"
@@ -556,7 +589,7 @@ class TestImageRoute:
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
-            _insert_kb(conn, kb_id, owner="alice")
+            _insert_kb(conn, kb_id, owner = "alice")
             _insert_doc(conn, doc_id, kb_id, str(stored), "report.pdf")
 
         client = _make_client(app, "mallory")
@@ -572,7 +605,7 @@ class TestImageRoute:
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
         images = uploads / "images" / doc_id
-        images.mkdir(parents=True, exist_ok=True)
+        images.mkdir(parents = True, exist_ok = True)
         image = images / "figure.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n")
         stored = uploads / "report.pdf"
@@ -580,7 +613,7 @@ class TestImageRoute:
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
         with studio_db.get_connection() as conn:
-            _insert_kb(conn, kb_id, owner="alice")
+            _insert_kb(conn, kb_id, owner = "alice")
             _insert_doc(conn, doc_id, kb_id, str(stored), "report.pdf")
 
         client = _make_client(app, "alice")

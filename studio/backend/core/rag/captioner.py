@@ -170,12 +170,18 @@ def caption_images(
         if vlm_url and vlm_model:
             endpoint = f"{vlm_url.rstrip('/')}/v1/chat/completions"
             model_name = vlm_model
-            logger.info("caption_images: using loaded chat VLM", endpoint = endpoint, model = model_name)
+            logger.info(
+                "caption_images: using loaded chat VLM",
+                endpoint = endpoint,
+                model = model_name,
+            )
         else:
             logger.info("caption_images: chat VLM unavailable, loading helper")
             loaded = _load_helper_vlm()
             if loaded is None:
-                logger.warning("caption_images: helper load failed, returning empty captions")
+                logger.warning(
+                    "caption_images: helper load failed, returning empty captions"
+                )
                 return ["" for _ in image_bytes_list]
             helper_backend, helper_base_url, helper_model_name = loaded
             endpoint = f"{helper_base_url.rstrip('/')}/v1/chat/completions"

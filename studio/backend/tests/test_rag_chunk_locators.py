@@ -29,17 +29,17 @@ def _token_count(text: str) -> int:
 def test_standard_chunking_records_page_local_char_and_line_spans():
     pages = [
         ParsedPage(
-            text="alpha first line\nbeta target line\ngamma final line",
-            page_number=7,
+            text = "alpha first line\nbeta target line\ngamma final line",
+            page_number = 7,
         )
     ]
 
     chunks = chunk_pages(
         pages,
-        max_tokens=3,
-        overlap_tokens=0,
-        token_counter=_token_count,
-        separators=("\n", " ", ""),
+        max_tokens = 3,
+        overlap_tokens = 0,
+        token_counter = _token_count,
+        separators = ("\n", " ", ""),
     )
 
     target = next(chunk for chunk in chunks if "beta" in chunk.text)
@@ -53,16 +53,16 @@ def test_standard_chunking_records_page_local_char_and_line_spans():
 
 def test_late_chunking_maps_global_span_back_to_source_page():
     pages = [
-        ParsedPage(text="page one alpha", page_number=1),
-        ParsedPage(text="page two beta target", page_number=2),
+        ParsedPage(text = "page one alpha", page_number = 1),
+        ParsedPage(text = "page two beta target", page_number = 2),
     ]
 
     _full_doc, chunks, spans = chunk_pages_with_spans(
         pages,
-        max_tokens=4,
-        overlap_tokens=0,
-        token_counter=_token_count,
-        separators=("\n\n", " ", ""),
+        max_tokens = 4,
+        overlap_tokens = 0,
+        token_counter = _token_count,
+        separators = ("\n\n", " ", ""),
     )
 
     target = next(chunk for chunk in chunks if "beta" in chunk.text)

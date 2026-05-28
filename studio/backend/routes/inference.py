@@ -337,8 +337,7 @@ def _drop_rag_tool_if_scope_empty(tools: list, rag_scope: Optional[dict]) -> lis
     if doc_count > 0:
         return tools
     return [
-        t for t in tools
-        if t.get("function", {}).get("name") != "search_knowledge_base"
+        t for t in tools if t.get("function", {}).get("name") != "search_knowledge_base"
     ]
 
 

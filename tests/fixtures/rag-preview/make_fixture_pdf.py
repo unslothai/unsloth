@@ -15,7 +15,7 @@ OUTPUT = Path(__file__).parent / "sample.pdf"
 
 
 def _compress(data: bytes) -> bytes:
-    return zlib.compress(data, level=9)
+    return zlib.compress(data, level = 9)
 
 
 def _pdf() -> bytes:

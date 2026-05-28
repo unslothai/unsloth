@@ -57,7 +57,7 @@ def document_for_subject_or_404(
     `filename`, `content_type`, etc. without re-querying.
     """
     if not document_id or not current_subject:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+        raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
 
     with get_connection() as conn:
         row = conn.execute(
@@ -65,7 +65,7 @@ def document_for_subject_or_404(
             (document_id,),
         ).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+            raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
 
         kb_id = row["kb_id"]
         thread_id = row["thread_id"]
@@ -76,10 +76,10 @@ def document_for_subject_or_404(
                 (kb_id,),
             ).fetchone()
             if owner_row is None:
-                raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+                raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
             owner = owner_row["owner_user_id"]
             if owner is None or owner != current_subject:
-                raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+                raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
             return row
 
         if thread_id is not None:
@@ -91,13 +91,13 @@ def document_for_subject_or_404(
                 (thread_id,),
             ).fetchone()
             if thread_row is None:
-                raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+                raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
             return row
 
         # Documents must belong to either a KB or a thread (DB CHECK
         # constraint enforces XOR on insert); a row that satisfies
         # neither is corrupt — treat as 404.
-        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+        raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
 
 
 def chunk_belongs_to_document(chunk_id: str, document_id: str) -> bool:

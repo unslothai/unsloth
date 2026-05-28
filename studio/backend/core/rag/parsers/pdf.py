@@ -105,12 +105,15 @@ def _extract_images_pymupdf(doc, pages: list[ParsedPage]) -> list[ParsedImage]:
         if union.width < _MIN_FIGURE_PT or union.height < _MIN_FIGURE_PT:
             continue
         # Expand and clip to page rect so we don't render past page edges.
-        union = pymupdf.Rect(
-            union.x0 - _FIGURE_MARGIN_PT,
-            union.y0 - _FIGURE_MARGIN_PT,
-            union.x1 + _FIGURE_MARGIN_PT,
-            union.y1 + _FIGURE_MARGIN_PT,
-        ) & page.rect
+        union = (
+            pymupdf.Rect(
+                union.x0 - _FIGURE_MARGIN_PT,
+                union.y0 - _FIGURE_MARGIN_PT,
+                union.x1 + _FIGURE_MARGIN_PT,
+                union.y1 + _FIGURE_MARGIN_PT,
+            )
+            & page.rect
+        )
         try:
             matrix = pymupdf.Matrix(_RENDER_SCALE, _RENDER_SCALE)
             pix = page.get_pixmap(clip = union, matrix = matrix, alpha = False)

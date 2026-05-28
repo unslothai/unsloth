@@ -13,7 +13,7 @@ import storage.studio_db as studio_db
 from auth.authentication import get_current_subject
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def app():
     import sys
 
@@ -38,7 +38,7 @@ def _uid() -> str:
 
 def _make_client(app, subject: str = "alice"):
     app.dependency_overrides[get_current_subject] = lambda: subject
-    return TestClient(app, raise_server_exceptions=True)
+    return TestClient(app, raise_server_exceptions = True)
 
 
 def _clear_overrides(app):
@@ -68,7 +68,7 @@ def _seed_doc(conn, doc_id: str, kb_id: str, stored_path: str) -> None:
 def test_preview_target_returns_nullable_locator_fields(app, db_env):
     doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
     stored = db_env / "rag" / "uploads" / "report.pdf"
-    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.parent.mkdir(parents = True, exist_ok = True)
     stored.write_bytes(b"%PDF-1.4")
 
     with studio_db.get_connection() as conn:
@@ -104,7 +104,7 @@ def test_preview_target_returns_nullable_locator_fields(app, db_env):
 def test_preview_target_old_null_locator_rows_still_work(app, db_env):
     doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
     stored = db_env / "rag" / "uploads" / "legacy.pdf"
-    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.parent.mkdir(parents = True, exist_ok = True)
     stored.write_bytes(b"%PDF-1.4")
 
     with studio_db.get_connection() as conn:

@@ -29,8 +29,7 @@ def test_locator_schema_is_additive_and_nullable(tmp_path, monkeypatch):
         }.issubset(chunk_cols)
 
         page_cols = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(rag_document_pages)")
+            row["name"] for row in conn.execute("PRAGMA table_info(rag_document_pages)")
         }
         assert {
             "document_id",

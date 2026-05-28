@@ -87,9 +87,7 @@ def retrieve_figure_refs(
     placeholders_docs = ""
     params: list = [scope]
     if document_ids:
-        placeholders_docs = (
-            f" AND document_id IN ({','.join('?' * len(document_ids))})"
-        )
+        placeholders_docs = f" AND document_id IN ({','.join('?' * len(document_ids))})"
         params.extend(document_ids)
 
     like_clauses: list[str] = []

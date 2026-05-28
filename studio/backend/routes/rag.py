@@ -1136,10 +1136,7 @@ def _content_disposition_header(filename: str, disposition: str) -> str:
         return f'{disposition}; filename="{safe}"'
     ascii_fallback = safe.encode("ascii", "replace").decode("ascii")
     encoded = _urlquote(safe, safe = "")
-    return (
-        f'{disposition}; filename="{ascii_fallback}"; '
-        f"filename*=UTF-8''{encoded}"
-    )
+    return f'{disposition}; filename="{ascii_fallback}"; ' f"filename*=UTF-8''{encoded}"
 
 
 def _preview_file_metadata(filename: str) -> tuple[str, str, PreviewMediaKind]:
@@ -1308,9 +1305,7 @@ def _serve_document_file_row(
     range_header: str | None,
 ) -> FileResponse | Response | StreamingResponse:
     resolved = _resolve_document_file_or_404(doc_row, document_id)
-    content_type, disposition, _media_kind = _preview_file_metadata(
-        doc_row["filename"]
-    )
+    content_type, disposition, _media_kind = _preview_file_metadata(doc_row["filename"])
     safe_name = _sanitize_filename(doc_row["filename"])
     headers = {
         "Content-Disposition": _content_disposition_header(safe_name, disposition),
@@ -1423,12 +1418,11 @@ def get_document_preview_target(
             detail = "Document not found",
         )
 
-    chunk_kind: PreviewChunkKind = (chunk_row["kind"] or "text")  # type: ignore[assignment]
+    chunk_kind: PreviewChunkKind = chunk_row["kind"] or "text"  # type: ignore[assignment]
     image_url: str | None = None
     if chunk_kind == "image" and chunk_row["image_path"]:
         image_url = (
-            f"/api/rag/images/{doc_row['id']}/"
-            f"{Path(chunk_row['image_path']).name}"
+            f"/api/rag/images/{doc_row['id']}/" f"{Path(chunk_row['image_path']).name}"
         )
 
     return PreviewTargetResponse(

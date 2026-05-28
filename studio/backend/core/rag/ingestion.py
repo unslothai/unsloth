@@ -590,7 +590,9 @@ def _replace_document_pages(document_id: str, pages: list[dict]) -> None:
         ).fetchone()
         if doc_row is None:
             raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
-        conn.execute("DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,))
+        conn.execute(
+            "DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,)
+        )
         if rows:
             conn.executemany(
                 """

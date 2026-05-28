@@ -13,7 +13,7 @@ import storage.studio_db as studio_db
 from auth.authentication import get_current_subject
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def app():
     import sys
 
@@ -38,7 +38,7 @@ def _uid() -> str:
 
 def _make_client(app, subject: str = "alice"):
     app.dependency_overrides[get_current_subject] = lambda: subject
-    return TestClient(app, raise_server_exceptions=True)
+    return TestClient(app, raise_server_exceptions = True)
 
 
 def _clear_overrides(app):
@@ -76,8 +76,8 @@ def _insert_chunk(conn, chunk_id: str, doc_id: str, text: str) -> None:
 def test_backfill_preserves_ids_and_updates_unique_locator(app, db_env, monkeypatch):
     doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
     stored = db_env / "rag" / "uploads" / "paper.txt"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text("Intro line\nUnique quote here.\nEnd.", encoding="utf-8")
+    stored.parent.mkdir(parents = True, exist_ok = True)
+    stored.write_text("Intro line\nUnique quote here.\nEnd.", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
     with studio_db.get_connection() as conn:
@@ -111,8 +111,8 @@ def test_backfill_preserves_ids_and_updates_unique_locator(app, db_env, monkeypa
 def test_backfill_leaves_ambiguous_matches_null(app, db_env, monkeypatch):
     doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
     stored = db_env / "rag" / "uploads" / "paper.txt"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text("Repeat me.\nOther text.\nRepeat me.", encoding="utf-8")
+    stored.parent.mkdir(parents = True, exist_ok = True)
+    stored.write_text("Repeat me.\nOther text.\nRepeat me.", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
 
     with studio_db.get_connection() as conn:

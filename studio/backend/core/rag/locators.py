@@ -111,7 +111,9 @@ def _find_normalized(page_text: str, needle: str) -> list[tuple[int, int]]:
     return out
 
 
-def _locate_unique(text: str, pages: list[ParsedPage]) -> tuple[LocatorMatch | None, str]:
+def _locate_unique(
+    text: str, pages: list[ParsedPage]
+) -> tuple[LocatorMatch | None, str]:
     text = (text or "").strip()
     if not text:
         return None, "missing"
@@ -170,7 +172,9 @@ def _replace_document_pages(document_id: str, pages: list[ParsedPage]) -> None:
         for index, page in enumerate(pages)
     ]
     with get_connection() as conn:
-        conn.execute("DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,))
+        conn.execute(
+            "DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,)
+        )
         if rows:
             conn.executemany(
                 """
@@ -340,7 +344,9 @@ def _scope_for_document(kb_id: str | None, thread_id: str | None) -> str | None:
     return None
 
 
-def _update_vector_payloads(scope: str | None, updates: dict[str, dict[str, Any]]) -> None:
+def _update_vector_payloads(
+    scope: str | None, updates: dict[str, dict[str, Any]]
+) -> None:
     if not scope or not updates:
         return
     try:

@@ -24,7 +24,10 @@ import pytest
 from fastapi import HTTPException
 
 import storage.studio_db as studio_db
-from core.rag.authorization import chunk_belongs_to_document, document_for_subject_or_404
+from core.rag.authorization import (
+    chunk_belongs_to_document,
+    document_for_subject_or_404,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -103,7 +106,7 @@ def test_kb_doc_correct_owner_returns_row(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
     row = document_for_subject_or_404(doc_id, "alice")
     assert row["id"] == doc_id
@@ -114,7 +117,7 @@ def test_kb_doc_wrong_owner_raises_404(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
     with pytest.raises(HTTPException) as exc_info:
         document_for_subject_or_404(doc_id, "mallory")
@@ -127,7 +130,7 @@ def test_kb_doc_null_owner_raises_404(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner=None)
+        _insert_kb(conn, kb_id, owner = None)
         _insert_kb_doc(conn, doc_id, kb_id)
     with pytest.raises(HTTPException) as exc_info:
         document_for_subject_or_404(doc_id, "alice")
@@ -146,7 +149,7 @@ def test_kb_doc_missing_kb_raises_404(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
         # Delete the KB — ON DELETE CASCADE should also drop the doc.
         conn.execute("DELETE FROM rag_knowledge_bases WHERE id = ?", (kb_id,))
@@ -216,7 +219,7 @@ def test_empty_subject_raises_404(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
     with pytest.raises(HTTPException) as exc_info:
         document_for_subject_or_404(doc_id, "")
@@ -231,7 +234,7 @@ def test_chunk_belongs_returns_true_for_matching_doc(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
         _insert_chunk(conn, chunk_id, doc_id)
     assert chunk_belongs_to_document(chunk_id, doc_id) is True
@@ -243,7 +246,7 @@ def test_chunk_belongs_returns_false_for_wrong_doc(tmp_path, monkeypatch):
     kb_id = _uid()
     doc_a, doc_b, chunk_id = _uid(), _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_a, kb_id, "a.pdf")
         _insert_kb_doc(conn, doc_b, kb_id, "b.pdf")
         _insert_chunk(conn, chunk_id, doc_a)
@@ -256,7 +259,7 @@ def test_chunk_belongs_returns_false_for_missing_chunk(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     doc_id, kb_id = _uid(), _uid()
     with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner="alice")
+        _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
     assert chunk_belongs_to_document("ghost-chunk-id", doc_id) is False
 
