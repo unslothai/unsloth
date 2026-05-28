@@ -133,7 +133,10 @@ def is_model_cached(model_name: str) -> bool:
 def _hf_hub_cache_dir() -> Path:
     """Return HF cache root honoring HF_HUB_CACHE when available."""
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
+        from huggingface_hub import HfFolder, get_cache_home
+        return Path(get_cache_home())
+    except ImportError:
+        return Path.home() / ".cache" / "huggingface"onstants import HF_HUB_CACHE
 
         return Path(HF_HUB_CACHE)
     except Exception as exc:
