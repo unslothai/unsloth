@@ -55,7 +55,7 @@ export function IngestionToastStack() {
   if (visible.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-72 flex-col gap-2">
+    <div className="pointer-events-none fixed right-4 top-4 z-[9999] flex w-72 flex-col gap-2">
       <AnimatePresence initial={false}>
         {visible.map(([jobId, event]) => {
           const isTerminal =
