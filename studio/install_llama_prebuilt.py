@@ -4246,6 +4246,22 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     )
 
 
+def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
+    """Subdirectory names within the archive root that must be copied into
+    the overlay directory alongside the flat shared libraries.
+
+    hipBLASLt and rocBLAS expect their Tensile kernel catalog trees
+    (hipblaslt/library/<gfx>/ and rocblas/library/<gfx>/) to sit next to
+    their shared libraries at runtime.  These trees are multi-level and
+    cannot be handled by copy_globs (filename-only matching, flat copy)."""
+    if choice.source_label == "lemonade" and choice.install_kind in {
+        "linux-rocm",
+        "windows-hip",
+    }:
+        return ["hipblaslt", "rocblas"]
+    return []
+
+
 def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
     patterns = ["BUILD_INFO.txt", "THIRD_PARTY_LICENSES.txt"]
     if choice.install_kind.startswith("windows"):
@@ -4570,6 +4586,10 @@ def install_from_archives(
         copy_globs(
             source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
         )
+        for _subdir in runtime_subdirs_for_choice(choice):
+            _src_subdir = source_dir / _subdir
+            if _src_subdir.is_dir():
+                shutil.copytree(_src_subdir, overlay_dir / _subdir, dirs_exist_ok = True)
         if runtime_extract_dir is not None:
             # The runtime archive only contributes the CUDA DLLs.
             # Restrict the overlay to the cudart bundle's known
