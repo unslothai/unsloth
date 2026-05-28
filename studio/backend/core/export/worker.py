@@ -477,9 +477,9 @@ def run_export_process(
         m.__path__ = []
         m.__package__ = mod_name
         m._unsloth_stub = _STUB_SENTINEL
-        m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
+        m.__spec__ = _ilm.ModuleSpec(mod_name, loader = None, is_package = True)
 
-        def _ga(attr, _m=m, _n=mod_name):
+        def _ga(attr, _m = m, _n = mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
             child = _make_stub_type(f"{_n}.{attr}")
@@ -500,7 +500,7 @@ def run_export_process(
             pass
 
     class _StubSubpackageFinder(_ilabc.MetaPathFinder):
-        def find_spec(self, fullname, path, target=None):
+        def find_spec(self, fullname, path, target = None):
             if "." not in fullname:
                 return None
             parent = sys.modules.get(fullname.rsplit(".", 1)[0])
@@ -509,13 +509,14 @@ def run_export_process(
             if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
                 return None
             return _ilm.ModuleSpec(
-                fullname, _StubSubpackageLoader(fullname), is_package=True
+                fullname, _StubSubpackageLoader(fullname), is_package = True
             )
 
     _is_win32_rocm = False
     if sys.platform == "win32":
         try:
             import torch as _torch_probe
+
             _is_win32_rocm = bool(
                 getattr(getattr(_torch_probe, "version", None), "hip", None)
                 or "rocm" in getattr(_torch_probe, "__version__", "").lower()
