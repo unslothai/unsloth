@@ -26,16 +26,36 @@ logger = get_logger(__name__)
 def get_colab_url(port: int = 8888) -> str:
     """
     Get the actual Colab proxy URL for a port.
+
+    Retries up to 3 times and validates that the result is a real HTTPS Colab
+    URL before returning.  Falls back to http://localhost:{port} only when all
+    attempts fail.
     """
+    import time as _time
+
+    fallback = f"http://localhost:{port}"
+
     try:
         from google.colab.output import eval_js
+    except ImportError:
+        return fallback
 
-        # Use Colab's proxy mechanism
-        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 5)
-        return url if url else f"http://localhost:{port}"
-    except Exception as e:
-        logger.info(f"Note: Could not get Colab URL ({e})")
-        return f"http://localhost:{port}"
+    for attempt in range(3):
+        try:
+            url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
+            # A valid Colab proxy URL starts with https:// and embeds the port.
+            if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
+                return url.rstrip("/")
+        except Exception as e:
+            logger.info(f"Note: Could not get Colab URL (attempt {attempt + 1}/3: {e})")
+        if attempt < 2:
+            _time.sleep(1)
+
+    logger.warning(
+        f"Could not get a valid Colab proxy URL after 3 attempts — using localhost fallback. "
+        f"The link/iframe may not work from outside the runtime."
+    )
+    return fallback
 
 
 def show_link(port: int = 8888):
@@ -45,11 +65,20 @@ def show_link(port: int = 8888):
     # Get real Colab proxy URL
     url = get_colab_url(port)
 
-    short_url = (
-        url[: url.index("-", url.index(f"{port}-") + len(str(port)) + 1) + 1] + "..."
-        if f"{port}-" in url
-        else url
-    )
+    # Build a truncated display URL. Wrap in try/except so an unexpected URL
+    # shape never prevents the link from rendering.
+    try:
+        port_prefix = f"{port}-"
+        idx = url.index(port_prefix)
+        next_dash = url.index("-", idx + len(port_prefix))
+        short_url = url[: next_dash + 1] + "..."
+    except (ValueError, IndexError):
+        short_url = url
+
+    # Also emit a plain-text line so the URL is visible even if HTML display
+    # is suppressed or fails.
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
+
     html = f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -77,6 +106,27 @@ def show_link(port: int = 8888):
     display(HTML(html))
 
 
+def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
+    """Return True if a Studio backend is already answering health checks on *port*."""
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _show_and_embed(port: int):
+    """Show the link card and register the inline iframe for *port*."""
+    show_link(port)
+    try:
+        from google.colab import output as colab_output
+        colab_output.serve_kernel_port_as_iframe(port, height = 1200, width = "100%")
+    except ImportError:
+        pass
+
+
 def start(port: int = 8888):
     """
     Start Unsloth Studio server in Colab and display the URL.
@@ -85,10 +135,23 @@ def start(port: int = 8888):
         from colab import start
         start()
     """
-    import sys
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+
+    # --- Fast path: Studio is already running (cell re-run) ---
+    # Re-launching would either collide on the port or silently shift to a new
+    # port and confuse the user.  Just re-show the link and iframe instead.
+    if _is_studio_healthy(port):
+        logger.info(f"   Studio is already running on port {port} — reusing existing server.")
+        _show_and_embed(port)
+        try:
+            for _ in range(10000):
+                time.sleep(300)
+                print("=", end = "", flush = True)
+        except KeyboardInterrupt:
+            logger.info("\nUnsloth Studio keepalive stopped.")
+        return
 
     logger.info("   Loading backend...")
     from run import run_server
@@ -97,12 +160,19 @@ def start(port: int = 8888):
     repo_root = Path(__file__).parent.parent
     frontend_path = repo_root / "frontend" / "dist"
 
-    if not frontend_path.exists():
+    if not (frontend_path / "index.html").exists():
         logger.info("❌ Frontend not built! Please run the setup cell first.")
         return
 
     logger.info("   Starting server...")
-    app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    try:
+        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    except SystemExit as exc:
+        logger.error(f"❌ Unsloth Studio failed to start: {exc}")
+        return
+    except Exception as exc:
+        logger.error(f"❌ Unsloth Studio failed to start: {exc}")
+        return
 
     # run_server auto-increments the port when the requested one is already in
     # use (e.g. Jupyter occupying 8888). Read back the actual bound port so the
@@ -136,20 +206,17 @@ def start(port: int = 8888):
         )
         return
 
-    # Show the clickable link with real URL
-    show_link(actual_port)
+    _show_and_embed(actual_port)
 
-    # Serve as inline iframe in notebook output
+    # Keep kernel alive so the daemon server thread stays running.
+    # Handle KeyboardInterrupt cleanly so the user gets a readable message
+    # rather than a raw traceback when they interrupt the cell.
     try:
-        from google.colab import output as colab_output
-        colab_output.serve_kernel_port_as_iframe(actual_port, height = 1200, width = "100%")
-    except ImportError:
-        pass
-
-    # Keep kernel alive so the daemon server thread stays running
-    for _ in range(10000):
-        time.sleep(300)
-        print("=", end = "", flush = True)
+        for _ in range(10000):
+            time.sleep(300)
+            print("=", end = "", flush = True)
+    except KeyboardInterrupt:
+        logger.info("\nUnsloth Studio keepalive stopped.")
 
 
 if __name__ == "__main__":

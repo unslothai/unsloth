@@ -350,12 +350,31 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     # sandboxed null-origin output iframe. Use '*' so any ancestor is allowed;
     # Colab is already a sandboxed single-user environment.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
+
+    # In Colab the frontend is served over the Colab reverse-proxy at an HTTPS
+    # *.prod.colab.dev URL. Colab's kernel communication layer and the output
+    # iframe scaffolding inject scripts from *.prod.colab.dev and
+    # *.googleusercontent.com, and make fetch/WebSocket connections to those
+    # same origins. Widen script-src and connect-src in Colab mode so those
+    # requests are not blocked. 'unsafe-inline' for scripts is still omitted;
+    # our own inline script uses a nonce.
+    if _IS_COLAB:
+        script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
+        connect_src = (
+            "'self' blob: data: "
+            "https://huggingface.co https://datasets-server.huggingface.co "
+            "https://*.prod.colab.dev wss://*.prod.colab.dev "
+            "https://*.googleusercontent.com wss://*.googleusercontent.com"
+        )
+    else:
+        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
         "https://t3.gstatic.com https://www.google.com; "
-        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        f"connect-src {connect_src}; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
