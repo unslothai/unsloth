@@ -58,12 +58,16 @@ def get_colab_url(port: int = 8888) -> str:
     return fallback
 
 
-def show_link(port: int = 8888):
-    """Display a styled clickable link to the UI."""
+def show_link(port: int = 8888, *, _url: "str | None" = None):
+    """Display a styled clickable link to the UI.
+
+    *_url* is an optional pre-fetched Colab proxy URL. When omitted,
+    ``get_colab_url(port)`` is called internally. Pass it from
+    ``_show_and_embed`` to avoid a second ``eval_js`` round-trip.
+    """
     from IPython.display import display, HTML
 
-    # Get real Colab proxy URL
-    url = get_colab_url(port)
+    url = _url if _url is not None else get_colab_url(port)
 
     # Build a truncated display URL. Wrap in try/except so an unexpected URL
     # shape never prevents the link from rendering.
@@ -118,13 +122,73 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
 
 
 def _show_and_embed(port: int):
-    """Show the link card and register the inline iframe for *port*."""
-    show_link(port)
+    """Show the link card and embed the Studio inline for *port*.
+
+    The URL is fetched once and shared between the link card and the iframe so
+    ``google.colab.kernel.proxyPort`` is only called once per invocation.
+
+    We inject a raw ``<iframe>`` via ``IPython.display.HTML`` rather than
+    ``serve_kernel_port_as_iframe`` for two reasons:
+
+    1. **Width responsiveness** — ``serve_kernel_port_as_iframe`` sets the
+       iframe width as a DOM *attribute* (``width="100%"``), which Colab's
+       output machinery can "bake in" to a fixed pixel value on first render.
+       A CSS *style* (``style="width:100%"``) is recalculated every time the
+       parent container reflows, so the Studio actually follows the Colab
+       notebook panel width when it opens/closes or the window is resized.
+
+    2. **Height sizing** — a hardcoded ``height=1200`` is too tall on short
+       monitors (forces outer-page scroll) and wastes space on tall ones.  A
+       small JS snippet reads ``screen.availHeight`` and picks a height that
+       fills ~82 % of the physical screen, bounded between 600 px and 1100 px.
+       A ``resize`` listener keeps the height correct if the user zooms.
+
+    Falls back to ``serve_kernel_port_as_iframe`` if ``IPython.display.HTML``
+    is unavailable for any reason.
+    """
+    # Single eval_js round-trip: get_colab_url() calls proxyPort() which both
+    # returns the URL and registers the port with Colab's reverse-proxy.
+    url = get_colab_url(port)
+    show_link(port, _url = url)
+
     try:
-        from google.colab import output as colab_output
-        colab_output.serve_kernel_port_as_iframe(port, height = 1200, width = "100%")
-    except ImportError:
-        pass
+        from IPython.display import display, HTML
+
+        # Use a unique element id so the resize script can find the iframe even
+        # when multiple Studio instances are embedded in the same notebook.
+        iframe_id = f"unsloth-studio-{port}"
+
+        display(HTML(f"""
+<iframe
+  id="{iframe_id}"
+  src="{url}"
+  style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
+  allow="clipboard-read; clipboard-write"
+></iframe>
+<script>
+(function() {{
+  var el = document.getElementById('{iframe_id}');
+  if (!el) return;
+  function fit() {{
+    // screen.availHeight is in CSS pixels and excludes the OS taskbar.
+    // Aim for ~82 % of the screen, clamped to [600, 1100] px.
+    var h = Math.max(600, Math.min(Math.round((window.screen.availHeight || 900) * 0.82), 1100));
+    el.style.height = h + 'px';
+  }}
+  fit();
+  // Re-fit on window resize (handles browser zoom changes and panel open/close
+  // events that trigger a resize in Colab's output iframe context).
+  window.addEventListener('resize', fit, {{passive: true}});
+}})();
+</script>
+"""))
+    except Exception:
+        # Fallback: Colab's built-in (less sizing control, but always works)
+        try:
+            from google.colab import output as colab_output
+            colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
+        except ImportError:
+            pass
 
 
 def start(port: int = 8888):
