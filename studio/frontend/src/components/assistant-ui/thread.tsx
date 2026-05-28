@@ -1150,9 +1150,12 @@ const RagToggle: FC = () => {
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // RAG runs through the local search_knowledge_base tool, so it needs
-  // tool-calling support (mirrors shared-composer's ragDisabled).
-  const disabled = !modelLoaded || !supportsTools;
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const isExternalModel = parseExternalModelId(checkpoint) !== null;
+  // Local models need tool-calling (search_knowledge_base loop); external
+  // providers use the prefetch path, so RAG is allowed regardless of the
+  // local supportsTools flag (mirrors shared-composer's ragDisabled).
+  const disabled = !modelLoaded || (!supportsTools && !isExternalModel);
   return (
     <button
       type="button"

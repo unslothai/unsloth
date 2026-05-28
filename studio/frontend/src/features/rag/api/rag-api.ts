@@ -425,6 +425,36 @@ export async function search(req: SearchRequest): Promise<SearchHit[]> {
   return body.hits;
 }
 
+export interface PrefetchRequest {
+  query: string;
+  kb_id?: string;
+  thread_id?: string;
+  top_k?: number;
+  mode?: "bm25" | "dense" | "hybrid";
+  enable_rerank?: boolean;
+  reranker_model?: string;
+  min_score?: number;
+}
+
+export interface PrefetchResult {
+  queries: string[];
+  hits: SearchHit[];
+}
+
+/** External-provider RAG prefetch: the backend decomposes the question via
+ *  the helper model and retrieves, returning the (possibly multi-query)
+ *  list of queries it used plus the merged hits. */
+export async function prefetchRag(
+  req: PrefetchRequest,
+): Promise<PrefetchResult> {
+  const response = await authFetch("/api/rag/prefetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  return parseJsonOrThrow<PrefetchResult>(response);
+}
+
 // --- Ingestion SSE ---
 
 /** Subscribe to a job's SSE stream; returns an unsubscribe fn.
