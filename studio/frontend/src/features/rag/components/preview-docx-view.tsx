@@ -26,14 +26,20 @@ export const PreviewDocxView: FC<{ target: PreviewTarget; blob: Blob }> = ({
     void renderAsync(blob, offscreen, undefined, {
       inWrapper: true,
       ignoreLastRenderedPageBreak: true,
+      // Inline images as base64 data: URIs rather than blob: URLs.
+      // DOMPurify drops blob: from img src, so blob-backed images would
+      // vanish after sanitize; data: URIs survive (see ADD_DATA_URI_TAGS).
+      useBase64URL: true,
     })
       .then(() => {
         if (cancelled || !ref.current) return;
         // Keep <style> so docx-preview's scoped layout CSS survives the
-        // sanitize pass; everything else uses DOMPurify defaults (drops
+        // sanitize pass, and allow data: URIs on <img> so embedded
+        // figures render. Everything else uses DOMPurify defaults (drops
         // <script>, event handlers, javascript: URLs, etc.).
         const clean = DOMPurify.sanitize(offscreen.innerHTML, {
           ADD_TAGS: ["style"],
+          ADD_DATA_URI_TAGS: ["img"],
         });
         ref.current.innerHTML = clean;
       })
