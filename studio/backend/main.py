@@ -367,7 +367,9 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        connect_src = (
+            "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        )
 
     return (
         "default-src 'self'; "

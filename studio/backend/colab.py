@@ -44,7 +44,12 @@ def get_colab_url(port: int = 8888) -> str:
         try:
             url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
             # A valid Colab proxy URL starts with https:// and embeds the port.
-            if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
+            if (
+                url
+                and isinstance(url, str)
+                and url.startswith("https://")
+                and str(port) in url
+            ):
                 return url.rstrip("/")
         except Exception as e:
             logger.info(f"Note: Could not get Colab URL (attempt {attempt + 1}/3: {e})")
@@ -158,7 +163,8 @@ def _show_and_embed(port: int):
         # when multiple Studio instances are embedded in the same notebook.
         iframe_id = f"unsloth-studio-{port}"
 
-        display(HTML(f"""
+        display(
+            HTML(f"""
 <div id="{iframe_id}-wrap" style="position:relative;width:100%;">
   <iframe
     id="{iframe_id}"
@@ -216,11 +222,13 @@ def _show_and_embed(port: int):
   }});
 }})();
 </script>
-"""))
+""")
+        )
     except Exception:
         # Fallback: Colab's built-in (less sizing control, but always works)
         try:
             from google.colab import output as colab_output
+
             colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
         except ImportError:
             pass
@@ -242,7 +250,9 @@ def start(port: int = 8888):
     # Re-launching would either collide on the port or silently shift to a new
     # port and confuse the user.  Just re-show the link and iframe instead.
     if _is_studio_healthy(port):
-        logger.info(f"   Studio is already running on port {port} — reusing existing server.")
+        logger.info(
+            f"   Studio is already running on port {port} — reusing existing server."
+        )
         _show_and_embed(port)
         try:
             for _ in range(10000):
@@ -265,7 +275,9 @@ def start(port: int = 8888):
 
     logger.info("   Starting server...")
     try:
-        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+        app = run_server(
+            host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True
+        )
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
@@ -276,9 +288,7 @@ def start(port: int = 8888):
     # run_server auto-increments the port when the requested one is already in
     # use (e.g. Jupyter occupying 8888). Read back the actual bound port so the
     # Colab proxy URL and iframe always point at the right place.
-    actual_port: int = (
-        getattr(getattr(app, "state", None), "server_port", None) or port
-    )
+    actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
 
     logger.info(f"   Server started on port {actual_port}!")
 
