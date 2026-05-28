@@ -92,10 +92,10 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
                  height="48" style="display:block;">
             Unsloth Studio is Ready!
         </h2>
-        <a href="{url}" target="_blank"
+        <a href="{url}" onclick="window.open('{url}','_blank');return false;"
            style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
                   background: #000000; color: white; text-decoration: none; border-radius: 8px;
-                  font-weight: 800; font-size: 16px;">
+                  font-weight: 800; font-size: 16px; cursor: pointer;">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
             Open Unsloth Studio
         </a>
@@ -159,26 +159,61 @@ def _show_and_embed(port: int):
         iframe_id = f"unsloth-studio-{port}"
 
         display(HTML(f"""
-<iframe
-  id="{iframe_id}"
-  src="{url}"
-  style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
-  allow="clipboard-read; clipboard-write"
-></iframe>
+<div id="{iframe_id}-wrap" style="position:relative;width:100%;">
+  <iframe
+    id="{iframe_id}"
+    src="{url}"
+    style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
+    allow="clipboard-read; clipboard-write"
+  ></iframe>
+  <button
+    id="{iframe_id}-fs"
+    title="Fullscreen"
+    style="position:absolute;top:10px;right:10px;z-index:9999;
+           background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:6px;
+           width:34px;height:34px;cursor:pointer;font-size:16px;
+           display:flex;align-items:center;justify-content:center;
+           opacity:0;transition:opacity 0.2s;"
+    onmouseenter="this.style.opacity='1'"
+    onmouseleave="this.style.opacity='0.15'"
+  >&#x26F6;</button>
+</div>
 <script>
 (function() {{
-  var el = document.getElementById('{iframe_id}');
-  if (!el) return;
+  var wrap = document.getElementById('{iframe_id}-wrap');
+  var el   = document.getElementById('{iframe_id}');
+  var btn  = document.getElementById('{iframe_id}-fs');
+  if (!el || !btn) return;
+
   function fit() {{
-    // screen.availHeight is in CSS pixels and excludes the OS taskbar.
-    // Aim for ~82 % of the screen, clamped to [600, 1100] px.
     var h = Math.max(600, Math.min(Math.round((window.screen.availHeight || 900) * 0.82), 1100));
     el.style.height = h + 'px';
   }}
   fit();
-  // Re-fit on window resize (handles browser zoom changes and panel open/close
-  // events that trigger a resize in Colab's output iframe context).
   window.addEventListener('resize', fit, {{passive: true}});
+
+  // Show button faintly when hovering the wrapper
+  wrap.addEventListener('mouseenter', function() {{ btn.style.opacity = '0.15'; }});
+  wrap.addEventListener('mouseleave', function() {{ btn.style.opacity = '0'; }});
+
+  btn.addEventListener('click', function() {{
+    var target = wrap;
+    var req = target.requestFullscreen || target.webkitRequestFullscreen || target.mozRequestFullScreen;
+    if (req) {{
+      req.call(target);
+      // After entering fullscreen, make the iframe fill it
+      document.addEventListener('fullscreenchange', function onFs() {{
+        if (document.fullscreenElement === target) {{
+          el.style.height = '100vh';
+          el.style.width  = '100vw';
+        }} else {{
+          fit();
+          el.style.width = '100%';
+        }}
+        document.removeEventListener('fullscreenchange', onFs);
+      }});
+    }}
+  }});
 }})();
 </script>
 """))
