@@ -22,6 +22,7 @@ import {
   isInlineBlobAllowed,
   usePreviewStore,
 } from "../stores/preview-store";
+import { PreviewDocxView } from "./preview-docx-view";
 import { PreviewPdfView } from "./preview-pdf-view";
 import { PreviewTextView } from "./preview-text-view";
 import { PreviewUnavailable } from "./preview-unavailable";
@@ -111,9 +112,16 @@ function renderPreviewBody({
       return <PreviewPdfView target={target} file={pdfFile} />;
     }
 
-    // text / image / docx / html / unknown — all routed through
-    // text-view. text gets the snippet rendered inline; docx/html
-    // /unknown skip inline-render entirely (contracts §5.4 + Risk #3).
+    // DOCX renders inline through a DOMPurify-sanitized docx-preview
+    // pass (Risk #3 stays satisfied — the markup is sanitized and no raw
+    // object URL is created).
+    if (target.mediaKind === "docx" && previewBlob) {
+      return <PreviewDocxView target={target} blob={previewBlob} />;
+    }
+
+    // text / html / unknown — routed through text-view. text gets the
+    // snippet rendered inline; html / unknown skip inline-render entirely
+    // (contracts §5.4 + Risk #3).
     return <PreviewTextView target={target} />;
   }
 

@@ -4,7 +4,9 @@
  * Acceptance criteria (contracts §5.4, PLAN.md T5, decisions Q7):
  * - mediaKind === "pdf" → react-pdf view is mounted (or loading indicator shown).
  * - mediaKind === "html" → text-view fallback shown, NO object/embed/iframe with blob URL.
- * - mediaKind === "docx" → text-view fallback shown, NO inline rendering.
+ * - mediaKind === "docx" → DOMPurify-sanitized docx-preview render when a
+ *   blob is present; falls back to text-view when it isn't. Never uses
+ *   object/embed/iframe and never creates a raw object URL.
  * - mediaKind === "unknown" → unavailable/download state, NOT inline.
  * - mediaKind === "text" → text/snippet view shown.
  * - Panel without a target renders nothing or unavailable state.

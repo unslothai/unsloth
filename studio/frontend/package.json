@@ -57,6 +57,8 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "dexie": "^4.3.0",
+    "docx-preview": "^0.3.6",
+    "dompurify": "^3.2.7",
     "event-source-polyfill": "1.0.31",
     "fflate": "0.8.3",
     "js-yaml": "^4.1.1",
