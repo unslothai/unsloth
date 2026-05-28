@@ -108,9 +108,7 @@ def decompose_query(query: str) -> list[str]:
             response = client.post(endpoint, json = payload)
             response.raise_for_status()
             data = response.json()
-        content = (
-            data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         queries = _parse_queries(content if isinstance(content, str) else "", q)
         logger.info("RAG query-decompose: produced queries", n = len(queries))
         return queries

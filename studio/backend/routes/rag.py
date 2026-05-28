@@ -1638,9 +1638,7 @@ def _execute_search(
 ) -> list[SearchHit]:
     """Run one retrieval against an already-resolved scope. Shared by the
     /search and /prefetch endpoints."""
-    candidate_k = (
-        max(top_k, RAG_RERANK_CANDIDATE_K) if enable_rerank else top_k
-    )
+    candidate_k = max(top_k, RAG_RERANK_CANDIDATE_K) if enable_rerank else top_k
 
     if mode == "bm25":
         hits = retrieval.retrieve_bm25(scope, query, candidate_k)
