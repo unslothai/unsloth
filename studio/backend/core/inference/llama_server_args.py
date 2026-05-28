@@ -1,46 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Validator for user-supplied llama-server pass-through args.
+"""Boundary validator for user-supplied llama-server pass-through args.
 
-Studio runs llama-server as a managed subprocess and lets callers pass
-extra flags directly (CLI: ``unsloth run ... --top-k 20``; HTTP:
-``LoadRequest.llama_extra_args``). This module is the boundary that
-rejects only flags Studio fundamentally cannot share with the user --
-model identity, the auth key, and the network endpoint Studio's HTTP
-proxy targets. Anything else passes through.
+Reject only flags Studio manages (model identity, auth, network,
+parallel slots). Everything else (sampling, ``-c``, ``-ngl``,
+``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...)
+is appended after Studio's auto-set flags so llama.cpp's last-wins
+parser lets the user override.
 
-User-supplied args are appended to ``cmd`` after Studio's auto-set
-flags, so llama.cpp's last-wins CLI parsing makes the user's value
-override the auto-set one. That covers tunable knobs the user might
-reasonably want to override -- ``-c``/``--ctx-size``,
-``-np``/``--parallel``, ``-fa``/``--flash-attn``,
-``-ngl``/``--gpu-layers``, ``-t``/``--threads``, ``-fit``/``--fit*``,
-``--cache-type-k/v``, ``--chat-template-file/-kwargs``,
-``--spec-*``, ``--jinja``/``--no-jinja``,
-``--no-context-shift``/``--context-shift``, sampling params, etc.
-
-Reference: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Optional
 
-# Each group is the full set of aliases (short + long) for one
-# hard-denied flag, taken from the llama-server README. If llama.cpp
-# adds a new alias for an existing denied flag, extend the relevant
-# group.
-#
-# Flags NOT in this list (e.g. -c, --parallel, --flash-attn, -ngl,
-# -t/--threads, --jinja, --no-context-shift, --fit*, --cache-type-*,
-# --chat-template-*, --spec-*) pass through and override Studio's
-# auto-set version via llama.cpp's last-wins CLI parsing.
+# Each group = every alias (short + long) of one hard-denied flag.
+# Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Model identity -- Studio resolves the model from LoadRequest and
-    # passes -m / mmproj after downloading from HF if needed. A second
-    # -m would point at a different model than the one Studio thinks
-    # is loaded.
+    # Parallel slots: owned by typer --parallel; a pass-through would
+    # desync app.state.llama_parallel_slots from llama-server.
+    frozenset({"-np", "--parallel", "--n-parallel"}),
+    # Model identity: Studio resolves it from LoadRequest; a second
+    # -m would load a different model than Studio thinks it loaded.
     frozenset({"-m", "--model"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
@@ -51,28 +34,21 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hft", "--hf-token"}),
     frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
-    # Networking -- Studio binds llama-server's port and reverse-proxies
-    # HTTP traffic to it. Retargeting host/port/path/prefix would
-    # orphan Studio's proxy and the UI would lose the server.
+    # Networking: Studio binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
     frozenset({"--port"}),
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
-    # Auth / TLS -- Studio terminates auth at its own layer; an
-    # upstream --api-key would shadow Studio's UNSLOTH_DIRECT_STREAM
-    # key, and TLS on llama-server would break the local proxy hop.
+    # Auth / TLS: Studio terminates auth; upstream --api-key / TLS
+    # shadows Studio's key and breaks the proxy hop.
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
     frozenset({"--ssl-key-file"}),
     frozenset({"--ssl-cert-file"}),
-    # Single-model server -- Studio runs one model per llama-server
-    # process and serves its own UI. Enabling multi-model loading or
-    # llama-server's built-in web UI changes the surface clients see.
-    # ``--webui``/``--no-webui`` are the legacy spelling; current
-    # upstream uses ``--ui``/``--no-ui`` + ``--ui-*`` companions.
-    # Keep both so the denylist matches old and new llama-server
-    # binaries (Studio's prebuilt vs system-llama.cpp).
+    # Built-in web UI. --webui/--no-webui is the legacy spelling;
+    # upstream renamed to --ui/--no-ui + --ui-*. Keep both so prebuilt
+    # and system llama.cpp binaries both match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
     frozenset({"--ui-config"}),
@@ -82,32 +58,46 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
+    # Server-mode flips: --embedding / --rerank restrict llama-server to
+    # those endpoints, breaking Studio's /v1/chat/completions hop.
+    frozenset({"--embedding", "--embeddings"}),
+    frozenset({"--rerank", "--reranking"}),
+    # llama-server's own built-in tools flag would silently stack on top
+    # of Studio's --enable-tools / --disable-tools policy resolver.
+    frozenset({"--tools"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 
 
 def _flag_name(token: str) -> Optional[str]:
-    """Return the flag name for a token, or None if it isn't a flag.
+    """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels ``--key=value`` to the bare ``--key``. Plain numeric values
-    like ``-1`` or ``-0.5`` (e.g. ``--seed -1``) are values, not flags;
-    llama-server short-form flags always start with a letter.
+    Peels `--key=value` to `--key`, treats `-1` / `-0.5` as values
+    (llama-server shorts always start with a letter), strips
+    whitespace, and normalises attached `-np8` / signed `-np-1` /
+    digit-prefix-junk `-np8x` to `-np`. Mirrors the CLI's
+    `_expand_attached_np_short`.
     """
+    token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
         return None
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
-    return token.split("=", 1)[0]
+    name = token.split("=", 1)[0]
+    if len(name) > 3 and name.startswith("-np"):
+        suffix = name[3:]
+        if suffix[0].isdigit() or (
+            len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
+        ):
+            return "-np"
+    return name
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args.
-
-    Returns the args as a flat list ready to extend the llama-server
-    command. Raises ``ValueError`` (with the offending flag in the
-    message) the moment a token resolves to a Studio-managed flag.
-    """
+    """Validate user-supplied llama-server args. Returns a flat list
+    ready to extend the llama-server command; raises ``ValueError``
+    naming the offending flag on the first managed token."""
     if not args:
         return []
     out: list[str] = []
@@ -120,19 +110,21 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"and cannot be passed as an extra arg"
             )
         out.append(token)
+    parse_ctx_override(out)
+    parse_cache_override(out)
     return out
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is a Studio-managed llama-server flag."""
-    return flag in _DENYLIST
+    """True if ``flag`` is Studio-managed. Normalises via ``_flag_name``
+    so `-np8` / `--parallel=8` classify like the canonical tokens."""
+    normalised = _flag_name(flag)
+    return normalised is not None and normalised in _DENYLIST
 
 
-# Pass-through flags that shadow first-class ``LoadRequest`` fields
-# (max_seq_length, cache_type_kv, speculative_type,
-# chat_template_override). Stripped from inherited extras so they
-# can't last-wins-override an Apply that re-sets the same first-class
-# field.
+# Pass-through flags that shadow first-class LoadRequest fields;
+# stripped from inherited extras so they can't last-wins-override an
+# Apply that re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
 _CACHE_FLAGS: frozenset[str] = frozenset(
     {"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"}
@@ -169,12 +161,122 @@ _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
 )
 
-# Boolean flags inside _SHADOWING_FLAGS that take no value. The
-# value-consuming heuristic in strip_shadowing_flags must skip just the
-# flag for these, never the following token.
+# Shadowing flags that take no value -- strip the flag only, never the
+# following token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
     {"--spec-default", "--jinja", "--no-jinja"}
 )
+
+
+def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``-c`` / ``--ctx-size`` value.
+
+    Mirrors llama.cpp's last-wins flag parsing for the one pass-through
+    numeric knob Studio's load-time fit logic needs to see.
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[int] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _CONTEXT_FLAGS:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                raise ValueError(
+                    f"llama-server flag '{flag}' requires an integer value"
+                )
+            raw_value = tokens[i + 1]
+            i += 2
+
+        try:
+            value = int(str(raw_value).strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"llama-server flag '{flag}' requires an integer value"
+            ) from exc
+        if value < 0:
+            raise ValueError(
+                f"llama-server flag '{flag}' requires a non-negative integer value"
+            )
+        override = value
+
+    return override
+
+
+def resolve_requested_ctx(
+    args: Optional[Iterable[str]],
+    fallback_n_ctx: int,
+) -> int:
+    """Return the context size load_model should treat as requested.
+
+    Single source of truth for the two-line ``ctx_override = parse_ctx_override(...);
+    requested_ctx = ctx_override if ctx_override is not None else n_ctx`` pattern
+    used by ``load_model`` so tests don't have to reimplement the conditional
+    locally and then assert against their own reimplementation.
+    """
+    override = parse_ctx_override(args)
+    return override if override is not None else fallback_n_ctx
+
+
+def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins cache type if extras pass cache flags.
+
+    Mirrors parse_ctx_override but for cache type. Recognises both -ctk
+    (key) and -ctv (value). When both flags appear, returns the last-wins
+    value, treating key and value cache flags as the same setting because
+    Studio's KV estimate has a single cache_type_kv knob.
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[str] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _CACHE_FLAGS:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                raise ValueError(f"llama-server flag '{flag}' requires a value")
+            raw_value = tokens[i + 1]
+            i += 2
+
+        value = str(raw_value).strip()
+        if not value:
+            raise ValueError(f"llama-server flag '{flag}' requires a non-empty value")
+        override = value
+
+    return override
+
+
+def resolve_cache_type_kv(
+    args: Optional[Iterable[str]],
+    fallback_cache_type_kv: Optional[str],
+) -> Optional[str]:
+    """Return the cache type load_model should treat as requested.
+
+    Single source of truth for the cache override conditional used by
+    ``load_model``.
+    """
+    override = parse_cache_override(args)
+    return override if override is not None else fallback_cache_type_kv
 
 
 def strip_shadowing_flags(
@@ -187,14 +289,11 @@ def strip_shadowing_flags(
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
-    Used when the route inherits a previous load's ``llama_extra_args``
-    so that an inherited ``-c 4096`` cannot override the current
-    request's ``max_seq_length`` (and equivalents for cache /
-    speculative / chat template). Each ``strip_*`` flag controls one
-    group; the route only strips groups whose corresponding first-class
-    field was actually supplied by the caller, so an inherited
-    ``--chat-template-file`` survives an Apply that omits both
-    ``llama_extra_args`` and ``chat_template_override``.
+    Used when inheriting a previous load's ``llama_extra_args`` so an
+    inherited `-c 4096` can't override the current `max_seq_length`
+    (same for cache / spec / template). Each ``strip_*`` toggle
+    controls one group; the route only strips groups whose first-class
+    field the caller actually supplied.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -216,9 +315,8 @@ def strip_shadowing_flags(
             out.append(tok)
             i += 1
             continue
-        # Drop this token. Boolean shadowing flags never carry a value;
-        # other shadowing flags consume the next token when it isn't a
-        # flag and the value isn't already packed as ``--key=value``.
+        # Drop the flag; consume the next token too unless it's
+        # boolean, already inline (`-c=4096`), or another flag.
         if flag in _BOOLEAN_SHADOWING_FLAGS or "=" in tok:
             i += 1
         elif i + 1 < n and _flag_name(tokens[i + 1]) is None:

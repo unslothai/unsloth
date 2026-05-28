@@ -175,7 +175,8 @@ export const Thread: FC<{
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  hideComposer ? "bottom-3" : "bottom-[140px]",
+                  // 150px (was 140px) to add a small gap above the composer
+                  hideComposer ? "bottom-3" : "bottom-[150px]",
                 )}
               >
                 <ThreadScrollToBottom />
@@ -801,6 +802,7 @@ const ReasoningToggle: FC = () => {
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
       : null;
