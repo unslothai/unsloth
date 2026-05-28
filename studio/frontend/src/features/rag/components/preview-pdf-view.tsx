@@ -252,6 +252,8 @@ export const PreviewPdfView: FC<PreviewPdfViewProps> = ({ target, file }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const resizeTimeoutRef = useRef<number | null>(null);
   const lastMeasuredWidthRef = useRef<number | null>(null);
   const lastResetKeyRef = useRef<string | null>(null);
   const [width, setWidth] = useState<number | null>(null);
@@ -280,35 +282,54 @@ export const PreviewPdfView: FC<PreviewPdfViewProps> = ({ target, file }) => {
     setCopied(false);
   }, [resetKey, target.targetPage]);
 
-  useEffect(() => {
+  const measureWidth = useCallback(() => {
     const el = containerRef.current;
     if (!el) {
       return;
     }
-    let timeoutId: number | null = null;
-    const updateWidth = () => {
-      const next = Math.max(MIN_PDF_WIDTH, el.clientWidth - PDF_BODY_GUTTER_PX);
-      if (lastMeasuredWidthRef.current === next) {
+    const next = Math.max(MIN_PDF_WIDTH, el.clientWidth - PDF_BODY_GUTTER_PX);
+    if (lastMeasuredWidthRef.current === next) {
+      return;
+    }
+    lastMeasuredWidthRef.current = next;
+    setWidth(next);
+  }, []);
+
+  // Callback ref instead of useRef + mount effect: the scroll container
+  // lives INSIDE <Document>, so it only enters the DOM after the PDF
+  // loads. Attaching the ResizeObserver the instant the node mounts
+  // (rather than on the component's mount effect, when the node is still
+  // absent) is what keeps the main page from rendering at width 0 — the
+  // thin white strip regression.
+  const attachContainer = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (resizeTimeoutRef.current !== null) {
+        window.clearTimeout(resizeTimeoutRef.current);
+        resizeTimeoutRef.current = null;
+      }
+      containerRef.current = node;
+      if (!node) {
         return;
       }
-      lastMeasuredWidthRef.current = next;
-      setWidth(next);
-    };
-    updateWidth();
-    const observer = new ResizeObserver(() => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-      timeoutId = window.setTimeout(updateWidth, RESIZE_DEBOUNCE_MS);
-    });
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, []);
+      measureWidth();
+      const observer = new ResizeObserver(() => {
+        if (resizeTimeoutRef.current !== null) {
+          window.clearTimeout(resizeTimeoutRef.current);
+        }
+        resizeTimeoutRef.current = window.setTimeout(
+          measureWidth,
+          RESIZE_DEBOUNCE_MS,
+        );
+      });
+      observer.observe(node);
+      observerRef.current = observer;
+    },
+    [measureWidth],
+  );
 
   useEffect(() => {
     if (!copied) {
@@ -531,7 +552,7 @@ export const PreviewPdfView: FC<PreviewPdfViewProps> = ({ target, file }) => {
           ))}
         </div>
         <div
-          ref={containerRef}
+          ref={attachContainer}
           className="preview-scrollbar flex-1 overflow-y-scroll overflow-x-auto bg-muted/20 p-2 [scrollbar-gutter:stable]"
         >
           <div
