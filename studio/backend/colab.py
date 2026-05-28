@@ -120,8 +120,10 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     import urllib.request
 
     try:
-        urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout)
-        return True
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/api/health", timeout = timeout
+        ):
+            return True
     except Exception:
         return False
 
@@ -143,10 +145,9 @@ def _show_and_embed(port: int):
        notebook panel width when it opens/closes or the window is resized.
 
     2. **Height sizing** — a hardcoded ``height=1200`` is too tall on short
-       monitors (forces outer-page scroll) and wastes space on tall ones.  A
-       small JS snippet reads ``screen.availHeight`` and picks a height that
-       fills ~82 % of the physical screen, bounded between 600 px and 1100 px.
-       A ``resize`` listener keeps the height correct if the user zooms.
+       monitors (forces outer-page scroll) and wastes space on tall ones.
+       ``height: 82vh`` fills ~82 % of the viewport and re-fits automatically
+       on resize and zoom with no JS needed.
 
     Falls back to ``serve_kernel_port_as_iframe`` if ``IPython.display.HTML``
     is unavailable for any reason.
@@ -163,28 +164,14 @@ def _show_and_embed(port: int):
         # when multiple Studio instances are embedded in the same notebook.
         iframe_id = f"unsloth-studio-{port}"
 
-        display(
-            HTML(f"""
+        display(HTML(f"""
 <iframe
   id="{iframe_id}"
   src="{url}"
-  style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
+  style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
   allow="clipboard-read; clipboard-write"
 ></iframe>
-<script>
-(function() {{
-  var el = document.getElementById('{iframe_id}');
-  if (!el) return;
-  function fit() {{
-    var h = Math.max(600, Math.min(Math.round((window.screen.availHeight || 900) * 0.82), 1100));
-    el.style.height = h + 'px';
-  }}
-  fit();
-  window.addEventListener('resize', fit, {{passive: true}});
-}})();
-</script>
-""")
-        )
+"""))
     except Exception:
         # Fallback: Colab's built-in (less sizing control, but always works)
         try:
@@ -261,11 +248,11 @@ def start(port: int = 8888):
     server_ready = False
     for _ in range(40):
         try:
-            urllib.request.urlopen(
+            with urllib.request.urlopen(
                 f"http://localhost:{actual_port}/api/health", timeout = 1
-            )
-            server_ready = True
-            break
+            ):
+                server_ready = True
+                break
         except Exception:
             time.sleep(0.5)
 

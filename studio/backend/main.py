@@ -330,13 +330,12 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
 # /content is Colab's working directory — more reliable than env vars which
 # aren't always set depending on Colab runtime version.
-# Use a glob for the google.colab package so Python 3.12+ runtimes are covered.
-import glob as _glob
+import importlib.util as _importlib_util
 
 _IS_COLAB = os.path.isdir("/content") and (
     bool(os.environ.get("COLAB_BACKEND_URL"))
     or bool(os.environ.get("COLAB_JUPYTER_IP"))
-    or bool(_glob.glob("/usr/local/lib/python3.*/dist-packages/google/colab"))
+    or _importlib_util.find_spec("google.colab") is not None
 )
 
 
