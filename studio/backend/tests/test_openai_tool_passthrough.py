@@ -36,7 +36,11 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
-from routes.inference import _build_passthrough_payload, _friendly_error
+from routes.inference import (
+    _build_passthrough_payload,
+    _format_timeout_label,
+    _friendly_error,
+)
 
 
 # =====================================================================
@@ -512,6 +516,14 @@ class TestFriendlyErrorHttpx:
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
         assert "first token within 10 minutes" in _friendly_error(exc)
+
+    def test_timeout_label_singular_plural(self):
+        assert _format_timeout_label(1.0) == "1 second"
+        assert _format_timeout_label(1.5) == "1.5 seconds"
+        assert _format_timeout_label(2.0) == "2 seconds"
+        assert _format_timeout_label(60.0) == "1 minute"
+        assert _format_timeout_label(120.0) == "2 minutes"
+        assert _format_timeout_label(90.0) == "90 seconds"
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the existing substring

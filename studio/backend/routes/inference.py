@@ -83,14 +83,21 @@ def _install_httpcore_asyncgen_silencer() -> None:
 _install_httpcore_asyncgen_silencer()
 
 
+def _format_timeout_label(seconds: float) -> str:
+    value = float(seconds)
+    if value >= 60 and value.is_integer() and int(value) % 60 == 0:
+        minutes = int(value) // 60
+        unit = "minute" if minutes == 1 else "minutes"
+        return f"{minutes} {unit}"
+    display = str(int(value)) if value.is_integer() else f"{value:g}"
+    unit = "second" if value == 1 else "seconds"
+    return f"{display} {unit}"
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, httpx.ReadTimeout):
-        timeout_label = (
-            f"{int(_DEFAULT_FIRST_TOKEN_TIMEOUT_S // 60)} minutes"
-            if _DEFAULT_FIRST_TOKEN_TIMEOUT_S >= 60
-            else f"{int(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)} seconds"
-        )
+        timeout_label = _format_timeout_label(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
         return (
             "The model is still processing the prompt but did not produce a "
             f"first token within {timeout_label}. Try reducing context length, "
