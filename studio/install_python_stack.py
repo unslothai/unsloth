@@ -510,20 +510,28 @@ def _install_bnb_windows_rocm() -> bool:
     The continuous-release wheel is intentionally mismatched: the filename
     encodes version 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the
     wheel metadata reports 0.50.0.dev0.  uv rejects this filename/metadata
-    mismatch; use pip directly (force_pip=True) to bypass that check.
+    mismatch; set UV_SKIP_WHEEL_FILENAME_CHECK=1 to bypass that check, then
+    restore the previous value (or remove the var) when done.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
         return False
-    _ok = pip_install_try(
-        "bitsandbytes (AMD Windows, pre-release main)",
-        "--force-reinstall",
-        "--no-cache-dir",
-        "--no-deps",
-        _bnb_win_url,
-        constrain = False,
-        force_pip = True,
-    )
+    _old = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
+    os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
+    try:
+        _ok = pip_install_try(
+            "bitsandbytes (AMD Windows, pre-release main)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _bnb_win_url,
+            constrain = False,
+        )
+    finally:
+        if _old is None:
+            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
+        else:
+            os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = _old
     if not _ok:
         return False
     # After install: detect the actual ROCm DLL suffix shipped in the wheel and

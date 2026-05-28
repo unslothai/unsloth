@@ -1297,17 +1297,22 @@ shell.Run cmd, 0, False
                     $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
                     if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                         $HasROCm = $true
-                        # Attempt 1: newer amd-smi versions embed the gfx arch in list output
-                        if ($smiOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                            $ROCmGfxArch = $Matches[1].ToLower()
+                        # Mirror the hipinfo path: collect all gfx tokens in enumeration
+                        # order and pick the runtime-visible one via HIP_VISIBLE_DEVICES.
+                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                        # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                        $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($_smiGfxTokens.Count -gt 0) {
+                            $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
                             $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                         } else {
                             # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
                             # including the GFX target needed for wheel index selection.
                             $smiAsicOut = ""
                             try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
-                            if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                                $ROCmGfxArch = $Matches[1].ToLower()
+                            $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                            if ($_asicGfxTokens.Count -gt 0) {
+                                $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
                                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                             } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
                                 $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"

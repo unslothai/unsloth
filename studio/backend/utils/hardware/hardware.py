@@ -960,7 +960,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
     import sys as _sys
     import types as _types
 
-    if _sys.platform == "win32":
+    if _sys.platform == "win32" and IS_ROCM:
         # Dummy class for any name torch.distributed tries to import from these stubs
         class _Dummy:
             pass
