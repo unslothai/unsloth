@@ -448,9 +448,17 @@ function indexChunksByCitationId(
 function documentSourceIds(
   allChunks: ParsedChunk[],
   citedIds: Set<string>,
+  requireCitations: boolean,
 ): string[] {
   if (citedIds.size > 0) {
     return Array.from(citedIds);
+  }
+  // Prefetch injects docs unconditionally, so zero citations means the model
+  // judged them irrelevant — emit no badges rather than falsely attributing an
+  // off-topic answer to every retrieved chunk. The tool path keeps the lenient
+  // fallback since the model itself chose to search.
+  if (requireCitations) {
+    return [];
   }
   return allChunks.map((chunk) => chunk.id);
 }
@@ -502,9 +510,10 @@ function toDocumentSourcePart(
 function buildDocumentSourceParts(
   allChunks: ParsedChunk[],
   citedIds: Set<string>,
+  requireCitations: boolean,
 ): DocumentSourcePart[] {
   const byId = indexChunksByCitationId(allChunks);
-  const idsToShow = documentSourceIds(allChunks, citedIds);
+  const idsToShow = documentSourceIds(allChunks, citedIds, requireCitations);
   const out: DocumentSourcePart[] = [];
   const emittedIds = new Set<string>();
   for (const id of idsToShow) {
@@ -3107,13 +3116,30 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
           return parseChunks(typeof tc.result === "string" ? tc.result : "");
         });
+        const citedIds = extractCitedIds(cumulativeText);
         const documentSourceParts =
           ragChunks.length > 0
             ? buildDocumentSourceParts(
                 ragChunks,
-                extractCitedIds(cumulativeText),
+                citedIds,
+                // Prefetched (external) chunks were injected unconditionally,
+                // so require explicit citations before attributing sources.
+                ragPrefetchedThisTurn,
               )
             : [];
+
+        // Prefetch surfaces a synthetic search_knowledge_base card every turn.
+        // If the model cited none of the injected chunks it judged them
+        // irrelevant, so drop the card from the final (persisted) content —
+        // same rationale as the suppressed source badges above.
+        if (ragPrefetchSynthetic && citedIds.size === 0) {
+          const idx = toolCallParts.findIndex(
+            (p) => p.toolCallId === ragPrefetchSynthetic?.toolCallId,
+          );
+          if (idx !== -1) {
+            toolCallParts.splice(idx, 1);
+          }
+        }
 
         // SDK's SourceMessagePart only types `sourceType: "url"` with a
         // required `url` field. SourcesGroup branches on `sourceType` at
