@@ -518,6 +518,11 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
+  // RAG retrieval runs entirely through the local search_knowledge_base
+  // tool, so it needs the tool-calling loop. No external-builtin RAG
+  // equivalent — gate purely on supportsTools (mirrors web/code when not
+  // backed by a provider builtin).
+  const ragDisabled = !modelLoaded || !supportsTools;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1405,7 +1410,7 @@ export function SharedComposer({
           {/* Master RAG toggle; sidebar Retrieval section configures the rest. */}
           <button
             type="button"
-            disabled={!modelLoaded}
+            disabled={ragDisabled}
             onClick={() => {
               const next = !ragToolEnabled;
               setRagToolEnabled(next);
@@ -1414,12 +1419,14 @@ export function SharedComposer({
               }
             }}
             className="composer-pill-btn"
-            data-active={ragToolEnabled && modelLoaded ? "true" : "false"}
+            data-active={ragToolEnabled && !ragDisabled ? "true" : "false"}
             aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
             title={
-              ragToolEnabled
-                ? "RAG on — the model can search your attached documents"
-                : "Enable RAG — let the model search your documents"
+              ragDisabled
+                ? "RAG needs a model that supports tool calling"
+                : ragToolEnabled
+                  ? "RAG on — the model can search your attached documents"
+                  : "Enable RAG — let the model search your documents"
             }
           >
             <BookOpenIcon className="size-3.5" />

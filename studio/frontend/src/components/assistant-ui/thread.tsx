@@ -1149,7 +1149,10 @@ const RagToggle: FC = () => {
   const setRagToolEnabled = useChatRuntimeStore((s) => s.setRagToolEnabled);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
-  const disabled = !modelLoaded;
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // RAG runs through the local search_knowledge_base tool, so it needs
+  // tool-calling support (mirrors shared-composer's ragDisabled).
+  const disabled = !modelLoaded || !supportsTools;
   return (
     <button
       type="button"
@@ -1165,9 +1168,11 @@ const RagToggle: FC = () => {
       data-active={ragToolEnabled && !disabled ? "true" : "false"}
       aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
       title={
-        ragToolEnabled
-          ? "RAG on — the model can search your attached documents"
-          : "Enable RAG — let the model search your documents"
+        disabled
+          ? "RAG needs a model that supports tool calling"
+          : ragToolEnabled
+            ? "RAG on — the model can search your attached documents"
+            : "Enable RAG — let the model search your documents"
       }
     >
       <BookOpenIcon className="size-3.5" />
