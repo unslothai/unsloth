@@ -28,7 +28,12 @@ from urllib.parse import urlparse
 
 import httpx
 
-from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
+from core.inference.llama_server_args import (
+    parse_cache_override,
+    parse_ctx_override,
+    resolve_cache_type_kv,
+    resolve_requested_ctx,
+)
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -2727,10 +2732,17 @@ class LlamaCppBackend:
                 # still has valid state to publish.
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
+                cache_override = parse_cache_override(extra_args)
+                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(
                         f"User --ctx-size {ctx_override} honored; "
                         "skipping auto-reduce"
+                    )
+                if cache_override is not None:
+                    logger.info(
+                        f"User --cache-type-k/-v {cache_override} "
+                        "honored for KV estimate"
                     )
                 effective_ctx = (
                     requested_ctx if requested_ctx > 0 else (self._context_length or 0)
