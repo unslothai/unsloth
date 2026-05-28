@@ -3091,9 +3091,12 @@ async def openai_chat_completions(
         else:
             try:
                 full_text = ""
+                completion_usage = None
                 for token in gguf_generate():
                     if isinstance(token, dict):
-                        continue  # skip metadata dict in non-streaming path
+                        if token.get("type") == "metadata":
+                            completion_usage = token.get("usage")
+                        continue
                     full_text = token
 
                 response = ChatCompletion(
@@ -3106,6 +3109,15 @@ async def openai_chat_completions(
                             finish_reason = "stop",
                         )
                     ],
+                    usage = CompletionUsage(
+                        prompt_tokens = (completion_usage or {}).get("prompt_tokens")
+                        or 0,
+                        completion_tokens = (completion_usage or {}).get(
+                            "completion_tokens"
+                        )
+                        or 0,
+                        total_tokens = (completion_usage or {}).get("total_tokens") or 0,
+                    ),
                 )
                 return JSONResponse(content = response.model_dump())
 
