@@ -89,6 +89,7 @@ export const zhCN = {
       profile: "个人资料",
       appearance: "外观",
       chat: "聊天",
+      knowledgeBases: "知识库",
       connections: "连接",
       apiKeys: "API",
       about: "帮助",

@@ -401,7 +401,6 @@ interface DocumentSourcePart {
   pageCharEnd?: string;
   lineStart?: string;
   lineEnd?: string;
-  score?: string;
   text: string;
 }
 
@@ -476,9 +475,6 @@ function toDocumentSourcePart(
   }
   if (chunk.lineEnd) {
     part.lineEnd = chunk.lineEnd;
-  }
-  if (chunk.score) {
-    part.score = chunk.score;
   }
 
   return part;

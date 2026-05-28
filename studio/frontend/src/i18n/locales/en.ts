@@ -89,6 +89,7 @@ export const en = {
       profile: "Profile",
       appearance: "Appearance",
       chat: "Chat",
+      knowledgeBases: "Knowledge Bases",
       connections: "Connections",
       apiKeys: "API",
       about: "Help",
