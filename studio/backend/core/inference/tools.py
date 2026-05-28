@@ -33,8 +33,10 @@ from core.inference.mcp_client import (
     cache_tools,
     call_tool_sync,
     get_cached_tools,
+    in_failure_cooloff,
     list_tools_async,
     parse_server_headers,
+    record_probe_failure,
 )
 from storage import mcp_servers_db
 
@@ -576,7 +578,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
     if not servers:
         return []
 
-    uncached = [s for s in servers if get_cached_tools(s["id"]) is None]
+    # Skip servers still in their post-failure cool-off, otherwise a down
+    # server gets re-probed -- and blocks the send for the full timeout -- on
+    # every message.
+    uncached = [
+        s
+        for s in servers
+        if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+    ]
     if uncached:
         results = await asyncio.gather(
             *(
@@ -605,8 +614,9 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     server.get("url"),
                     payload,
                 )
-                # Don't cache failures: a transiently-down server should be
-                # retried next send, not left empty until a manual refresh.
+                # Failures aren't cached, but record one so a down server
+                # isn't re-probed every send during the cool-off.
+                record_probe_failure(server["id"], bool(server.get("use_oauth")))
                 continue
             fresh = current.get(server["id"])
             if fresh is None or any(

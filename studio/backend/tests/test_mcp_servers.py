@@ -669,7 +669,7 @@ def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
 
 
 def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
-    """A failed probe must not be cached, so a recovered server is retried."""
+    """A failed probe isn't cached: once the cool-off elapses, it's retried."""
     import asyncio
 
     _reset_db(tmp_path, monkeypatch)
@@ -677,6 +677,7 @@ def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_servers_db.create_server(
         id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
     )
@@ -692,8 +693,10 @@ def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(tools_mod, "list_tools_async", fake)
 
     assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []  # failure -> empty
+    # Expire the cool-off (an until-time in the past) so the server is retried.
+    mcp_client._probe_cooloff_until["s1"] = 0.0
     second = asyncio.run(tools_mod.get_enabled_mcp_tools())
-    assert attempts["n"] == 2  # retried because the failure was not cached
+    assert attempts["n"] == 2  # retried after the cool-off, not cached
     assert [t["function"]["name"] for t in second] == ["mcp__s1__echo"]
 
 
@@ -859,6 +862,7 @@ def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypa
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_servers_db.create_server(
         id = "s1", display_name = "A", url = "https://bad/mcp", is_enabled = True
     )
@@ -956,3 +960,95 @@ def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
     specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
     assert specs == []  # stale result is neither served...
     assert mcp_client.get_cached_tools("s1") is None  # ...nor cached
+
+
+def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monkeypatch):
+    """A down server is probed once, then skipped during the cool-off instead
+    of being re-probed (and re-hung) on every send."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    attempts = {"n": 0}
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        attempts["n"] += 1
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []  # probes, fails
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []  # within cool-off
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []  # still skipped
+    assert attempts["n"] == 1  # only the first send probed
+
+
+def test_cache_tools_clears_failure_cooloff(monkeypatch):
+    """A successful probe lifts a server's failure cool-off."""
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_client.record_probe_failure("s1")
+    assert mcp_client.in_failure_cooloff("s1")
+    mcp_client.cache_tools("s1", _one_tool())
+    assert not mcp_client.in_failure_cooloff("s1")
+
+
+def test_oauth_failure_cools_off_longer_than_plain(monkeypatch):
+    """An OAuth server's failure cools off longer than a plain server's, so its
+    multi-minute probe hang doesn't recur every minute."""
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_client.record_probe_failure("plain", use_oauth = False)
+    mcp_client.record_probe_failure("oauth", use_oauth = True)
+    assert (
+        mcp_client._probe_cooloff_until["oauth"]
+        > mcp_client._probe_cooloff_until["plain"]
+    )
+
+
+def test_invalidate_clears_failure_cooloff(monkeypatch):
+    """Eviction drops the failure cool-off so an edited server re-probes at once."""
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {"s1": 1.0, "s2": 2.0})
+    mcp_client.invalidate_tool_cache("s1")
+    assert "s1" not in mcp_client._probe_cooloff_until
+    assert "s2" in mcp_client._probe_cooloff_until
+    mcp_client.invalidate_tool_cache()
+    assert mcp_client._probe_cooloff_until == {}
+
+
+def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
+    """A failed manual refresh starts the cool-off so the next chat send does
+    not immediately hang on the down server."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    async def boom(url, headers = None, timeout = None, use_oauth = False):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", boom)
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("s1", current_subject = "u"))
+    assert res.ok is False
+    assert mcp_client.in_failure_cooloff("s1")

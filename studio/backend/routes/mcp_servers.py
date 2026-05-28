@@ -18,6 +18,7 @@ from core.inference.mcp_client import (
     invalidate_tool_cache,
     list_tools_async,
     parse_server_headers,
+    record_probe_failure,
 )
 from models.mcp_servers import (
     McpServerCreate,
@@ -196,6 +197,9 @@ async def refresh_mcp_server_tools(
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
         logger.warning("MCP refresh failed", server_id = server_id, error = str(exc))
+        # Start the cool-off so the next chat send doesn't immediately re-hang
+        # on this server's timeout.
+        record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = str(exc))
 
     # Warm the chat-path cache so the next send skips re-probing.

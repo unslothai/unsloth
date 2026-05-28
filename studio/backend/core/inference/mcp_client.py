@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -17,6 +18,14 @@ PROBE_TIMEOUT_SECONDS = 8.0
 # When OAuth probes need to open a browser, wait long enough for the user to
 # sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
 OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
+
+# A failed probe isn't cached (a recovered server must come back), but it's
+# recorded so a down server isn't re-probed -- and the chat send re-hung for
+# the full timeout -- on every message. Cool off for this long after a failure;
+# much longer for OAuth, whose probe can hang up to OAUTH_PROBE_TIMEOUT_SECONDS,
+# so that hang doesn't recur every minute.
+FAILED_PROBE_COOLOFF_SECONDS = 60.0
+OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 
@@ -103,9 +112,13 @@ async def list_tools_async(
 # probes a server only on a cache miss, keeping MCP discovery off the chat
 # send's critical path -- tool schemas are stable within a session. The
 # /refresh route warms it; a URL/header/OAuth change or a delete evicts it.
-# Successful probes are cached indefinitely; failures are never cached so a
-# transiently-down server is retried on the next send.
+# Successful probes are cached indefinitely.
 _tool_cache: dict[str, list[dict]] = {}
+
+# server_id -> monotonic time before which a failed server must not be
+# re-probed (see record_probe_failure). Cleared on a successful probe or
+# eviction.
+_probe_cooloff_until: dict[str, float] = {}
 
 # MCP server fields whose change invalidates a server's discovered tools: the
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
@@ -122,14 +135,28 @@ def get_cached_tools(server_id: str) -> Optional[list[dict]]:
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:
     _tool_cache[server_id] = tools
+    _probe_cooloff_until.pop(server_id, None)
+
+
+def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
+    cooloff = (
+        OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+    )
+    _probe_cooloff_until[server_id] = time.monotonic() + cooloff
+
+
+def in_failure_cooloff(server_id: str) -> bool:
+    return _probe_cooloff_until.get(server_id, 0.0) > time.monotonic()
 
 
 def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
     """Evict one server's cached tools, or every entry when server_id is None."""
     if server_id is None:
         _tool_cache.clear()
+        _probe_cooloff_until.clear()
     else:
         _tool_cache.pop(server_id, None)
+        _probe_cooloff_until.pop(server_id, None)
 
 
 def _flatten_result(result: Any) -> str:
