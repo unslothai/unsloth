@@ -164,14 +164,16 @@ def _show_and_embed(port: int):
         # when multiple Studio instances are embedded in the same notebook.
         iframe_id = f"unsloth-studio-{port}"
 
-        display(HTML(f"""
+        display(
+            HTML(f"""
 <iframe
   id="{iframe_id}"
   src="{url}"
   style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
   allow="clipboard-read; clipboard-write"
 ></iframe>
-"""))
+""")
+        )
     except Exception:
         # Fallback: Colab's built-in (less sizing control, but always works)
         try:
