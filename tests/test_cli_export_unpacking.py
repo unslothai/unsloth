@@ -86,7 +86,7 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     # Drop any cached import of the CLI module so the deferred import
     # inside export() re-resolves against our fake module rather than a
     # previously cached real one.
-    monkeypatch.delitem(sys.modules, "unsloth_cli.commands.export", raising = False)
+    monkeypatch.delitem(sys.modules, "unsloth_cli.commands.export", raising=False)
 
 
 @pytest.fixture

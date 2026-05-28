@@ -48,7 +48,7 @@ def without_hf_auth():
 
     for token_loc in token_locations:
         if token_loc.exists():
-            temp = tempfile.NamedTemporaryFile(delete = False)
+            temp = tempfile.NamedTemporaryFile(delete=False)
             temp.close()
             shutil.move(str(token_loc), temp.name)
             token_files.append((token_loc, temp.name))
@@ -59,7 +59,7 @@ def without_hf_auth():
         # Restore tokens
         for original, temp in token_files:
             try:
-                original.parent.mkdir(parents = True, exist_ok = True)
+                original.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(temp, str(original))
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")

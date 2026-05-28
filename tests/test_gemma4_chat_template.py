@@ -16,13 +16,13 @@ CHAT_TEMPLATES_PATH = os.path.join(
 def _extract_template(name):
     src = open(CHAT_TEMPLATES_PATH).read()
     pattern = rf'{re.escape(name)}\s*=\s*\\\n"""(.*?)"""'
-    m = re.search(pattern, src, flags = re.DOTALL)
+    m = re.search(pattern, src, flags=re.DOTALL)
     assert m, f"Could not extract {name} from chat_templates.py"
     return m.group(1)
 
 
 def _env():
-    env = Environment(undefined = StrictUndefined, trim_blocks = False, lstrip_blocks = False)
+    env = Environment(undefined=StrictUndefined, trim_blocks=False, lstrip_blocks=False)
     env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(
         TemplateError(msg)
     )
@@ -83,7 +83,7 @@ def test_thinking_template_defaults_to_thinking_off_when_unset():
 
 def test_thinking_template_emits_think_with_newline_when_enabled():
     msgs = [{"role": "system", "content": "Sys"}, {"role": "user", "content": "Hi"}]
-    out = _render("gemma4_thinking_template", msgs, enable_thinking = True)
+    out = _render("gemma4_thinking_template", msgs, enable_thinking=True)
     assert "<|turn>system\n<|think|>\nSys<turn|>" in out
 
 
@@ -116,7 +116,7 @@ def test_strip_thinking_applied_unconditionally_to_model_turn():
         {"role": "assistant", "content": "<|channel>reasoning<channel|>final"},
     ]
     for agp in (True, False):
-        out = _render("gemma4_template", msgs, add_generation_prompt = agp)
+        out = _render("gemma4_template", msgs, add_generation_prompt=agp)
         assert "reasoning" not in out
         assert "final" in out
 
@@ -139,7 +139,7 @@ def test_strip_thinking_preserves_plain_text():
         {"role": "user", "content": "Q"},
         {"role": "assistant", "content": "plain answer with no markup"},
     ]
-    out = _render("gemma4_template", msgs, add_generation_prompt = True)
+    out = _render("gemma4_template", msgs, add_generation_prompt=True)
     assert "plain answer with no markup" in out
 
 
@@ -150,7 +150,7 @@ def test_multi_turn_strips_all_historical_model_turns():
         {"role": "user", "content": "Q2"},
         {"role": "assistant", "content": "<|channel>r2<channel|>A2"},
     ]
-    out = _render("gemma4_thinking_template", msgs, add_generation_prompt = True)
+    out = _render("gemma4_thinking_template", msgs, add_generation_prompt=True)
     assert "r1" not in out and "r2" not in out
     assert "A1" in out and "A2" in out
 
@@ -161,7 +161,7 @@ def test_multi_turn_strips_all_historical_model_turns():
 def test_thinking_template_injects_empty_thought_channel_by_default():
     # Author defaults enable_thinking=False, so the gen-prompt injection fires.
     msgs = [{"role": "user", "content": "Hi"}]
-    out = _render("gemma4_thinking_template", msgs, add_generation_prompt = True)
+    out = _render("gemma4_thinking_template", msgs, add_generation_prompt=True)
     assert out.endswith("<|turn>model\n<|channel>thought\n<channel|>")
 
 
@@ -170,14 +170,14 @@ def test_thinking_template_no_injection_when_thinking_enabled():
     out = _render(
         "gemma4_thinking_template",
         msgs,
-        add_generation_prompt = True,
-        enable_thinking = True,
+        add_generation_prompt=True,
+        enable_thinking=True,
     )
     assert "<|channel>thought" not in out
 
 
 def test_base_template_has_no_channel_thought_injection():
     msgs = [{"role": "user", "content": "Hi"}]
-    out = _render("gemma4_template", msgs, add_generation_prompt = True)
+    out = _render("gemma4_template", msgs, add_generation_prompt=True)
     assert out.endswith("<|turn>model\n")
     assert "<|channel>thought" not in out

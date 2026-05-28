@@ -24,7 +24,7 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
         "test2025-II": "https://raw.githubusercontent.com/GAIR-NLP/AIME-Preview/main/eval/data/aime/test2025-II.jsonl",
     }
 
-    os.makedirs(data_dir, exist_ok = True)
+    os.makedirs(data_dir, exist_ok=True)
     combined_filepath = os.path.join(data_dir, "aime.jsonl")
 
     # Check if combined file already exists
@@ -67,9 +67,9 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
 
     # Write combined dataset
     if all_problems:
-        with open(combined_filepath, "w", encoding = "utf-8") as f:
+        with open(combined_filepath, "w", encoding="utf-8") as f:
             for problem in all_problems:
-                f.write(json.dumps(problem, ensure_ascii = False) + "\n")
+                f.write(json.dumps(problem, ensure_ascii=False) + "\n")
 
         print(f"✅ Combined {len(all_problems)} problems from {len(datasets)} datasets")
         print(f"   Saved to: {combined_filepath}")
@@ -92,7 +92,7 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
     filepath = download_and_combine_aime_datasets(data_dir)
 
     examples = []
-    with open(filepath, "r", encoding = "utf-8") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f):
             line = line.strip()
             if line:
@@ -188,20 +188,20 @@ def get_num_tokens(text, tokenizer_instance):
     """Count tokens in text"""
     if not text:
         return 0
-    encoding = tokenizer_instance(text, return_tensors = "pt")
+    encoding = tokenizer_instance(text, return_tensors="pt")
     return len(encoding["input_ids"][0])
 
 
 def evaluate_model_aime(
     model,
     tokenizer,
-    model_type = "base",
-    lora_request = None,
-    temperature = 0.3,
-    n_sampling = 8,
-    max_tokens = 32768,
-    top_p = 0.95,
-    seed = 0,
+    model_type="base",
+    lora_request=None,
+    temperature=0.3,
+    n_sampling=8,
+    max_tokens=32768,
+    top_p=0.95,
+    seed=0,
 ):
     """Evaluate model on combined AIME dataset with official configuration"""
 
@@ -237,11 +237,11 @@ def evaluate_model_aime(
 
     # Setup sampling parameters (AIME configuration)
     sampling_params = SamplingParams(
-        temperature = temperature,
-        top_p = top_p,
-        max_tokens = max_tokens,
-        n = n_sampling,  # Multiple samples per question
-        seed = seed,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        n=n_sampling,  # Multiple samples per question
+        seed=seed,
     )
 
     print(f"\n🔧 Configuration:")
@@ -272,13 +272,13 @@ def evaluate_model_aime(
 
         # Main evaluation loop
         with tqdm(
-            total = len(eval_dataset), desc = "Processing AIME problems", unit = "problem"
+            total=len(eval_dataset), desc="Processing AIME problems", unit="problem"
         ) as pbar:
             for task_id, item in enumerate(eval_dataset):
                 try:
                     # Prepare prompt
                     prompt_text = tokenizer.apply_chat_template(
-                        item["prompt"], add_generation_prompt = True, tokenize = False
+                        item["prompt"], add_generation_prompt=True, tokenize=False
                     )
 
                     input_tokens.append(get_num_tokens(prompt_text, tokenizer))
@@ -286,9 +286,9 @@ def evaluate_model_aime(
                     # Generate multiple responses
                     outputs = model.fast_generate(
                         [prompt_text],
-                        sampling_params = sampling_params,
-                        lora_request = lora_request,
-                        use_tqdm = False,
+                        sampling_params=sampling_params,
+                        lora_request=lora_request,
+                        use_tqdm=False,
                     )[0].outputs
 
                     # Process all generated responses
@@ -413,8 +413,8 @@ def evaluate_model_aime(
 
     # Save results
     filename = f"aime_eval_combined_{model_type}_t{temperature}_n{n_sampling}.json"
-    with open(filename, "w", encoding = "utf-8") as f:
-        json.dump({"results": results, "records": records}, f, indent = 4)
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump({"results": results, "records": records}, f, indent=4)
 
     # Print comprehensive summary
     print(f"\n{'='*70}")
@@ -517,27 +517,27 @@ def compare_aime_results(all_results):
     if all_results and "source_accuracies" in all_results[0]:
         datasets = list(all_results[0]["source_accuracies"].keys())
 
-        print(f"{'Model':<15}", end = "")
+        print(f"{'Model':<15}", end="")
         for dataset in datasets:
-            print(f"{dataset:<15}", end = "")
+            print(f"{dataset:<15}", end="")
         print()
         print("-" * (15 + 15 * len(datasets)))
 
         for result in all_results:
-            print(f"{result['model_type']:<15}", end = "")
+            print(f"{result['model_type']:<15}", end="")
             for dataset in datasets:
                 accuracy = result["source_accuracies"].get(dataset, 0)
-                print(f"{accuracy:<15.1f}", end = "")
+                print(f"{accuracy:<15.1f}", end="")
             print()
 
     # Save comparison
     comparison_data = {
         "summary": all_results,
-        "best_model": max(all_results, key = lambda x: x["accuracy"]),
+        "best_model": max(all_results, key=lambda x: x["accuracy"]),
     }
 
     with open("aime_model_comparison.json", "w") as f:
-        json.dump(comparison_data, f, indent = 4)
+        json.dump(comparison_data, f, indent=4)
 
     print(
         f"\nBest performing model: {comparison_data['best_model']['model_type']} "

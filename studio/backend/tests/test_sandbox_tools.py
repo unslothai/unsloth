@@ -30,31 +30,31 @@ class TestMetadataHostDenylist:
     def test_aws_imds_literal_blocked(self):
         _blocked(
             'import requests; requests.get("http://169.254.169.254/latest/meta-data/")',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
     def test_gcp_metadata_dns_blocked(self):
         _blocked(
             'import requests; requests.get("http://metadata.google.internal/")',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
     def test_alibaba_ecs_literal_blocked(self):
         _blocked(
             'import socket; s=socket.socket(); s.connect(("100.100.100.200", 80))',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
     def test_ipv6_imds_literal_blocked(self):
         _blocked(
             'import urllib.request; urllib.request.urlopen("http://[fd00:ec2::254]/")',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
     def test_metadata_link_local_prefix_blocked(self):
         _blocked(
             'import requests; requests.get("http://169.254.170.2/v3/")',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
 
@@ -103,19 +103,19 @@ class TestUntrustedHostBlock:
     def test_example_com_blocked(self):
         _blocked(
             'import requests; requests.get("https://example.com/")',
-            expect_phrase = "Blocked: host not in sandbox allowlist",
+            expect_phrase="Blocked: host not in sandbox allowlist",
         )
 
     def test_random_blog_blocked(self):
         _blocked(
             'import urllib.request; urllib.request.urlopen("https://random-blog-host.example/")',
-            expect_phrase = "Blocked: host not in sandbox allowlist",
+            expect_phrase="Blocked: host not in sandbox allowlist",
         )
 
     def test_socket_connect_random_host_blocked(self):
         _blocked(
             'import socket; s=socket.socket(); s.connect(("evil.example", 80))',
-            expect_phrase = "Blocked: host not in sandbox allowlist",
+            expect_phrase="Blocked: host not in sandbox allowlist",
         )
 
     def test_dynamic_url_not_statically_blocked(self):
@@ -131,13 +131,13 @@ class TestHostNormalization:
         _ok('import requests; requests.get("https://en.wikipedia.org:443/wiki/Foo")')
         _blocked(
             'import requests; requests.get("https://example.com:8080/")',
-            expect_phrase = "Blocked: host not in sandbox allowlist",
+            expect_phrase="Blocked: host not in sandbox allowlist",
         )
 
     def test_userinfo_at_does_not_smuggle_metadata_host(self):
         _blocked(
             'import requests; requests.get("https://wikipedia.org@169.254.169.254/latest/")',
-            expect_phrase = "Blocked: cloud-metadata host",
+            expect_phrase="Blocked: cloud-metadata host",
         )
 
     def test_uppercase_host_normalised(self):
@@ -152,7 +152,7 @@ class TestUploadDenylist:
                 'requests.post("https://huggingface.co/api/repos/upload", '
                 'files={"f": open("x.bin", "rb")})'
             ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            expect_phrase="Blocked: file upload disallowed in sandbox",
         )
 
     def test_requests_put_data_bytes_blocked(self):
@@ -162,7 +162,7 @@ class TestUploadDenylist:
                 'requests.put("https://huggingface.co/api/repos/upload", '
                 'data=b"\\x00\\x01\\x02")'
             ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            expect_phrase="Blocked: file upload disallowed in sandbox",
         )
 
     def test_requests_post_data_open_handle_blocked(self):
@@ -172,7 +172,7 @@ class TestUploadDenylist:
                 'requests.post("https://huggingface.co/api/repos/upload", '
                 'data=open("x.bin", "rb"))'
             ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            expect_phrase="Blocked: file upload disallowed in sandbox",
         )
 
     def test_httpx_post_files_blocked(self):
@@ -182,7 +182,7 @@ class TestUploadDenylist:
                 'httpx.post("https://huggingface.co/api/repos/upload", '
                 'files={"f": open("x.bin", "rb")})'
             ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            expect_phrase="Blocked: file upload disallowed in sandbox",
         )
 
     def test_hf_api_upload_sandbox_local_allowed(self):
@@ -210,14 +210,14 @@ class TestUploadDenylist:
         _blocked(
             "from huggingface_hub import HfApi\n"
             'HfApi().upload_file(path_or_fileobj="/etc/passwd", path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_hf_upload_parent_dir_escape_blocked(self):
         _blocked(
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="../escape.bin", path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_plain_post_json_not_blocked(self):
@@ -574,7 +574,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="/etc/passwd",'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_absolute_windows_drive_blocked(self):
@@ -582,7 +582,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="C:\\\\Windows\\\\creds",'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_home_expansion_blocked(self):
@@ -590,7 +590,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="~/.aws/credentials",'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_parent_traversal_blocked(self):
@@ -598,7 +598,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="../../etc/shadow",'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_parent_traversal_mid_path_blocked(self):
@@ -606,7 +606,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="outputs/../../../etc",'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_open_of_absolute_blocked(self):
@@ -614,7 +614,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj=open("/etc/passwd","rb"),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_open_of_parent_traversal_blocked(self):
@@ -622,7 +622,7 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj=open("../escape","rb"),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_dynamic_variable_path_blocked(self):
@@ -632,28 +632,28 @@ class TestHfUploadSandboxLocalPaths:
             "import huggingface_hub, os\n"
             "p = os.path.join('outputs', 'x.bin')\n"
             'huggingface_hub.upload_file(path_or_fileobj=p, path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_upload_folder_absolute_blocked(self):
         _blocked(
             "import huggingface_hub\n"
             'huggingface_hub.upload_folder(folder_path="/var/log", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_upload_folder_parent_traversal_blocked(self):
         _blocked(
             "import huggingface_hub\n"
             'huggingface_hub.upload_folder(folder_path="../..", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_upload_large_folder_absolute_blocked(self):
         _blocked(
             "import huggingface_hub\n"
             'huggingface_hub.upload_large_folder(folder_path="/etc", repo_id="r")',
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_create_commit_operation_safe_allowed(self):
@@ -674,7 +674,7 @@ class TestHfUploadSandboxLocalPaths:
             "  repo_id='r',\n"
             "  operations=[CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
             ")",
-            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+            expect_phrase="HF upload path must be a sandbox-local relative-path literal",
         )
 
 
@@ -690,7 +690,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj=os.environ["HF_TOKEN"],'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_path_from_os_environ_get_blocked(self):
@@ -698,7 +698,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj=os.environ.get("HF_TOKEN"),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_path_from_os_getenv_blocked(self):
@@ -706,7 +706,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj=os.getenv("HF_TOKEN"),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_path_from_bare_getenv_blocked(self):
@@ -715,7 +715,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "from os import getenv\n"
             'huggingface_hub.upload_file(path_or_fileobj=getenv("HF_TOKEN"),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_path_from_subprocess_printenv_blocked(self):
@@ -724,7 +724,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "huggingface_hub.upload_file("
             'path_or_fileobj=subprocess.check_output(["printenv","HF_TOKEN"]),'
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_token_kwarg_with_literal_blocked(self):
@@ -732,7 +732,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
             ' path_in_repo="x", repo_id="r", token="hf_xyzabc123")',
-            expect_phrase = "HF upload token= cannot be set",
+            expect_phrase="HF upload token= cannot be set",
         )
 
     def test_hf_token_kwarg_blocked(self):
@@ -740,7 +740,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
             ' path_in_repo="x", repo_id="r", hf_token="hf_secret")',
-            expect_phrase = "HF upload hf_token= cannot be set",
+            expect_phrase="HF upload hf_token= cannot be set",
         )
 
     def test_api_key_kwarg_blocked(self):
@@ -748,7 +748,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub\n"
             'huggingface_hub.upload_folder(folder_path="outputs",'
             ' repo_id="r", api_key="abc")',
-            expect_phrase = "HF upload api_key= cannot be set",
+            expect_phrase="HF upload api_key= cannot be set",
         )
 
     def test_token_kwarg_from_env_blocked(self):
@@ -757,7 +757,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
             ' path_in_repo="x", repo_id="r", token=os.environ["HF_TOKEN"])',
-            expect_phrase = "HF upload token= cannot be set",
+            expect_phrase="HF upload token= cannot be set",
         )
 
     def test_env_dict_unpacked_via_environ_attr_blocked(self):
@@ -766,7 +766,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             "huggingface_hub.upload_file(path_or_fileobj=str(os.environ),"
             ' path_in_repo="x", repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_repo_id_from_env_also_blocked(self):
@@ -776,7 +776,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
             ' path_in_repo=os.environ["HF_TOKEN"], repo_id="r")',
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_create_commit_with_env_in_operation_blocked(self):
@@ -788,7 +788,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "  operations=[CommitOperationAdd("
             'path_or_fileobj=os.environ["HF_TOKEN"], path_in_repo="x")],\n'
             ")",
-            expect_phrase = "HF upload cannot include os.environ",
+            expect_phrase="HF upload cannot include os.environ",
         )
 
     def test_create_commit_token_kwarg_blocked(self):
@@ -796,5 +796,5 @@ class TestHfUploadEnvAndSecretLeakBlock:
             "import huggingface_hub\n"
             'huggingface_hub.HfApi().create_commit(repo_id="r",'
             ' operations=[], token="hf_xxx")',
-            expect_phrase = "HF upload token= cannot be set",
+            expect_phrase="HF upload token= cannot be set",
         )

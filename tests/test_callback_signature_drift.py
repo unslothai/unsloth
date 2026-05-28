@@ -82,7 +82,7 @@ def _safe_parse(path: pathlib.Path):
             # Suppress SyntaxWarning emitted while parsing third-party files
             # that contain invalid escape sequences in regex / docstrings.
             _w.simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):
         tree = None
     _PARSE_CACHE[key] = tree

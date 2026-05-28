@@ -120,12 +120,12 @@ def _invoke(monkeypatch, args):
     captured = _install_capture(monkeypatch)
     app = _typer.Typer()
     app.command(
-        context_settings = {
+        context_settings={
             "allow_extra_args": True,
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -445,7 +445,7 @@ def test_consume_helper_rejects_empty_inline_value():
     import typer as _typer
 
     helper = _studio_mod()._consume_legacy_short_aliases
-    with pytest.raises(_typer.BadParameter, match = "non-empty"):
+    with pytest.raises(_typer.BadParameter, match="non-empty"):
         helper(["-m="], ("-m",), None, "--model")
 
 
@@ -476,7 +476,7 @@ def test_third_party_importers_do_not_trigger_np_rewrite(
     starting_argv = [third_party_argv0, "subcmd", "-np8", "--input", "foo"]
     monkeypatch.setattr(sys, "argv", list(starting_argv))
     # Force a fresh import so the import-time gate actually runs.
-    monkeypatch.delitem(sys.modules, "unsloth_cli", raising = False)
+    monkeypatch.delitem(sys.modules, "unsloth_cli", raising=False)
     importlib.import_module("unsloth_cli")
     assert sys.argv == starting_argv, (
         f"third-party argv[0]={third_party_argv0!r} triggered the "
@@ -529,7 +529,7 @@ def test_consume_helper_rejects_long_flag_as_value():
     import typer as _typer
 
     helper = _studio_mod()._consume_legacy_short_aliases
-    with pytest.raises(_typer.BadParameter, match = "--flash-attn"):
+    with pytest.raises(_typer.BadParameter, match="--flash-attn"):
         helper(["-m", "--flash-attn"], ("-m",), None, "--model")
 
 

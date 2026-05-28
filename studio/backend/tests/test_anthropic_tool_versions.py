@@ -115,15 +115,15 @@ def _mock_http_client(monkeypatch, handler):
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
@@ -135,8 +135,8 @@ def _capture_outbound(monkeypatch, model: str) -> dict:
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -144,12 +144,12 @@ def _capture_outbound(monkeypatch, model: str) -> dict:
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages = [{"role": "user", "content": "hi"}],
-            model = model,
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
-            enabled_tools = ["web_search", "code_execution"],
+            messages=[{"role": "user", "content": "hi"}],
+            model=model,
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
+            enabled_tools=["web_search", "code_execution"],
         ):
             pass
         await client.close()

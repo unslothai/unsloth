@@ -36,35 +36,35 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
         # cleanly.
         return httpx.Response(
             200,
-            content = (
+            content=(
                 b"event: response.completed\n"
                 b'data: {"type":"response.completed",'
                 b'"response":{"output":[],"usage":{"input_tokens":0,'
                 b'"output_tokens":0}}}\n\n'
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = base_url,
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url=base_url,
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 32,
-            reasoning_effort = "medium",
-            compaction_threshold = threshold,
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=32,
+            reasoning_effort="medium",
+            compaction_threshold=threshold,
         ):
             pass
         await client.close()
@@ -79,8 +79,8 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
 def test_cloud_openai_sets_compaction_block(monkeypatch):
     captured = _capture(
         monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        threshold = 200_000,
+        base_url="https://api.openai.com/v1",
+        threshold=200_000,
     )
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
@@ -92,8 +92,8 @@ def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
     # the caller sends, so a small probe like 60k still goes through.
     captured = _capture(
         monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        threshold = 60_000,
+        base_url="https://api.openai.com/v1",
+        threshold=60_000,
     )
     assert captured["body"]["context_management"] == [
         {"type": "compaction", "compact_threshold": 60_000}
@@ -109,8 +109,8 @@ def test_non_cloud_base_silently_drops_compaction(monkeypatch):
     # 400 those servers, so it must NOT appear on the wire.
     captured = _capture(
         monkeypatch,
-        base_url = "http://127.0.0.1:11434/v1",
-        threshold = 200_000,
+        base_url="http://127.0.0.1:11434/v1",
+        threshold=200_000,
     )
     assert "context_management" not in captured["body"]
 
@@ -125,8 +125,8 @@ def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
     # compaction field actually reaches the API.
     captured = _capture(
         monkeypatch,
-        base_url = "https://my-resource.openai.azure.com/openai/v1",
-        threshold = 200_000,
+        base_url="https://my-resource.openai.azure.com/openai/v1",
+        threshold=200_000,
     )
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
@@ -142,8 +142,8 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
     # the cloud-only fields.
     captured = _capture(
         monkeypatch,
-        base_url = "https://My-Resource.OpenAI.Azure.Com/openai/v1",
-        threshold = 50_000,
+        base_url="https://My-Resource.OpenAI.Azure.Com/openai/v1",
+        threshold=50_000,
     )
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 50_000}
@@ -165,8 +165,8 @@ def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
     ]:
         captured = _capture(
             monkeypatch,
-            base_url = evil,
-            threshold = 200_000,
+            base_url=evil,
+            threshold=200_000,
         )
         assert "context_management" not in captured["body"], evil
         assert "prompt_cache_retention" not in captured["body"], evil
@@ -178,8 +178,8 @@ def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
 def test_omitted_threshold_no_body_field(monkeypatch):
     captured = _capture(
         monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        threshold = None,
+        base_url="https://api.openai.com/v1",
+        threshold=None,
     )
     assert "context_management" not in captured["body"]
 

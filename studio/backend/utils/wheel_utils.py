@@ -23,7 +23,7 @@ FLASH_ATTN_RELEASE_BASE_URL = (
 )
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def has_blackwell_gpu() -> bool:
     """Return True if any visible NVIDIA GPU has compute capability >= 10.0
     (Blackwell: sm_100, sm_120, sm_121, ...).
@@ -42,11 +42,11 @@ def has_blackwell_gpu() -> bool:
     try:
         result = subprocess.run(
             [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            env=child_env_without_native_path_secret(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -101,11 +101,11 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
                     "}))"
                 ),
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            text = True,
-            timeout = timeout,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            env=child_env_without_native_path_secret(),
         )
     except subprocess.TimeoutExpired:
         return None
@@ -160,11 +160,11 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if package_version is None:
         return None
     return direct_wheel_url(
-        filename_prefix = "flash_attn",
-        package_version = package_version,
-        release_tag = f"v{package_version}",
-        release_base_url = FLASH_ATTN_RELEASE_BASE_URL,
-        env = env,
+        filename_prefix="flash_attn",
+        package_version=package_version,
+        release_tag=f"v{package_version}",
+        release_base_url=FLASH_ATTN_RELEASE_BASE_URL,
+        env=env,
     )
 
 
@@ -186,10 +186,10 @@ def install_wheel(
         uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
         result = run(
             uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
@@ -198,10 +198,10 @@ def install_wheel(
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
     result = run(
         pip_cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = child_env_without_native_path_secret(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=child_env_without_native_path_secret(),
     )
     attempts.append(("pip", result))
     return attempts
@@ -209,8 +209,8 @@ def install_wheel(
 
 def url_exists(url: str) -> bool:
     try:
-        request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=10):
             return True
     except urllib.error.HTTPError as exc:
         _logger.debug("url_exists(%s): HTTP %s", url, exc.code)

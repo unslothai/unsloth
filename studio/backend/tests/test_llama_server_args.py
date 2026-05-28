@@ -189,7 +189,7 @@ def test_non_flag_token_passes_through():
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
-    with pytest.raises(ValueError, match = denied):
+    with pytest.raises(ValueError, match=denied):
         validate_extra_args([denied, "value"])
 
 
@@ -218,12 +218,12 @@ def test_denylist_rejects_all_aliases(denied):
     ],
 )
 def test_parallel_flags_are_managed(args, offending):
-    with pytest.raises(ValueError, match = re.escape(offending)):
+    with pytest.raises(ValueError, match=re.escape(offending)):
         validate_extra_args(args)
 
 
 def test_denylist_rejects_equals_form():
-    with pytest.raises(ValueError, match = "--port"):
+    with pytest.raises(ValueError, match="--port"):
         validate_extra_args(["--port=9000"])
 
 
@@ -234,7 +234,7 @@ def test_denylist_rejects_equals_form():
 def test_denylist_rejects_whitespace_padded_forms(padded):
     # `_flag_name` trims whitespace before lookup; otherwise a trailing
     # space could slip a managed flag past the boundary.
-    with pytest.raises(ValueError, match = "parallel|np"):
+    with pytest.raises(ValueError, match="parallel|np"):
         validate_extra_args([padded, "8"])
 
 
@@ -245,14 +245,14 @@ def test_denylist_rejects_whitespace_padded_forms(padded):
 def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
     # Backend `_flag_name` must classify the same forms the CLI
     # rewriter expands, else HTTP /load could smuggle `-np8x` through.
-    with pytest.raises(ValueError, match = "np"):
+    with pytest.raises(ValueError, match="np"):
         validate_extra_args([attached])
 
 
 def test_denylist_rejects_short_form_when_long_is_denied():
     # `-m` is the short form of --model; rejecting only the long
     # form would leave a trivial bypass.
-    with pytest.raises(ValueError, match = "-m"):
+    with pytest.raises(ValueError, match="-m"):
         validate_extra_args(["-m", "/some/other/path.gguf"])
 
 
@@ -264,7 +264,7 @@ def test_denylist_message_names_offending_flag():
 
 def test_first_denied_flag_short_circuits():
     # Validation stops at the first denied flag; the message names it.
-    with pytest.raises(ValueError, match = "--port"):
+    with pytest.raises(ValueError, match="--port"):
         validate_extra_args(["--port", "1", "--host", "x"])
 
 
@@ -314,10 +314,10 @@ def test_is_managed_flag_false_for_pass_through():
 def test_strip_shadowing_flags_drops_context_when_requested():
     out = strip_shadowing_flags(
         ["-c", "4096", "--top-k", "20"],
-        strip_context = True,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
+        strip_context=True,
+        strip_cache=False,
+        strip_spec=False,
+        strip_template=False,
     )
     assert out == ["--top-k", "20"]
 
@@ -325,10 +325,10 @@ def test_strip_shadowing_flags_drops_context_when_requested():
 def test_strip_shadowing_flags_keeps_context_when_not_requested():
     out = strip_shadowing_flags(
         ["-c", "4096", "--top-k", "20"],
-        strip_context = False,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
+        strip_context=False,
+        strip_cache=False,
+        strip_spec=False,
+        strip_template=False,
     )
     assert out == ["-c", "4096", "--top-k", "20"]
 
@@ -338,10 +338,10 @@ def test_strip_shadowing_flags_keeps_chat_template_when_template_disabled():
     # --chat-template-file must survive.
     out = strip_shadowing_flags(
         ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"],
-        strip_context = True,
-        strip_cache = True,
-        strip_spec = True,
-        strip_template = False,
+        strip_context=True,
+        strip_cache=True,
+        strip_spec=True,
+        strip_template=False,
     )
     assert out == ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"]
 
@@ -349,7 +349,7 @@ def test_strip_shadowing_flags_keeps_chat_template_when_template_disabled():
 def test_strip_shadowing_flags_drops_template_when_requested():
     out = strip_shadowing_flags(
         ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"],
-        strip_template = True,
+        strip_template=True,
     )
     assert out == ["--top-k", "20"]
 
@@ -357,7 +357,7 @@ def test_strip_shadowing_flags_drops_template_when_requested():
 def test_strip_shadowing_flags_keeps_cache_when_cache_disabled():
     out = strip_shadowing_flags(
         ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"],
-        strip_cache = False,
+        strip_cache=False,
     )
     assert out == [
         "--cache-type-k",
@@ -372,7 +372,7 @@ def test_strip_shadowing_flags_keeps_cache_when_cache_disabled():
 def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
     out = strip_shadowing_flags(
         ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"],
-        strip_spec = False,
+        strip_spec=False,
     )
     assert out == [
         "--spec-type",
@@ -401,7 +401,7 @@ def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
             "--top-k",
             "20",
         ],
-        strip_spec = True,
+        strip_spec=True,
     )
     assert out == ["--top-k", "20"]
 
@@ -444,12 +444,12 @@ def test_parse_ctx_override(args, expected):
     ],
 )
 def test_parse_ctx_override_rejects_malformed_values(args):
-    with pytest.raises(ValueError, match = "ctx-size|'-c'"):
+    with pytest.raises(ValueError, match="ctx-size|'-c'"):
         parse_ctx_override(args)
 
 
 def test_validate_extra_args_rejects_malformed_ctx_override():
-    with pytest.raises(ValueError, match = "ctx-size"):
+    with pytest.raises(ValueError, match="ctx-size"):
         validate_extra_args(["--ctx-size", "abc"])
 
 
@@ -481,7 +481,7 @@ def test_parse_cache_override(args, expected):
     ],
 )
 def test_parse_cache_override_rejects_malformed_values(args):
-    with pytest.raises(ValueError, match = "cache-type|'-ctk'"):
+    with pytest.raises(ValueError, match="cache-type|'-ctk'"):
         parse_cache_override(args)
 
 
@@ -495,24 +495,24 @@ def test_resolve_cache_type_kv_uses_fallback_without_override():
 
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():
     # `--spec-default` is boolean; drop just the flag, keep the next token.
-    out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec = True)
+    out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec=True)
     assert out == ["ngram-mod"]
 
 
 def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
-    out = strip_shadowing_flags(["--jinja", "trailing-positional"], strip_template = True)
+    out = strip_shadowing_flags(["--jinja", "trailing-positional"], strip_template=True)
     assert out == ["trailing-positional"]
 
 
 def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
     out = strip_shadowing_flags(
-        ["--no-jinja", "trailing-positional"], strip_template = True
+        ["--no-jinja", "trailing-positional"], strip_template=True
     )
     assert out == ["trailing-positional"]
 
 
 def test_strip_shadowing_flags_equals_form_drops_only_the_flag():
-    out = strip_shadowing_flags(["--ctx-size=4096", "--seed", "-1"], strip_context = True)
+    out = strip_shadowing_flags(["--ctx-size=4096", "--seed", "-1"], strip_context=True)
     assert out == ["--seed", "-1"]
 
 

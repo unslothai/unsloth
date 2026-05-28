@@ -24,14 +24,14 @@ def _base_load_request(**overrides):
 
 
 def test_blank_chat_template_override_normalizes_to_none():
-    req = _base_load_request(chat_template_override = "   \n\t")
+    req = _base_load_request(chat_template_override="   \n\t")
 
     assert req.chat_template_override is None
 
 
 def test_nonblank_chat_template_override_is_preserved_verbatim():
     template = "  {{ messages }}  "
-    req = _base_load_request(chat_template_override = template)
+    req = _base_load_request(chat_template_override=template)
 
     assert req.chat_template_override == template
 

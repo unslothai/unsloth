@@ -25,9 +25,9 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
@@ -67,14 +67,14 @@ def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content = sse or _empty_message_sse(),
-            headers = {"content-type": "text/event-stream"},
+            content=sse or _empty_message_sse(),
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     out_lines: list[str] = []
@@ -83,12 +83,12 @@ def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
         client = _make_client()
         try:
             async for line in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}],
-                model = kwargs.get("model", "claude-opus-4-7"),
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 32,
-                fast_mode = kwargs.get("fast_mode"),
+                messages=[{"role": "user", "content": "hi"}],
+                model=kwargs.get("model", "claude-opus-4-7"),
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=32,
+                fast_mode=kwargs.get("fast_mode"),
             ):
                 out_lines.append(line)
         finally:
@@ -99,49 +99,49 @@ def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
 
 
 def test_fast_mode_attaches_beta_header_and_speed_on_opus_4_7(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
+    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-7")
     assert cap["body"].get("speed") == "fast", cap["body"]
     beta = cap["headers"].get("anthropic-beta", "")
     assert "fast-mode-2026-02-01" in beta, beta
 
 
 def test_fast_mode_attaches_beta_header_and_speed_on_opus_4_6(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6")
+    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-6")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_dropped_on_sonnet(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-sonnet-4-6")
+    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-sonnet-4-6")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_dropped_on_haiku(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-haiku-4-5")
+    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-haiku-4-5")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_dropped_on_older_opus(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-5")
+    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-5")
     assert "speed" not in cap["body"], cap["body"]
 
 
 def test_fast_mode_false_does_not_attach_header_or_field(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = False)
+    cap, _ = _capture(monkeypatch, fast_mode=False)
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_none_does_not_attach_header_or_field(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = None)
+    cap, _ = _capture(monkeypatch, fast_mode=None)
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch):
-    _, lines = _capture(monkeypatch, sse = _refusal_sse())
+    _, lines = _capture(monkeypatch, sse=_refusal_sse())
     body = "\n".join(lines)
     # User-visible refusal notice.
     assert "stopped by Anthropic's safety classifier" in body, body
@@ -156,7 +156,7 @@ def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
     latches into assistant `metadata.custom.anthropicRefusal`, driving
     the next-request prune. Tool event (not text) prevents spoofing.
     """
-    _, lines = _capture(monkeypatch, sse = _refusal_sse())
+    _, lines = _capture(monkeypatch, sse=_refusal_sse())
     body = "\n".join(lines)
     assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
     # Visible refusal text must not embed a sentinel that could spoof

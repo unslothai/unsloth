@@ -46,7 +46,7 @@ class NativePathLeaseError(ValueError):
     """Raised when a native path grant is missing, invalid, or unsafe."""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class NativePathGrant:
     operation: str
     canonical_path: Path
@@ -137,7 +137,7 @@ def verify_native_path_lease(
         raise NativePathLeaseError("Native path grant signature is invalid.")
 
     payload = _decode_payload(payload_b64)
-    _validate_payload(payload, operation = operation, expected_kind = expected_kind)
+    _validate_payload(payload, operation=operation, expected_kind=expected_kind)
 
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
@@ -148,7 +148,7 @@ def verify_native_path_lease(
     if _stat_module.S_ISLNK(signed_lstat.st_mode):
         raise NativePathLeaseError("Native path is no longer a regular file.")
     try:
-        resolved = path.resolve(strict = True)
+        resolved = path.resolve(strict=True)
     except OSError as exc:
         raise NativePathLeaseError("Native path is no longer accessible.") from exc
     _reject_network_or_device_path(resolved)
@@ -158,16 +158,16 @@ def verify_native_path_lease(
         )
 
     grant = NativePathGrant(
-        operation = str(payload["operation"]),
-        canonical_path = resolved,
-        path_kind = str(payload["path_kind"]),
-        path_type = str(payload["path_type"]),
-        source_kind = str(payload["source_kind"]),
-        token_id_hash = str(payload["token_id_hash"]),
-        display_label = str(payload.get("display_label") or resolved.name),
-        expires_at_ms = _required_int(payload, "expires_at_ms"),
-        size_bytes = _optional_int(payload.get("size_bytes")),
-        modified_ms = _optional_int(payload.get("modified_ms")),
+        operation=str(payload["operation"]),
+        canonical_path=resolved,
+        path_kind=str(payload["path_kind"]),
+        path_type=str(payload["path_type"]),
+        source_kind=str(payload["source_kind"]),
+        token_id_hash=str(payload["token_id_hash"]),
+        display_label=str(payload.get("display_label") or resolved.name),
+        expires_at_ms=_required_int(payload, "expires_at_ms"),
+        size_bytes=_optional_int(payload.get("size_bytes")),
+        modified_ms=_optional_int(payload.get("modified_ms")),
     )
 
     if expected_path_type and grant.path_type != expected_path_type:
@@ -198,7 +198,7 @@ def is_registered_native_path_label(path_value: str | None, label: str | None) -
 
 def redact_native_paths(value: str) -> str:
     with _REDACTION_LOCK:
-        paths = sorted(_NATIVE_PATH_REDACTIONS, key = len, reverse = True)
+        paths = sorted(_NATIVE_PATH_REDACTIONS, key=len, reverse=True)
     redacted = value
     for path in paths:
         for variant in {path, path.replace("/", "\\"), path.replace("\\", "/")}:

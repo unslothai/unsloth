@@ -41,12 +41,12 @@ def _load_local_align_completion_tool_mask():
 
     calls = []
 
-    def align_logprobs_with_mask(logprob_tensor, completion_mask, pad_value = None):
+    def align_logprobs_with_mask(logprob_tensor, completion_mask, pad_value=None):
         calls.append((logprob_tensor, completion_mask, pad_value))
         return torch.tensor(
             [[1, 0, 1], [0, 1, 1]],
-            device = completion_mask.device,
-            dtype = logprob_tensor.dtype,
+            device=completion_mask.device,
+            dtype=logprob_tensor.dtype,
         )
 
     namespace = {
@@ -67,14 +67,14 @@ def test_local_tool_mask_fallback_is_only_old_zoo_compat_shim():
     align_completion_tool_mask, calls = _load_local_align_completion_tool_mask()
     completion_mask = torch.tensor(
         [[1, 1, 0], [1, 1, 1]],
-        dtype = torch.float32,
+        dtype=torch.float32,
     )
 
     assert align_completion_tool_mask(None, completion_mask) is completion_mask
     assert calls == []
 
-    same_shape_tool_mask = torch.tensor([[1, 0, 1], [0, 1, 1]], dtype = torch.bool)
-    with pytest.raises(RuntimeError, match = "Please upgrade unsloth_zoo"):
+    same_shape_tool_mask = torch.tensor([[1, 0, 1], [0, 1, 1]], dtype=torch.bool)
+    with pytest.raises(RuntimeError, match="Please upgrade unsloth_zoo"):
         align_completion_tool_mask(same_shape_tool_mask, completion_mask)
 
 

@@ -34,22 +34,22 @@ class TestLocalhostHost:
     def test_no_prompt(self, flag):
         # localhost never prompts regardless of flag
         result = resolve_tool_policy(
-            host = "127.0.0.1",
-            flag = flag,
-            yes = False,
-            silent = False,
-            prompt = _never_prompt,
+            host="127.0.0.1",
+            flag=flag,
+            yes=False,
+            silent=False,
+            prompt=_never_prompt,
         )
         assert result is (True if flag in (None, True) else False)
 
     def test_default_is_on(self):
         assert (
             resolve_tool_policy(
-                host = "127.0.0.1",
-                flag = None,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="127.0.0.1",
+                flag=None,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is True
         )
@@ -57,11 +57,11 @@ class TestLocalhostHost:
     def test_explicit_off(self):
         assert (
             resolve_tool_policy(
-                host = "127.0.0.1",
-                flag = False,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="127.0.0.1",
+                flag=False,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is False
         )
@@ -71,11 +71,11 @@ class TestZeroHost:
     def test_default_is_off(self):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = None,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="0.0.0.0",
+                flag=None,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is False
         )
@@ -83,11 +83,11 @@ class TestZeroHost:
     def test_explicit_off_no_prompt(self):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = False,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="0.0.0.0",
+                flag=False,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is False
         )
@@ -95,11 +95,11 @@ class TestZeroHost:
     def test_explicit_on_silent_skips_prompt(self):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = True,
-                prompt = _never_prompt,
+                host="0.0.0.0",
+                flag=True,
+                yes=False,
+                silent=True,
+                prompt=_never_prompt,
             )
             is True
         )
@@ -107,11 +107,11 @@ class TestZeroHost:
     def test_explicit_on_yes_skips_prompt(self):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = True,
-                silent = False,
-                prompt = _never_prompt,
+                host="0.0.0.0",
+                flag=True,
+                yes=True,
+                silent=False,
+                prompt=_never_prompt,
             )
             is True
         )
@@ -119,11 +119,11 @@ class TestZeroHost:
     def test_explicit_on_prompt_yes(self):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt_yes,
+                host="0.0.0.0",
+                flag=True,
+                yes=False,
+                silent=False,
+                prompt=_prompt_yes,
             )
             is True
         )
@@ -131,11 +131,11 @@ class TestZeroHost:
     def test_explicit_on_prompt_no_aborts(self):
         with pytest.raises(typer.Exit) as exc_info:
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt_no,
+                host="0.0.0.0",
+                flag=True,
+                yes=False,
+                silent=False,
+                prompt=_prompt_no,
             )
         assert exc_info.value.exit_code == 1
 
@@ -160,11 +160,11 @@ class TestSpecificNetworkIP:
     def test_default_is_off(self):
         assert (
             resolve_tool_policy(
-                host = "192.168.1.5",
-                flag = None,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="192.168.1.5",
+                flag=None,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is False
         )
@@ -178,11 +178,11 @@ class TestSpecificNetworkIP:
 
         assert (
             resolve_tool_policy(
-                host = "192.168.1.5",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt,
+                host="192.168.1.5",
+                flag=True,
+                yes=False,
+                silent=False,
+                prompt=_prompt,
             )
             is True
         )
@@ -191,11 +191,11 @@ class TestSpecificNetworkIP:
     def test_localhost_alias_does_not_prompt(self):
         assert (
             resolve_tool_policy(
-                host = "localhost",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host="localhost",
+                flag=True,
+                yes=False,
+                silent=False,
+                prompt=_never_prompt,
             )
             is True
         )

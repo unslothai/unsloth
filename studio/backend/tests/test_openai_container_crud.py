@@ -34,7 +34,7 @@ def _mock_http_client(monkeypatch, handler):
     external_provider.delete_openai_container) so the test must
     also intercept that constructor."""
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
     real_async_client = httpx.AsyncClient
 
     def _patched_async_client(*args, **kwargs):
@@ -46,9 +46,9 @@ def _mock_http_client(monkeypatch, handler):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = "https://api.openai.com/v1",
-        api_key = "sk-test",
+        provider_type="openai",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
     )
 
 
@@ -60,7 +60,7 @@ def test_list_sends_openai_beta_header(monkeypatch):
         seen["url"] = str(request.url)
         return httpx.Response(
             200,
-            json = {"data": [{"id": "cntr_x", "name": "auto"}]},
+            json={"data": [{"id": "cntr_x", "name": "auto"}]},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -77,11 +77,11 @@ def test_create_sends_openai_beta_header(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         seen["headers"] = dict(request.headers)
         seen["body"] = json.loads(request.content.decode("utf-8"))
-        return httpx.Response(200, json = {"id": "cntr_new", "name": "analysis"})
+        return httpx.Response(200, json={"id": "cntr_new", "name": "analysis"})
 
     _mock_http_client(monkeypatch, handler)
     result = _drive(
-        _make_client().create_openai_container(name = "analysis", ttl_minutes = 30)
+        _make_client().create_openai_container(name="analysis", ttl_minutes=30)
     )
 
     assert result == {"id": "cntr_new", "name": "analysis"}
@@ -102,7 +102,7 @@ def test_delete_sends_openai_beta_header_and_accepts_confirmation(monkeypatch):
         seen["method"] = request.method
         return httpx.Response(
             200,
-            json = {"id": "cntr_x", "object": "container.deleted", "deleted": True},
+            json={"id": "cntr_x", "object": "container.deleted", "deleted": True},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -122,11 +122,11 @@ def test_delete_raises_when_response_lacks_deleted_true(monkeypatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         # 200 but no deleted flag — simulate an unexpected payload shape.
-        return httpx.Response(200, json = {"id": "cntr_x", "object": "container"})
+        return httpx.Response(200, json={"id": "cntr_x", "object": "container"})
 
     _mock_http_client(monkeypatch, handler)
 
-    with pytest.raises(httpx.HTTPError, match = "did not confirm container deletion"):
+    with pytest.raises(httpx.HTTPError, match="did not confirm container deletion"):
         _drive(_make_client().delete_openai_container("cntr_x"))
 
 
@@ -134,28 +134,28 @@ def test_delete_raises_when_deleted_is_false(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json = {"id": "cntr_x", "object": "container.deleted", "deleted": False},
+            json={"id": "cntr_x", "object": "container.deleted", "deleted": False},
         )
 
     _mock_http_client(monkeypatch, handler)
 
-    with pytest.raises(httpx.HTTPError, match = "did not confirm container deletion"):
+    with pytest.raises(httpx.HTTPError, match="did not confirm container deletion"):
         _drive(_make_client().delete_openai_container("cntr_x"))
 
 
 def test_delete_raises_when_body_is_not_json(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = b"<html>OK</html>")
+        return httpx.Response(200, content=b"<html>OK</html>")
 
     _mock_http_client(monkeypatch, handler)
 
-    with pytest.raises(httpx.HTTPError, match = "did not confirm container deletion"):
+    with pytest.raises(httpx.HTTPError, match="did not confirm container deletion"):
         _drive(_make_client().delete_openai_container("cntr_x"))
 
 
 def test_delete_propagates_openai_4xx(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json = {"error": {"message": "not found"}})
+        return httpx.Response(404, json={"error": {"message": "not found"}})
 
     _mock_http_client(monkeypatch, handler)
 
@@ -174,7 +174,7 @@ def test_list_route_filters_expired_containers(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json = {
+            json={
                 "data": [
                     {"id": "cntr_active", "name": "live", "status": "running"},
                     {"id": "cntr_dead", "name": "old", "status": "expired"},
@@ -191,10 +191,10 @@ def test_list_route_filters_expired_containers(monkeypatch):
     monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)
 
     body = OpenAIContainerRequest(
-        encrypted_api_key = "enc",
-        provider_base_url = "https://api.openai.com/v1",
+        encrypted_api_key="enc",
+        provider_base_url="https://api.openai.com/v1",
     )
-    response = _drive(inf_mod.list_openai_containers(body, current_subject = "u"))
+    response = _drive(inf_mod.list_openai_containers(body, current_subject="u"))
     ids = [c.id for c in response.containers]
     assert "cntr_active" in ids
     assert "cntr_unknown" in ids  # missing status is treated as usable

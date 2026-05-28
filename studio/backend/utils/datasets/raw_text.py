@@ -11,14 +11,14 @@ from typing import Literal
 from datasets import Dataset
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class RawTextNotice:
     message: str
     level: Literal["info", "warning"]
     update_status: bool = False
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class RawTextPreparationResult:
     dataset: Dataset
     notices: list[RawTextNotice]
@@ -58,12 +58,12 @@ def _drop_invalid_text_rows(
 
     return filtered_dataset, [
         RawTextNotice(
-            message = (
+            message=(
                 f"{mode_title}: dropped {dropped_rows:,} row(s) with null or "
                 f"non-string 'text' values from {split_scope}"
             ),
-            level = "warning",
-            update_status = True,
+            level="warning",
+            update_status=True,
         )
     ]
 
@@ -92,31 +92,31 @@ def prepare_raw_text_dataset(
         if len(string_cols) > 1:
             notices.append(
                 RawTextNotice(
-                    message = (
+                    message=(
                         f"{mode_title}: dataset has {len(string_cols)} string "
                         f"columns ({string_cols}); auto-selecting '{renamed_col}' "
                         "as the training text. Rename the intended column to "
                         "'text' to override."
                     ),
-                    level = "warning",
-                    update_status = True,
+                    level="warning",
+                    update_status=True,
                 )
             )
         notices.append(
             RawTextNotice(
-                message = (
+                message=(
                     f"{mode_title}: renaming column '{renamed_col}' -> 'text' "
                     f"for {split_scope}"
                 ),
-                level = "info",
+                level="info",
             )
         )
         dataset = dataset.rename_column(renamed_col, "text")
 
     dataset, invalid_row_notices = _drop_invalid_text_rows(
         dataset,
-        mode_title = mode_title,
-        split_scope = split_scope,
+        mode_title=mode_title,
+        split_scope=split_scope,
     )
     notices.extend(invalid_row_notices)
 
@@ -124,19 +124,19 @@ def prepare_raw_text_dataset(
         if not eos_token:
             notices.append(
                 RawTextNotice(
-                    message = (
+                    message=(
                         f"{mode_title}: tokenizer has no eos_token; skipping EOS "
                         "append. Model will not learn document boundaries."
                     ),
-                    level = "warning",
+                    level="warning",
                 )
             )
         else:
 
-            def _append_eos(ex, _eos = eos_token):
+            def _append_eos(ex, _eos=eos_token):
                 text = ex["text"]
                 return {"text": text if text.endswith(_eos) else text + _eos}
 
             dataset = dataset.map(_append_eos)
 
-    return RawTextPreparationResult(dataset = dataset, notices = notices)
+    return RawTextPreparationResult(dataset=dataset, notices=notices)

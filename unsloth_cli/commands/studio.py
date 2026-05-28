@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional
 import typer
 
-studio_app = typer.Typer(help = "Unsloth Studio commands.")
+studio_app = typer.Typer(help="Unsloth Studio commands.")
 
 
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
@@ -228,7 +228,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
         for sp in venv_dir.glob(sp_pattern):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
-                    src = finder.read_text(encoding = "utf-8")
+                    src = finder.read_text(encoding="utf-8")
                 except OSError:
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
@@ -299,7 +299,7 @@ def _wait_for_server(port: int, timeout: int = 30) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout = 2) as resp:
+            with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ConnectionError):
@@ -318,8 +318,8 @@ def _create_api_key_inprocess(name: str) -> str:
     storage = _load_backend_auth_storage()
 
     raw_key, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = name,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name=name,
     )
     return raw_key
 
@@ -359,8 +359,8 @@ def _load_backend_auth_storage():
 
 
 def _write_auth_secret(path: Path, secret: str) -> None:
-    path.parent.mkdir(parents = True, exist_ok = True)
-    fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
         try:
@@ -374,7 +374,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
     except Exception:
         if fd >= 0:
             os.close(fd)
-        tmp_path.unlink(missing_ok = True)
+        tmp_path.unlink(missing_ok=True)
         raise
     try:
         os.chmod(path, 0o600)
@@ -384,7 +384,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
 
 def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
-    auth_dir.mkdir(parents = True, exist_ok = True)
+    auth_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(auth_dir / "auth.db")
     conn.execute(
         """
@@ -565,25 +565,25 @@ def _load_model_via_http(
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/inference/load",
-        data = data,
-        headers = {
+        data=data,
+        headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         },
-        method = "POST",
+        method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors = "replace")
+        body = exc.read().decode(errors="replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
 
 
 # ── unsloth studio (server) ──────────────────────────────────────────
 
 
-@studio_app.callback(invoke_without_command = True)
+@studio_app.callback(invoke_without_command=True)
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
@@ -593,15 +593,15 @@ def studio_default(
     api_only: bool = typer.Option(
         False,
         "--api-only",
-        help = "Run API server only, no frontend serving (for Tauri desktop app)",
+        help="Run API server only, no frontend serving (for Tauri desktop app)",
     ),
     parallel: int = typer.Option(
         _PARALLEL_DEFAULT_PLAIN,
         "--parallel",
         "--n-parallel",
-        min = _PARALLEL_MIN,
-        max = _PARALLEL_MAX,
-        help = (
+        min=_PARALLEL_MIN,
+        max=_PARALLEL_MAX,
+        help=(
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
             f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` "
             f"defaults to {_PARALLEL_DEFAULT_RUN}."
@@ -621,7 +621,7 @@ def studio_default(
                 f"{ctx.invoked_subcommand}`, put the flag after the "
                 f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
                 f"--parallel {parallel} ...`",
-                err = True,
+                err=True,
             )
             raise typer.Exit(2)
         return
@@ -672,12 +672,12 @@ def studio_default(
                 if rc != 0:
                     typer.echo(
                         f"\nError: Studio server exited unexpectedly (code {rc}).",
-                        err = True,
+                        err=True,
                     )
                     typer.echo(
                         "Check the error above. If a package is missing, "
                         "re-run: unsloth studio setup",
-                        err = True,
+                        err=True,
                     )
                 raise typer.Exit(rc)
             else:
@@ -695,11 +695,11 @@ def studio_default(
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_kwargs = dict(
-        host = host,
-        port = port,
-        silent = silent,
-        api_only = api_only,
-        llama_parallel_slots = parallel,
+        host=host,
+        port=port,
+        silent=silent,
+        api_only=api_only,
+        llama_parallel_slots=parallel,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
@@ -712,7 +712,7 @@ def studio_default(
             # Event.wait() with no timeout blocks at C-level on Linux
             # and swallows SIGINT; loop with a 1s timeout instead.
             while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+                _shutdown_event.wait(timeout=1)
         else:
             while True:
                 time.sleep(1)
@@ -818,7 +818,7 @@ def _consume_legacy_short_aliases(
 
 
 @studio_app.command(
-    context_settings = {
+    context_settings={
         "allow_extra_args": True,
         "ignore_unknown_options": True,
     },
@@ -833,21 +833,21 @@ def run(
         # `-m` / `-hfr` removed (Click would cluster `-mg`/`-md`/...).
         # Exact-match `-m`/`-hfr` still work via the legacy shim below.
         # `-hf` stays (multi-char shorts don't cluster).
-        help = (
+        help=(
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
             "llama-server's spelling."
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
-        None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
+        None, "--gguf-variant", help="GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
     max_seq_length: int = typer.Option(
-        0, "--max-seq-length", help = "Max sequence length (0 = model default)"
+        0, "--max-seq-length", help="Max sequence length (0 = model default)"
     ),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     api_key_name: str = typer.Option(
-        "cli", "--api-key-name", help = "Label for the auto-generated API key"
+        "cli", "--api-key-name", help="Label for the auto-generated API key"
     ),
     port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
@@ -857,7 +857,7 @@ def run(
     enable_tools: Optional[bool] = typer.Option(
         None,
         "--enable-tools/--disable-tools",
-        help = (
+        help=(
             "Force server-side tools on/off for all requests. "
             "Default: on for 127.0.0.1, off for 0.0.0.0."
         ),
@@ -866,16 +866,16 @@ def run(
         False,
         "--yes",
         "-y",
-        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+        help="Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
     ),
     parallel: int = typer.Option(
         _PARALLEL_DEFAULT_RUN,
         "--parallel",
         "--n-parallel",
         "-np",
-        min = _PARALLEL_MIN,
-        max = _PARALLEL_MAX,
-        help = (
+        min=_PARALLEL_MIN,
+        max=_PARALLEL_MAX,
+        help=(
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
             f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
@@ -921,7 +921,7 @@ def run(
         typer.echo(
             "Error: Missing option '--model' / '-hf' / '--hf-repo' "
             "(legacy aliases '-m' / '-hfr' are still accepted).",
-            err = True,
+            err=True,
         )
         raise typer.Exit(2)
 
@@ -933,7 +933,7 @@ def run(
             typer.echo(
                 f"Error: --model embeds variant '{embedded_variant}' but "
                 f"--gguf-variant '{gguf_variant}' was also provided.",
-                err = True,
+                err=True,
             )
             raise typer.Exit(1)
         model = parsed_repo
@@ -944,10 +944,10 @@ def run(
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
-        host = host,
-        flag = enable_tools,
-        yes = yes,
-        silent = silent,
+        host=host,
+        flag=enable_tools,
+        yes=yes,
+        silent=silent,
     )
 
     # 1. Re-exec into the studio venv (same pattern as studio_default).
@@ -1019,7 +1019,7 @@ def run(
     # ── 2. Start server (always suppress built-in banner) ─────────────
     from studio.backend.run import run_server, _resolve_external_ip
 
-    run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = parallel)
+    run_kwargs = dict(host=host, port=port, silent=True, llama_parallel_slots=parallel)
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
@@ -1037,7 +1037,7 @@ def run(
     if not silent:
         typer.echo("Starting Unsloth Studio...")
     if not _wait_for_server(actual_port):
-        typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
+        typer.echo("Error: server did not become healthy within 30 seconds.", err=True)
         raise typer.Exit(1)
 
     # 4. Create API key in-process.
@@ -1048,16 +1048,16 @@ def run(
         typer.echo(f"Loading model: {model}...")
     try:
         result = _load_model_via_http(
-            port = actual_port,
-            api_key = api_key,
-            model = model,
-            gguf_variant = gguf_variant,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            llama_extra_args = extra_llama_args,
+            port=actual_port,
+            api_key=api_key,
+            model=model,
+            gguf_variant=gguf_variant,
+            max_seq_length=max_seq_length,
+            load_in_4bit=load_in_4bit,
+            llama_extra_args=extra_llama_args,
         )
     except RuntimeError as exc:
-        typer.echo(f"Error: {exc}", err = True)
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
     loaded_model = result.get("model", model)
@@ -1102,7 +1102,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
-        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
+        typer.secho(_tool_notice, fg=_tool_notice_fg, bold=True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -1130,7 +1130,7 @@ def run(
         # Silent still prints URL + API key + tool-status policy.
         typer.echo(f"URL:     {base_url}")
         typer.echo(f"API Key: {api_key}")
-        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
+        typer.secho(_tool_notice, fg=_tool_notice_fg, bold=True)
 
     # 7. Wait for Ctrl+C.
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
@@ -1138,7 +1138,7 @@ def run(
     try:
         if _shutdown_event is not None:
             while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+                _shutdown_event.wait(timeout=1)
         else:
             while True:
                 time.sleep(1)
@@ -1168,7 +1168,7 @@ def stop():
     pid_text = _PID_FILE.read_text().strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
-        _PID_FILE.unlink(missing_ok = True)
+        _PID_FILE.unlink(missing_ok=True)
         raise typer.Exit(1)
 
     pid = int(pid_text)
@@ -1180,7 +1180,7 @@ def stop():
         typer.echo(
             f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
         )
-        _PID_FILE.unlink(missing_ok = True)
+        _PID_FILE.unlink(missing_ok=True)
         raise typer.Exit(0)
     except PermissionError:
         pass  # process exists but we may not own it; try to signal anyway
@@ -1188,16 +1188,16 @@ def stop():
     # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check = True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=True)
         else:
             os.kill(pid, _signal.SIGTERM)
         typer.echo(f"Sent shutdown signal to Studio server (PID {pid}).")
     except ProcessLookupError:
         typer.echo(f"Studio server (PID {pid}) already exited.")
-        _PID_FILE.unlink(missing_ok = True)
+        _PID_FILE.unlink(missing_ok=True)
         raise typer.Exit(0)
     except Exception as e:
-        typer.echo(f"Failed to stop Studio server (PID {pid}): {e}", err = True)
+        typer.echo(f"Failed to stop Studio server (PID {pid}): {e}", err=True)
         raise typer.Exit(1)
 
     # Wait briefly for the process to exit and clean up
@@ -1206,7 +1206,7 @@ def stop():
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
-            _PID_FILE.unlink(missing_ok = True)
+            _PID_FILE.unlink(missing_ok=True)
             typer.echo("Studio server stopped.")
             raise typer.Exit(0)
         except PermissionError:
@@ -1266,14 +1266,14 @@ def _run_setup_script(*, verbose: bool = False) -> None:
         # CI was the smoking gun (run 25533694490 and 25534292239).
         result = subprocess.run(
             powershell_args,
-            env = env,
-            stdin = _stream_for_subprocess(sys.stdin),
-            stdout = _stream_for_subprocess(sys.stdout),
-            stderr = _stream_for_subprocess(sys.stderr),
+            env=env,
+            stdin=_stream_for_subprocess(sys.stdin),
+            stdout=_stream_for_subprocess(sys.stdout),
+            stderr=_stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
     else:
-        result = subprocess.run(["bash", str(script)], env = env)
+        result = subprocess.run(["bash", str(script)], env=env)
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
@@ -1326,8 +1326,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                     )
                     result = subprocess.run(
                         argv,
-                        env = env,
-                        check = False,
+                        env=env,
+                        check=False,
                         **_windows_hidden_subprocess_kwargs(),
                     )
                     if result.returncode != 0:
@@ -1341,10 +1341,10 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
         try:
             request = urllib.request.Request(
-                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+                installer_url, headers={"User-Agent": "unsloth-studio-update"}
             )
-            with urllib.request.urlopen(request, timeout = 30) as response:
-                installer = response.read().decode("utf-8", errors = "replace")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                installer = response.read().decode("utf-8", errors="replace")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             typer.echo(
                 f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
@@ -1369,8 +1369,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # in install.ps1. -File reads the BOM and decodes correctly. The
         # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
         ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-",
-            suffix = ".ps1",
+            prefix="unsloth-studio-refresh-",
+            suffix=".ps1",
         )
         try:
             with os.fdopen(ps1_fd, "wb") as fh:
@@ -1380,8 +1380,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             try:
                 result = subprocess.run(
                     argv,
-                    env = env,
-                    check = False,
+                    env=env,
+                    check=False,
                     **_windows_hidden_subprocess_kwargs(),
                 )
                 if result.returncode != 0:
@@ -1404,8 +1404,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             if script.is_file():
                 result = subprocess.run(
                     ["bash", str(script), *args],
-                    env = env,
-                    check = False,
+                    env=env,
+                    check=False,
                 )
                 if result.returncode != 0:
                     typer.echo(
@@ -1418,9 +1418,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     # PyPI installs lack install.sh: fetch upstream.
     try:
         request = urllib.request.Request(
-            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+            installer_url, headers={"User-Agent": "unsloth-studio-update"}
         )
-        with urllib.request.urlopen(request, timeout = 30) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             installer = response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         typer.echo(
@@ -1431,9 +1431,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     try:
         result = subprocess.run(
             ["bash", "-s", "--", *args],
-            input = installer,
-            env = env,
-            check = False,
+            input=installer,
+            env=env,
+            check=False,
         )
         if result.returncode != 0:
             typer.echo(
@@ -1443,32 +1443,32 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
 
-@studio_app.command(hidden = True)
+@studio_app.command(hidden=True)
 def setup(
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
-        help = "Full pip/build output during setup for troubleshooting.",
+        help="Full pip/build output during setup for troubleshooting.",
     ),
 ):
     """Run Studio setup (called by install.ps1 / install.sh)."""
-    _run_setup_script(verbose = verbose)
+    _run_setup_script(verbose=verbose)
 
 
 @studio_app.command()
 def update(
     local: bool = typer.Option(
-        False, "--local", help = "Install from local repo instead of PyPI"
+        False, "--local", help="Install from local repo instead of PyPI"
     ),
     package: str = typer.Option(
-        "unsloth", "--package", help = "Package name to install/update (for testing)"
+        "unsloth", "--package", help="Package name to install/update (for testing)"
     ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
-        help = "Full pip/build output during update for troubleshooting.",
+        help="Full pip/build output during update for troubleshooting.",
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
@@ -1489,7 +1489,7 @@ def update(
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     _release_self_exe_lock_windows()
     try:
-        _run_setup_script(verbose = verbose)
+        _run_setup_script(verbose=verbose)
     except BaseException:
         # Restore unsloth.exe from .deleteme if setup failed before pip
         # produced a replacement; otherwise the user has no CLI for recovery.
@@ -1506,7 +1506,7 @@ def update(
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
-    _refresh_desktop_shortcuts(verbose = verbose)
+    _refresh_desktop_shortcuts(verbose=verbose)
 
 
 def _release_self_exe_lock_windows() -> None:
@@ -1566,7 +1566,7 @@ def _cleanup_self_exe_lock_windows() -> None:
         return
     stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
     try:
-        stale.unlink(missing_ok = True)
+        stale.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1574,12 +1574,12 @@ def _cleanup_self_exe_lock_windows() -> None:
 # ── unsloth studio reset-password ────────────────────────────────────
 
 
-@studio_app.command("desktop-capabilities", hidden = True)
+@studio_app.command("desktop-capabilities", hidden=True)
 def desktop_capabilities(
     json_output: bool = typer.Option(
         False,
         "--json",
-        help = "Emit machine-readable JSON.",
+        help="Emit machine-readable JSON.",
     ),
 ):
     payload = {
@@ -1598,14 +1598,14 @@ def desktop_capabilities(
         pass
 
     if json_output:
-        typer.echo(json.dumps(payload, sort_keys = True))
+        typer.echo(json.dumps(payload, sort_keys=True))
         return
 
     for key, value in payload.items():
         typer.echo(f"{key}: {value}")
 
 
-@studio_app.command("provision-desktop-auth", hidden = True)
+@studio_app.command("provision-desktop-auth", hidden=True)
 def provision_desktop_auth():
     """Create/repair desktop auth state for the local machine."""
     auth_dir = STUDIO_HOME / "auth"
@@ -1630,9 +1630,9 @@ def reset_password():
     ]
     had_db = db_file.exists()
 
-    db_file.unlink(missing_ok = True)
+    db_file.unlink(missing_ok=True)
     for path in stale_files:
-        path.unlink(missing_ok = True)
+        path.unlink(missing_ok=True)
 
     if not had_db:
         typer.echo("No auth database found -- nothing to reset.")

@@ -97,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/tokenize":
             time.sleep(srv.config.tok_delay)
             if srv.config.tok_reset:
-                self._send_reset(partial = b'{"toke')
+                self._send_reset(partial=b'{"toke')
                 return
             if srv.config.tok_body is not None:
                 self._send_raw(srv.config.tok_status, srv.config.tok_body)
@@ -205,18 +205,18 @@ class FakeLlamaServer:
         self._requested_port = port
         self.model_path = model_path
         self.config = FakeLlamaServer._Config(
-            health_delay = health_delay,
-            health_fail = health_fail,
-            tok_delay = tok_delay,
-            tok_status = tok_status,
-            tok_body = tok_body,
-            tok_reset = tok_reset,
-            tok_response_map = tok_response_map or {},
-            detok_delay = detok_delay,
-            detok_status = detok_status,
-            detok_body = detok_body,
-            detok_map = detok_map or {},
-            completion_delay = completion_delay,
+            health_delay=health_delay,
+            health_fail=health_fail,
+            tok_delay=tok_delay,
+            tok_status=tok_status,
+            tok_body=tok_body,
+            tok_reset=tok_reset,
+            tok_response_map=tok_response_map or {},
+            detok_delay=detok_delay,
+            detok_status=detok_status,
+            detok_body=detok_body,
+            detok_map=detok_map or {},
+            completion_delay=completion_delay,
         )
         self._server: Optional[FakeLlamaServer._Server] = None
         self._thread: Optional[threading.Thread] = None
@@ -230,9 +230,9 @@ class FakeLlamaServer:
         self._server.config = self.config
         bound_port = self._server.server_address[1]
         self._thread = threading.Thread(
-            target = self._server.serve_forever,
-            daemon = True,
-            name = f"fake-llama-{bound_port}",
+            target=self._server.serve_forever,
+            daemon=True,
+            name=f"fake-llama-{bound_port}",
         )
         self._thread.start()
         return self
@@ -243,7 +243,7 @@ class FakeLlamaServer:
             self._server.server_close()
             self._server = None
         if self._thread is not None:
-            self._thread.join(timeout = 5.0)
+            self._thread.join(timeout=5.0)
             self._thread = None
 
     def __enter__(self) -> "FakeLlamaServer":

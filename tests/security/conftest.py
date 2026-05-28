@@ -68,7 +68,7 @@ class _BlockedSocket(socket.socket):
         return super().connect_ex(address)
 
 
-@pytest.fixture(scope = "session", autouse = True)
+@pytest.fixture(scope="session", autouse=True)
 def network_blocker():
     """Session-scoped fixture; replaces `socket.socket` with a blocker.
 
@@ -83,11 +83,11 @@ def network_blocker():
         socket.socket = original  # type: ignore[assignment]
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def repo_root() -> Path:
     return REPO_ROOT
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"

@@ -49,14 +49,14 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _make_client(base_url: str = "https://api.openai.com/v1") -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = base_url,
-        api_key = "sk-test",
+        provider_type="openai",
+        base_url=base_url,
+        api_key="sk-test",
     )
 
 
@@ -93,8 +93,8 @@ def test_shell_tool_added_on_cloud_with_container_auto(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _openai_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -102,14 +102,14 @@ def test_shell_tool_added_on_cloud_with_container_auto(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "compute 2+2"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 4096,
-            enable_thinking = None,
-            reasoning_effort = None,
-            enabled_tools = ["code_execution"],
+            messages=[{"role": "user", "content": "compute 2+2"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=4096,
+            enable_thinking=None,
+            reasoning_effort=None,
+            enabled_tools=["code_execution"],
         ):
             pass
         await client.close()
@@ -130,8 +130,8 @@ def test_shell_tool_uses_container_reference_when_id_supplied(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _openai_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -139,15 +139,15 @@ def test_shell_tool_uses_container_reference_when_id_supplied(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "what did i write earlier"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 4096,
-            enable_thinking = None,
-            reasoning_effort = None,
-            enabled_tools = ["code_execution"],
-            openai_code_exec_container_id = "cntr_abc123",
+            messages=[{"role": "user", "content": "what did i write earlier"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=4096,
+            enable_thinking=None,
+            reasoning_effort=None,
+            enabled_tools=["code_execution"],
+            openai_code_exec_container_id="cntr_abc123",
         ):
             pass
         await client.close()
@@ -171,23 +171,23 @@ def test_shell_tool_refused_for_non_cloud_base_url(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _openai_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
-        client = _make_client(base_url = "http://localhost:11434/v1")
+        client = _make_client(base_url="http://localhost:11434/v1")
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 4096,
-            enable_thinking = None,
-            reasoning_effort = None,
-            enabled_tools = ["code_execution"],
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=4096,
+            enable_thinking=None,
+            reasoning_effort=None,
+            enabled_tools=["code_execution"],
         ):
             pass
         await client.close()
@@ -240,8 +240,8 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -250,14 +250,14 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "list files"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
+                messages=[{"role": "user", "content": "list files"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
             )
         )
 
@@ -293,8 +293,8 @@ def test_container_ready_emitted_when_new_id_surfaces(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -303,14 +303,14 @@ def test_container_ready_emitted_when_new_id_surfaces(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "do stuff"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
+                messages=[{"role": "user", "content": "do stuff"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
             )
         )
 
@@ -332,8 +332,8 @@ def test_container_ready_not_emitted_when_id_unchanged(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -342,15 +342,15 @@ def test_container_ready_not_emitted_when_id_unchanged(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "do stuff"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_same_789",
+                messages=[{"role": "user", "content": "do stuff"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
+                openai_code_exec_container_id="cntr_same_789",
             )
         )
 
@@ -364,7 +364,7 @@ def test_stale_container_emits_invalidated(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             400,
-            content = json.dumps(
+            content=json.dumps(
                 {
                     "error": {
                         "message": "container has expired",
@@ -372,7 +372,7 @@ def test_stale_container_emits_invalidated(monkeypatch):
                     }
                 }
             ).encode("utf-8"),
-            headers = {"content-type": "application/json"},
+            headers={"content-type": "application/json"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -381,15 +381,15 @@ def test_stale_container_emits_invalidated(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
+                openai_code_exec_container_id="cntr_stale_999",
             )
         )
 
@@ -421,7 +421,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
         if shell_env_type == "container_reference":
             return httpx.Response(
                 400,
-                content = json.dumps(
+                content=json.dumps(
                     {
                         "error": {
                             "message": "Container is expired.",
@@ -429,7 +429,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
                         }
                     }
                 ).encode("utf-8"),
-                headers = {"content-type": "application/json"},
+                headers={"content-type": "application/json"},
             )
         # Successful retry: minimal SSE — a completed response with a
         # fresh container_id so container_ready latches.
@@ -443,8 +443,8 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
         )
         return httpx.Response(
             200,
-            content = sse,
-            headers = {"content-type": "text/event-stream"},
+            content=sse,
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -453,15 +453,15 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
+                openai_code_exec_container_id="cntr_stale_999",
             )
         )
 
@@ -504,7 +504,7 @@ def test_expired_container_retries_only_once(monkeypatch):
         call_count["n"] += 1
         return httpx.Response(
             400,
-            content = json.dumps(
+            content=json.dumps(
                 {
                     "error": {
                         "message": "Container is expired.",
@@ -512,7 +512,7 @@ def test_expired_container_retries_only_once(monkeypatch):
                     }
                 }
             ).encode("utf-8"),
-            headers = {"content-type": "application/json"},
+            headers={"content-type": "application/json"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -521,15 +521,15 @@ def test_expired_container_retries_only_once(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=["code_execution"],
+                openai_code_exec_container_id="cntr_stale_999",
             )
         )
 

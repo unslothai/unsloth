@@ -73,7 +73,7 @@ KAGGLE_TMP = "/tmp"
 del keynames
 
 
-def try_fix_tokenizer(tokenizer, prepend = True):
+def try_fix_tokenizer(tokenizer, prepend=True):
     if hasattr(tokenizer, "_tokenizer"):
         converted_tokenizer = tokenizer._tokenizer
     else:
@@ -137,7 +137,7 @@ def get_sorted_dict(dictionary):
 
 def convert_to_fast_tokenizer(
     slow_tokenizer,
-    temporary_location = "_unsloth_sentencepiece_temp",
+    temporary_location="_unsloth_sentencepiece_temp",
 ):
     is_fast = getattr(slow_tokenizer, "is_fast", False)
     if is_fast:
@@ -159,20 +159,20 @@ def convert_to_fast_tokenizer(
     # Get all arguments (bos_token, etc)
     docs = FastTokenizer.__doc__
     docs = docs[docs.find("Args:") :]
-    args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
+    args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags=re.MULTILINE)
     args = [x for x in args if not x.endswith("_file")]
 
     # Also some missing maybe!
     docs = PreTrainedTokenizerFast.__doc__
     docs = docs[docs.find("Args:") :]
-    args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
+    args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags=re.MULTILINE)
     args2 = [x for x in args2 if not x.endswith("_file")]
     args = list(set(args + args2))
 
     kwargs = {}
     for arg in args:
         kwargs[arg] = getattr(slow_tokenizer, arg, None)
-    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
+    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend=True)
     fast_tokenizer = FastTokenizer(**kwargs)
 
     # Check if they're similar!
@@ -191,7 +191,7 @@ def convert_to_fast_tokenizer(
     # Now confirm if they match
     if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         # Maybe remove prepending of __apple?
-        kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = False)
+        kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend=False)
         fast_tokenizer = FastTokenizer(**kwargs)
         if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             # Failure :(
@@ -354,7 +354,7 @@ def fix_sentencepiece_tokenizer(
     old_tokenizer,
     new_tokenizer,
     token_mapping,
-    temporary_location = "_unsloth_sentencepiece_temp",
+    temporary_location="_unsloth_sentencepiece_temp",
 ):
     # From https://github.com/google/sentencepiece/issues/121
     # We need to manually edit the sentencepiece tokenizer!
@@ -397,7 +397,7 @@ def fix_sentencepiece_tokenizer(
 
     # Now correct the old tokenizer's .model file
     for old_token, new_token in token_mapping.items():
-        ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
+        ids = old_tokenizer([old_token], add_special_tokens=False).input_ids
         ids = ids[0]
         if len(ids) != 1:
             # Skip this token!
@@ -423,8 +423,8 @@ def fix_sentencepiece_tokenizer(
 
     tokenizer = AutoTokenizer.from_pretrained(
         temporary_location,
-        eos_token = new_tokenizer.eos_token,
-        pad_token = new_tokenizer.pad_token,
+        eos_token=new_tokenizer.eos_token,
+        pad_token=new_tokenizer.pad_token,
     )
     return tokenizer
 
@@ -479,7 +479,7 @@ def fix_sentencepiece_gguf(saved_location):
     # llama.cpp writes them as CONTROL (type=3) in the GGUF token_type array.
     special_token_ids = set()
     if os.path.isfile(f"{saved_location}/tokenizer.json"):
-        with open(f"{saved_location}/tokenizer.json", "r", encoding = "utf-8") as f:
+        with open(f"{saved_location}/tokenizer.json", "r", encoding="utf-8") as f:
             tokenizer_json = json.load(f)
         for entry in tokenizer_json.get("added_tokens", []):
             token_id = entry.get("id")
@@ -507,7 +507,7 @@ def fix_sentencepiece_gguf(saved_location):
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
                 file.write(tokenizer_file.SerializeToString())
         return
-    with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
+    with open(f"{saved_location}/added_tokens.json", "r", encoding="utf-8") as file:
         added_tokens_json = json.load(file)
     if len(added_tokens_json) == 0:
         if patched > 0:
@@ -516,7 +516,7 @@ def fix_sentencepiece_gguf(saved_location):
         return
 
     added_tokens_json = dict(
-        sorted(added_tokens_json.items(), key = lambda item: item[1])
+        sorted(added_tokens_json.items(), key=lambda item: item[1])
     )
     new_size = sentence_piece_size + len(added_tokens_json)
 
@@ -569,12 +569,12 @@ def fix_sentencepiece_gguf(saved_location):
 
 def _load_correct_tokenizer(
     tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
+    model_max_length=None,
+    padding_side="right",
+    token=None,
+    trust_remote_code=False,
+    cache_dir="huggingface_tokenizers_cache",
+    fix_tokenizer=True,
 ):
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
@@ -591,15 +591,15 @@ def _load_correct_tokenizer(
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
+            model_max_length=model_max_length,
+            padding_side=padding_side,
+            token=token,
+            trust_remote_code=trust_remote_code,
             # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-            use_fast = False,
-            legacy = False,
-            from_slow = True,
-            cache_dir = cache_dir,
+            use_fast=False,
+            legacy=False,
+            from_slow=True,
+            cache_dir=cache_dir,
         )
     except:
         slow_tokenizer = None
@@ -613,11 +613,11 @@ def _load_correct_tokenizer(
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
+        model_max_length=model_max_length,
+        padding_side=padding_side,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
     )
 
     if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
@@ -653,21 +653,21 @@ def _load_correct_tokenizer(
 
 def load_correct_tokenizer(
     tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
+    model_max_length=None,
+    padding_side="right",
+    token=None,
+    trust_remote_code=False,
+    cache_dir="huggingface_tokenizers_cache",
+    fix_tokenizer=True,
 ):
     tokenizer = _load_correct_tokenizer(
-        tokenizer_name = tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        fix_tokenizer = fix_tokenizer,
+        tokenizer_name=tokenizer_name,
+        model_max_length=model_max_length,
+        padding_side=padding_side,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
+        fix_tokenizer=fix_tokenizer,
     )
 
     ### 1. Fixup tokenizer's chat_template
@@ -706,10 +706,10 @@ def load_correct_tokenizer(
 #   {% endfor %}    {%- endfor %}    {% endfor -%}    {%- endfor -%}
 _RE_ENDFOR = re.compile(r"\{%(-?)\s*endfor\s*(-?)%\}")
 _RE_ENDIF = re.compile(r"\{%(-?)\s*endif\s*(-?)%\}")
-_RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags = re.DOTALL)
+_RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags=re.DOTALL)
 
 
-def _find_end_position(template, endfor = None, endif = None):
+def _find_end_position(template, endfor=None, endif=None):
     """Rightmost {% endfor %}/{% endif %} (any dash variant), as a dict
     with start/end/text/dash_left/dash_right. Tokens inside Jinja comments
     are ignored. `endfor`/`endif` kwargs kept for back-compat, ignored."""
@@ -722,7 +722,7 @@ def _find_end_position(template, endfor = None, endif = None):
     candidates = [m for m in (last_endfor, last_endif) if m is not None]
     if not candidates:
         return None
-    m = max(candidates, key = lambda x: x.end())
+    m = max(candidates, key=lambda x: x.end())
     return {
         "start": m.start(),
         "end": m.end(),
@@ -832,7 +832,7 @@ _RENDER_DIFF_SENTINEL_B = "BBBB_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_C = "CCCC_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 
 
-def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
+def _derive_assistant_prefix_by_render(chat_template, is_sharegpt=False):
     """Return the assistant-turn prefix the template emits, derived by
     rendering two dialogs that differ only in assistant content: the common
     prefix of their tails (after the base [user]-only render) is what the
@@ -881,13 +881,13 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     # apply_chat_template. SandboxedEnvironment blocks attribute-chain exploits.
     try:
         env = SandboxedEnvironment(
-            autoescape = False,
-            keep_trailing_newline = True,
+            autoescape=False,
+            keep_trailing_newline=True,
         )
         tmpl = env.from_string(probe_template)
-        out_base = tmpl.render(messages = base_msgs, add_generation_prompt = False)
-        out_a = tmpl.render(messages = sent_a_msgs, add_generation_prompt = False)
-        out_b = tmpl.render(messages = sent_b_msgs, add_generation_prompt = False)
+        out_base = tmpl.render(messages=base_msgs, add_generation_prompt=False)
+        out_a = tmpl.render(messages=sent_a_msgs, add_generation_prompt=False)
+        out_b = tmpl.render(messages=sent_b_msgs, add_generation_prompt=False)
     except Exception:
         return None
 
@@ -896,7 +896,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     # for Guard C, not a probe failure.
     out_user_c = None
     try:
-        out_user_c = tmpl.render(messages = sent_c_msgs, add_generation_prompt = False)
+        out_user_c = tmpl.render(messages=sent_c_msgs, add_generation_prompt=False)
     except Exception:
         pass
 
@@ -931,7 +931,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     return prefix
 
 
-def _fix_chat_template(chat_template, is_sharegpt = False):
+def _fix_chat_template(chat_template, is_sharegpt=False):
     # Fast path: already has an {% if add_generation_prompt %} block, nothing
     # to do. This catches cases the old string-based check would miss (e.g.
     # templates that use {%- if add_generation_prompt -%} with both-side dash,
@@ -980,7 +980,7 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
         # Dual-probe: dict/list callers don't know the shape up front.
         if assistant_prefix is None and not is_sharegpt:
             assistant_prefix = _derive_assistant_prefix_by_render(
-                chat_template, is_sharegpt = True
+                chat_template, is_sharegpt=True
             )
         if assistant_prefix is None:
             return chat_template
@@ -1024,9 +1024,9 @@ def _name_is_local_path(name_or_path):
 def _format_chat_template_message(
     name_or_path,
     repaired,
-    has_generation_block = False,
-    local_path_source = None,
-    strict = False,
+    has_generation_block=False,
+    local_path_source=None,
+    strict=False,
 ):
     """Build a user-facing warning/error message that points at the right
     responsible party (user's downstream tool vs. upstream model maintainer)."""
@@ -1045,7 +1045,7 @@ def _format_chat_template_message(
         source_hint = (
             "The chat_template shipped with `{name}` appears incomplete. "
             "Consider filing a bug report with the model maintainers."
-        ).format(name = name_or_path)
+        ).format(name=name_or_path)
     strict_suffix = (
         ""
         if strict
@@ -1055,13 +1055,13 @@ def _format_chat_template_message(
         return (
             "Unsloth: Patched the chat_template on `{name}` to add a "
             "{{% if add_generation_prompt %}} block. {hint}"
-        ).format(name = name_or_path, hint = source_hint)
+        ).format(name=name_or_path, hint=source_hint)
     if has_generation_block:
         return (
             "Unsloth: The tokenizer `{name}` has a "
             "{{% if add_generation_prompt %}} block, but it does not change "
             "the rendered output. {hint}{suffix}"
-        ).format(name = name_or_path, hint = source_hint, suffix = strict_suffix)
+        ).format(name=name_or_path, hint=source_hint, suffix=strict_suffix)
     load_clause = (
         "Loading is blocked in strict mode."
         if strict
@@ -1074,10 +1074,10 @@ def _format_chat_template_message(
         "{{% if add_generation_prompt %}} block for generation purposes, and "
         "automatic repair was not possible. {load_clause} {hint}{suffix}"
     ).format(
-        name = name_or_path,
-        load_clause = load_clause,
-        hint = source_hint,
-        suffix = strict_suffix,
+        name=name_or_path,
+        load_clause=load_clause,
+        hint=source_hint,
+        suffix=strict_suffix,
     )
 
 
@@ -1100,13 +1100,13 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
         try:
             yes = tokenizer.apply_chat_template(
                 msgs,
-                add_generation_prompt = True,
-                tokenize = False,
+                add_generation_prompt=True,
+                tokenize=False,
             )
             no = tokenizer.apply_chat_template(
                 msgs,
-                add_generation_prompt = False,
-                tokenize = False,
+                add_generation_prompt=False,
+                tokenize=False,
             )
         except Exception:
             return False
@@ -1124,7 +1124,7 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
 def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     """Core string-template repair. Returns the repaired template on success,
     or None if repair was not possible / failed validation."""
-    candidate = _fix_chat_template(chat_template, is_sharegpt = is_sharegpt)
+    candidate = _fix_chat_template(chat_template, is_sharegpt=is_sharegpt)
     if not _has_add_generation_prompt_block(candidate):
         return None
     # Validate with the caller's is_sharegpt first. If that fails, the
@@ -1153,16 +1153,16 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     try:
         tokenizer.apply_chat_template(
             [{"role": "user", "content": "Who are you?"}],
-            add_generation_prompt = False,
-            tokenize = False,
+            add_generation_prompt=False,
+            tokenize=False,
         )
         is_sharegpt = False
     except Exception:
         try:
             tokenizer.apply_chat_template(
                 [{"from": "human", "value": "Who are you?"}],
-                add_generation_prompt = False,
-                tokenize = False,
+                add_generation_prompt=False,
+                tokenize=False,
             )
             is_sharegpt = True
         except Exception:
@@ -1179,13 +1179,13 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     try:
         no = tokenizer.apply_chat_template(
             messages,
-            add_generation_prompt = False,
-            tokenize = False,
+            add_generation_prompt=False,
+            tokenize=False,
         )
         yes = tokenizer.apply_chat_template(
             messages,
-            add_generation_prompt = True,
-            tokenize = False,
+            add_generation_prompt=True,
+            tokenize=False,
         )
     except Exception:
         return chat_template
@@ -1201,10 +1201,10 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         strict = _is_strict_chat_template_mode()
         msg = _format_chat_template_message(
             name,
-            repaired = False,
-            has_generation_block = True,
-            local_path_source = source_path,
-            strict = strict,
+            repaired=False,
+            has_generation_block=True,
+            local_path_source=source_path,
+            strict=strict,
         )
         if strict:
             raise RuntimeError(msg)
@@ -1216,8 +1216,8 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         logger.warning_once(
             _format_chat_template_message(
                 name,
-                repaired = True,
-                local_path_source = source_path,
+                repaired=True,
+                local_path_source=source_path,
             )
         )
         return repaired
@@ -1225,9 +1225,9 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     strict = _is_strict_chat_template_mode()
     msg = _format_chat_template_message(
         name,
-        repaired = False,
-        local_path_source = source_path,
-        strict = strict,
+        repaired=False,
+        local_path_source=source_path,
+        strict=strict,
     )
     if strict:
         raise RuntimeError(msg)
@@ -1246,7 +1246,7 @@ class _VariantTokenizerProxy:
     preserved; falls back to bare Jinja for read-only stubs.
     """
 
-    def __init__(self, base_tokenizer, variant_template, variant_label = ""):
+    def __init__(self, base_tokenizer, variant_template, variant_label=""):
         self._base = base_tokenizer
         self._template = variant_template
         base_name = getattr(base_tokenizer, "name_or_path", "unknown")
@@ -1278,14 +1278,14 @@ class _VariantTokenizerProxy:
             from jinja2.sandbox import SandboxedEnvironment
 
             env = SandboxedEnvironment(
-                autoescape = False,
-                keep_trailing_newline = True,
+                autoescape=False,
+                keep_trailing_newline=True,
             )
             messages = args[0] if args else kwargs.get("messages", [])
             add_generation_prompt = kwargs.get("add_generation_prompt", False)
             return env.from_string(self._template).render(
-                messages = messages,
-                add_generation_prompt = add_generation_prompt,
+                messages=messages,
+                add_generation_prompt=add_generation_prompt,
             )
         finally:
             if swapped:
@@ -1309,7 +1309,7 @@ def fix_chat_template(tokenizer):
                 fixed[key] = tmpl
                 continue
             proxy = _VariantTokenizerProxy(
-                tokenizer, tmpl, variant_label = f"variant={key!r}"
+                tokenizer, tmpl, variant_label=f"variant={key!r}"
             )
             fixed[key] = _fix_chat_template_for_tokenizer(proxy, tmpl)
         return fixed
@@ -1326,7 +1326,7 @@ def fix_chat_template(tokenizer):
                 fixed.append(item)
                 continue
             label = f"variant={item.get('name', '?')!r}"
-            proxy = _VariantTokenizerProxy(tokenizer, tmpl, variant_label = label)
+            proxy = _VariantTokenizerProxy(tokenizer, tmpl, variant_label=label)
             new_tmpl = _fix_chat_template_for_tokenizer(proxy, tmpl)
             if new_tmpl is tmpl or new_tmpl == tmpl:
                 fixed.append(item)
@@ -1340,11 +1340,11 @@ def fix_chat_template(tokenizer):
 def check_tokenizer(
     model,
     tokenizer,
-    model_name = "unsloth/llama-2-7b-bnb-4bit",
-    model_max_length = 4096,
-    padding_side = "right",
-    token = None,
-    _reload = True,
+    model_name="unsloth/llama-2-7b-bnb-4bit",
+    model_max_length=4096,
+    padding_side="right",
+    token=None,
+    _reload=True,
 ):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
@@ -1451,23 +1451,23 @@ def check_tokenizer(
                 # Try slow tokenizer which can fix things!
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
+                    model_max_length=model_max_length,
+                    padding_side=padding_side,
+                    token=token,
                     # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-                    use_fast = False,
-                    legacy = False,
-                    from_slow = True,
-                    cache_dir = cache_dir,
+                    use_fast=False,
+                    legacy=False,
+                    from_slow=True,
+                    cache_dir=cache_dir,
                 )
                 return check_tokenizer(
-                    model = model,
-                    tokenizer = tokenizer,
-                    model_name = model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
-                    _reload = False,
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_name=model_name,
+                    model_max_length=model_max_length,
+                    padding_side=padding_side,
+                    token=token,
+                    _reload=False,
                 )
                 break
             except:
@@ -1645,7 +1645,7 @@ def patch_sft_trainer_tokenizer():
             replacer = re.findall(
                 f"def {function_name}" + r"\(.*?\).*?\:\n",
                 function,
-                flags = re.MULTILINE | re.DOTALL,
+                flags=re.MULTILINE | re.DOTALL,
             )
             if len(replacer) == 0:
                 continue

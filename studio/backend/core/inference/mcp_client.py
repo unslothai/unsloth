@@ -37,9 +37,9 @@ def _oauth_store():
         # Hash keys/collections — fastmcp uses raw URLs like https://x.com as
         # keys and FileTreeStore would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
-            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
-            key_sanitization_strategy = AlwaysHashStrategy(),
-            collection_sanitization_strategy = AlwaysHashStrategy(),
+            data_directory=ensure_dir(studio_root() / "mcp-oauth-tokens"),
+            key_sanitization_strategy=AlwaysHashStrategy(),
+            collection_sanitization_strategy=AlwaysHashStrategy(),
         )
     return _oauth_token_store
 
@@ -54,7 +54,7 @@ async def clear_oauth_tokens_async(url: str) -> None:
     try:
         from fastmcp.client.auth import OAuth
 
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(mcp_url=url, token_storage=_oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         # Cleanup is best-effort; the row delete still wins.
@@ -70,14 +70,14 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     if use_oauth:
         from fastmcp.client.auth import OAuth
 
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(mcp_url=url, token_storage=_oauth_store())
 
     transport_cls = (
         SSETransport
         if infer_transport_type_from_url(url) == "sse"
         else StreamableHttpTransport
     )
-    return Client(transport_cls(url = url, headers = headers or None, auth = auth))
+    return Client(transport_cls(url=url, headers=headers or None, auth=auth))
 
 
 async def list_tools_async(
@@ -89,9 +89,9 @@ async def list_tools_async(
     async def _fetch() -> list[dict]:
         async with _client(url, headers, use_oauth) as client:
             tools = await client.list_tools()
-        return [t.model_dump(exclude_none = True) for t in tools]
+        return [t.model_dump(exclude_none=True) for t in tools]
 
-    return await asyncio.wait_for(_fetch(), timeout = timeout)
+    return await asyncio.wait_for(_fetch(), timeout=timeout)
 
 
 def _flatten_result(result: Any) -> str:
@@ -118,7 +118,7 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
-    cancel_event = None,
+    cancel_event=None,
 ) -> str:
     """Synchronously call an MCP tool.
 
@@ -146,13 +146,13 @@ def call_tool_sync(
             raise _MCPCancelled
         call_task = asyncio.create_task(_call())
         if cancel_event is None:
-            return await asyncio.wait_for(call_task, timeout = timeout)
+            return await asyncio.wait_for(call_task, timeout=timeout)
         watch_task = asyncio.create_task(_watch_cancel())
         try:
             done, pending = await asyncio.wait(
                 {call_task, watch_task},
-                timeout = timeout,
-                return_when = asyncio.FIRST_COMPLETED,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
             for t in (call_task, watch_task):

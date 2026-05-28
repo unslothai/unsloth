@@ -29,7 +29,7 @@ from loggers.handlers import filter_sensitive_data
 
 
 def _run(event_dict):
-    return filter_sensitive_data(logger = None, method_name = "info", event_dict = event_dict)
+    return filter_sensitive_data(logger=None, method_name="info", event_dict=event_dict)
 
 
 class TestNoTruncation:

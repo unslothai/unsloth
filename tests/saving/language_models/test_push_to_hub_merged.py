@@ -37,7 +37,7 @@ def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
         tokenizer.apply_chat_template(
-            convo, tokenize = False, add_generation_prompt = False
+            convo, tokenize=False, add_generation_prompt=False
         )
         for convo in convos
     ]
@@ -52,34 +52,34 @@ else:
     attn_implementation = "sdpa"
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/Llama-3.2-1B-Instruct",
-    max_seq_length = 2048,
-    dtype = compute_dtype,
-    load_in_4bit = True,
-    load_in_8bit = False,
-    full_finetuning = False,
-    attn_implementation = attn_implementation,
+    model_name="unsloth/Llama-3.2-1B-Instruct",
+    max_seq_length=2048,
+    dtype=compute_dtype,
+    load_in_4bit=True,
+    load_in_8bit=False,
+    full_finetuning=False,
+    attn_implementation=attn_implementation,
 )
 
 tokenizer = get_chat_template(
     tokenizer,
-    chat_template = "llama-3.1",
+    chat_template="llama-3.1",
 )
 
 from unsloth.chat_templates import standardize_sharegpt
 
-dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
-dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
+dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split="train")
+dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
 
-dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
-dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
+dataset_train = dataset_train.map(formatting_prompts_func, batched=True)
+dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched=True)
 
 add_to_comparison("Base model 4 bits", ppl_model(model, tokenizer, dataset_ppl))
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 16,
-    target_modules = [
+    r=16,
+    target_modules=[
         "k_proj",
         "q_proj",
         "v_proj",
@@ -88,40 +88,40 @@ model = FastLanguageModel.get_peft_model(
         "down_proj",
         "up_proj",
     ],
-    lora_alpha = 16,
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = "unsloth",
-    random_state = 3407,
-    use_rslora = False,
-    loftq_config = None,
+    lora_alpha=16,
+    lora_dropout=0,
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
+    use_rslora=False,
+    loftq_config=None,
 )
 
 from unsloth import is_bfloat16_supported
 
 trainer = SFTTrainer(
-    model = model,
-    tokenizer = tokenizer,
-    train_dataset = dataset_train,
-    dataset_text_field = "text",
-    max_seq_length = 2048,
-    data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
-    dataset_num_proc = 2,
-    packing = False,
-    args = TrainingArguments(
-        per_device_train_batch_size = 2,
-        gradient_accumulation_steps = 4,
-        warmup_ratio = 0.1,
-        max_steps = 30,
-        learning_rate = 2e-4,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
-        logging_steps = 50,
-        optim = "adamw_8bit",
-        lr_scheduler_type = "linear",
-        seed = 3407,
-        output_dir = "outputs",
-        report_to = "none",
+    model=model,
+    tokenizer=tokenizer,
+    train_dataset=dataset_train,
+    dataset_text_field="text",
+    max_seq_length=2048,
+    data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
+    dataset_num_proc=2,
+    packing=False,
+    args=TrainingArguments(
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        warmup_ratio=0.1,
+        max_steps=30,
+        learning_rate=2e-4,
+        fp16=not is_bfloat16_supported(),
+        bf16=is_bfloat16_supported(),
+        logging_steps=50,
+        optim="adamw_8bit",
+        lr_scheduler_type="linear",
+        seed=3407,
+        output_dir="outputs",
+        report_to="none",
     ),
 )
 
@@ -129,8 +129,8 @@ from unsloth.chat_templates import train_on_responses_only
 
 trainer = train_on_responses_only(
     trainer,
-    instruction_part = "<|start_header_id|>user<|end_header_id|>\n\n",
-    response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    instruction_part="<|start_header_id|>user<|end_header_id|>\n\n",
+    response_part="<|start_header_id|>assistant<|end_header_id|>\n\n",
 )
 
 # run training
@@ -160,7 +160,7 @@ try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
     print("=" * 80 + "\n")
-    model.push_to_hub_merged(repo_name, tokenizer = tokenizer, token = hf_token)
+    model.push_to_hub_merged(repo_name, tokenizer=tokenizer, token=hf_token)
     success["upload"] = True
     print("✅ Model uploaded successfully!")
 except Exception as e:

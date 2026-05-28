@@ -62,13 +62,13 @@ def test_fixture_bytes_are_deterministic(tmp_path):
         f"_build.HERE = pathlib.Path({str(rebuild_dir)!r})\n"
         "_build.build_all()\n"
     )
-    env = dict(os.environ, SOURCE_DATE_EPOCH = "0")
+    env = dict(os.environ, SOURCE_DATE_EPOCH="0")
     proc = subprocess.run(
         [sys.executable, str(shim)],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
 
@@ -134,7 +134,7 @@ _MAY12_AVAILABLE = hasattr(sp, "RE_MAY12_IOC")
 
 @pytest.mark.skipif(
     not _BLOCKED_AVAILABLE,
-    reason = "Fork 1 (BLOCKED_PYPI_VERSIONS) not merged yet",
+    reason="Fork 1 (BLOCKED_PYPI_VERSIONS) not merged yet",
 )
 def test_blocked_pypi_versions_complete():
     table = sp.BLOCKED_PYPI_VERSIONS
@@ -148,7 +148,7 @@ def test_blocked_pypi_versions_complete():
 
 @pytest.mark.skipif(
     not _MAY12_AVAILABLE,
-    reason = "Fork 1 (RE_MAY12_IOC) not merged yet",
+    reason="Fork 1 (RE_MAY12_IOC) not merged yet",
 )
 def test_re_may12_ioc_catches_each_literal():
     expected_literals = [
@@ -167,7 +167,7 @@ def test_re_may12_ioc_catches_each_literal():
 
 @pytest.mark.skipif(
     not _MAY12_AVAILABLE,
-    reason = "Fork 1 (RE_MAY12_IOC integration) not merged yet",
+    reason="Fork 1 (RE_MAY12_IOC integration) not merged yet",
 )
 def test_may12_ioc_caught_by_scan_archive():
     """Once RE_MAY12_IOC is wired into check_py_file (per Fork 1's
@@ -220,10 +220,10 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
     unresolvable = "pkg-that-does-not-exist-0123456789-fork-c-silentfail==0.0.0"
     proc = subprocess.run(
         [sys.executable, str(script), unresolvable],
-        cwd = str(tmp_path),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 2, (

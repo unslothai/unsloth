@@ -18,8 +18,8 @@ from core.inference.pricing import (
 )
 
 
-def _isclose(a, b, tol = 1e-6):
-    return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
+def _isclose(a, b, tol=1e-6):
+    return math.isclose(a, b, rel_tol=tol, abs_tol=tol)
 
 
 # ── prefix-match boundary checks ────────────────────────────────────
@@ -367,9 +367,9 @@ def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
     mirrored `prompt_tokens_details.cached_tokens` should still apply
     the cache_read discount."""
     r = calculate_cost(
-        provider = "anthropic",
-        model = "claude-opus-4-7",
-        usage = {
+        provider="anthropic",
+        model="claude-opus-4-7",
+        usage={
             "prompt_tokens": 1_000_000,
             "completion_tokens": 0,
             # Only the mirrored shape (no native key).
@@ -379,16 +379,16 @@ def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
     )
     assert r["billable_input_tokens"] == 1_000_000, r
     # 1M cached at 0.1x of $5 (opus 4.7) = $0.50
-    assert math.isclose(r["cache_read_usd"], 0.5, rel_tol = 1e-3), r
+    assert math.isclose(r["cache_read_usd"], 0.5, rel_tol=1e-3), r
 
 
 def test_anthropic_native_key_takes_precedence_over_mirrored():
     """When both native and mirrored cache-read fields are present,
     the native Anthropic field wins (mirror is fallback-only)."""
     r = calculate_cost(
-        provider = "anthropic",
-        model = "claude-opus-4-7",
-        usage = {
+        provider="anthropic",
+        model="claude-opus-4-7",
+        usage={
             "prompt_tokens": 1_000_000,
             "cache_read_input_tokens": 800_000,
             "prompt_tokens_details": {"cached_tokens": 1_000_000},
@@ -399,16 +399,16 @@ def test_anthropic_native_key_takes_precedence_over_mirrored():
     #         = (1M - 0 - 800k) + 0 + 800k = 1M
     assert r["billable_input_tokens"] == 1_000_000, r
     # cache_read uses 800k (native), not 1M (mirrored).
-    assert math.isclose(r["cache_read_usd"], 0.4, rel_tol = 1e-3), r
+    assert math.isclose(r["cache_read_usd"], 0.4, rel_tol=1e-3), r
 
 
 def test_anthropic_native_zero_takes_precedence_over_mirrored():
     """Explicit `cache_read_input_tokens: 0` is authoritative; a stale
     mirrored block from a proxy must not inflate cache_read past it."""
     r = calculate_cost(
-        provider = "anthropic",
-        model = "claude-opus-4-7",
-        usage = {
+        provider="anthropic",
+        model="claude-opus-4-7",
+        usage={
             "input_tokens": 1_000_000,
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
@@ -421,8 +421,8 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
     # billable = input + cache_creation + cache_read = 1M + 0 + 0
     assert r["billable_input_tokens"] == 1_000_000, r
     # 1M uncached at $5/M (no discount).
-    assert math.isclose(r["input_usd"], 5.0, rel_tol = 1e-3), r
-    assert math.isclose(r["total_usd"], 5.0, rel_tol = 1e-3), r
+    assert math.isclose(r["input_usd"], 5.0, rel_tol=1e-3), r
+    assert math.isclose(r["total_usd"], 5.0, rel_tol=1e-3), r
 
 
 # ── _build_usage_chunk preserves cache_creation breakdown ──
@@ -435,9 +435,9 @@ def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
     from core.inference.external_provider import _build_usage_chunk
 
     chunk = _build_usage_chunk(
-        completion_id = "cmpl-x",
-        provider = "anthropic",
-        last_usage = {
+        completion_id="cmpl-x",
+        provider="anthropic",
+        last_usage={
             "input_tokens": 10,
             "output_tokens": 5,
             "cache_creation_input_tokens": 1_000_000,
@@ -458,9 +458,9 @@ def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
 def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
     """Re-emitted chat envelope must price 1h cache writes at 2x base."""
     r = calculate_cost(
-        provider = "anthropic",
-        model = "claude-opus-4-7",
-        usage = {
+        provider="anthropic",
+        model="claude-opus-4-7",
+        usage={
             "prompt_tokens": 1_000_010,
             "completion_tokens": 0,
             "cache_creation_input_tokens": 1_000_000,
@@ -472,4 +472,4 @@ def test_calculate_cost_uses_forwarded_cache_creation_for_1h_premium():
         },
     )
     # 1M at 1h-premium (2x of $5 = $10); 5m baseline would be $6.25.
-    assert math.isclose(r["cache_write_usd"], 10.0, rel_tol = 1e-2), r
+    assert math.isclose(r["cache_write_usd"], 10.0, rel_tol=1e-2), r

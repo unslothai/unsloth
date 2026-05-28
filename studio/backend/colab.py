@@ -31,7 +31,7 @@ def get_colab_url(port: int = 8888) -> str:
         from google.colab.output import eval_js
 
         # Use Colab's proxy mechanism
-        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 5)
+        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec=5)
         return url if url else f"http://localhost:{port}"
     except Exception as e:
         logger.info(f"Note: Could not get Colab URL ({e})")
@@ -102,7 +102,7 @@ def start(port: int = 8888):
 
     logger.info("   Starting server...")
     # Start server silently
-    run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    run_server(host="0.0.0.0", port=port, frontend_path=frontend_path, silent=True)
 
     logger.info("   Server started!")
 

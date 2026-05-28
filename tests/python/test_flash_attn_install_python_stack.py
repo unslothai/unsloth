@@ -28,16 +28,16 @@ class TestHasBlackwellGpu:
         wheel_utils.has_blackwell_gpu.cache_clear()
 
     def test_returns_false_when_nvidia_smi_missing(self):
-        with mock.patch.object(wheel_utils.shutil, "which", return_value = None):
+        with mock.patch.object(wheel_utils.shutil, "which", return_value=None):
             assert wheel_utils.has_blackwell_gpu() is False
 
     def test_returns_true_for_sm_100(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("10.0\n")
+                wheel_utils.subprocess, "run", return_value=_smi_result("10.0\n")
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is True
@@ -45,10 +45,10 @@ class TestHasBlackwellGpu:
     def test_returns_true_for_sm_120(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("12.0\n")
+                wheel_utils.subprocess, "run", return_value=_smi_result("12.0\n")
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is True
@@ -56,10 +56,10 @@ class TestHasBlackwellGpu:
     def test_returns_true_for_sm_121(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("12.1\n")
+                wheel_utils.subprocess, "run", return_value=_smi_result("12.1\n")
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is True
@@ -67,10 +67,10 @@ class TestHasBlackwellGpu:
     def test_returns_false_for_sm_90(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("9.0\n")
+                wheel_utils.subprocess, "run", return_value=_smi_result("9.0\n")
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is False
@@ -78,10 +78,10 @@ class TestHasBlackwellGpu:
     def test_returns_false_for_sm_89(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("8.9\n")
+                wheel_utils.subprocess, "run", return_value=_smi_result("8.9\n")
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is False
@@ -89,12 +89,12 @@ class TestHasBlackwellGpu:
     def test_mixed_gpus_with_one_blackwell_returns_true(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
-                return_value = _smi_result("8.0\n10.0\n"),
+                return_value=_smi_result("8.0\n10.0\n"),
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is True
@@ -102,12 +102,12 @@ class TestHasBlackwellGpu:
     def test_returns_false_when_nvidia_smi_fails(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
-                return_value = _smi_result("", returncode = 1),
+                return_value=_smi_result("", returncode=1),
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is False
@@ -115,12 +115,12 @@ class TestHasBlackwellGpu:
     def test_returns_false_on_subprocess_timeout(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
-                side_effect = subprocess.TimeoutExpired(cmd = "nvidia-smi", timeout = 10),
+                side_effect=subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10),
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is False
@@ -128,12 +128,12 @@ class TestHasBlackwellGpu:
     def test_returns_false_on_malformed_output(self):
         with (
             mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
+                wheel_utils.shutil, "which", return_value="/usr/bin/nvidia-smi"
             ),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
-                return_value = _smi_result("not-a-number\n\n"),
+                return_value=_smi_result("not-a-number\n\n"),
             ),
         ):
             assert wheel_utils.has_blackwell_gpu() is False
@@ -201,7 +201,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value = {
+                return_value={
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -209,9 +209,9 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "url_exists", return_value=True),
+            mock.patch.object(ips, "install_wheel", side_effect=fake_install_wheel),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -240,7 +240,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value = {
+                return_value={
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -248,9 +248,9 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "url_exists", return_value=True),
+            mock.patch.object(ips, "install_wheel", side_effect=fake_install_wheel),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -262,7 +262,7 @@ class TestEnsureFlashAttn:
         step_messages: list[tuple[str, str]] = []
         printed_failures: list[str] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(label: str, value: str, color_fn=None):
             step_messages.append((label, value))
 
         with (
@@ -274,7 +274,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value = {
+                return_value={
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -282,11 +282,11 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(ips, "url_exists", return_value=True),
             mock.patch.object(
                 ips,
                 "install_wheel",
-                return_value = [
+                return_value=[
                     ("uv", subprocess.CompletedProcess(["uv"], 1, "uv wheel failed")),
                     (
                         "pip",
@@ -297,10 +297,10 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "_print_optional_install_failure",
-                side_effect = lambda label, result: printed_failures.append(label),
+                side_effect=lambda label, result: printed_failures.append(label),
             ),
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "_step", side_effect=fake_step),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -313,7 +313,7 @@ class TestEnsureFlashAttn:
     def test_wheel_missing_skips_install_at_setup_time(self):
         step_messages: list[tuple[str, str]] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(label: str, value: str, color_fn=None):
             step_messages.append((label, value))
 
         with (
@@ -323,7 +323,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value = {
+                return_value={
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "13",
@@ -331,10 +331,10 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value = False),
+            mock.patch.object(ips, "url_exists", return_value=False),
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "_step", side_effect=fake_step),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -352,7 +352,7 @@ class TestEnsureFlashAttn:
             mock.patch.dict(os.environ, {"UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL": "1"}),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -362,18 +362,18 @@ class TestEnsureFlashAttn:
     def test_blackwell_gpu_skips_install_with_warning(self):
         step_messages: list[tuple[str, str]] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(label: str, value: str, color_fn=None):
             step_messages.append((label, value))
 
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value=True),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "_step", side_effect=fake_step),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -386,18 +386,18 @@ class TestEnsureFlashAttn:
     def test_blackwell_gpu_on_windows_emits_blackwell_warning(self):
         step_messages: list[tuple[str, str]] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(label: str, value: str, color_fn=None):
             step_messages.append((label, value))
 
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value=True),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "_step", side_effect=fake_step),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -410,18 +410,18 @@ class TestEnsureFlashAttn:
     def test_non_blackwell_windows_does_not_emit_blackwell_warning(self):
         step_messages: list[tuple[str, str]] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(label: str, value: str, color_fn=None):
             step_messages.append((label, value))
 
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(ips, "has_blackwell_gpu", return_value=False),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            mock.patch.object(ips, "_step", side_effect=fake_step),
+            mock.patch("subprocess.run", return_value=self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -448,30 +448,30 @@ class TestInstallPythonStackFlashAttnIntegration:
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
             mock.patch.object(ips, "VERBOSE", False),
-            mock.patch.object(ips, "_bootstrap_uv", return_value = True),
-            mock.patch.object(ips, "_ensure_flash_attn", side_effect = count_flash_attn),
-            mock.patch("subprocess.run", side_effect = fake_run),
-            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
-            mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
+            mock.patch.object(ips, "_bootstrap_uv", return_value=True),
+            mock.patch.object(ips, "_ensure_flash_attn", side_effect=count_flash_attn),
+            mock.patch("subprocess.run", side_effect=fake_run),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value=False),
+            mock.patch.object(ips, "_has_rocm_gpu", return_value=False),
             mock.patch.object(
                 ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")
             ),
-            mock.patch("pathlib.Path.is_dir", return_value = True),
-            mock.patch("pathlib.Path.is_file", return_value = True),
-            mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear = False),
+            mock.patch("pathlib.Path.is_dir", return_value=True),
+            mock.patch("pathlib.Path.is_file", return_value=True),
+            mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear=False),
         ):
             ips.install_python_stack()
 
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
+        assert self._run_install(no_torch=False, is_macos=False, is_windows=False) == 1
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
+        assert self._run_install(no_torch=True, is_macos=False, is_windows=False) == 0
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
+        assert self._run_install(no_torch=False, is_macos=True, is_windows=False) == 0
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
+        assert self._run_install(no_torch=False, is_macos=False, is_windows=True) == 0

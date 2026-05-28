@@ -42,7 +42,7 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
     """Create a uv venv at the given Python version. Returns python path or None."""
     result = subprocess.run(
         ["uv", "venv", str(venv_dir), "--python", python_version],
-        capture_output = True,
+        capture_output=True,
     )
     if result.returncode != 0:
         return None
@@ -52,7 +52,7 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
     return venv_python if venv_python.exists() else None
 
 
-@pytest.fixture(params = ["3.12", "3.13"], scope = "module")
+@pytest.fixture(params=["3.12", "3.13"], scope="module")
 def no_torch_venv(request, tmp_path_factory):
     """Create a temporary venv at the requested Python version with no torch.
 
@@ -70,7 +70,7 @@ def no_torch_venv(request, tmp_path_factory):
     # Verify torch is NOT importable
     check = subprocess.run(
         [str(venv_python), "-c", "import torch"],
-        capture_output = True,
+        capture_output=True,
     )
     assert (
         check.returncode != 0
@@ -87,13 +87,13 @@ class TestDataCollatorsAST:
 
     def test_ast_parse(self):
         """data_collators.py must be valid Python syntax."""
-        source = DATA_COLLATORS.read_text(encoding = "utf-8")
-        tree = ast.parse(source, filename = str(DATA_COLLATORS))
+        source = DATA_COLLATORS.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(DATA_COLLATORS))
         assert tree is not None
 
     def test_no_top_level_torch_import(self):
         """No top-level 'import torch' or 'from torch' statements."""
-        source = DATA_COLLATORS.read_text(encoding = "utf-8")
+        source = DATA_COLLATORS.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.Import):
@@ -113,13 +113,13 @@ class TestChatTemplatesAST:
 
     def test_ast_parse(self):
         """chat_templates.py must be valid Python syntax."""
-        source = CHAT_TEMPLATES.read_text(encoding = "utf-8")
-        tree = ast.parse(source, filename = str(CHAT_TEMPLATES))
+        source = CHAT_TEMPLATES.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(CHAT_TEMPLATES))
         assert tree is not None
 
     def test_no_top_level_torch_import(self):
         """No top-level 'import torch' or 'from torch' at module level."""
-        source = CHAT_TEMPLATES.read_text(encoding = "utf-8")
+        source = CHAT_TEMPLATES.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.Import):
@@ -135,7 +135,7 @@ class TestChatTemplatesAST:
 
     def test_torch_imports_only_inside_functions(self):
         """All 'from torch' imports must be inside function/method bodies."""
-        source = CHAT_TEMPLATES.read_text(encoding = "utf-8")
+        source = CHAT_TEMPLATES.read_text(encoding="utf-8")
         tree = ast.parse(source)
         torch_imports = []
         for node in ast.walk(tree):
@@ -174,8 +174,8 @@ class TestDataCollatorsNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -196,8 +196,8 @@ class TestDataCollatorsNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -220,8 +220,8 @@ class TestDataCollatorsNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -243,8 +243,8 @@ class TestDataCollatorsNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -293,8 +293,8 @@ class TestChatTemplatesNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -332,8 +332,8 @@ class TestChatTemplatesNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -349,13 +349,13 @@ class TestFormatConversionAST:
 
     def test_ast_parse(self):
         """format_conversion.py must be valid Python syntax."""
-        source = FORMAT_CONVERSION.read_text(encoding = "utf-8")
-        tree = ast.parse(source, filename = str(FORMAT_CONVERSION))
+        source = FORMAT_CONVERSION.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(FORMAT_CONVERSION))
         assert tree is not None
 
     def test_no_bare_torch_import_in_functions(self):
         """All 'from torch' imports in function bodies must be inside try/except."""
-        source = FORMAT_CONVERSION.read_text(encoding = "utf-8")
+        source = FORMAT_CONVERSION.read_text(encoding="utf-8")
         tree = ast.parse(source)
 
         for node in ast.walk(tree):
@@ -437,8 +437,8 @@ class TestFormatConversionNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -492,8 +492,8 @@ class TestFormatConversionNoTorchVenv:
         """)
         result = subprocess.run(
             [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert (
             result.returncode == 0
@@ -510,10 +510,10 @@ class TestNegativeControls:
     def test_import_torch_prepended_fails(self, no_torch_venv):
         """Prepending 'import torch' to data_collators.py causes ModuleNotFoundError."""
         with tempfile.NamedTemporaryFile(
-            mode = "w", suffix = ".py", delete = False, encoding = "utf-8"
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
         ) as f:
             f.write("import torch\n")
-            f.write(DATA_COLLATORS.read_text(encoding = "utf-8"))
+            f.write(DATA_COLLATORS.read_text(encoding="utf-8"))
             temp_file = f.name
 
         try:
@@ -526,8 +526,8 @@ class TestNegativeControls:
             """)
             result = subprocess.run(
                 [no_torch_venv, "-c", code],
-                capture_output = True,
-                timeout = 30,
+                capture_output=True,
+                timeout=30,
             )
             assert (
                 result.returncode != 0
@@ -553,8 +553,8 @@ class TestNegativeControls:
                 "torchao==0.14.0",
                 "--dry-run",
             ],
-            capture_output = True,
-            timeout = 60,
+            capture_output=True,
+            timeout=60,
         )
         if result.returncode != 0:
             # torchao install/resolution failed as expected
@@ -563,7 +563,7 @@ class TestNegativeControls:
             # pip dry-run may not catch dependency issues; verify torch is missing
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
-                capture_output = True,
+                capture_output=True,
             )
             assert (
                 check.returncode != 0
@@ -573,8 +573,8 @@ class TestNegativeControls:
         """Direct 'import torch' fails in the no-torch venv."""
         result = subprocess.run(
             [no_torch_venv, "-c", "import torch; print('torch loaded')"],
-            capture_output = True,
-            timeout = 30,
+            capture_output=True,
+            timeout=30,
         )
         assert result.returncode != 0, "import torch should fail in no-torch venv"
         assert (

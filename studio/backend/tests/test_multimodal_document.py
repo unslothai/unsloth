@@ -45,21 +45,21 @@ def _capture(monkeypatch, *, provider: str, base_url: str, messages) -> dict:
             )
         return httpx.Response(
             200,
-            content = body,
-            headers = {"content-type": "text/event-stream"},
+            content=body,
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = provider,
-            base_url = base_url,
-            api_key = "sk-test",
+            provider_type=provider,
+            base_url=base_url,
+            api_key="sk-test",
         )
         kwargs = {
             "messages": messages,
@@ -96,9 +96,9 @@ def _strip_cache(p: dict) -> dict:
 def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -134,9 +134,9 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
 def test_anthropic_url_pdf_becomes_document_block(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -161,9 +161,9 @@ def test_anthropic_url_pdf_becomes_document_block(monkeypatch):
 def test_anthropic_empty_document_part_is_dropped(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -184,9 +184,9 @@ def test_anthropic_empty_only_document_drops_whole_message(monkeypatch):
     # body (Anthropic 400s on "at least one block is required").
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {"role": "user", "content": [{"type": "input_document"}]},
             {"role": "user", "content": "but THIS one is fine"},
         ],
@@ -202,9 +202,9 @@ def test_anthropic_empty_data_uri_payload_is_dropped(monkeypatch):
     # Anthropic 400s on. Must be filtered before the wire.
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -236,9 +236,9 @@ def test_anthropic_empty_data_uri_falls_back_to_file_url(monkeypatch):
     # attaches.
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -267,9 +267,9 @@ def test_anthropic_empty_data_uri_falls_back_to_file_url(monkeypatch):
 def test_anthropic_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        messages = [
+        provider="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -298,9 +298,9 @@ def test_anthropic_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
 def test_openai_base64_pdf_becomes_input_file(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -327,9 +327,9 @@ def test_openai_base64_pdf_becomes_input_file(monkeypatch):
 def test_openai_url_pdf_becomes_input_file(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -358,9 +358,9 @@ def test_openai_empty_data_uri_falls_back_to_file_url(monkeypatch):
     # missing and recover via file_url.
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -386,9 +386,9 @@ def test_openai_empty_data_uri_falls_back_to_file_url(monkeypatch):
 def test_openai_whitespace_only_data_uri_falls_back_to_file_url(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -413,9 +413,9 @@ def test_openai_empty_data_uri_without_fallback_is_dropped(monkeypatch):
     # whole part is skipped rather than sent as `file_data=""`.
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -437,9 +437,9 @@ def test_openai_empty_data_uri_without_fallback_is_dropped(monkeypatch):
 def test_openai_empty_document_part_is_dropped(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider = "openai",
-        base_url = "https://api.openai.com/v1",
-        messages = [
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -513,7 +513,7 @@ def test_build_external_messages_passes_input_document_for_anthropic_and_openai(
     ]
     for provider in ("anthropic", "openai"):
         out = _build_external_messages(
-            msgs, supports_vision = True, provider_type = provider
+            msgs, supports_vision=True, provider_type=provider
         )
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
@@ -551,7 +551,7 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
     ]
     for provider in ("gemini", "mistral", "kimi", "openrouter", "deepseek", "qwen"):
         out = _build_external_messages(
-            msgs, supports_vision = True, provider_type = provider
+            msgs, supports_vision=True, provider_type=provider
         )
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
@@ -581,7 +581,7 @@ def test_build_external_messages_strips_input_document_when_provider_type_unknow
             }
         )
     ]
-    out = _build_external_messages(msgs, supports_vision = True)
+    out = _build_external_messages(msgs, supports_vision=True)
     parts = out[0]["content"]
     types = [p.get("type") for p in parts if isinstance(p, dict)]
     assert "input_document" not in types, parts
@@ -605,5 +605,5 @@ def test_build_external_messages_drops_input_document_for_non_vision_provider():
             }
         )
     ]
-    out = _build_external_messages(msgs, supports_vision = False)
+    out = _build_external_messages(msgs, supports_vision=False)
     assert out == [{"role": "user", "content": "summarise"}]

@@ -48,7 +48,7 @@ class ScrapeConfig:
     max_comments_per_item: int
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ResolvedToken:
     value: str
     source: str
@@ -57,18 +57,18 @@ class ResolvedToken:
 def _resolve_token(token: str) -> ResolvedToken:
     if token:
         return ResolvedToken(
-            value = token,
-            source = "explicit token argument (recipe-level field)",
+            value=token,
+            source="explicit token argument (recipe-level field)",
         )
     if os.environ.get("GH_TOKEN"):
         return ResolvedToken(
-            value = os.environ["GH_TOKEN"],
-            source = "GH_TOKEN environment variable",
+            value=os.environ["GH_TOKEN"],
+            source="GH_TOKEN environment variable",
         )
     if os.environ.get("GITHUB_TOKEN"):
         return ResolvedToken(
-            value = os.environ["GITHUB_TOKEN"],
-            source = "GITHUB_TOKEN environment variable",
+            value=os.environ["GITHUB_TOKEN"],
+            source="GITHUB_TOKEN environment variable",
         )
     raise ValueError(
         "GitHub token is required. Set it in the recipe config or the GH_TOKEN / GITHUB_TOKEN env var."
@@ -78,7 +78,7 @@ def _resolve_token(token: str) -> ResolvedToken:
 def _read_jsonl(path: Path, max_rows: int | None = None):
     if not path.exists():
         return
-    with path.open(encoding = "utf-8") as f:
+    with path.open(encoding="utf-8") as f:
         for i, line in enumerate(f):
             if not line.strip():
                 continue
@@ -173,8 +173,8 @@ def _flatten_commit_row(r: dict, repo: str) -> dict:
 def scrape(cfg: ScrapeConfig, base_dir: Path):
     token = _resolve_token(cfg.token)
     GitHubClient, RepoScraper = _load_impl()
-    client = GitHubClient(token = token.value, token_source = token.source)
-    base_dir.mkdir(parents = True, exist_ok = True)
+    client = GitHubClient(token=token.value, token_source=token.source)
+    base_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-resource trial limits. limit <= 0 means "all": use a very large cap.
     effective_limit = cfg.limit if cfg.limit and cfg.limit > 0 else 1_000_000
@@ -190,12 +190,12 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
     for repo in cfg.repos:
         owner, name = repo.split("/", 1)
         scraper = RepoScraper(
-            owner = owner,
-            name = name,
-            base_dir = base_dir,
-            client = client,
-            trial_limits = trial_limits,
-            light = True,
+            owner=owner,
+            name=name,
+            base_dir=base_dir,
+            client=client,
+            trial_limits=trial_limits,
+            light=True,
         )
         try:
             repo_meta = scraper.scrape_repo_meta()
@@ -213,7 +213,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
                     if default_branch
                     else "refs/heads/main"
                 )
-                scraper.scrape_commits(branch = branch)
+                scraper.scrape_commits(branch=branch)
         finally:
             scraper.close()
 
@@ -241,14 +241,14 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
 
 
 def materialize_to_jsonl(cfg: ScrapeConfig, out_dir: Path) -> Path:
-    out_dir.mkdir(parents = True, exist_ok = True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     tag = "-".join(r.replace("/", "__") for r in cfg.repos)[:120]
     kinds = "-".join(cfg.item_types)
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:12]}"
     fname = f"github_{tag}__{kinds}__{cfg.limit}_{run_id}.jsonl"
     out = out_dir / fname
     rows = scrape(cfg, out_dir / "raw-runs" / run_id)
-    with out.open("w", encoding = "utf-8") as f:
+    with out.open("w", encoding="utf-8") as f:
         for r in rows:
-            f.write(json.dumps(r, ensure_ascii = False) + "\n")
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
     return out

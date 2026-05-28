@@ -31,13 +31,13 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
-def _capture(monkeypatch, ttl = None) -> dict:
+def _capture(monkeypatch, ttl=None) -> dict:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -45,29 +45,29 @@ def _capture(monkeypatch, ttl = None) -> dict:
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content = (b"event: message_stop\n" b'data: {"type": "message_stop"}\n\n'),
-            headers = {"content-type": "text/event-stream"},
+            content=(b"event: message_stop\n" b'data: {"type": "message_stop"}\n\n'),
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     async def run():
         client = _make_client()
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "system", "content": "Be brief."},
                 {"role": "user", "content": "hi"},
             ],
-            model = "claude-opus-4-7",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 32,
-            enable_prompt_caching = True,
-            prompt_cache_ttl = ttl,
+            model="claude-opus-4-7",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=32,
+            enable_prompt_caching=True,
+            prompt_cache_ttl=ttl,
         ):
             pass
         await client.close()
@@ -98,7 +98,7 @@ def _cache_controls(body: dict) -> list[dict]:
 
 
 def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
-    captured = _capture(monkeypatch, ttl = None)
+    captured = _capture(monkeypatch, ttl=None)
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
@@ -109,7 +109,7 @@ def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
 
 
 def test_explicit_5m_ttl_round_trips(monkeypatch):
-    captured = _capture(monkeypatch, ttl = "5m")
+    captured = _capture(monkeypatch, ttl="5m")
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
@@ -120,7 +120,7 @@ def test_explicit_5m_ttl_round_trips(monkeypatch):
 
 
 def test_1h_ttl_writes_into_1h_pool(monkeypatch):
-    captured = _capture(monkeypatch, ttl = "1h")
+    captured = _capture(monkeypatch, ttl="1h")
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
@@ -135,13 +135,13 @@ def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
     # returns 200 and populates `ephemeral_1h_input_tokens`. Pin the
     # contract so we don't reintroduce the gate by accident; a future
     # regression that re-adds the header would surface here.
-    captured = _capture(monkeypatch, ttl = "1h")
+    captured = _capture(monkeypatch, ttl="1h")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
 
 def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    captured = _capture(monkeypatch, ttl = "5m")
+    captured = _capture(monkeypatch, ttl="5m")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
@@ -151,7 +151,7 @@ def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
 
 @pytest.mark.parametrize("bogus", ["6m", "2h", "", "forever", "1d", "0", "1"])
 def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
-    captured = _capture(monkeypatch, ttl = bogus)
+    captured = _capture(monkeypatch, ttl=bogus)
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
@@ -170,29 +170,29 @@ def test_opt_out_skips_cache_control(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     async def run():
         client = _make_client()
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "system", "content": "Be brief."},
                 {"role": "user", "content": "hi"},
             ],
-            model = "claude-opus-4-7",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 32,
-            enable_prompt_caching = False,
-            prompt_cache_ttl = "1h",  # ignored when caching is off
+            model="claude-opus-4-7",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=32,
+            enable_prompt_caching=False,
+            prompt_cache_ttl="1h",  # ignored when caching is off
         ):
             pass
         await client.close()

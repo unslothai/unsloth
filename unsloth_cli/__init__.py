@@ -37,8 +37,8 @@ def show_version(value: bool):
 
 
 app = typer.Typer(
-    help = "Command-line interface for Unsloth training, inference, and export.",
-    context_settings = {"help_option_names": ["-h", "--help"]},
+    help="Command-line interface for Unsloth training, inference, and export.",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -48,9 +48,9 @@ def main(
         None,
         "--version",
         "-V",
-        callback = show_version,
-        is_eager = True,
-        help = "Show version and exit.",
+        callback=show_version,
+        is_eager=True,
+        help="Show version and exit.",
     ),
 ):
     pass
@@ -60,15 +60,15 @@ app.command()(train)
 app.command()(inference)
 app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
-app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
+app.add_typer(studio_app, name="studio", help="Unsloth Studio commands.")
 
 # Top-level `unsloth run` aliases `unsloth studio run`; same context
 # so unknown flags still pass through to llama-server.
 app.command(
     "run",
-    context_settings = {
+    context_settings={
         "allow_extra_args": True,
         "ignore_unknown_options": True,
     },
-    help = "Alias for `unsloth studio run`.",
+    help="Alias for `unsloth studio run`.",
 )(studio_run)

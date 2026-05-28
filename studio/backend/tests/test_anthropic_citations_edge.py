@@ -29,9 +29,9 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
@@ -64,14 +64,14 @@ def _capture(
                 pass
         return httpx.Response(
             200,
-            content = _sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     lines: list[str] = []
@@ -80,10 +80,10 @@ def _capture(
         client = _make_client()
         try:
             async for line in client.stream_chat_completion(
-                messages = messages
+                messages=messages
                 or [{"role": "user", "content": "what color is grass?"}],
-                model = "claude-opus-4-7",
-                max_tokens = 64,
+                model="claude-opus-4-7",
+                max_tokens=64,
             ):
                 lines.append(line)
         finally:
@@ -491,15 +491,15 @@ def test_citation_across_multiple_content_blocks_numbers_continue(monkeypatch):
             _message_start(),
             _content_block_start_text(),
             _text_delta("first"),
-            _citations_delta(cit_a, index = 0),
+            _citations_delta(cit_a, index=0),
             _content_block_stop(0),
             {
                 "type": "content_block_start",
                 "index": 1,
                 "content_block": {"type": "text", "text": ""},
             },
-            _text_delta(" second", index = 1),
-            _citations_delta(cit_b, index = 1),
+            _text_delta(" second", index=1),
+            _citations_delta(cit_b, index=1),
             _content_block_stop(1),
             _message_delta_end(),
             _message_stop(),
@@ -579,7 +579,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
             _message_delta_end(),
             _message_stop(),
         ],
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -592,7 +592,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
                 ],
             }
         ],
-        captured_body = captured_b64,
+        captured_body=captured_b64,
     )
     user_msg = captured_b64["messages"][0]
     doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")
@@ -610,7 +610,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
             _message_delta_end(),
             _message_stop(),
         ],
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -623,7 +623,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
                 ],
             }
         ],
-        captured_body = captured_url,
+        captured_body=captured_url,
     )
     user_msg = captured_url["messages"][0]
     doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")

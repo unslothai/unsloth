@@ -123,7 +123,7 @@ def test_is_mlx_gate_true_on_apple_silicon_with_mlx_present(monkeypatch):
 
     # Inject a fake mlx package so find_spec returns a non-None ModuleSpec.
     fake_mlx = types.ModuleType("mlx")
-    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
+    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None)
     fake_mlx.__path__ = []
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
 
@@ -140,7 +140,7 @@ def test_is_mlx_gate_false_when_mlx_missing(monkeypatch):
     import importlib.util
 
     # Apple Silicon platform but no mlx package -> gate must be False.
-    monkeypatch.delitem(sys.modules, "mlx", raising = False)
+    monkeypatch.delitem(sys.modules, "mlx", raising=False)
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
 

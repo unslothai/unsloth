@@ -78,17 +78,17 @@ def formatting_prompts_func(examples):
     }
 
 
-def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit = False):
+def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=False):
     """Load model and compute perplexity in subprocess"""
     from unsloth import FastLanguageModel
     from tests.utils.perplexity_eval import ppl_model
 
     # Load model
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
-        max_seq_length = 2048,
-        load_in_4bit = load_in_4bit,
-        load_in_8bit = load_in_8bit,
+        model_name="./unsloth_out/merged_qwen_text_model",
+        max_seq_length=2048,
+        load_in_4bit=load_in_4bit,
+        load_in_8bit=load_in_8bit,
     )
     # Set up tokenizer
     # merged_tokenizer = get_chat_template(
@@ -98,7 +98,7 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
 
     # Load dataset fresh in subprocess
     dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
+        "allenai/openassistant-guanaco-reformatted", split="eval"
     )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -146,7 +146,7 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
             "text": texts,
         }
 
-    dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
+    dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched=True)
 
     # Compute perplexity using the passed dataset
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
@@ -172,7 +172,7 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
 
 # Main execution code should be wrapped in this guard
 if __name__ == "__main__":
-    mp.set_start_method("spawn", force = True)
+    mp.set_start_method("spawn", force=True)
 
     if torch.cuda.is_bf16_supported():
         compute_dtype = torch.bfloat16
@@ -182,31 +182,31 @@ if __name__ == "__main__":
         attn_implementation = "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "unsloth/Qwen2.5-7B-Instruct",
-        max_seq_length = 2048,
-        dtype = compute_dtype,
-        load_in_4bit = True,
-        load_in_8bit = False,
-        full_finetuning = False,
-        attn_implementation = attn_implementation,
+        model_name="unsloth/Qwen2.5-7B-Instruct",
+        max_seq_length=2048,
+        dtype=compute_dtype,
+        load_in_4bit=True,
+        load_in_8bit=False,
+        full_finetuning=False,
+        attn_implementation=attn_implementation,
     )
 
     dataset_train = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "train"
+        "allenai/openassistant-guanaco-reformatted", split="train"
     )
     dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
+        "allenai/openassistant-guanaco-reformatted", split="eval"
     )
 
-    dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
-    dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
+    dataset_train = dataset_train.map(formatting_prompts_func, batched=True)
+    dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched=True)
 
     add_to_comparison("Base model 4 bits", ppl_model(model, tokenizer, dataset_ppl))
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 16,
-        target_modules = [
+        r=16,
+        target_modules=[
             "k_proj",
             "q_proj",
             "v_proj",
@@ -215,40 +215,40 @@ if __name__ == "__main__":
             "down_proj",
             "up_proj",
         ],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
-        use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
-        use_rslora = False,
-        loftq_config = None,
+        lora_alpha=16,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
+        use_rslora=False,
+        loftq_config=None,
     )
 
     from unsloth import is_bfloat16_supported
 
     trainer = SFTTrainer(
-        model = model,
-        tokenizer = tokenizer,
-        train_dataset = dataset_train,
-        dataset_text_field = "text",
-        max_seq_length = 2048,
-        data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
-        dataset_num_proc = 2,
-        packing = False,
-        args = TrainingArguments(
-            per_device_train_batch_size = 2,
-            gradient_accumulation_steps = 4,
-            warmup_ratio = 0.1,
-            max_steps = 200,
-            learning_rate = 2e-4,
-            fp16 = not is_bfloat16_supported(),
-            bf16 = is_bfloat16_supported(),
-            logging_steps = 50,
-            optim = "adamw_8bit",
-            lr_scheduler_type = "linear",
-            seed = 3407,
-            output_dir = "outputs",
-            report_to = "none",
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset_train,
+        dataset_text_field="text",
+        max_seq_length=2048,
+        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
+        dataset_num_proc=2,
+        packing=False,
+        args=TrainingArguments(
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=4,
+            warmup_ratio=0.1,
+            max_steps=200,
+            learning_rate=2e-4,
+            fp16=not is_bfloat16_supported(),
+            bf16=is_bfloat16_supported(),
+            logging_steps=50,
+            optim="adamw_8bit",
+            lr_scheduler_type="linear",
+            seed=3407,
+            output_dir="outputs",
+            report_to="none",
         ),
     )
 
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     # saving and merging the model to local disk
     print("merge and save to local disk")
     model.save_pretrained_merged(
-        save_directory = "./unsloth_out/merged_qwen_text_model", tokenizer = tokenizer
+        save_directory="./unsloth_out/merged_qwen_text_model", tokenizer=tokenizer
     )
 
     # print("cleaning")
@@ -272,10 +272,10 @@ if __name__ == "__main__":
     # load model from local disk and test
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
-        max_seq_length = 2048,
-        load_in_4bit = True,
-        load_in_8bit = False,
+        model_name="./unsloth_out/merged_qwen_text_model",
+        max_seq_length=2048,
+        load_in_4bit=True,
+        load_in_8bit=False,
     )
 
     add_to_comparison(
@@ -284,7 +284,7 @@ if __name__ == "__main__":
 
     print("Computing 8-bit model perplexity in subprocess...")
     result_queue = mp.Queue()
-    p = mp.Process(target = load_and_compute_8bit_ppl, args = (result_queue, False, True))
+    p = mp.Process(target=load_and_compute_8bit_ppl, args=(result_queue, False, True))
     p.start()
     p.join()
 
@@ -293,10 +293,10 @@ if __name__ == "__main__":
 
     print("Loading merged model in 16 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
-        max_seq_length = 2048,
-        load_in_4bit = False,
-        load_in_8bit = False,
+        model_name="./unsloth_out/merged_qwen_text_model",
+        max_seq_length=2048,
+        load_in_4bit=False,
+        load_in_8bit=False,
     )
 
     add_to_comparison(

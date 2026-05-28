@@ -1214,14 +1214,14 @@ def iter_archive_files(archive_path: str):
                     print(
                         f"  [WARN] {path.name}: refused; member count "
                         f"{count} exceeds cap {HARD_MAX_MEMBERS}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     return
                 reason = _refuse_unsafe_member_name(info.filename)
                 if reason is not None:
                     print(
                         f"  [WARN] {path.name}: refused member ({reason})",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 # Declared (uncompressed) size cap.
@@ -1229,20 +1229,20 @@ def iter_archive_files(archive_path: str):
                     print(
                         f"  [WARN] {path.name}: skipped {info.filename!r} "
                         f"(declared {info.file_size} > cap {HARD_MAX_FILE_BYTES})",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 if total + info.file_size > HARD_MAX_TOTAL_BYTES:
                     print(
                         f"  [WARN] {path.name}: cumulative bytes cap "
                         f"{HARD_MAX_TOTAL_BYTES} hit at {info.filename!r}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     return
                 try:
                     data = zf.read(info.filename)
                     total += len(data)
-                    text = data.decode("utf-8", errors = "replace")
+                    text = data.decode("utf-8", errors="replace")
                     yield info.filename, text
                 except Exception:
                     continue
@@ -1251,14 +1251,14 @@ def iter_archive_files(archive_path: str):
         total = 0
         count = 0
         # Streaming open so we never read the whole archive into memory.
-        with tarfile.open(path, mode = "r|*") as tf:
+        with tarfile.open(path, mode="r|*") as tf:
             for member in tf:
                 count += 1
                 if count > HARD_MAX_MEMBERS:
                     print(
                         f"  [WARN] {path.name}: refused; member count "
                         f"{count} exceeds cap {HARD_MAX_MEMBERS}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     return
                 # Refuse symlinks / hardlinks / devices outright -- the
@@ -1268,14 +1268,14 @@ def iter_archive_files(archive_path: str):
                     print(
                         f"  [WARN] {path.name}: refused link member "
                         f"{member.name!r}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 if member.isdev() or member.isfifo():
                     print(
                         f"  [WARN] {path.name}: refused special member "
                         f"{member.name!r}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 if not member.isfile():
@@ -1284,7 +1284,7 @@ def iter_archive_files(archive_path: str):
                 if reason is not None:
                     print(
                         f"  [WARN] {path.name}: refused member ({reason})",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 declared = max(member.size, 0)
@@ -1292,14 +1292,14 @@ def iter_archive_files(archive_path: str):
                     print(
                         f"  [WARN] {path.name}: skipped {member.name!r} "
                         f"(declared {declared} > cap {HARD_MAX_FILE_BYTES})",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     continue
                 if total + declared > HARD_MAX_TOTAL_BYTES:
                     print(
                         f"  [WARN] {path.name}: cumulative bytes cap "
                         f"{HARD_MAX_TOTAL_BYTES} hit at {member.name!r}",
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     return
                 try:
@@ -1313,16 +1313,16 @@ def iter_archive_files(archive_path: str):
                         print(
                             f"  [WARN] {path.name}: body of "
                             f"{member.name!r} exceeded declared cap",
-                            file = sys.stderr,
+                            file=sys.stderr,
                         )
                         continue
                     total += len(data)
-                    text = data.decode("utf-8", errors = "replace")
+                    text = data.decode("utf-8", errors="replace")
                     yield member.name, text
                 except Exception:
                     continue
     else:
-        print(f"  [WARN] Unknown archive format: {path.name}", file = sys.stderr)
+        print(f"  [WARN] Unknown archive format: {path.name}", file=sys.stderr)
 
 
 def scan_archive(archive_path: str, package: str) -> list[Finding]:
@@ -1483,7 +1483,7 @@ def download_packages(
         # `--only-binary :all:` refuses sdists so we never execute a
         # setup.py just to learn dependency metadata; combined with the
         # scrubbed env, pip is wired hard at pypi.org.
-        os.makedirs(dest, exist_ok = True)
+        os.makedirs(dest, exist_ok=True)
         cmd = [
             sys.executable,
             "-m",
@@ -1496,20 +1496,20 @@ def download_packages(
         try:
             proc = subprocess.run(
                 cmd,
-                capture_output = True,
-                text = True,
-                timeout = 600,  # transitive resolution can be slow
-                env = env,
+                capture_output=True,
+                text=True,
+                timeout=600,  # transitive resolution can be slow
+                env=env,
             )
             if proc.returncode != 0:
                 msg = (
                     f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
                 )
-                print(f"  [ERROR] {msg}", file = sys.stderr)
+                print(f"  [ERROR] {msg}", file=sys.stderr)
                 download_errors.append(msg)
         except subprocess.TimeoutExpired:
             msg = "pip download (with deps) timed out"
-            print(f"  [ERROR] {msg}", file = sys.stderr)
+            print(f"  [ERROR] {msg}", file=sys.stderr)
             download_errors.append(msg)
 
         # Collect every archive that landed in dest
@@ -1526,7 +1526,7 @@ def download_packages(
             # cannot path-traverse out of the destination directory.
             safe_name = _RE_PKG_NAME_SANITIZE.sub("_", raw_name) or "_pkg"
             pkg_dir = os.path.join(dest, safe_name)
-            os.makedirs(pkg_dir, exist_ok = True)
+            os.makedirs(pkg_dir, exist_ok=True)
             cmd = [
                 sys.executable,
                 "-m",
@@ -1541,22 +1541,22 @@ def download_packages(
             try:
                 proc = subprocess.run(
                     cmd,
-                    capture_output = True,
-                    text = True,
-                    timeout = 120,
-                    env = env,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    env=env,
                 )
                 if proc.returncode != 0:
                     msg = (
                         f"pip download failed for {spec}: "
                         f"{proc.stderr.strip()[:500]}"
                     )
-                    print(f"  [ERROR] {msg}", file = sys.stderr)
+                    print(f"  [ERROR] {msg}", file=sys.stderr)
                     download_errors.append(msg)
                     continue
             except subprocess.TimeoutExpired:
                 msg = f"pip download timed out for {spec}"
-                print(f"  [ERROR] {msg}", file = sys.stderr)
+                print(f"  [ERROR] {msg}", file=sys.stderr)
                 download_errors.append(msg)
                 continue
 
@@ -1618,7 +1618,7 @@ def parse_requirements(req_files: list[str]) -> list[dict]:
                         }
                     )
         except FileNotFoundError:
-            print(f"  [ERROR] Requirements file not found: {req_file}", file = sys.stderr)
+            print(f"  [ERROR] Requirements file not found: {req_file}", file=sys.stderr)
     return results
 
 
@@ -1663,7 +1663,7 @@ def print_findings(findings: list[Finding]) -> None:
         return
 
     # Sort by severity
-    findings.sort(key = lambda f: SEVERITY_ORDER.get(f.severity, 99))
+    findings.sort(key=lambda f: SEVERITY_ORDER.get(f.severity, 99))
 
     print(f"\n  {'=' * 72}")
     print(f"  SCAN RESULTS: {len(findings)} finding(s)")
@@ -1713,7 +1713,7 @@ def version_sort_key(v: str) -> tuple:
 
     # Split off pre/post/dev suffixes
     v_clean = re.split(
-        r"[-_.]?(a|alpha|b|beta|rc|c|pre|preview|dev|post)", v, maxsplit = 1, flags = re.I
+        r"[-_.]?(a|alpha|b|beta|rc|c|pre|preview|dev|post)", v, maxsplit=1, flags=re.I
     )
     base = v_clean[0]
     suffix = v[len(base) :]
@@ -1754,15 +1754,15 @@ def fetch_pypi_versions(name: str) -> list[str]:
     """
     url = f"https://pypi.org/pypi/{name}/json"
     try:
-        req = urllib.request.Request(url, headers = {"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout = 30) as resp:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        print(f"  [ERROR] Failed to query PyPI for {name}: {e}", file = sys.stderr)
+        print(f"  [ERROR] Failed to query PyPI for {name}: {e}", file=sys.stderr)
         return []
 
     versions = list(data.get("releases", {}).keys())
-    versions.sort(key = version_sort_key)
+    versions.sort(key=version_sort_key)
     return versions
 
 
@@ -1779,7 +1779,7 @@ def find_safe_version(
     """
     versions = fetch_pypi_versions(name)
     if not versions:
-        print(f"  [WARN] No versions found on PyPI for {name}", file = sys.stderr)
+        print(f"  [WARN] No versions found on PyPI for {name}", file=sys.stderr)
         return None
 
     # Find index of bad version
@@ -1802,7 +1802,7 @@ def find_safe_version(
     candidates = candidates[:max_search]
 
     if not candidates:
-        print(f"  [WARN] No older versions to scan for {name}", file = sys.stderr)
+        print(f"  [WARN] No older versions to scan for {name}", file=sys.stderr)
         return None
 
     print(f"  Searching {len(candidates)} older version(s) of {name}...")
@@ -1810,7 +1810,7 @@ def find_safe_version(
     for ver in candidates:
         spec = f"{name}=={ver}"
         scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
-        os.makedirs(scan_dir, exist_ok = True)
+        os.makedirs(scan_dir, exist_ok=True)
 
         downloaded = download_packages([spec], scan_dir)
         if not downloaded:
@@ -1831,7 +1831,7 @@ def find_safe_version(
                 break
 
         # Clean up scan dir for this version
-        shutil.rmtree(scan_dir, ignore_errors = True)
+        shutil.rmtree(scan_dir, ignore_errors=True)
 
         if clean:
             print(f"    {ver} -- clean!")
@@ -1866,7 +1866,7 @@ def update_req_line(raw_line: str, safe_ver: str, old_ver: str | None) -> str:
         r"([A-Za-z0-9._-]+)\s*(?:[><=!~]=?[^;#,\s]*(?:\s*,\s*[><=!~]=?[^;#,\s]*)*)?",
         lambda m: f"{m.group(1)}=={safe_ver}",
         code_part.strip(),
-        count = 1,
+        count=1,
     )
 
     was_note = f" (was {old_ver})" if old_ver else ""
@@ -1899,8 +1899,8 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
 
     dirpath = os.path.dirname(os.path.abspath(filepath)) or "."
     fd, tmp_path = tempfile.mkstemp(
-        prefix = ".req_fix.",
-        dir = dirpath,
+        prefix=".req_fix.",
+        dir=dirpath,
     )
     try:
         with os.fdopen(fd, "w") as f:
@@ -1931,7 +1931,7 @@ def _run_fix(
 
     changes_summary: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix = "pth_fix_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="pth_fix_") as tmpdir:
         for pkg_name in sorted(critical_pkgs):
             norm = pkg_name.lower().replace("-", "_").replace(".", "_")
             related = pkg_entries.get(norm, [])
@@ -1959,12 +1959,12 @@ def _run_fix(
             if not current_ver:
                 # If no pinned version, download to find what pip resolves
                 dl_dir = os.path.join(tmpdir, f"resolve_{pkg_name}")
-                os.makedirs(dl_dir, exist_ok = True)
+                os.makedirs(dl_dir, exist_ok=True)
                 downloaded = download_packages([pkg_name], dl_dir)
                 if downloaded:
                     current_ver = get_downloaded_version(downloaded[0][1])
                 # Delete resolution download immediately
-                shutil.rmtree(dl_dir, ignore_errors = True)
+                shutil.rmtree(dl_dir, ignore_errors=True)
 
             if not current_ver:
                 print(
@@ -2062,46 +2062,46 @@ def _find_requirements_files(root: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description = __doc__,
-        formatter_class = argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "packages",
-        nargs = "*",
-        help = "Package specs (e.g. requests==2.32.5 fastapi)",
+        nargs="*",
+        help="Package specs (e.g. requests==2.32.5 fastapi)",
     )
     parser.add_argument(
         "-r",
         "--requirements",
-        action = "append",
-        default = [],
-        metavar = "FILE",
-        help = "Requirements file(s) to scan",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Requirements file(s) to scan",
     )
     parser.add_argument(
         "-d",
         "--scan-dir",
-        action = "append",
-        default = [],
-        metavar = "DIR",
-        help = "Recursively find requirements*.txt files in DIR",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Recursively find requirements*.txt files in DIR",
     )
     parser.add_argument(
         "--with-deps",
-        action = "store_true",
-        help = "Also download and scan transitive dependencies (full dependency tree)",
+        action="store_true",
+        help="Also download and scan transitive dependencies (full dependency tree)",
     )
     parser.add_argument(
         "--fix",
-        action = "store_true",
-        help = "Auto-search for safe versions and update requirements files",
+        action="store_true",
+        help="Auto-search for safe versions and update requirements files",
     )
     parser.add_argument(
         "--max-search",
-        type = int,
-        default = 10,
-        metavar = "N",
-        help = "Max older versions to scan when searching for safe version (default: 10)",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max older versions to scan when searching for safe version (default: 10)",
     )
     args = parser.parse_args()
 
@@ -2116,7 +2116,7 @@ def main() -> int:
             req_files.extend(found)
         else:
             print(
-                f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr
+                f"  [WARN] No requirements files found in {scan_dir}/", file=sys.stderr
             )
 
     # Build unified entry list: list of dicts with source tracking
@@ -2162,14 +2162,14 @@ def main() -> int:
     specs, blocked_findings = _check_blocked_pypi_versions(specs)
     all_findings.extend(blocked_findings)
 
-    tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
-    atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
+    tmpdir = tempfile.mkdtemp(prefix="pth_scan_")
+    atexit.register(lambda d=tmpdir: shutil.rmtree(d, ignore_errors=True))
     download_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
             tmpdir,
-            with_deps = args.with_deps,
+            with_deps=args.with_deps,
         )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
@@ -2183,7 +2183,7 @@ def main() -> int:
             except OSError:
                 pass
     finally:
-        shutil.rmtree(tmpdir, ignore_errors = True)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     print_findings(all_findings)
 
@@ -2206,13 +2206,13 @@ def main() -> int:
             f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
             f"failure(s):\n"
             f"  {'=' * 72}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         for err in download_errors:
-            print(f"  [ERROR] {err}", file = sys.stderr)
+            print(f"  [ERROR] {err}", file=sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; " "exiting 2.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
 

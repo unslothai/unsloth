@@ -121,7 +121,7 @@ def test_unsloth_save_pretrained_merged_entry_point_exists():
     save_py = pathlib.Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
     if not save_py.is_file():
         pytest.skip(f"{save_py} not present")
-    text = save_py.read_text(encoding = "utf-8", errors = "replace")
+    text = save_py.read_text(encoding="utf-8", errors="replace")
     assert "save_pretrained_merged" in text, "entry point removed from unsloth/save.py."
     assert (
         "merge_and_overwrite_lora" in text

@@ -121,12 +121,12 @@ def _build_cache(
 ) -> Path:
     """Create ``$root/models--<repo>/snapshots/<sha>/<rel>`` for each entry."""
     repo_dir = root / f"models--{repo_id.replace('/', '--')}"
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
     snap = repo_dir / "snapshots" / snapshot_sha
-    snap.mkdir(parents = True, exist_ok = True)
+    snap.mkdir(parents=True, exist_ok=True)
     for rel, size in files.items():
         full = snap / rel
-        full.parent.mkdir(parents = True, exist_ok = True)
+        full.parent.mkdir(parents=True, exist_ok=True)
         full.write_bytes(b"\0" * size)
     return snap
 
@@ -141,15 +141,15 @@ def hf_cache(tmp_path, monkeypatch):
 @pytest.fixture
 def clean_offline_env(monkeypatch):
     """Strip ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE`` for the test."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
 
 
 def _siblings(items: dict[str, int]):
     """Mock ``hf_model_info(...).siblings`` payload."""
     return _types.SimpleNamespace(
-        siblings = [
-            _types.SimpleNamespace(rfilename = name, size = size)
+        siblings=[
+            _types.SimpleNamespace(rfilename=name, size=size)
             for name, size in items.items()
         ],
     )
@@ -175,10 +175,10 @@ class TestIterHfCacheSnapshots:
 
     def test_yields_newest_first(self, hf_cache):
         old = _build_cache(
-            hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40
+            hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha="a" * 40
         )
         new = _build_cache(
-            hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40
+            hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha="b" * 40
         )
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
@@ -252,7 +252,7 @@ class TestListGgufVariantsOffline:
             raise OSError("network down")
 
         with patch("huggingface_hub.model_info", boom):
-            with pytest.raises(OSError, match = "network down"):
+            with pytest.raises(OSError, match="network down"):
                 list_gguf_variants("unsloth/never-cached")
 
     def test_online_path_unaffected(self, hf_cache, clean_offline_env):
@@ -467,7 +467,7 @@ class TestHfOfflineIfDnsDead:
         clean_offline_env,
     ):
         dns.fail()
-        with pytest.raises(RuntimeError, match = "boom"):
+        with pytest.raises(RuntimeError, match="boom"):
             with _hf_offline_if_dns_dead():
                 raise RuntimeError("boom")
         # Cleanup must happen on exception as well.
@@ -520,7 +520,7 @@ class TestDownloadMmprojOfflineCacheFallback:
         def boom_list(*a, **k):
             raise OSError("offline")
 
-        def fake_download(*, repo_id, filename, token = None):
+        def fake_download(*, repo_id, filename, token=None):
             # Echo back so the test can verify the cache-resolved filename
             return f"/fake/cache/{repo_id}/{filename}"
 
@@ -529,8 +529,8 @@ class TestDownloadMmprojOfflineCacheFallback:
             patch("huggingface_hub.hf_hub_download", fake_download),
         ):
             out = backend._download_mmproj(
-                hf_repo = "unsloth/vision-GGUF",
-                hf_token = None,
+                hf_repo="unsloth/vision-GGUF",
+                hf_token=None,
             )
         assert out is not None, "mmproj must resolve from cache when offline"
         assert "mmproj-vision-F16.gguf" in out
@@ -551,7 +551,7 @@ class TestDownloadMmprojOfflineCacheFallback:
 
         captured = {}
 
-        def fake_download(*, repo_id, filename, token = None):
+        def fake_download(*, repo_id, filename, token=None):
             captured["filename"] = filename
             return f"/fake/{filename}"
 
@@ -560,8 +560,8 @@ class TestDownloadMmprojOfflineCacheFallback:
             patch("huggingface_hub.hf_hub_download", fake_download),
         ):
             backend._download_mmproj(
-                hf_repo = "unsloth/vision-GGUF",
-                hf_token = None,
+                hf_repo="unsloth/vision-GGUF",
+                hf_token=None,
             )
         assert captured.get("filename") == "mmproj-vision-F16.gguf"
 
@@ -578,8 +578,8 @@ class TestDownloadMmprojOfflineCacheFallback:
 
         with patch("huggingface_hub.list_repo_files", boom_list):
             out = backend._download_mmproj(
-                hf_repo = "unsloth/text-only-GGUF",
-                hf_token = None,
+                hf_repo="unsloth/text-only-GGUF",
+                hf_token=None,
             )
         assert out is None
 
@@ -722,7 +722,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         monkeypatch.setattr(_socket, "gethostbyname", lambda h: "127.0.0.1")
 
         try:
-            _probe_dns_dead("example.invalid", timeout = 0.5)
+            _probe_dns_dead("example.invalid", timeout=0.5)
         finally:
             # Restore exact state regardless of any test-side mutation.
             original_set(prev)
@@ -743,7 +743,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
             threading.Event().wait()
 
         monkeypatch.setattr(_socket, "gethostbyname", wedged)
-        assert _probe_dns_dead("example.invalid", timeout = 0.1) is True
+        assert _probe_dns_dead("example.invalid", timeout=0.1) is True
 
 
 class TestWaitForHealthRetriesOnReadError:
@@ -771,7 +771,7 @@ class TestWaitForHealthRetriesOnReadError:
             def kill(self):
                 pass
 
-            def wait(self, timeout = None):
+            def wait(self, timeout=None):
                 return 0
 
         backend._process = _FakeProc()
@@ -780,7 +780,7 @@ class TestWaitForHealthRetriesOnReadError:
 
         calls = {"n": 0}
 
-        def fake_get(url, timeout = None):
+        def fake_get(url, timeout=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise httpx.ReadError("WinError 10054")
@@ -795,7 +795,7 @@ class TestWaitForHealthRetriesOnReadError:
             return _OK()
 
         monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
-        assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is True
+        assert backend._wait_for_health(timeout=5.0, interval=0.01) is True
         assert calls["n"] == 4, (
             f"_wait_for_health should retry past ReadError/RemoteProtocol/Write; "
             f"saw {calls['n']} attempts"
@@ -819,10 +819,10 @@ class TestWaitForHealthRetriesOnReadError:
             def kill(self):
                 pass
 
-            def wait(self, timeout = None):
+            def wait(self, timeout=None):
                 return 137
 
         backend._process = _DeadProc()
         backend._stdout_thread = None
         backend._stdout_lines = ["fatal: out of memory"]
-        assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert backend._wait_for_health(timeout=5.0, interval=0.01) is False

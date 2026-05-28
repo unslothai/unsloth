@@ -169,7 +169,7 @@ class _FakeProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
     def kill(self):
@@ -208,15 +208,15 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
     backend = _mtp_backend()
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -226,15 +226,15 @@ def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model
     backend = _mtp_backend()
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "default",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="default",
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -247,20 +247,20 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
     # backend's own load path and reflected in _speculative_type; the
     # short-circuit comparison only cares whether the *intent* changed.
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.6-27B-GGUF",
-        _speculative_type = "default",
+        _model_identifier="unsloth/Qwen3.6-27B-GGUF",
+        _speculative_type="default",
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -270,15 +270,15 @@ def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "off",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="off",
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is False
     )
@@ -321,21 +321,21 @@ def test_extra_args_set_spec_type_passes_on_non_spec_type_args(extra_args):
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
     # User --spec-type none suppressed auto-MTP; repeat /load must not re-promote.
     backend = _mtp_backend(
-        _speculative_type = None,
-        _requested_spec_mode = None,
-        _extra_args = ["--spec-type", "none"],
+        _speculative_type=None,
+        _requested_spec_mode=None,
+        _extra_args=["--spec-type", "none"],
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = ["--spec-type", "none"],
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=["--spec-type", "none"],
+            is_vision=False,
         )
         is True
     )
@@ -346,21 +346,21 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
     gguf = tmp_path / "Qwen3.6-35B-A3B-MTP-Q4_K_M.gguf"
     gguf.write_bytes(b"")
     backend = _mtp_backend(
-        _model_identifier = "local-qwen-mtp",
-        _gguf_path = str(gguf),
-        _hf_variant = None,
+        _model_identifier="local-qwen-mtp",
+        _gguf_path=str(gguf),
+        _hf_variant=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = str(gguf),
-            model_identifier = "local-qwen-mtp",
-            hf_variant = None,
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=str(gguf),
+            model_identifier="local-qwen-mtp",
+            hf_variant=None,
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -369,36 +369,36 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
 def test_already_in_target_state_vision_mtp_match():
     # llama.cpp #22673: MTP is compatible with mmproj. A vision MTP load
     # with auto/default spec must match a backend already running draft-mtp.
-    backend = _mtp_backend(_is_vision = True)
+    backend = _mtp_backend(_is_vision=True)
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = True,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=True,
         )
         is True
     )
 
 
 def test_already_in_target_state_vision_mtp_default_matches():
-    backend = _mtp_backend(_is_vision = True)
+    backend = _mtp_backend(_is_vision=True)
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "default",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = True,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="default",
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=True,
         )
         is True
     )
@@ -411,22 +411,22 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
     # requested modes; a vision backend recorded with _requested_spec_mode
     # = "off" matches a req of "off" or None+vision.
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
-        _is_vision = True,
-        _speculative_type = None,
-        _requested_spec_mode = "off",
+        _model_identifier="unsloth/Qwen3-VL-4B-Instruct-GGUF",
+        _is_vision=True,
+        _speculative_type=None,
+        _requested_spec_mode="off",
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "off",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = True,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3-VL-4B-Instruct-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="off",
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=True,
         )
         is True
     )
@@ -449,9 +449,9 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
 def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn):
     gguf = _write_minimal_gguf(
         tmp_path / "model.gguf",
-        arch = arch,
-        nextn = nextn,
-        extra_uint32 = {f"{arch}.block_count": 4},
+        arch=arch,
+        nextn=nextn,
+        extra_uint32={f"{arch}.block_count": 4},
     )
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
@@ -461,9 +461,9 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):
     gguf = _write_minimal_gguf(
         tmp_path / "model.gguf",
-        arch = "qwen3",
-        nextn = None,
-        extra_uint32 = {"qwen3.block_count": 4},
+        arch="qwen3",
+        nextn=None,
+        extra_uint32={"qwen3.block_count": 4},
     )
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
@@ -474,9 +474,9 @@ def test_read_gguf_metadata_zero_nextn_is_falsy(tmp_path):
     # bool(0) is False, so the spec block short-circuits.
     gguf = _write_minimal_gguf(
         tmp_path / "model.gguf",
-        arch = "qwen35",
-        nextn = 0,
-        extra_uint32 = {"qwen35.block_count": 4},
+        arch="qwen35",
+        nextn=0,
+        extra_uint32={"qwen35.block_count": 4},
     )
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
@@ -504,7 +504,7 @@ def _make_fake_llama_server(path: Path, help_text: str) -> Path:
 
 _NEEDS_BASH = pytest.mark.skipif(
     sys.platform == "win32",
-    reason = "fake llama-server is a bash stub; Windows has no direct executor",
+    reason="fake llama-server is a bash stub; Windows has no direct executor",
 )
 
 
@@ -673,7 +673,7 @@ def test_build_ngram_mod_flags_empty_when_unsupported():
 
 def test_build_ngram_mod_flags_respects_custom_values():
     flags = _build_ngram_mod_flags(
-        {"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32
+        {"ngram_mod_flavor": "new"}, n_match=16, n_min=24, n_max=32
     )
     assert flags == [
         "--spec-ngram-mod-n-match",
@@ -715,57 +715,57 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 
 def test_already_in_target_state_matches_when_draft_n_max_unset():
     # None on the request means "platform default"; matches any backend.
-    backend = _mtp_backend(_spec_draft_n_max = None)
+    backend = _mtp_backend(_spec_draft_n_max=None)
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            spec_draft_n_max=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
+    backend = _mtp_backend(_spec_draft_n_max=4)
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 4,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            spec_draft_n_max=4,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
 
 
 def test_already_in_target_state_mismatches_when_draft_n_max_differs():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
+    backend = _mtp_backend(_spec_draft_n_max=4)
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            spec_draft_n_max=8,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is False
     )
@@ -775,22 +775,22 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     # ngram-mod backend; spec_draft_n_max is MTP-only and must not force
     # a reload against a non-MTP active spec.
     backend = _mtp_backend(
-        _speculative_type = "ngram-mod",
-        _requested_spec_mode = "ngram",
-        _spec_draft_n_max = None,
+        _speculative_type="ngram-mod",
+        _requested_spec_mode="ngram",
+        _spec_draft_n_max=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "ngram-mod",
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="ngram-mod",
+            spec_draft_n_max=8,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -817,7 +817,7 @@ def _patch_probe(monkeypatch, ngram_supported):
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: fake),
+        classmethod(lambda cls, binary=None: fake),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -831,23 +831,23 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
 ):
     # 0.8B MTP request -- load_model would have promoted to ngram-mod
     # (no MTP head); reload check must match a ngram-mod backend.
-    _patch_probe(monkeypatch, ngram_supported = True)
+    _patch_probe(monkeypatch, ngram_supported=True)
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
+        _model_identifier="unsloth/Qwen3.5-0.8B-MTP-GGUF",
+        _speculative_type="ngram-mod",
+        _spec_draft_n_max=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.5-0.8B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -855,23 +855,23 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
 
 def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypatch):
     # 0.8B + binary lacks ngram-mod -> fall back to off.
-    _patch_probe(monkeypatch, ngram_supported = False)
+    _patch_probe(monkeypatch, ngram_supported=False)
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-        _speculative_type = None,
-        _spec_draft_n_max = None,
+        _model_identifier="unsloth/Qwen3.5-0.8B-MTP-GGUF",
+        _speculative_type=None,
+        _spec_draft_n_max=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.5-0.8B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -879,23 +879,23 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
 
 def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
     # 4B is above the 3B threshold -> auto-promote still applies.
-    _patch_probe(monkeypatch, ngram_supported = True)
+    _patch_probe(monkeypatch, ngram_supported=True)
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
-        _speculative_type = "draft-mtp",
-        _spec_draft_n_max = None,
+        _model_identifier="unsloth/Qwen3.5-4B-MTP-GGUF",
+        _speculative_type="draft-mtp",
+        _spec_draft_n_max=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.5-4B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -904,23 +904,23 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
 def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
     # 2.0B is below the 3B threshold -> ngram-mod fallback, not
     # draft-mtp. Clean-bench shows 2B regresses with draft-mtp.
-    _patch_probe(monkeypatch, ngram_supported = True)
+    _patch_probe(monkeypatch, ngram_supported=True)
     backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
+        _model_identifier="unsloth/Qwen3.5-2B-MTP-GGUF",
+        _speculative_type="ngram-mod",
+        _spec_draft_n_max=None,
     )
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
+            gguf_path=None,
+            model_identifier="unsloth/Qwen3.5-2B-MTP-GGUF",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type=None,
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
         )
         is True
     )
@@ -1011,7 +1011,7 @@ def test_canonicalize_spec_mode(value, expected):
 # ── _build_speculative_flags resolver matrix ──────────────────────
 
 
-def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft-mtp"):
+def _resolver_backend(monkeypatch, *, ngram_supported=True, mtp_token="draft-mtp"):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
@@ -1024,7 +1024,7 @@ def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: fake),
+        classmethod(lambda cls, binary=None: fake),
     )
     backend = LlamaCppBackend()
     backend._nextn_predict_layers = None
@@ -1103,13 +1103,13 @@ def test_build_speculative_flags_matrix(
 ):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
-        speculative_type = requested,
-        spec_draft_n_max = None,
-        extra_args = None,
-        model_identifier = model,
-        model_path = None,
-        gpus = gpus,
-        binary = "/fake/llama-server",
+        speculative_type=requested,
+        spec_draft_n_max=None,
+        extra_args=None,
+        model_identifier=model,
+        model_path=None,
+        gpus=gpus,
+        binary="/fake/llama-server",
     )
     parsed = _flags_dict(flags)
     if expect_spec_type is None:
@@ -1132,13 +1132,13 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     # User --spec-type in extra_args bypasses the dropdown entirely.
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
-        speculative_type = "mtp",  # would normally force MTP
-        spec_draft_n_max = None,
-        extra_args = ["--spec-type", "ngram-mod"],
-        model_identifier = _MTP_MODEL,
-        model_path = None,
-        gpus = True,
-        binary = "/fake/llama-server",
+        speculative_type="mtp",  # would normally force MTP
+        spec_draft_n_max=None,
+        extra_args=["--spec-type", "ngram-mod"],
+        model_identifier=_MTP_MODEL,
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
     )
     # No flags emitted by the resolver -- the user's extra_args carries
     # the --spec-type, and the resolver records requested_spec_mode = None.
@@ -1153,13 +1153,13 @@ def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
     # restore its picked value after reload / refresh.
     backend = _resolver_backend(monkeypatch)
     backend._build_speculative_flags(
-        speculative_type = mode,
-        spec_draft_n_max = None,
-        extra_args = None,
-        model_identifier = _MTP_MODEL,
-        model_path = None,
-        gpus = True,
-        binary = "/fake/llama-server",
+        speculative_type=mode,
+        spec_draft_n_max=None,
+        extra_args=None,
+        model_identifier=_MTP_MODEL,
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
     )
     assert backend.requested_spec_mode == mode
 
@@ -1167,13 +1167,13 @@ def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
 def test_build_speculative_flags_user_draft_n_max_override(monkeypatch):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
-        speculative_type = "mtp",
-        spec_draft_n_max = 5,
-        extra_args = None,
-        model_identifier = _MTP_MODEL,
-        model_path = None,
-        gpus = True,
-        binary = "/fake/llama-server",
+        speculative_type="mtp",
+        spec_draft_n_max=5,
+        extra_args=None,
+        model_identifier=_MTP_MODEL,
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
     )
     parsed = _flags_dict(flags)
     assert parsed.get("--spec-draft-n-max") == "5"
@@ -1183,15 +1183,15 @@ def test_build_speculative_flags_user_draft_n_max_override(monkeypatch):
 def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
     # Outdated llama-server with no MTP support: forced MTP must degrade
     # to spec-off (warned) rather than emit a bad --spec-type.
-    backend = _resolver_backend(monkeypatch, mtp_token = None)
+    backend = _resolver_backend(monkeypatch, mtp_token=None)
     flags = backend._build_speculative_flags(
-        speculative_type = "mtp",
-        spec_draft_n_max = None,
-        extra_args = None,
-        model_identifier = _MTP_MODEL,
-        model_path = None,
-        gpus = True,
-        binary = "/fake/llama-server",
+        speculative_type="mtp",
+        spec_draft_n_max=None,
+        extra_args=None,
+        model_identifier=_MTP_MODEL,
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
     )
     assert "--spec-type" not in flags
     # _speculative_type stays None (resolved emission was none), but

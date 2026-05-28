@@ -125,10 +125,10 @@ def run(cmd: list[str], cwd: Path | None = None) -> str:
     """Run a command, return stdout. On non-zero exit, return ''."""
     res = subprocess.run(
         cmd,
-        cwd = cwd or REPO_ROOT,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE,
-        text = True,
+        cwd=cwd or REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     return res.stdout if res.returncode == 0 else ""
 
@@ -144,7 +144,7 @@ def read_pkg_at(base: str, path: str) -> dict:
 def read_pkg_file(path: Path) -> dict:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding = "utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def all_decl_names(pkg: dict) -> set[str]:
@@ -613,7 +613,7 @@ def scripts_bin_refs(
             if not chunk:
                 continue
             try:
-                words = shlex.split(chunk, posix = True)
+                words = shlex.split(chunk, posix=True)
             except ValueError:
                 # Unbalanced quotes -- fall back to plain split.
                 words = chunk.split()
@@ -821,7 +821,7 @@ def _read_file(path: str) -> list[str]:
     if path not in _file_lines_cache:
         try:
             _file_lines_cache[path] = (
-                Path(path).read_text(errors = "replace").splitlines()
+                Path(path).read_text(errors="replace").splitlines()
             )
         except (OSError, UnicodeDecodeError):
             _file_lines_cache[path] = []
@@ -880,7 +880,7 @@ def find_command_usage(pkg: str) -> list[Hit]:
     happens to contain `npx foo` inside a TS test fixture is not
     mistaken for a real invocation.
     """
-    bins = sorted(_candidate_bin_names(pkg), key = len, reverse = True)
+    bins = sorted(_candidate_bin_names(pkg), key=len, reverse=True)
     esc_bins = "|".join(re.escape(b) for b in bins)
     # grep ERE pattern (POSIX classes for whitespace/word boundaries).
     # Build without f-strings to avoid f-string-vs-{} confusion with the
@@ -953,45 +953,45 @@ def find_types_runtime_usage(pkg: str, tsc_types: set[str]) -> list[Hit]:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description = __doc__, formatter_class = argparse.RawTextHelpFormatter
+        description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
     p.add_argument(
         "--base",
-        default = "origin/main",
-        help = "git ref to diff against (default: origin/main). "
+        default="origin/main",
+        help="git ref to diff against (default: origin/main). "
         "Examples: HEAD~1, main, a-tag, a-sha.",
     )
     p.add_argument(
-        "--base-pkg", help = "optional override: read base package.json from this path"
+        "--base-pkg", help="optional override: read base package.json from this path"
     )
     p.add_argument(
         "--base-lock",
-        help = "optional override: read base package-lock.json from this path. "
+        help="optional override: read base package-lock.json from this path. "
         "Used to recover the bin -> package mapping for removed packages so "
         "scripts.foo still flags as a usage even after the PR drops node_modules/foo.",
     )
     p.add_argument(
         "--head-pkg",
-        default = str(REPO_ROOT / FRONTEND_PKG),
-        help = "head package.json path (default: working tree)",
+        default=str(REPO_ROOT / FRONTEND_PKG),
+        help="head package.json path (default: working tree)",
     )
     p.add_argument(
         "--head-lock",
-        default = str(REPO_ROOT / FRONTEND_LOCK),
-        help = "head lockfile path (default: working tree). "
+        default=str(REPO_ROOT / FRONTEND_LOCK),
+        help="head lockfile path (default: working tree). "
         "Reachability analysis runs against this lockfile.",
     )
-    p.add_argument("--verbose", action = "store_true")
+    p.add_argument("--verbose", action="store_true")
     p.add_argument(
         "--strict",
-        action = "store_true",
-        help = "Also fail on hygiene warnings (lockfile sync, "
+        action="store_true",
+        help="Also fail on hygiene warnings (lockfile sync, "
         "@types orphans, imports without declared dep, unused deps).",
     )
     p.add_argument(
         "--enumerate-dead",
-        action = "store_true",
-        help = "Print every declared dep that appears unused anywhere "
+        action="store_true",
+        help="Print every declared dep that appears unused anywhere "
         "in the repo. Informational; does not fail unless --strict.",
     )
     args = p.parse_args()
@@ -1004,13 +1004,13 @@ def main() -> int:
     if not base_pkg:
         print(
             f"ERROR: could not read base package.json at {args.base}:{FRONTEND_PKG}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
     if not head_pkg:
         print(
             f"ERROR: could not read head package.json at {args.head_pkg}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
 
@@ -1018,7 +1018,7 @@ def main() -> int:
     if not head_lock_path.exists():
         print(
             f"ERROR: head lockfile not found at {head_lock_path}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
     head_lock = read_pkg_file(head_lock_path)

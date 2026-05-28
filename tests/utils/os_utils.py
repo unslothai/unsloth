@@ -21,7 +21,7 @@ def detect_package_manager():
     return None
 
 
-def check_package_installed(package_name, package_manager = None):
+def check_package_installed(package_name, package_manager=None):
     """Check if a package is installed using the system package manager"""
 
     if package_manager is None:
@@ -35,26 +35,26 @@ def check_package_installed(package_name, package_manager = None):
         if package_manager == "apt":
             # Check with dpkg
             result = subprocess.run(
-                ["dpkg", "-l", package_name], capture_output = True, text = True
+                ["dpkg", "-l", package_name], capture_output=True, text=True
             )
             return result.returncode == 0
 
         elif package_manager in ["yum", "dnf"]:
             # Check with rpm
             result = subprocess.run(
-                ["rpm", "-q", package_name], capture_output = True, text = True
+                ["rpm", "-q", package_name], capture_output=True, text=True
             )
             return result.returncode == 0
 
         elif package_manager == "pacman":
             result = subprocess.run(
-                ["pacman", "-Q", package_name], capture_output = True, text = True
+                ["pacman", "-Q", package_name], capture_output=True, text=True
             )
             return result.returncode == 0
 
         elif package_manager == "zypper":
             result = subprocess.run(
-                ["zypper", "se", "-i", package_name], capture_output = True, text = True
+                ["zypper", "se", "-i", package_name], capture_output=True, text=True
             )
             return package_name in result.stdout
 
@@ -63,7 +63,7 @@ def check_package_installed(package_name, package_manager = None):
         return None
 
 
-def require_package(package_name, executable_name = None):
+def require_package(package_name, executable_name=None):
     """Require a package to be installed, exit if not found"""
 
     # First check if executable is in PATH (most reliable)
@@ -109,7 +109,7 @@ def require_package(package_name, executable_name = None):
 # require_package("ffmpeg", "ffmpeg")
 
 
-def require_python_package(package_name, import_name = None, pip_name = None):
+def require_python_package(package_name, import_name=None, pip_name=None):
     """Require a Python package to be installed, exit if not found"""
     if import_name is None:
         import_name = package_name

@@ -50,7 +50,7 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
             _message("msg-1", 1, "keep me"),
             _message("msg-2", 2, "old text"),
         ],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     messages = studio_db.sync_chat_messages(
@@ -77,7 +77,7 @@ def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     messages = studio_db.sync_chat_messages(
         "thread-1",
         [_message("msg-2", 2, "keep me")],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     assert [message["id"] for message in messages] == ["msg-2"]
@@ -110,7 +110,7 @@ def test_sync_chat_messages_detects_conflict_before_prune(tmp_path, monkeypatch)
         studio_db.sync_chat_messages(
             "thread-1",
             [_message("conflict", 3, "bad", "thread-1")],
-            prune_missing = True,
+            prune_missing=True,
         )
 
     assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["keep-me"]
@@ -128,8 +128,8 @@ def test_settings_merge_atomic_under_concurrency(tmp_path, monkeypatch):
         barrier.wait()
         studio_db.upsert_chat_settings_merge({"inferenceParams": {key: value}})
 
-    t1 = threading.Thread(target = writer, args = ("temperature", 0.7))
-    t2 = threading.Thread(target = writer, args = ("topP", 0.9))
+    t1 = threading.Thread(target=writer, args=("temperature", 0.7))
+    t2 = threading.Thread(target=writer, args=("topP", 0.9))
     t1.start()
     t2.start()
     t1.join()

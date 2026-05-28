@@ -144,9 +144,9 @@ def install_view_transition_killer(ctx: Any) -> None:
 
 def _http_get_status_and_body(url: str, timeout: float) -> tuple[int, dict | None]:
     try:
-        with urllib.request.urlopen(url, timeout = timeout) as r:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
             try:
-                body = json.loads(r.read().decode("utf-8", errors = "replace"))
+                body = json.loads(r.read().decode("utf-8", errors="replace"))
             except Exception:
                 body = None
             return r.status, body
@@ -175,7 +175,7 @@ def wait_for_health(
     while time.monotonic() < deadline:
         status, body = _http_get_status_and_body(
             f"{base_url}/api/health",
-            timeout = 3.0,
+            timeout=3.0,
         )
         last_status, last_body = status, body
         # `chat_only` and `status` keys both exist; prefer status==healthy
@@ -231,11 +231,11 @@ def recover_or_replace_page(
     if goto_url is not None:
         try:
             page.goto(
-                goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms
+                goto_url, wait_until="domcontentloaded", timeout=default_timeout_ms
             )
             if settle_networkidle:
                 try:
-                    page.wait_for_load_state("networkidle", timeout = 30_000)
+                    page.wait_for_load_state("networkidle", timeout=30_000)
                 except Exception:
                     pass
         except Exception as exc:
@@ -270,7 +270,7 @@ def click_and_wait_for_response(
     try:
         with page.expect_response(
             lambda r: url_substr in r.url and r.request.method == method,
-            timeout = timeout_ms,
+            timeout=timeout_ms,
         ) as resp_info:
             do_click()
         resp = resp_info.value
@@ -362,15 +362,15 @@ def dump_diagnostics(
     """
     art = Path(art_dir)
     try:
-        art.mkdir(parents = True, exist_ok = True)
+        art.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     try:
         page.screenshot(
-            path = str(art / f"{name}.png"),
-            full_page = True,
-            timeout = 90_000,
-            animations = "disabled",
+            path=str(art / f"{name}.png"),
+            full_page=True,
+            timeout=90_000,
+            animations="disabled",
         )
     except Exception as exc:
         if info is not None:
@@ -400,8 +400,8 @@ def dump_diagnostics(
         payload["extra"] = extra
     try:
         (art / f"{name}.json").write_text(
-            json.dumps(payload, indent = 2, default = str),
-            encoding = "utf-8",
+            json.dumps(payload, indent=2, default=str),
+            encoding="utf-8",
         )
     except Exception as exc:
         if info is not None:

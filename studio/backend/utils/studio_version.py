@@ -56,12 +56,12 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
                 "v[0-9]*",
                 "HEAD",
             ],
-            cwd = repo_root,
-            check = False,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = _GIT_TIMEOUT_SECONDS,
+            cwd=repo_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

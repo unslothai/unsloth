@@ -43,7 +43,7 @@ def _load_safe_is_dir():
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_safe_is_dir"
     )
-    module = ast.Module(body = [fn], type_ignores = [])
+    module = ast.Module(body=[fn], type_ignores=[])
     ns: dict = {"Path": Path, "os": os}
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_safe_is_dir"]
@@ -55,7 +55,7 @@ safe_is_dir = _load_safe_is_dir()
 # below would not actually deny access when running as root.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason = "root bypasses filesystem permission bits",
+    reason="root bypasses filesystem permission bits",
 )
 
 
@@ -110,7 +110,7 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
 @_skip_as_root
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
-    reason = "is_dir() only propagates PermissionError on Python >= 3.12",
+    reason="is_dir() only propagates PermissionError on Python >= 3.12",
 )
 def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
     """Documents *why* _safe_is_dir exists: the old bare pattern raises

@@ -482,7 +482,7 @@ def load_model_config(
     if token:
         # Explicit token provided - use it
         return AutoConfig.from_pretrained(
-            model_name, trust_remote_code = trust_remote_code, token = token
+            model_name, trust_remote_code=trust_remote_code, token=token
         )
 
     if not use_auth:
@@ -490,14 +490,14 @@ def load_model_config(
         with without_hf_auth():
             return AutoConfig.from_pretrained(
                 model_name,
-                trust_remote_code = trust_remote_code,
-                token = None,
+                trust_remote_code=trust_remote_code,
+                token=None,
             )
 
     # Use default authentication (cached tokens)
     return AutoConfig.from_pretrained(
         model_name,
-        trust_remote_code = trust_remote_code,
+        trust_remote_code=trust_remote_code,
     )
 
 
@@ -598,10 +598,10 @@ def _is_vision_model_subprocess(
                 model_name,
                 token_arg,
             ],
-            capture_output = True,
-            text = True,
-            timeout = 60,
-            env = child_env_without_native_path_secret(),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -736,10 +736,10 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        return _is_vision_model_subprocess(model_name, hf_token=hf_token)
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(model_name, use_auth=True, token=hf_token)
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
@@ -901,7 +901,7 @@ def _detect_audio_from_tokenizer(
 
         for tok_path in paths_to_try:
             url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
-            resp = requests.get(url, headers = headers, timeout = 15)
+            resp = requests.get(url, headers=headers, timeout=15)
             if not resp.ok:
                 continue
 
@@ -1130,7 +1130,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     # Score first, then longest shared prefix, then shorter stem.
     best = max(
         scored,
-        key = lambda sc: (
+        key=lambda sc: (
             sc[0],
             _shared_prefix_len(model_stem, sc[1].stem.lower()),
             -len(sc[1].stem),
@@ -1168,8 +1168,8 @@ def detect_gguf_model(path: str) -> Optional[str]:
     if p.is_dir():
         gguf_files = sorted(
             (f for f in _iter_gguf_files(p) if not _is_mmproj(f.name)),
-            key = lambda f: f.stat().st_size,
-            reverse = True,
+            key=lambda f: f.stat().st_size,
+            reverse=True,
         )
         if gguf_files:
             return str(gguf_files[0].resolve())
@@ -1336,7 +1336,7 @@ def _iter_hf_cache_snapshots(repo_id: str):
         snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
     except OSError:
         return
-    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
+    snap_dirs.sort(key=lambda s: s.stat().st_mtime, reverse=True)
     yield from snap_dirs
 
 
@@ -1373,7 +1373,7 @@ def list_gguf_variants(
             return cached
 
     try:
-        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+        info = hf_model_info(repo_id, token=hf_token, files_metadata=True)
     except Exception as e:
         # Permanent errors (deleted/gated/bad revision) must surface to
         # the caller; serving stale cache here would mask the real cause.
@@ -1420,16 +1420,16 @@ def list_gguf_variants(
     for quant, total_size in quant_totals.items():
         variants.append(
             GgufVariantInfo(
-                filename = quant_first_file[quant],
-                quant = quant,
-                size_bytes = total_size,
+                filename=quant_first_file[quant],
+                quant=quant,
+                size_bytes=total_size,
             )
         )
 
     # Sort by size descending (largest = best quality first).
     # Recommended pinning and OOM demotion are handled client-side
     # where GPU VRAM info is available.
-    variants.sort(key = lambda v: -v.size_bytes)
+    variants.sort(key=lambda v: -v.size_bytes)
 
     return variants, has_vision
 
@@ -1480,7 +1480,7 @@ def list_local_gguf_variants(
     # used by some HF GGUF repos for the largest quants) are picked up.
     # Filenames in the result preserve the relative subpath so that
     # ``_find_local_gguf_by_variant`` can locate the file again.
-    for f in sorted(_iter_gguf_files(p, recursive = True)):
+    for f in sorted(_iter_gguf_files(p, recursive=True)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -1498,13 +1498,13 @@ def list_local_gguf_variants(
 
     variants = [
         GgufVariantInfo(
-            filename = quant_first_file[q],
-            quant = q,
-            size_bytes = s,
+            filename=quant_first_file[q],
+            quant=q,
+            size_bytes=s,
         )
         for q, s in quant_totals.items()
     ]
-    variants.sort(key = lambda v: -v.size_bytes)
+    variants.sort(key=lambda v: -v.size_bytes)
     return variants, has_vision
 
 
@@ -1526,7 +1526,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # the directory name when the basename omits it.
     matches = sorted(
         f
-        for f in _iter_gguf_files(p, recursive = True)
+        for f in _iter_gguf_files(p, recursive=True)
         if not _is_mmproj(f.name)
         and _extract_quant_label(f.relative_to(p).as_posix()) == variant
     )
@@ -1544,7 +1544,7 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     for snap in _iter_hf_cache_snapshots(repo_id):
         rel_files = [
             f.relative_to(snap).as_posix()
-            for f in _iter_gguf_files(snap, recursive = True)
+            for f in _iter_gguf_files(snap, recursive=True)
             if not _is_mmproj(f.name)
         ]
         if rel_files:
@@ -1583,7 +1583,7 @@ def detect_gguf_model_remote(
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
-            info = hf_model_info(repo_id, token = hf_token)
+            info = hf_model_info(repo_id, token=hf_token)
             repo_files = [s.rfilename for s in info.siblings]
             return _pick_best_gguf(repo_files)
         except Exception as e:
@@ -1630,9 +1630,9 @@ def download_gguf_file(
     from huggingface_hub import hf_hub_download
 
     local_path = hf_hub_download(
-        repo_id = repo_id,
-        filename = filename,
-        token = hf_token,
+        repo_id=repo_id,
+        filename=filename,
+        token=hf_token,
     )
     return local_path
 
@@ -1675,7 +1675,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token=hf_token)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -1776,7 +1776,7 @@ def scan_trained_models(
                 logger.debug("Found trained model: %s (%s)", display_name, model_type)
 
         # Sort by modification time (newest first)
-        trained_models.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
+        trained_models.sort(key=lambda x: Path(x[1]).stat().st_mtime, reverse=True)
 
         logger.info(
             "Found %s trained models in %s",
@@ -1909,7 +1909,7 @@ def scan_exported_models(
                 results.append((display_name, model_path, export_type, base_model))
                 logger.debug(f"Found exported model: {display_name} ({export_type})")
 
-        results.sort(key = lambda x: Path(x[1]).stat().st_mtime, reverse = True)
+        results.sort(key=lambda x: Path(x[1]).stat().st_mtime, reverse=True)
         logger.info(f"Found {len(results)} exported models in {exports_dir}")
         return results
 
@@ -2076,7 +2076,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
             # Search in subfolders and root
             for config_path in defaults_dir.rglob(canonical_file):
                 if config_path.is_file():
-                    with open(config_path, "r", encoding = "utf-8") as f:
+                    with open(config_path, "r", encoding="utf-8") as f:
                         config = yaml.safe_load(f) or {}
                         logger.info(
                             f"Loaded model defaults from {config_path} (via mapping)"
@@ -2100,7 +2100,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                         canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
                         for config_path in defaults_dir.rglob(canonical_file):
                             if config_path.is_file():
-                                with open(config_path, "r", encoding = "utf-8") as f:
+                                with open(config_path, "r", encoding="utf-8") as f:
                                     config = yaml.safe_load(f) or {}
                                     logger.info(
                                         f"Loaded model defaults from {config_path} (via path suffix '{suffix}')"
@@ -2116,7 +2116,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         # Search in subfolders and root
         for config_path in defaults_dir.rglob(model_filename):
             if config_path.is_file():
-                with open(config_path, "r", encoding = "utf-8") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = yaml.safe_load(f) or {}
                     logger.info(f"Loaded model defaults from {config_path}")
                     return config
@@ -2124,7 +2124,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         # Fall back to default.yaml
         default_config_path = defaults_dir / "default.yaml"
         if default_config_path.exists():
-            with open(default_config_path, "r", encoding = "utf-8") as f:
+            with open(default_config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
                 logger.info(f"Loaded default model defaults from {default_config_path}")
                 return config
@@ -2194,26 +2194,26 @@ class ModelConfig:
                 return None
 
             # Check if base model is vision
-            is_vision = is_vision_model(base_model, hf_token = hf_token)
+            is_vision = is_vision_model(base_model, hf_token=hf_token)
 
             # Check if base model is audio
-            audio_type = detect_audio_type(base_model, hf_token = hf_token)
+            audio_type = detect_audio_type(base_model, hf_token=hf_token)
 
             display_name = lora_path_obj.name
             identifier = lora_path  # Use path as identifier for local LoRAs
 
             return cls(
-                identifier = identifier,
-                display_name = display_name,
-                path = lora_path,
-                is_local = True,
-                is_cached = True,  # Local LoRAs are always "cached"
-                is_vision = is_vision,
-                is_lora = True,
-                is_audio = audio_type is not None and audio_type != "audio_vlm",
-                audio_type = audio_type,
-                has_audio_input = is_audio_input_type(audio_type),
-                base_model = base_model,
+                identifier=identifier,
+                display_name=display_name,
+                path=lora_path,
+                is_local=True,
+                is_cached=True,  # Local LoRAs are always "cached"
+                is_vision=is_vision,
+                is_lora=True,
+                is_audio=audio_type is not None and audio_type != "audio_vlm",
+                audio_type=audio_type,
+                has_audio_input=is_audio_input_type(audio_type),
+                base_model=base_model,
             )
 
         except Exception as e:
@@ -2295,7 +2295,7 @@ class ModelConfig:
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
+                        if base and is_vision_model(base, hf_token=hf_token):
                             base_is_vision = True
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
@@ -2310,7 +2310,7 @@ class ModelConfig:
                 # ``detect_mmproj_file`` walks up to the snapshot root
                 # instead of seeing only the weight file's immediate
                 # parent.
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
+                mmproj_file = detect_mmproj_file(gguf_file, search_root=path)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
@@ -2320,20 +2320,20 @@ class ModelConfig:
                     )
 
                 return cls(
-                    identifier = identifier,
-                    display_name = display_name,
-                    path = path,
-                    is_local = True,
-                    is_cached = True,
-                    is_vision = gguf_is_vision,
-                    is_lora = False,
-                    is_gguf = True,
-                    gguf_file = gguf_file,
-                    gguf_mmproj_file = mmproj_file,
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=path,
+                    is_local=True,
+                    is_cached=True,
+                    is_vision=gguf_is_vision,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=gguf_file,
+                    gguf_mmproj_file=mmproj_file,
                 )
         else:
             # Check if the HF repo contains GGUF files
-            gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+            gguf_filename = detect_gguf_model_remote(identifier, hf_token=hf_token)
             if gguf_filename:
                 # Preflight: verify llama-server binary exists BEFORE user waits
                 # for a multi-GB download that llama-server handles natively
@@ -2346,7 +2346,7 @@ class ModelConfig:
                     )
 
                 # Use list_gguf_variants() to detect vision & resolve variant
-                variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
+                variants, has_vision = list_gguf_variants(identifier, hf_token=hf_token)
                 variant = gguf_variant
                 if not variant:
                     # Auto-select best quantization
@@ -2363,17 +2363,17 @@ class ModelConfig:
                     f"variant={variant}, vision={has_vision}"
                 )
                 return cls(
-                    identifier = identifier,
-                    display_name = display_name,
-                    path = identifier,
-                    is_local = False,
-                    is_cached = False,
-                    is_vision = has_vision,
-                    is_lora = False,
-                    is_gguf = True,
-                    gguf_file = None,
-                    gguf_hf_repo = identifier,
-                    gguf_variant = variant,
+                    identifier=identifier,
+                    display_name=display_name,
+                    path=identifier,
+                    is_local=False,
+                    is_cached=False,
+                    is_vision=has_vision,
+                    is_lora=False,
+                    is_gguf=True,
+                    gguf_file=None,
+                    gguf_hf_repo=identifier,
+                    gguf_variant=variant,
                 )
 
         # Auto-detect LoRA for local paths (check adapter_config.json on disk)
@@ -2395,7 +2395,7 @@ class ModelConfig:
             try:
                 from huggingface_hub import model_info as hf_model_info
 
-                info = hf_model_info(identifier, token = hf_token)
+                info = hf_model_info(identifier, token=hf_token)
                 repo_files = [s.rfilename for s in info.siblings]
                 if "adapter_config.json" in repo_files:
                     is_lora = True
@@ -2427,7 +2427,7 @@ class ModelConfig:
                     from huggingface_hub import hf_hub_download
 
                     config_path = hf_hub_download(
-                        identifier, "adapter_config.json", token = hf_token
+                        identifier, "adapter_config.json", token=hf_token
                     )
                     with open(config_path, "r") as f:
                         adapter_config = json.load(f)
@@ -2446,24 +2446,24 @@ class ModelConfig:
         else:
             check_model = identifier
 
-        vision = is_vision_model(check_model, hf_token = hf_token)
-        audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
+        vision = is_vision_model(check_model, hf_token=hf_token)
+        audio_type_val = detect_audio_type(check_model, hf_token=hf_token)
         has_audio_in = is_audio_input_type(audio_type_val)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
         return cls(
-            identifier = identifier,
-            display_name = display_name,
-            path = path,
-            is_local = is_local,
-            is_cached = is_model_cached(identifier) if not is_local else True,
-            is_vision = vision,
-            is_lora = is_lora,
-            is_audio = audio_type_val is not None and audio_type_val != "audio_vlm",
-            audio_type = audio_type_val,
-            has_audio_input = has_audio_in,
-            base_model = base_model,
+            identifier=identifier,
+            display_name=display_name,
+            path=path,
+            is_local=is_local,
+            is_cached=is_model_cached(identifier) if not is_local else True,
+            is_vision=vision,
+            is_lora=is_lora,
+            is_audio=audio_type_val is not None and audio_type_val != "audio_vlm",
+            audio_type=audio_type_val,
+            has_audio_input=has_audio_in,
+            base_model=base_model,
         )
 
     @classmethod
@@ -2535,22 +2535,22 @@ class ModelConfig:
                 return None  # Cannot proceed without a base model
 
             # A LoRA's vision capability is determined by its base model.
-            is_vision = is_vision_model(base_model, hf_token = hf_token)
+            is_vision = is_vision_model(base_model, hf_token=hf_token)
         else:
             # For a base model, just check its own vision status.
-            is_vision = is_vision_model(identifier, hf_token = hf_token)
+            is_vision = is_vision_model(identifier, hf_token=hf_token)
 
         from utils.paths import is_model_cached
 
         is_cached = is_model_cached(identifier) if not is_local else True
 
         return cls(
-            identifier = identifier,
-            display_name = display_name,
-            path = path,
-            is_local = is_local,
-            is_cached = is_cached,
-            is_vision = is_vision,
-            is_lora = is_lora,
-            base_model = base_model,  # This will be None for base models, and populated for LoRAs
+            identifier=identifier,
+            display_name=display_name,
+            path=path,
+            is_local=is_local,
+            is_cached=is_cached,
+            is_vision=is_vision,
+            is_lora=is_lora,
+            base_model=base_model,  # This will be None for base models, and populated for LoRAs
         )

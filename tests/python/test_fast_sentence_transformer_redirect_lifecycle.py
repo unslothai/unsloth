@@ -21,7 +21,7 @@ def _stub_module(name: str) -> types.ModuleType:
     # __spec__ must be set so importlib.util.find_spec(name) does not raise
     # ValueError if a downstream test imports the real package.
     mod = types.ModuleType(name)
-    mod.__spec__ = importlib.util.spec_from_loader(name, loader = None)
+    mod.__spec__ = importlib.util.spec_from_loader(name, loader=None)
     return mod
 
 
@@ -32,7 +32,7 @@ _STUB_KEYS = (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _restore_sys_modules():
     """Snapshot the entries we shadow with stubs and restore them after each
     test so a downstream test that does `import transformers` for real does
@@ -244,7 +244,7 @@ def test_is_requested_model_name_returns_false_when_no_identifier():
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
 
-            captured["args"] = AutoModel.from_pretrained(some_other_kwarg = "x")
+            captured["args"] = AutoModel.from_pretrained(some_other_kwarg="x")
 
     driver, *_ = _build_driver(_NoNameTransformer)
     driver("primary/model-id", object(), object())

@@ -86,8 +86,8 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout = 15) as r:
-            return r.read().decode("utf-8", errors = "replace")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -293,7 +293,7 @@ def test_unsloth_zoo_standby_guards_present():
     path = _vllm_zoo_local_path()
     if path is None:
         pytest.skip("unsloth_zoo not installed on runner")
-    src = open(path, encoding = "utf-8").read()
+    src = open(path, encoding="utf-8").read()
     has_10x_guard = re.search(r"0\.10\.0", src) and re.search(
         r"standby", src, re.IGNORECASE
     )

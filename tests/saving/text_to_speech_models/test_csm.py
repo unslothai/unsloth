@@ -26,11 +26,11 @@ print(f"{'='*80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "unsloth/csm-1b",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Leave as None for auto-detection
-    auto_model = CsmForConditionalGeneration,
-    load_in_4bit = False,  # Select True for 4bit - reduces memory usage
+    model_name="unsloth/csm-1b",
+    max_seq_length=2048,  # Choose any for long context!
+    dtype=None,  # Leave as None for auto-detection
+    auto_model=CsmForConditionalGeneration,
+    load_in_4bit=False,  # Select True for 4bit - reduces memory usage
 )
 
 
@@ -39,8 +39,8 @@ base_model_class = model.__class__.__name__
 
 model = FastModel.get_peft_model(
     model,
-    r = 32,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules = [
+    r=32,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules=[
         "q_proj",
         "k_proj",
         "v_proj",
@@ -49,14 +49,14 @@ model = FastModel.get_peft_model(
         "up_proj",
         "down_proj",
     ],
-    lora_alpha = 32,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
+    lora_alpha=32,
+    lora_dropout=0,  # Supports any, but = 0 is optimized
+    bias="none",  # Supports any, but = "none" is optimized
     # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
-    random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
+    use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
+    random_state=3407,
+    use_rslora=False,  # We support rank stabilized LoRA
+    loftq_config=None,  # And LoftQ
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -110,11 +110,11 @@ print(f"{'='*80}")
 
 
 model, processor = FastModel.from_pretrained(
-    model_name = "./csm",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Leave as None for auto-detection
-    auto_model = CsmForConditionalGeneration,
-    load_in_4bit = False,  # Select True for 4bit - reduces memory usage
+    model_name="./csm",
+    max_seq_length=2048,  # Choose any for long context!
+    dtype=None,  # Leave as None for auto-detection
+    auto_model=CsmForConditionalGeneration,
+    load_in_4bit=False,  # Select True for 4bit - reduces memory usage
 )
 
 from transformers import AutoProcessor
@@ -138,19 +138,19 @@ try:
         "We just finished fine tuning a text to speech model... and it's pretty good!"
     )
     speaker_id = 0
-    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
+    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens=True).to("cuda")
     audio_values = model.generate(
         **inputs,
-        max_new_tokens = 125,  # 125 tokens is 10 seconds of audio, for longer speech increase this
+        max_new_tokens=125,  # 125 tokens is 10 seconds of audio, for longer speech increase this
         # play with these parameters to get the best results
-        depth_decoder_temperature = 0.6,
-        depth_decoder_top_k = 0,
-        depth_decoder_top_p = 0.9,
-        temperature = 0.8,
-        top_k = 50,
-        top_p = 1.0,
+        depth_decoder_temperature=0.6,
+        depth_decoder_top_k=0,
+        depth_decoder_top_p=0.9,
+        temperature=0.8,
+        top_k=50,
+        top_p=1.0,
         #########################################################
-        output_audio = True,
+        output_audio=True,
     )
     audio = audio_values[0].to(torch.float32).cpu().numpy()
     sf.write("example_without_context.wav", audio, 24000)

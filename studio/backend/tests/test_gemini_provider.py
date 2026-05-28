@@ -66,14 +66,14 @@ def _make_gemini_client(
     base_url: str = "https://generativelanguage.googleapis.com/v1beta",
 ) -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = base_url,
-        api_key = "AIza-test-key",
+        provider_type="gemini",
+        base_url=base_url,
+        api_key="AIza-test-key",
     )
 
 
 def _mock_http(monkeypatch, handler):
-    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(ep_mod, "_http_client", mock_client)
     # `_drive` will aclose this at the end of the run inside the same
     # event loop so we do not leak an unawaited aclose() coroutine.
@@ -101,7 +101,7 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
         # Minimal valid Gemini stream so the helper can complete.
         return httpx.Response(
             200,
-            content = _gemini_sse(
+            content=_gemini_sse(
                 [
                     {
                         "candidates": [
@@ -120,7 +120,7 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
                     }
                 ]
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -134,11 +134,11 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
     async def run():
         client = _make_gemini_client()
         async for _ in client.stream_chat_completion(
-            messages = messages,
-            model = model,
-            temperature = temperature,
-            top_p = top_p,
-            max_tokens = max_tokens,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
             **kwargs,
         ):
             pass
@@ -154,8 +154,8 @@ def _collect(monkeypatch, sse_events, **kwargs) -> list[str]:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _gemini_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_gemini_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -171,11 +171,11 @@ def _collect(monkeypatch, sse_events, **kwargs) -> list[str]:
     async def run():
         client = _make_gemini_client()
         async for line in client.stream_chat_completion(
-            messages = messages,
-            model = model,
-            temperature = temperature,
-            top_p = top_p,
-            max_tokens = max_tokens,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
             **kwargs,
         ):
             out.append(line)
@@ -207,7 +207,7 @@ def test_request_body_uses_contents_and_parts_shape(monkeypatch):
     """OpenAI messages must be translated to Gemini's `contents` shape."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "system", "content": "Be brief."},
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there"},
@@ -232,7 +232,7 @@ def test_request_body_uses_contents_and_parts_shape(monkeypatch):
 
 def test_request_url_targets_stream_generate_content(monkeypatch):
     """Helper must POST to /v1beta/models/{model}:streamGenerateContent?alt=sse."""
-    captured = _capture_body(monkeypatch, model = "gemini-2.5-pro")
+    captured = _capture_body(monkeypatch, model="gemini-2.5-pro")
     url = captured["url"]
     assert ":streamGenerateContent" in url, url
     assert "alt=sse" in url, url
@@ -250,20 +250,20 @@ def test_request_auth_header_uses_x_goog_api_key(monkeypatch):
 
 def test_top_k_forwarded_only_when_positive(monkeypatch):
     """top_k is opt-in; only positive integers reach the wire."""
-    captured = _capture_body(monkeypatch, top_k = 40)
+    captured = _capture_body(monkeypatch, top_k=40)
     assert captured["body"]["generationConfig"]["topK"] == 40
 
-    captured = _capture_body(monkeypatch, top_k = 0)
+    captured = _capture_body(monkeypatch, top_k=0)
     assert "topK" not in captured["body"]["generationConfig"]
 
 
 def test_presence_penalty_forwarded_to_generation_config(monkeypatch):
     """A non-zero presence_penalty reaches generationConfig.presencePenalty."""
-    captured = _capture_body(monkeypatch, presence_penalty = 0.7)
+    captured = _capture_body(monkeypatch, presence_penalty=0.7)
     assert captured["body"]["generationConfig"]["presencePenalty"] == 0.7
 
     # And the default of zero is omitted, matching top_k semantics.
-    captured = _capture_body(monkeypatch, presence_penalty = 0.0)
+    captured = _capture_body(monkeypatch, presence_penalty=0.0)
     assert "presencePenalty" not in captured["body"]["generationConfig"]
 
 
@@ -274,8 +274,8 @@ def test_gemini25_flash_thinking_disabled_sets_budget_zero(monkeypatch):
     """Gemini 2.5 Flash still uses thinkingBudget; 0 = off."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash",
-        enable_thinking = False,
+        model="gemini-2.5-flash",
+        enable_thinking=False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingBudget": 0}, tc
@@ -286,8 +286,8 @@ def test_gemini3_flash_thinking_disabled_uses_minimal_level(monkeypatch):
     (Gemini 3 cannot turn thinking fully off)."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.5-flash",
-        enable_thinking = False,
+        model="gemini-3.5-flash",
+        enable_thinking=False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingLevel": "minimal"}, tc
@@ -298,8 +298,8 @@ def test_gemini25_pro_thinking_disabled_uses_small_budget(monkeypatch):
     mode"); coerce to a small positive budget."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-pro",
-        enable_thinking = False,
+        model="gemini-2.5-pro",
+        enable_thinking=False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc is not None and tc.get("thinkingBudget", 0) > 0, tc
@@ -316,8 +316,8 @@ def test_gemini3_pro_thinking_disabled_uses_low_level(monkeypatch):
     ):
         captured = _capture_body(
             monkeypatch,
-            model = model,
-            enable_thinking = False,
+            model=model,
+            enable_thinking=False,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
         assert tc == {"thinkingLevel": "low"}, (model, tc)
@@ -336,8 +336,8 @@ def test_gemini25_flash_effort_levels_map_to_budgets(monkeypatch):
     for effort, expected in cases.items():
         captured = _capture_body(
             monkeypatch,
-            model = "gemini-2.5-flash",
-            reasoning_effort = effort,
+            model="gemini-2.5-flash",
+            reasoning_effort=effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
         assert tc == {"thinkingBudget": expected}, (effort, tc)
@@ -355,8 +355,8 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
     for effort, expected in cases.items():
         captured = _capture_body(
             monkeypatch,
-            model = "gemini-3.5-flash",
-            reasoning_effort = effort,
+            model="gemini-3.5-flash",
+            reasoning_effort=effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
         assert tc == {"thinkingLevel": expected}, (effort, tc)
@@ -372,8 +372,8 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
     ):
         captured = _capture_body(
             monkeypatch,
-            model = model,
-            reasoning_effort = "medium",
+            model=model,
+            reasoning_effort="medium",
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
         assert tc == {"thinkingLevel": "medium"}, (model, tc)
@@ -383,8 +383,8 @@ def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
     """Gemini 3 Pro rejects thinkingLevel="minimal"; coerce to "low"."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.1-pro-preview",
-        reasoning_effort = "minimal",
+        model="gemini-3.1-pro-preview",
+        reasoning_effort="minimal",
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingLevel": "low"}, tc
@@ -394,8 +394,8 @@ def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
     """reasoning_effort='none' on Gemini 3 Flash -> thinkingLevel=minimal."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.5-flash",
-        reasoning_effort = "none",
+        model="gemini-3.5-flash",
+        reasoning_effort="none",
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingLevel": "minimal"}, tc
@@ -404,7 +404,7 @@ def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
 def test_thinking_default_omits_thinking_config(monkeypatch):
     """When neither knob is supplied, thinkingConfig is omitted entirely
     (Google's server-side default applies)."""
-    captured = _capture_body(monkeypatch, model = "gemini-3.5-flash")
+    captured = _capture_body(monkeypatch, model="gemini-3.5-flash")
     gc = captured["body"]["generationConfig"]
     assert "thinkingConfig" not in gc, gc
 
@@ -415,8 +415,8 @@ def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
     (enabled_tools includes "image_generation")."""
     captured = _capture_body(
         monkeypatch,
-        model = "nano-banana-pro-preview",
-        enabled_tools = ["image_generation"],
+        model="nano-banana-pro-preview",
+        enabled_tools=["image_generation"],
     )
     gc = captured["body"]["generationConfig"]
     assert gc.get("responseModalities") == ["TEXT", "IMAGE"], gc
@@ -431,8 +431,8 @@ def test_image_capable_model_without_image_pill_stays_text_only(monkeypatch):
     disabled."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = [],
+        model="gemini-2.5-flash-image",
+        enabled_tools=[],
     )
     gc = captured["body"]["generationConfig"]
     assert gc.get("responseModalities") == ["TEXT"], gc
@@ -450,10 +450,10 @@ def test_image_models_skip_thinking_config(monkeypatch):
     ):
         captured = _capture_body(
             monkeypatch,
-            model = model,
-            reasoning_effort = "high",
-            enable_thinking = False,
-            enabled_tools = ["image_generation"],
+            model=model,
+            reasoning_effort="high",
+            enable_thinking=False,
+            enabled_tools=["image_generation"],
         )
         gc = captured["body"]["generationConfig"]
         assert "thinkingConfig" not in gc, (model, gc)
@@ -472,8 +472,8 @@ def test_image_models_drop_code_execution(monkeypatch):
     ):
         captured = _capture_body(
             monkeypatch,
-            model = model,
-            enabled_tools = ["image_generation", "code_execution"],
+            model=model,
+            enabled_tools=["image_generation", "code_execution"],
         )
         tools_arr = captured["body"].get("tools") or []
         names = [list(t.keys())[0] for t in tools_arr]
@@ -486,8 +486,8 @@ def test_gemini_35_pro_uses_thinking_level(monkeypatch):
     tier rejects "minimal"."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.5-pro",
-        enable_thinking = False,
+        model="gemini-3.5-pro",
+        enable_thinking=False,
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
     assert tc == {"thinkingLevel": "low"}, tc
@@ -504,8 +504,8 @@ def test_gemini3_image_models_allow_google_search(monkeypatch):
     ):
         captured = _capture_body(
             monkeypatch,
-            model = model,
-            enabled_tools = ["image_generation", "web_search", "code_execution"],
+            model=model,
+            enabled_tools=["image_generation", "web_search", "code_execution"],
         )
         tools_arr = captured["body"].get("tools") or []
         names = [list(t.keys())[0] for t in tools_arr]
@@ -518,8 +518,8 @@ def test_legacy_image_models_block_google_search(monkeypatch):
     `tools: [{googleSearch: {}}]`; backend keeps stripping it."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation", "web_search", "code_execution"],
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation", "web_search", "code_execution"],
     )
     assert "tools" not in captured["body"], captured["body"].get("tools")
 
@@ -529,9 +529,9 @@ def test_legacy_openai_base_url_normalized(monkeypatch):
     (from the pre-PR OpenAI-compat plumbing) now point at the native
     endpoint without the user re-saving the connection."""
     client = ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
-        api_key = "AIza-test-key",
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key="AIza-test-key",
     )
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
 
@@ -568,7 +568,7 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
     must echo the value back as a sibling of the Gemini functionCall part."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "lookup x"},
             {
                 "role": "assistant",
@@ -658,8 +658,8 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation", "web_search", "code_execution"],
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation", "web_search", "code_execution"],
     )
     chunks = _parse_chunks(lines)
     tool_evs = [
@@ -679,8 +679,8 @@ def test_image_generation_tool_on_image_model_drops_text_tools(monkeypatch):
     families also drop googleSearch."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = [
+        model="gemini-2.5-flash-image",
+        enabled_tools=[
             "image_generation",
             "web_search",
             "code_execution",
@@ -746,7 +746,7 @@ def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
 def test_web_search_forwarded_as_google_search_tool(monkeypatch):
     captured = _capture_body(
         monkeypatch,
-        enabled_tools = ["web_search"],
+        enabled_tools=["web_search"],
     )
     tools = captured["body"].get("tools") or []
     assert {"googleSearch": {}} in tools, tools
@@ -755,14 +755,14 @@ def test_web_search_forwarded_as_google_search_tool(monkeypatch):
 def test_code_execution_forwarded_as_code_execution_tool(monkeypatch):
     captured = _capture_body(
         monkeypatch,
-        enabled_tools = ["code_execution"],
+        enabled_tools=["code_execution"],
     )
     tools = captured["body"].get("tools") or []
     assert {"codeExecution": {}} in tools, tools
 
 
 def test_omitted_tools_leaves_body_untouched(monkeypatch):
-    captured = _capture_body(monkeypatch, enabled_tools = [])
+    captured = _capture_body(monkeypatch, enabled_tools=[])
     assert "tools" not in captured["body"], captured["body"]
 
 
@@ -774,14 +774,14 @@ def test_cached_content_pass_through(monkeypatch):
     cache_name = "cachedContents/abc123"
     captured = _capture_body(
         monkeypatch,
-        enable_prompt_caching = cache_name,
+        enable_prompt_caching=cache_name,
     )
     assert captured["body"].get("cachedContent") == cache_name
 
 
 def test_boolean_caching_does_not_set_cached_content(monkeypatch):
     """Studio's existing True/False signals shouldn't fabricate a cache id."""
-    captured = _capture_body(monkeypatch, enable_prompt_caching = True)
+    captured = _capture_body(monkeypatch, enable_prompt_caching=True)
     assert "cachedContent" not in captured["body"]
 
 
@@ -791,8 +791,8 @@ def test_boolean_caching_does_not_set_cached_content(monkeypatch):
 def test_image_model_sets_response_modalities(monkeypatch):
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation"],
     )
     assert captured["body"]["generationConfig"]["responseModalities"] == [
         "TEXT",
@@ -807,8 +807,8 @@ def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypat
     responseModalities)."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation"],
     )
     assert captured["body"]["generationConfig"]["responseModalities"] == [
         "TEXT",
@@ -846,7 +846,7 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        model = "gemini-2.5-flash-image",
+        model="gemini-2.5-flash-image",
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -931,7 +931,7 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
             "content": json.dumps({"temp_c": 18, "summary": "Sunny"}),
         },
     ]
-    captured = _capture_body(monkeypatch, messages = messages)
+    captured = _capture_body(monkeypatch, messages=messages)
     contents = captured["body"]["contents"]
     # Last turn must be a functionResponse part (Gemini wraps it as a
     # role=user turn carrying the result).
@@ -1044,7 +1044,7 @@ def test_function_call_ids_forwarded_into_gemini_function_call_part(monkeypatch)
             "content": json.dumps({"hits": ["B"]}),
         },
     ]
-    captured = _capture_body(monkeypatch, messages = messages)
+    captured = _capture_body(monkeypatch, messages=messages)
     contents = captured["body"]["contents"]
     assistant_parts = next(c for c in contents if c["role"] == "model")["parts"]
     call_ids = [p["functionCall"]["id"] for p in assistant_parts if "functionCall" in p]
@@ -1122,7 +1122,7 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
             },
         }
     ]
-    lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
+    lines = _collect(monkeypatch, sse, enabled_tools=["code_execution"])
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
     code_starts = [
@@ -1176,7 +1176,7 @@ def test_code_execution_failure_outcome_surfaces_in_result(monkeypatch):
             },
         }
     ]
-    lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
+    lines = _collect(monkeypatch, sse, enabled_tools=["code_execution"])
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
     result_text = next(
@@ -1211,7 +1211,7 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
             "content": json.dumps({"temp_c": 18}),
         },
     ]
-    captured = _capture_body(monkeypatch, messages = messages)
+    captured = _capture_body(monkeypatch, messages=messages)
     contents = captured["body"]["contents"]
     last = contents[-1]
     fr = last["parts"][0].get("functionResponse")
@@ -1273,7 +1273,7 @@ def test_vision_data_url_translates_to_inline_data(monkeypatch):
             ],
         }
     ]
-    captured = _capture_body(monkeypatch, messages = messages)
+    captured = _capture_body(monkeypatch, messages=messages)
     parts = captured["body"]["contents"][0]["parts"]
     inline_parts = [p for p in parts if "inlineData" in p]
     assert len(inline_parts) == 1, parts
@@ -1364,7 +1364,7 @@ def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        enabled_tools = ["web_search"],
+        enabled_tools=["web_search"],
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -1388,9 +1388,9 @@ def test_custom_gemini_proxy_base_url_not_rewritten():
     """Only the Google-hosted /v1beta/openai base is normalized; a
     custom gateway whose path ends in /openai must be left alone."""
     client = ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = "https://proxy.example.com/team/openai",
-        api_key = "AIza-test-key",
+        provider_type="gemini",
+        base_url="https://proxy.example.com/team/openai",
+        api_key="AIza-test-key",
     )
     assert client.base_url == "https://proxy.example.com/team/openai"
 
@@ -1406,9 +1406,9 @@ def test_custom_gemini_proxy_uses_openai_dispatch():
         "https://litellm.internal.example/v1",
     ):
         client = ExternalProviderClient(
-            provider_type = "gemini",
-            base_url = base,
-            api_key = "AIza-test-key",
+            provider_type="gemini",
+            base_url=base,
+            api_key="AIza-test-key",
         )
         assert client._is_openai_compatible() is True, base
         headers = client._auth_headers()
@@ -1425,9 +1425,9 @@ def test_custom_gemini_proxy_uses_openai_dispatch():
 def test_google_hosted_gemini_still_uses_native_dispatch():
     """Google-hosted Gemini keeps native dispatch + x-goog-api-key auth."""
     client = ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
-        api_key = "AIza-test-key",
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key="AIza-test-key",
     )
     assert client._is_openai_compatible() is False
     headers = client._auth_headers()
@@ -1445,8 +1445,8 @@ def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
         captured.append(request)
         return httpx.Response(
             200,
-            content = _gemini_sse([]),
-            headers = {"content-type": "text/event-stream"},
+            content=_gemini_sse([]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -1456,11 +1456,11 @@ def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
     async def run():
         client = _make_gemini_client()
         async for line in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "../cachedContents/leak",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
+            messages=[{"role": "user", "content": "hi"}],
+            model="../cachedContents/leak",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
         ):
             out.append(line)
         await client.close()
@@ -1475,7 +1475,7 @@ def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
 def test_top_k_omitted_when_not_explicit_default_for_gemini(monkeypatch):
     """top_k=None means "use provider default"; helper must not emit
     `topK` in generationConfig when the caller didn't pass it."""
-    captured = _capture_body(monkeypatch, top_k = None)
+    captured = _capture_body(monkeypatch, top_k=None)
     assert "topK" not in captured["body"]["generationConfig"], captured["body"]
 
 
@@ -1486,8 +1486,8 @@ def test_text_model_image_generation_tool_silently_dropped(monkeypatch):
     text models."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash",
-        enabled_tools = ["image_generation"],
+        model="gemini-2.5-flash",
+        enabled_tools=["image_generation"],
     )
     gc = captured["body"]["generationConfig"]
     assert "responseModalities" not in gc, gc
@@ -1570,9 +1570,9 @@ def test_enable_prompt_caching_false_string_coerces_to_bool():
 def test_legacy_google_openai_base_url_is_rewritten():
     """The Google-hosted /v1beta/openai legacy base IS still rewritten."""
     client = ExternalProviderClient(
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
-        api_key = "AIza-test-key",
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key="AIza-test-key",
     )
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
 
@@ -1584,14 +1584,14 @@ def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
     inline them as base64 inlineData."""
     image_bytes = b"FAKEPNGBYTES"
 
-    async def fake_fetch(url, fallback_mime, max_bytes = None):
+    async def fake_fetch(url, fallback_mime, max_bytes=None):
         assert url == "https://cdn.example.com/diagram.png"
         return ("image/png", base64.b64encode(image_bytes).decode("ascii"))
 
     monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch)
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -1620,13 +1620,13 @@ def test_remote_image_url_dropped_when_fetch_returns_none(monkeypatch):
     image part is silently dropped instead of forwarding raw bytes
     or a fileData fallback."""
 
-    async def fake_fetch_reject(url, fallback_mime, max_bytes = None):
+    async def fake_fetch_reject(url, fallback_mime, max_bytes=None):
         return None
 
     monkeypatch.setattr(ep_mod, "_safe_fetch_image_for_gemini", fake_fetch_reject)
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -1694,7 +1694,7 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _gemini_sse(
+            content=_gemini_sse(
                 [
                     {
                         "candidates": [
@@ -1713,7 +1713,7 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
                     }
                 ]
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -1721,7 +1721,7 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
     async def run():
         client = _make_gemini_client()
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -1741,10 +1741,10 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
                     ],
                 }
             ],
-            model = "gemini-2.5-flash",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="gemini-2.5-flash",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -1831,7 +1831,7 @@ def test_prompt_block_pairs_web_search_tool_end(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        enabled_tools = ["web_search"],
+        enabled_tools=["web_search"],
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -1885,7 +1885,7 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        enabled_tools = ["code_execution"],
+        enabled_tools=["code_execution"],
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -1943,7 +1943,7 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        model = "gemini-2.5-flash-image",
+        model="gemini-2.5-flash-image",
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -2011,7 +2011,7 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        enabled_tools = ["code_execution"],
+        enabled_tools=["code_execution"],
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -2079,7 +2079,7 @@ def test_openai_tools_translated_into_function_declarations(monkeypatch):
     Gemini's tools[].functionDeclarations envelope."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2095,7 +2095,7 @@ def test_openai_tools_translated_into_function_declarations(monkeypatch):
                 },
             }
         ],
-        tool_choice = {"type": "function", "function": {"name": "get_weather"}},
+        tool_choice={"type": "function", "function": {"name": "get_weather"}},
     )
     tools_arr = captured["body"].get("tools") or []
     fn_decls = [t for t in tools_arr if "functionDeclarations" in t]
@@ -2114,13 +2114,13 @@ def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
     """tool_choice="auto" maps to toolConfig.functionCallingConfig.mode."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "noop", "parameters": {"type": "object"}},
             }
         ],
-        tool_choice = "auto",
+        tool_choice="auto",
     )
     fcc = captured["body"]["toolConfig"]["functionCallingConfig"]
     assert fcc["mode"] == "AUTO"
@@ -2173,7 +2173,7 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     lines = _collect(
         monkeypatch,
         sse,
-        enabled_tools = ["code_execution"],
+        enabled_tools=["code_execution"],
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
@@ -2204,7 +2204,7 @@ def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
     Gemini parts (not a generic functionCall) on the next turn."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "compute 2+2"},
             {
                 "role": "assistant",
@@ -2263,8 +2263,8 @@ def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
     pixel = base64.b64encode(b"PNG").decode()
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        messages = [
+        model="gemini-2.5-flash-image",
+        messages=[
             {"role": "user", "content": "make a circle"},
             {
                 "role": "assistant",
@@ -2317,7 +2317,7 @@ def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypa
     signed-text signature and the backend pins it on the next turn."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "hi"},
             {
                 "role": "assistant",
@@ -2346,7 +2346,7 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
     keeping properties.<field>.type intact."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2398,7 +2398,7 @@ def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch)
     local `#/...` pointers and inline the referenced schema."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2451,7 +2451,7 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
     property refs."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2515,7 +2515,7 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
     set of refs in flight and short-circuits to `{}` on a cycle."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2600,11 +2600,11 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(
     )
     built = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
     )
-    captured = _capture_body(monkeypatch, messages = built)
+    captured = _capture_body(monkeypatch, messages=built)
     contents = captured["body"].get("contents") or []
     for entry in contents:
         for part in entry.get("parts", []):
@@ -2624,7 +2624,7 @@ def test_gemini_native_skips_orphan_function_response_for_native_part_replay(
     rules already attribute the result to the native parts above."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "plot something"},
             {
                 "role": "assistant",
@@ -2697,7 +2697,7 @@ def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
 
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "draw a cat"},
             {
                 "role": "assistant",
@@ -2782,11 +2782,11 @@ def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
     )
     built = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
     )
-    captured = _capture_body(monkeypatch, messages = built)
+    captured = _capture_body(monkeypatch, messages=built)
     contents = captured["body"].get("contents") or []
     for entry in contents:
         for part in entry.get("parts", []):
@@ -2829,9 +2829,9 @@ def test_chat_message_extra_content_round_trips_through_validation():
     }
     built = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
     )
     assistant_out = built[1]
     assert assistant_out["extra_content"] == {
@@ -2841,8 +2841,8 @@ def test_chat_message_extra_content_round_trips_through_validation():
     # thought_signature field is unknown to OpenAI / Mistral / etc.
     built_openai = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "openai",
+        supports_vision=True,
+        provider_type="openai",
     )
     assert "extra_content" not in built_openai[1], built_openai[1]
     # Custom non-Google Gemini bases (LiteLLM / OAI-compat gateways)
@@ -2850,9 +2850,9 @@ def test_chat_message_extra_content_round_trips_through_validation():
     # backend dispatches them through /chat/completions.
     built_custom = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://litellm.example/v1",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://litellm.example/v1",
     )
     assert "extra_content" not in built_custom[1], built_custom[1]
 
@@ -2865,7 +2865,7 @@ def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
     user turns."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {"role": "user", "content": "compute"},
             {
                 "role": "assistant",
@@ -2924,7 +2924,7 @@ def test_function_schema_nullable_type_array_flattens(monkeypatch):
     translate the union form."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -2961,9 +2961,9 @@ def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):
     legacy image ids)."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["web_search"],
-        reasoning_effort = "high",
+        model="gemini-2.5-flash-image",
+        enabled_tools=["web_search"],
+        reasoning_effort="high",
     )
     body = captured["body"]
     assert "tools" not in body, body.get("tools")
@@ -2977,9 +2977,9 @@ def test_image_models_drop_function_declarations(monkeypatch):
     user-supplied function declarations must be dropped."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
-        tools = [
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation"],
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "noop", "parameters": {"type": "object"}},
@@ -3042,11 +3042,11 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(
         def __exit__(self, *a):
             return False
 
-        def read(self, _n = None):
+        def read(self, _n=None):
             return b"PNG"
 
     class _StubOpener:
-        def open(self, req, timeout = None):
+        def open(self, req, timeout=None):
             captured["requests"].append(
                 {
                     "url": req.full_url,
@@ -3109,7 +3109,7 @@ def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     class _StubOpener:
-        def open(self, req, timeout = None):
+        def open(self, req, timeout=None):
             # Simulate a 302 to a private host.
             raise urllib.error.HTTPError(
                 req.full_url,
@@ -3140,7 +3140,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
     captured_outbound: dict = {}
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime, max_bytes = None):
+    async def fake_fetch(url, fallback_mime, max_bytes=None):
         fetch_calls.append(url)
         return "image/png", base64.b64encode(b"DATA").decode("ascii")
 
@@ -3150,7 +3150,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
         captured_outbound["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _gemini_sse(
+            content=_gemini_sse(
                 [
                     {
                         "candidates": [
@@ -3169,7 +3169,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
                     }
                 ]
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -3177,7 +3177,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
     async def run():
         client = _make_gemini_client()
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -3200,10 +3200,10 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
                     ],
                 }
             ],
-            model = "gemini-2.5-flash",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="gemini-2.5-flash",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -3224,7 +3224,7 @@ def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
     union back to the non-null branch with `nullable: true`."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -3270,8 +3270,8 @@ def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
     state does not 400 the request."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3-pro-preview",
-        reasoning_effort = "medium",
+        model="gemini-3-pro-preview",
+        reasoning_effort="medium",
     )
     assert captured["body"]["generationConfig"]["thinkingConfig"] == {
         "thinkingLevel": "high",
@@ -3283,8 +3283,8 @@ def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
     apply when the model id is gemini-3.1-pro*."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-3.1-pro-preview",
-        reasoning_effort = "medium",
+        model="gemini-3.1-pro-preview",
+        reasoning_effort="medium",
     )
     assert captured["body"]["generationConfig"]["thinkingConfig"] == {
         "thinkingLevel": "medium",
@@ -3329,9 +3329,9 @@ def test_tool_calls_extra_content_stripped_for_non_native_gemini():
     ]:
         result = _build_external_messages(
             req.messages,
-            supports_vision = True,
-            provider_type = provider_type,
-            base_url = base_url,
+            supports_vision=True,
+            provider_type=provider_type,
+            base_url=base_url,
         )
         assert len(result) == 1
         tc = result[0]["tool_calls"][0]
@@ -3340,9 +3340,9 @@ def test_tool_calls_extra_content_stripped_for_non_native_gemini():
     # Native Gemini still receives extra_content for the round-trip.
     result_native = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
     )
     tc_native = result_native[0]["tool_calls"][0]
     assert tc_native["extra_content"]["google"]["thought_signature"] == "SIG"
@@ -3361,20 +3361,20 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
         captured["input_items"] = body.get("input")
         return httpx.Response(
             200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "hi"},
                 {
                     "role": "assistant",
@@ -3400,10 +3400,10 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
                 },
                 {"role": "user", "content": "continue"},
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=1.0,
+            max_tokens=16,
         ):
             pass
         await client.close()
@@ -3429,20 +3429,20 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
         captured["input_items"] = body.get("input")
         return httpx.Response(
             200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "search please"},
                 {
                     "role": "assistant",
@@ -3462,10 +3462,10 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
                 },
                 {"role": "user", "content": "continue"},
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=1.0,
+            max_tokens=16,
         ):
             pass
         await client.close()
@@ -3485,8 +3485,8 @@ def test_gemini_tool_choice_none_disables_hosted_builtins(monkeypatch):
     tool use still triggers grounded search (privacy + billing)."""
     captured = _capture_body(
         monkeypatch,
-        enabled_tools = ["web_search", "code_execution"],
-        tool_choice = "none",
+        enabled_tools=["web_search", "code_execution"],
+        tool_choice="none",
     )
     assert captured["body"].get("tools") is None, captured["body"]
 
@@ -3496,8 +3496,8 @@ def test_gemini_tool_choice_none_disables_function_declarations(monkeypatch):
     declarations as well as hosted builtins from the Gemini body."""
     captured = _capture_body(
         monkeypatch,
-        tool_choice = "none",
-        tools = [
+        tool_choice="none",
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "lookup", "parameters": {"type": "object"}},
@@ -3516,7 +3516,7 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(
     `{"type":"null"}` inside anyOf."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -3576,7 +3576,7 @@ def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     class _StubOpener:
-        def open(self, req, timeout = None):
+        def open(self, req, timeout=None):
             raise urllib.error.HTTPError(
                 req.full_url,
                 302,
@@ -3642,11 +3642,11 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self, _n = None):
+        def read(self, _n=None):
             return b"PNG"
 
     class _StubOpener:
-        def open(self, req, timeout = None):
+        def open(self, req, timeout=None):
             return _StubResp()
 
     monkeypatch.setattr(
@@ -3675,20 +3675,20 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
         captured["messages"] = body.get("messages")
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "anthropic",
-            base_url = "https://api.anthropic.com",
-            api_key = "sk-ant-test",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "look up X"},
                 {
                     "role": "assistant",
@@ -3712,10 +3712,10 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
                 },
                 {"role": "user", "content": "summarise"},
             ],
-            model = "claude-sonnet-4-5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="claude-sonnet-4-5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -3777,9 +3777,9 @@ def test_unmarked_user_web_search_function_survives_serialization():
     req = ChatCompletionRequest.model_validate(payload)
     result = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "openai",
-        base_url = None,
+        supports_vision=True,
+        provider_type="openai",
+        base_url=None,
     )
     assert len(result) == 1, result
     tcs = result[0].get("tool_calls") or []
@@ -3826,9 +3826,9 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
     ]:
         result = _build_external_messages(
             req.messages,
-            supports_vision = True,
-            provider_type = provider_type,
-            base_url = base_url,
+            supports_vision=True,
+            provider_type=provider_type,
+            base_url=base_url,
         )
         # Empty assistant turn with only synthetic tool_call dropped.
         assert result == [] or all(not (m.get("tool_calls") or []) for m in result), (
@@ -3839,9 +3839,9 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
     # Native Gemini preserves it (round-trips via extra_content).
     result_native = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "gemini",
-        base_url = "https://generativelanguage.googleapis.com/v1beta",
+        supports_vision=True,
+        provider_type="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
     )
     assert len(result_native) == 1
     assert result_native[0]["tool_calls"][0]["function"]["name"] == "image_generation"
@@ -3857,26 +3857,26 @@ def test_openai_responses_tool_choice_none_drops_hosted_tools(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-            enabled_tools = ["web_search", "code_execution", "image_generation"],
-            tool_choice = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=1.0,
+            max_tokens=16,
+            enabled_tools=["web_search", "code_execution", "image_generation"],
+            tool_choice="none",
         ):
             pass
         await client.close()
@@ -3896,26 +3896,26 @@ def test_anthropic_tool_choice_none_drops_hosted_tools(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "anthropic",
-            base_url = "https://api.anthropic.com",
-            api_key = "sk-ant-test",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "claude-sonnet-4-5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search", "web_fetch", "code_execution"],
-            tool_choice = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-sonnet-4-5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search", "web_fetch", "code_execution"],
+            tool_choice="none",
         ):
             pass
         await client.close()
@@ -3935,26 +3935,26 @@ def test_openrouter_tool_choice_none_drops_web_plugin(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b"data: [DONE]\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openrouter",
-            base_url = "https://openrouter.ai/api/v1",
-            api_key = "sk-or-test",
+            provider_type="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "openai/gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice="none",
         ):
             pass
         await client.close()
@@ -3987,26 +3987,26 @@ def test_kimi_tool_choice_none_skips_web_search_helper(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = b"data: [DONE]\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "kimi",
-            base_url = "https://api.moonshot.ai/v1",
-            api_key = "sk-kimi-test",
+            provider_type="kimi",
+            base_url="https://api.moonshot.ai/v1",
+            api_key="sk-kimi-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "kimi-k2.6",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="kimi-k2.6",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice="none",
         ):
             pass
         await client.close()
@@ -4052,9 +4052,9 @@ def test_user_code_execution_function_not_dropped():
     req = ChatCompletionRequest.model_validate(payload)
     result = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "openai",
-        base_url = None,
+        supports_vision=True,
+        provider_type="openai",
+        base_url=None,
     )
     assert len(result) == 1, result
     tcs = result[0].get("tool_calls") or []
@@ -4105,9 +4105,9 @@ def test_native_part_code_execution_treated_as_server_side():
     req = ChatCompletionRequest.model_validate(payload)
     result = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "openai",
-        base_url = None,
+        supports_vision=True,
+        provider_type="openai",
+        base_url=None,
     )
     assert result == [] or all(not (m.get("tool_calls") or []) for m in result), result
 
@@ -4118,7 +4118,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
     failing/slow URLs runs 100 fetches each up to the 15s timeout."""
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime, max_bytes = None):
+    async def fake_fetch(url, fallback_mime, max_bytes=None):
         fetch_calls.append(url)
         return None
 
@@ -4127,7 +4127,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _gemini_sse(
+            content=_gemini_sse(
                 [
                     {
                         "candidates": [
@@ -4146,7 +4146,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
                     }
                 ]
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -4161,7 +4161,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
             for idx in range(20)
         ]
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -4170,10 +4170,10 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
                     ],
                 }
             ],
-            model = "gemini-2.5-flash",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="gemini-2.5-flash",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -4194,20 +4194,20 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
         captured["input_items"] = body.get("input")
         return httpx.Response(
             200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "search please"},
                 {
                     "role": "assistant",
@@ -4233,10 +4233,10 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
                 },
                 {"role": "user", "content": "continue"},
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=1.0,
+            max_tokens=16,
         ):
             pass
         await client.close()
@@ -4257,7 +4257,7 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
     branch and changes the function contract."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {
@@ -4293,7 +4293,7 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
     runs."""
     fetch_calls: list[str] = []
 
-    async def fake_fetch(url, fallback_mime, max_bytes = None):
+    async def fake_fetch(url, fallback_mime, max_bytes=None):
         fetch_calls.append(url)
         return None
 
@@ -4302,8 +4302,8 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = b"",
-            headers = {"content-type": "text/event-stream"},
+            content=b"",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
@@ -4311,7 +4311,7 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
     async def run():
         client = _make_gemini_client()
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -4323,10 +4323,10 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
                     ],
                 }
             ],
-            model = "../cachedContents/leak",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="../cachedContents/leak",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -4372,9 +4372,9 @@ def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
     ]:
         result = _build_external_messages(
             req.messages,
-            supports_vision = True,
-            provider_type = provider_type,
-            base_url = base_url,
+            supports_vision=True,
+            provider_type=provider_type,
+            base_url=base_url,
         )
         # The empty assistant turn (only a synthetic builtin) must
         # NOT appear in the output at all.
@@ -4420,9 +4420,9 @@ def test_role_tool_dropped_when_matching_synthetic_call_filtered():
     req = ChatCompletionRequest.model_validate(payload)
     result = _build_external_messages(
         req.messages,
-        supports_vision = True,
-        provider_type = "openai",
-        base_url = None,
+        supports_vision=True,
+        provider_type="openai",
+        base_url=None,
     )
     # Only the user "continue" message survives.
     roles = [m.get("role") for m in result]
@@ -4441,26 +4441,26 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = b"data: [DONE]\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openrouter",
-            base_url = "https://openrouter.ai/api/v1",
-            api_key = "sk-or-test",
+            provider_type="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test",
         )
         async for line in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "openai/gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice="none",
         ):
             if not line.startswith("data: "):
                 continue
@@ -4506,20 +4506,20 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(
         captured["messages"] = body.get("messages")
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "anthropic",
-            base_url = "https://api.anthropic.com",
-            api_key = "sk-ant-test",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "look up X"},
                 {
                     "role": "assistant",
@@ -4543,10 +4543,10 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(
                 },
                 {"role": "user", "content": "summarise"},
             ],
-            model = "claude-sonnet-4-5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 64,
+            model="claude-sonnet-4-5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=64,
         ):
             pass
         await client.close()
@@ -4573,7 +4573,7 @@ def test_data_url_non_image_mime_dropped(monkeypatch):
     `inlineData.mimeType="text/html"` which Gemini rejects."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -4597,7 +4597,7 @@ def test_youtube_filedata_uses_video_mime(monkeypatch):
     mimeType, not `image/jpeg` guessed from the URL path."""
     captured = _capture_body(
         monkeypatch,
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -4634,20 +4634,20 @@ def test_openai_responses_assistant_text_serialized_before_function_call(
         captured["input_items"] = body.get("input")
         return httpx.Response(
             200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [
+            messages=[
                 {"role": "user", "content": "weather?"},
                 {
                     "role": "assistant",
@@ -4671,10 +4671,10 @@ def test_openai_responses_assistant_text_serialized_before_function_call(
                 },
                 {"role": "user", "content": "thanks"},
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=1.0,
+            max_tokens=16,
         ):
             pass
         await client.close()
@@ -4706,9 +4706,9 @@ def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
     despite the explicit OpenAI tool opt-out."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
-        tool_choice = "none",
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation"],
+        tool_choice="none",
     )
     body = captured["body"]
     assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
@@ -4723,14 +4723,14 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     the caller pinning a specific user function."""
     captured = _capture_body(
         monkeypatch,
-        enabled_tools = ["web_search", "code_execution"],
-        tools = [
+        enabled_tools=["web_search", "code_execution"],
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "lookup", "parameters": {"type": "object"}},
             }
         ],
-        tool_choice = {
+        tool_choice={
             "type": "function",
             "function": {"name": "lookup"},
         },
@@ -4748,13 +4748,13 @@ def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
     implicit image-generation hosted tool off on image-tier models."""
     captured = _capture_body(
         monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
-        tool_choice = {
+        model="gemini-2.5-flash-image",
+        enabled_tools=["image_generation"],
+        tool_choice={
             "type": "function",
             "function": {"name": "lookup"},
         },
-        tools = [
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "lookup", "parameters": {"type": "object"}},
@@ -4819,7 +4819,7 @@ def test_gemini_code_execution_native_part_list_replays_per_part_signatures(
         },
         {"role": "user", "content": "next"},
     ]
-    captured = _capture_body(monkeypatch, messages = history)
+    captured = _capture_body(monkeypatch, messages=history)
     contents = captured["body"]["contents"]
     # Locate the assistant turn replayed as native code-exec parts.
     assistant_turn = next(c for c in contents if c["role"] == "model")
@@ -4881,7 +4881,7 @@ def test_gemini_code_execution_legacy_merged_signature_only_on_executable(
         },
         {"role": "user", "content": "next"},
     ]
-    captured = _capture_body(monkeypatch, messages = history)
+    captured = _capture_body(monkeypatch, messages=history)
     contents = captured["body"]["contents"]
     assistant_turn = next(c for c in contents if c["role"] == "model")
     exec_parts = [p for p in assistant_turn["parts"] if "executableCode" in p]
@@ -4919,7 +4919,7 @@ def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
         },
         {"role": "user", "content": "next"},
     ]
-    captured = _capture_body(monkeypatch, messages = history)
+    captured = _capture_body(monkeypatch, messages=history)
     contents = captured["body"]["contents"]
     fn_response = None
     for c in contents:
@@ -4973,12 +4973,12 @@ def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self, _n = None):
+        def read(self, _n=None):
             captured["reads"] += 1
             return b"\x00" * (5 * 1024 * 1024)
 
     class _StubOpener:
-        def open(self, req, timeout = None):
+        def open(self, req, timeout=None):
             return _StubResp()
 
     monkeypatch.setattr(
@@ -4989,7 +4989,7 @@ def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
         ep_mod._safe_fetch_image_for_gemini(
             "https://cdn.example.com/big.png",
             "image/png",
-            max_bytes = 1 * 1024 * 1024,
+            max_bytes=1 * 1024 * 1024,
         )
     )
     assert res is None
@@ -5009,7 +5009,7 @@ def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
     types_path = os.path.join(
         here, "frontend", "src", "features", "chat", "types", "api.ts"
     )
-    with open(types_path, "r", encoding = "utf-8") as f:
+    with open(types_path, "r", encoding="utf-8") as f:
         src = f.read()
     assert "tool_calls?: OpenAIToolCallPart[]" in src, src[:200]
     assert "extra_content?: Record<string, unknown>" in src, src[:200]
@@ -5028,26 +5028,26 @@ def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "anthropic",
-            base_url = "https://api.anthropic.com",
-            api_key = "sk-ant-test",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "claude-sonnet-4-5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search", "web_fetch", "code_execution"],
-            tool_choice = {
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-sonnet-4-5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search", "web_fetch", "code_execution"],
+            tool_choice={
                 "type": "function",
                 "function": {"name": "lookup_record"},
             },
@@ -5075,26 +5075,26 @@ def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b"data: [DONE]\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openrouter",
-            base_url = "https://openrouter.ai/api/v1",
-            api_key = "sk-or-test",
+            provider_type="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "openai/gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = {
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice={
                 "type": "function",
                 "function": {"name": "lookup_record"},
             },
@@ -5128,26 +5128,26 @@ def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = b"data: [DONE]\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "kimi",
-            base_url = "https://api.moonshot.ai/v1",
-            api_key = "sk-kimi-test",
+            provider_type="kimi",
+            base_url="https://api.moonshot.ai/v1",
+            api_key="sk-kimi-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "kimi-k2.6",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = {
+            messages=[{"role": "user", "content": "hi"}],
+            model="kimi-k2.6",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice={
                 "type": "function",
                 "function": {"name": "lookup_record"},
             },
@@ -5171,26 +5171,26 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b"event: response.completed\ndata: {}\n\n",
-            headers = {"content-type": "text/event-stream"},
+            content=b"event: response.completed\ndata: {}\n\n",
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-openai-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search", "code_execution", "image_generation"],
-            tools = [
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search", "code_execution", "image_generation"],
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -5199,7 +5199,7 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
                     },
                 },
             ],
-            tool_choice = {
+            tool_choice={
                 "type": "function",
                 "function": {"name": "lookup_record"},
             },
@@ -5320,10 +5320,10 @@ def test_gemini_custom_oai_compat_base_skips_native_allowlist():
     _providers.ExternalProviderClient = _FakeClient
     try:
         req = ProviderModelsRequest(
-            provider_type = "gemini",
-            base_url = "https://litellm.example/v1",
+            provider_type="gemini",
+            base_url="https://litellm.example/v1",
         )
-        result = _asyncio.run(list_provider_models(req, current_subject = "unsloth"))
+        result = _asyncio.run(list_provider_models(req, current_subject="unsloth"))
     finally:
         _providers.ExternalProviderClient = orig
     ids = {m.id for m in result}
@@ -5456,29 +5456,29 @@ def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = (
+            content=(
                 b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
                 b"data: [DONE]\n\n"
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openrouter",
-            base_url = "https://openrouter.ai/api/v1",
-            api_key = "sk-or-test",
+            provider_type="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test",
         )
         async for line in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "openai/gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 16,
-            enabled_tools = ["web_search"],
-            tool_choice = {
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=16,
+            enabled_tools=["web_search"],
+            tool_choice={
                 "type": "function",
                 "function": {"name": "lookup_record"},
             },

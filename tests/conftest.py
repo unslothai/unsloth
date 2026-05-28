@@ -134,7 +134,7 @@ def _install_device_type_stub(name: str) -> None:
 
 
 if not _has_real_accelerator():
-    if not _preload_device_type("unsloth_zoo", prereqs = ("utils",)):
+    if not _preload_device_type("unsloth_zoo", prereqs=("utils",)):
         _install_device_type_stub("unsloth_zoo.device_type")
     if not _preload_device_type("unsloth"):
         _install_device_type_stub("unsloth.device_type")

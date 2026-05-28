@@ -209,7 +209,7 @@ def test_unterminated_marker_at_stream_end_dropped_on_flush():
     """Stream ends mid-marker (e.g. response.incomplete); the tail is
     flushed with private-use bytes stripped, no `E202` text leaks."""
     deltas = ["Some text ", f"{CITE_START}citetu", "rn0view0"]  # no STOP ever
-    out = _simulate_delta_stream(deltas, [], flush = True)
+    out = _simulate_delta_stream(deltas, [], flush=True)
     assert _no_private_use(out)
     assert "E200" not in out and "E202" not in out
     # Surrounding prose stays; we don't assert exact marker remainder.
@@ -373,7 +373,7 @@ def test_unterminated_marker_does_not_leak_cite_residue():
     """Stream ends mid-marker: drop the whole tail rather than strip
     codepoints and leave ``cite<sid>`` behind."""
     half = f"Hi there {CITE_START}cite{CITE_DELIM}turn0view0"
-    out = _simulate_delta_stream([half], [], flush = True)
+    out = _simulate_delta_stream([half], [], flush=True)
     # Prose before the marker stays; no private-use bytes or cite residue.
     assert "Hi there" in out
     assert _no_private_use(out)
@@ -384,14 +384,14 @@ def test_unterminated_marker_does_not_leak_cite_residue():
 def test_unterminated_marker_only_no_prefix_drops_entirely():
     """A delta that is purely an unterminated marker flushes to ""."""
     half = f"{CITE_START}cite{CITE_DELIM}turn0view0"
-    out = _simulate_delta_stream([half], [], flush = True)
+    out = _simulate_delta_stream([half], [], flush=True)
     assert out == ""
 
 
 def test_unterminated_marker_with_prefix_emits_only_prefix():
     """Prose then unterminated marker: prose emits, marker remnant drops."""
     half = f"prefix prose {CITE_START}cite{CITE_DELIM}abc"
-    out = _simulate_delta_stream([half], [], flush = True)
+    out = _simulate_delta_stream([half], [], flush=True)
     assert out == "prefix prose "
 
 
@@ -405,7 +405,7 @@ def test_closing_byte_arrives_after_pending_buffered_split():
     out = _simulate_delta_stream(
         cuts,
         [{"source_id": "sid", "url": "https://example.com/x"}],
-        flush = True,
+        flush=True,
     )
     assert "[[1]](https://example.com/x)" in out
     assert "a " in out and "b" in out

@@ -38,7 +38,7 @@ def get_model_info(
     if _HFAPI is None:
         _HFAPI = HfApi()
     try:
-        model_info: ModelInfo = _HFAPI.model_info(model_id, expand = properties)
+        model_info: ModelInfo = _HFAPI.model_info(model_id, expand=properties)
     except Exception as e:
         print(f"Error getting model info for {model_id}: {e}")
         model_info = None
@@ -70,11 +70,11 @@ def list_models(
         properties = None
 
     models: list[ModelInfo] = _HFAPI.list_models(
-        author = author,
-        search = search,
-        sort = sort,
-        limit = limit,
-        expand = properties,
-        full = full,
+        author=author,
+        search=search,
+        sort=sort,
+        limit=limit,
+        expand=properties,
+        full=full,
     )
     return models

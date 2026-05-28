@@ -133,7 +133,7 @@ class Phase:
 
     def __enter__(self):
         self._t0 = time.perf_counter()
-        print(f"\n=== phase:{self.name} START ===", flush = True)
+        print(f"\n=== phase:{self.name} START ===", flush=True)
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -150,7 +150,7 @@ class Phase:
         print(
             f"=== phase:{self.name} {status} elapsed={elapsed:.2f}s "
             f"peak_gpu={peak_gpu:.2f}GB peak_rss={peak_rss:.2f}GB ===",
-            flush = True,
+            flush=True,
         )
         return False  # don't swallow exceptions
 
@@ -169,17 +169,17 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     if len(ids) < 2:
         raise RuntimeError(f"text too short to compute loss: {len(ids)} tokens")
 
-    inputs = mx.array([ids[:-1]], dtype = mx.int32)
-    targets = mx.array([ids[1:]], dtype = mx.int32)
+    inputs = mx.array([ids[:-1]], dtype=mx.int32)
+    targets = mx.array([ids[1:]], dtype=mx.int32)
 
     def loss_fn(m):
         logits = m(inputs)
-        return nn.losses.cross_entropy(logits, targets, reduction = "mean")
+        return nn.losses.cross_entropy(logits, targets, reduction="mean")
 
     loss_and_grad = nn.value_and_grad(model, loss_fn)
     loss_val, grad = loss_and_grad(model)
 
-    norm_sq = mx.array(0.0, dtype = mx.float32)
+    norm_sq = mx.array(0.0, dtype=mx.float32)
     for _name, value in tree_flatten(grad):
         v = value.astype(mx.float32)
         norm_sq = norm_sq + mx.sum(v * v)
@@ -220,8 +220,8 @@ def _teacher_forced_completion_loss(
             f"{prompt!r}; check tokenizer / chat template."
         )
 
-    inputs = mx.array([full_ids[:-1]], dtype = mx.int32)
-    targets = mx.array([full_ids[1:]], dtype = mx.int32)
+    inputs = mx.array([full_ids[:-1]], dtype=mx.int32)
+    targets = mx.array([full_ids[1:]], dtype=mx.int32)
     logits = model(inputs)
 
     # logits at position i predict targets[i]; completion tokens occupy
@@ -230,15 +230,15 @@ def _teacher_forced_completion_loss(
     completion_logits = logits[:, start:, :]
     completion_targets = targets[:, start:]
     loss = nn.losses.cross_entropy(
-        completion_logits, completion_targets, reduction = "mean"
+        completion_logits, completion_targets, reduction="mean"
     )
     return float(loss.item())
 
 
 def _write_metrics(path: Path, metrics: dict) -> None:
-    path.write_text(json.dumps(metrics, indent = 2, default = str))
-    print(f"\n[metrics] wrote {path}", flush = True)
-    print(json.dumps(metrics, indent = 2, default = str), flush = True)
+    path.write_text(json.dumps(metrics, indent=2, default=str))
+    print(f"\n[metrics] wrote {path}", flush=True)
+    print(json.dumps(metrics, indent=2, default=str), flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ def cmd_train(args) -> int:
         "phases": {},
     }
     workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents = True, exist_ok = True)
+    workdir.mkdir(parents=True, exist_ok=True)
 
     import mlx.core as mx
     from unsloth_zoo.mlx.loader import FastMLXModel
@@ -268,13 +268,13 @@ def cmd_train(args) -> int:
     with Phase("load_base", metrics):
         model, tokenizer = FastMLXModel.from_pretrained(
             MODEL_NAME,
-            load_in_4bit = False,
-            dtype = "float16",
-            text_only = True,
-            max_seq_length = 128,
-            random_state = SEED,
-            token = hf_token,
-            trust_remote_code = False,
+            load_in_4bit=False,
+            dtype="float16",
+            text_only=True,
+            max_seq_length=128,
+            random_state=SEED,
+            token=hf_token,
+            trust_remote_code=False,
         )
     metrics["base_src_path"] = str(getattr(model, "_src_path", "") or "")
 
@@ -290,10 +290,10 @@ def cmd_train(args) -> int:
         # training row at the larger effective batch.
         model = FastMLXModel.get_peft_model(
             model,
-            r = 8,
-            lora_alpha = 16,
-            lora_dropout = 0.0,
-            target_modules = [
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.0,
+            target_modules=[
                 "q_proj",
                 "k_proj",
                 "v_proj",
@@ -302,11 +302,11 @@ def cmd_train(args) -> int:
                 "up_proj",
                 "down_proj",
             ],
-            use_gradient_checkpointing = False,
-            random_state = SEED,
-            finetune_language_layers = True,
-            finetune_attention_modules = True,
-            finetune_mlp_modules = True,
+            use_gradient_checkpointing=False,
+            random_state=SEED,
+            finetune_language_layers=True,
+            finetune_attention_modules=True,
+            finetune_mlp_modules=True,
         )
 
     with Phase("pre_train_grad_probe", metrics):
@@ -318,20 +318,20 @@ def cmd_train(args) -> int:
     losses_per_step: list[float] = []
     with Phase("train", metrics):
         config = MLXTrainingConfig(
-            per_device_train_batch_size = 2,
-            gradient_accumulation_steps = 3,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=3,
             # 47-round mlx-parity-probes sweep (PR #5498 / staging-2#119)
             # found 7 steps is below the convergence horizon at any clip
             # setting -- the trainer hasn't memorized the train row yet
             # when the smoke probes loss/generation. At 30 steps every
             # seed tested hits post_train_loss=0 across all clip
             # configurations, so 30 is the seed-robust gate.
-            max_steps = 30,
-            learning_rate = 1e-3,
-            warmup_steps = 0,
-            lr_scheduler_type = "constant",
-            optim = "adamw",
-            weight_decay = 0.0,
+            max_steps=30,
+            learning_rate=1e-3,
+            warmup_steps=0,
+            lr_scheduler_type="constant",
+            optim="adamw",
+            weight_decay=0.0,
             # max_grad_value (elementwise) is materially cheaper than
             # max_grad_norm on MLX -- norm clip needs a cross-tree
             # reduction + materializing all grad tensors at full
@@ -343,35 +343,35 @@ def cmd_train(args) -> int:
             # Empirical 13-seed pass rate at this fixture: value=1.0
             # 62%, norm=1.0 46%, value=5.0 33%, value=0.5 77% -- the
             # cheaper default is also the higher-pass-rate default.
-            max_grad_norm = 0.0,
-            max_grad_value = 1.0,
-            logging_steps = 1,
-            max_seq_length = 64,
-            seed = SEED,
-            use_cce = False,
-            compile = False,
-            gradient_checkpointing = False,
-            output_dir = str(workdir / "trainer_outputs"),
-            save_steps = 0,
-            eval_steps = 0,
-            dataset_text_field = "text",
+            max_grad_norm=0.0,
+            max_grad_value=1.0,
+            logging_steps=1,
+            max_seq_length=64,
+            seed=SEED,
+            use_cce=False,
+            compile=False,
+            gradient_checkpointing=False,
+            output_dir=str(workdir / "trainer_outputs"),
+            save_steps=0,
+            eval_steps=0,
+            dataset_text_field="text",
         )
         trainer = MLXTrainer(
-            model = model,
-            tokenizer = tokenizer,
-            train_dataset = [{"text": TRAIN_TEXT}] * 64,
-            args = config,
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=[{"text": TRAIN_TEXT}] * 64,
+            args=config,
         )
 
         def _on_step(
-            step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens, grad_norm = None
+            step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens, grad_norm=None
         ):
             losses_per_step.append(round(float(loss), 4))
             grad_text = f"  grad={grad_norm:.4f}" if grad_norm is not None else ""
             print(
                 f"  step {step}/{total}  loss={loss:.4f}  lr={lr:.2e}  "
                 f"tok/s={tok_s:.0f}  peak={peak_gb:.2f}GB{grad_text}",
-                flush = True,
+                flush=True,
             )
 
         trainer.add_step_callback(_on_step)
@@ -430,9 +430,9 @@ def cmd_train(args) -> int:
         in_mem_out = generate(
             model,
             tokenizer,
-            prompt = PROMPT,
-            max_tokens = 48,
-            verbose = False,
+            prompt=PROMPT,
+            max_tokens=48,
+            verbose=False,
         )
     metrics["in_memory_generation"] = in_mem_out
     # Soft greedy-decode visibility (metric only). Empirically this lands in
@@ -447,7 +447,7 @@ def cmd_train(args) -> int:
             f"  [INFO] greedy decode did not contain {EXPECT_IN_OUTPUT!r} "
             f"(post_train_loss={post_loss:.4f}, completion={in_mem_out!r}). "
             "Hard gate is the teacher-forced completion-loss check below.",
-            flush = True,
+            flush=True,
         )
 
     # Hard check: teacher-forced loss on the completion the model was trained
@@ -474,8 +474,8 @@ def cmd_train(args) -> int:
     with Phase("save_lora", metrics):
         model.save_pretrained_merged(
             str(lora_dir),
-            tokenizer = tokenizer,
-            save_method = "lora",
+            tokenizer=tokenizer,
+            save_method="lora",
         )
     metrics["lora_dir"] = str(lora_dir)
     assert (lora_dir / "adapters.safetensors").exists()
@@ -486,8 +486,8 @@ def cmd_train(args) -> int:
     with Phase("save_merged_16bit", metrics):
         model.save_pretrained_merged(
             str(merged_dir),
-            tokenizer = tokenizer,
-            save_method = "merged_16bit",
+            tokenizer=tokenizer,
+            save_method="merged_16bit",
         )
     metrics["merged_dir"] = str(merged_dir)
     assert any(merged_dir.glob("*.safetensors"))
@@ -509,8 +509,8 @@ def cmd_train(args) -> int:
         try:
             model.save_pretrained_gguf(
                 str(gguf_dir),
-                tokenizer = tokenizer,
-                quantization_method = "not_quantized",
+                tokenizer=tokenizer,
+                quantization_method="not_quantized",
             )
             gguf_files = sorted(gguf_dir.glob("*.gguf"))
             if not gguf_files:
@@ -528,7 +528,7 @@ def cmd_train(args) -> int:
                 )
             else:
                 metrics["gguf_skip_reason"] = err_text
-            print(f"  GGUF SKIPPED: {metrics['gguf_skip_reason']}", flush = True)
+            print(f"  GGUF SKIPPED: {metrics['gguf_skip_reason']}", flush=True)
 
     metrics["final_peak_gpu_gb"] = round(_peak_gpu_gb(), 3)
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
@@ -568,19 +568,19 @@ def cmd_reload(args) -> int:
         mx.random.seed(SEED)
         m, t = FastMLXModel.from_pretrained(
             str(save_dir),
-            load_in_4bit = False,
-            dtype = "float16",
-            text_only = True,
-            max_seq_length = 128,
-            random_state = SEED,
-            token = hf_token,
+            load_in_4bit=False,
+            dtype="float16",
+            text_only=True,
+            max_seq_length=128,
+            random_state=SEED,
+            token=hf_token,
         )
         m.eval()
 
     with Phase(f"generate_{args.format}", metrics):
-        out = generate(m, t, prompt = PROMPT, max_tokens = 48, verbose = False)
+        out = generate(m, t, prompt=PROMPT, max_tokens=48, verbose=False)
     metrics["generation"] = out
-    print(f"  [reload:{args.format}] output: {out!r}", flush = True)
+    print(f"  [reload:{args.format}] output: {out!r}", flush=True)
 
     # Verify save/reload preserved the trained weights via teacher-
     # forced loss on the training row: the reloaded model should have
@@ -660,16 +660,16 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 "-no-cnv",
                 "--no-warmup",
             ],
-            capture_output = True,
-            text = True,
-            timeout = 300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
 
     metrics["llama_cli_returncode"] = proc.returncode
     metrics["generation"] = (proc.stdout or "")[:1500]
     metrics["stderr_head"] = (proc.stderr or "")[:600]
 
-    print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush = True)
+    print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush=True)
     if proc.returncode != 0:
         raise SystemExit(
             f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}"
@@ -699,18 +699,18 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest = "cmd", required = True)
+    sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_train = sub.add_parser("train")
-    p_train.add_argument("--workdir", required = True)
+    p_train.add_argument("--workdir", required=True)
 
     p_reload = sub.add_parser("reload")
     p_reload.add_argument(
         "--format",
-        required = True,
-        choices = ["lora", "merged", "gguf"],
+        required=True,
+        choices=["lora", "merged", "gguf"],
     )
-    p_reload.add_argument("--dir", required = True)
+    p_reload.add_argument("--dir", required=True)
 
     args = parser.parse_args()
     if args.cmd == "train":
