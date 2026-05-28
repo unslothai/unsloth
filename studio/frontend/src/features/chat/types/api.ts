@@ -219,9 +219,34 @@ export type OpenAIMessageContentPart =
 
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
+/**
+ * OpenAI Chat Completions tool_call shape. Assistant turns echo back
+ * function/tool calls as `tool_calls`; the matching tool result rides
+ * on a separate `role="tool"` message keyed by `tool_call_id`.
+ * `extra_content.google.thought_signature` is the Gemini-specific
+ * round-trip field the backend translator both emits (on `delta.
+ * tool_calls`) and consumes (when rebuilding the native functionCall
+ * part on the next turn).
+ */
+export interface OpenAIToolCallPart {
+  id?: string;
+  type?: "function";
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+  extra_content?: unknown;
+}
+
 export interface OpenAIChatMessage {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  /** Assistant tool-call deltas, when the turn invoked a function tool. */
+  tool_calls?: OpenAIToolCallPart[];
+  /** `role="tool"` only: id matching `assistant.tool_calls[].id`. */
+  tool_call_id?: string;
+  /** `role="tool"` only: name of the function that produced the result. */
+  name?: string;
 }
 
 export interface OpenAIChatCompletionsRequest {
@@ -262,7 +287,14 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
-  enable_prompt_caching?: boolean | null;
+  /**
+   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For
+   * Gemini the backend also accepts the cached-content resource name
+   * (`cachedContents/...`) as a string, which is forwarded as
+   * `generationConfig.cachedContent` on the native streamGenerateContent
+   * request.
+   */
+  enable_prompt_caching?: boolean | string | null;
   /**
    * OpenAI shell-tool container id captured from the prior response in
    * this chat thread. When set and the Code pill is on, the backend
@@ -292,7 +324,20 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string;
+  content?: string | null;
+  /**
+   * Streamed assistant tool calls. The Gemini and OpenAI Responses
+   * translators emit incremental `tool_calls` deltas (function name +
+   * arguments fragments) so the chat-adapter can render tool cards as
+   * they arrive.
+   */
+  tool_calls?: OpenAIToolCallPart[];
+  /**
+   * Provider-specific passthrough. Gemini ships `thoughtSignature`,
+   * citations, `native_part`, etc., here so the round-trip can replay
+   * them on follow-up turns without bleeding into other providers.
+   */
+  extra_content?: Record<string, unknown>;
 }
 
 export interface OpenAIChatChunkChoice {
