@@ -2,107 +2,124 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
-import { useRagStore } from "../stores/rag-store";
-import { IngestionProgress } from "./ingestion-progress";
+import { useEffect, useRef } from "react";
+import { useIndexProgressStore } from "../stores/index-progress-store";
 
-/** Floating per-job progress stack; mounted at the app root. */
+/** Single aggregate indexing toast (top-right). One entry per upload batch:
+ *  "Indexing documents · 2/5 · 40%" while in flight, "RAG index ready" when
+ *  the last document finishes. Replaces the old one-toast-per-file stack. */
 
 const DISMISS_DELAY_MS = 4000;
 
 export function IngestionToastStack() {
-  const jobs = useRagStore((s) => s.jobs);
+  const entries = useIndexProgressStore((s) => s.entries);
+  const clear = useIndexProgressStore((s) => s.clear);
   const reduced = useReducedMotion();
-  const [dismissedJobs, setDismissedJobs] = useState<Set<string>>(
-    () => new Set(),
-  );
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Ref-tracked dismissed set so it stays out of the effect deps
-  // (avoids update-depth loops when the scheduler races cleanup).
-  const scheduledJobsRef = useRef<Set<string>>(new Set());
-  const dismissedJobsRef = useRef<Set<string>>(dismissedJobs);
-  dismissedJobsRef.current = dismissedJobs;
+  const items = Object.values(entries);
+  const total = items.length;
+  const done = items.filter(
+    (e) => e.status === "ready" || e.status === "error",
+  ).length;
+  const errored = items.filter((e) => e.status === "error").length;
+  const allDone = total > 0 && done === total;
+  // Overall progress: completed/errored files count as 1, in-flight files
+  // contribute their fractional progress. Smooth even for a handful of files.
+  const overall =
+    total === 0
+      ? 0
+      : items.reduce(
+          (sum, e) =>
+            sum + (e.status === "ready" || e.status === "error" ? 1 : e.progress),
+          0,
+        ) / total;
+  const pct = Math.round(overall * 100);
+
+  // Auto-dismiss once the whole batch is terminal; cancel if a new upload
+  // re-opens the batch (entries change back to not-all-done).
   useEffect(() => {
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    for (const [jobId, event] of Object.entries(jobs)) {
-      if (
-        (event.type === "complete" || event.type === "error")
-        && !dismissedJobsRef.current.has(jobId)
-        && !scheduledJobsRef.current.has(jobId)
-      ) {
-        scheduledJobsRef.current.add(jobId);
-        timers.push(
-          setTimeout(() => {
-            setDismissedJobs((prev) => {
-              if (prev.has(jobId)) return prev;
-              const next = new Set(prev);
-              next.add(jobId);
-              return next;
-            });
-          }, DISMISS_DELAY_MS),
-        );
+    if (allDone) {
+      if (dismissTimerRef.current === null) {
+        dismissTimerRef.current = setTimeout(() => {
+          dismissTimerRef.current = null;
+          clear();
+        }, DISMISS_DELAY_MS);
       }
+    } else if (dismissTimerRef.current !== null) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
     }
-    return () => timers.forEach(clearTimeout);
-  }, [jobs]);
+    return () => {
+      if (dismissTimerRef.current !== null) {
+        clearTimeout(dismissTimerRef.current);
+        dismissTimerRef.current = null;
+      }
+    };
+  }, [allDone, clear]);
 
-  const visible = Object.entries(jobs).filter(
-    ([jobId]) => !dismissedJobs.has(jobId),
-  );
-  if (visible.length === 0) return null;
+  if (total === 0) return null;
+
+  const title = allDone
+    ? "RAG index ready"
+    : total > 1
+      ? "Indexing documents"
+      : "Indexing document";
+
+  let subtitle: string;
+  if (allDone) {
+    const indexed = total - errored;
+    subtitle =
+      `${indexed} document${indexed === 1 ? "" : "s"} indexed` +
+      (errored > 0 ? ` · ${errored} failed` : "");
+  } else {
+    subtitle = `${done}/${total} · ${pct}%`;
+  }
 
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-[9999] flex w-72 flex-col gap-2">
       <AnimatePresence initial={false}>
-        {visible.map(([jobId, event]) => {
-          const isTerminal =
-            event.type === "complete" || event.type === "error";
-          const isError = event.type === "error";
-          return (
-            <motion.div
-              key={jobId}
-              layout
-              initial={reduced ? false : { opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={
-                reduced ? { opacity: 0 } : { opacity: 0, y: 12 }
-              }
-              transition={{ duration: reduced ? 0 : 0.15 }}
-              className="pointer-events-auto rounded-md border border-border bg-popover px-3 py-2 shadow-md"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <span className="truncate text-xs font-medium">
-                    {isError
-                      ? "Ingestion failed"
-                      : event.type === "complete"
-                        ? "RAG index ready"
-                        : "Indexing document"}
-                  </span>
-                  <IngestionProgress jobId={jobId} />
+        <motion.div
+          key="rag-index-aggregate"
+          layout
+          initial={reduced ? false : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduced ? { opacity: 0 } : { opacity: 0, y: 12 }}
+          transition={{ duration: reduced ? 0 : 0.15 }}
+          className="pointer-events-auto rounded-md border border-border bg-popover px-3 py-2 shadow-md"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <span className="truncate text-xs font-medium">{title}</span>
+              {allDone ? (
+                <span className="text-xs text-muted-foreground">{subtitle}</span>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span className="truncate">
+                      {errored > 0 ? "Indexing (some failed)" : "Indexing"}
+                    </span>
+                    <span className="shrink-0 tabular-nums">{subtitle}</span>
+                  </div>
+                  <Progress value={pct} className="h-1" />
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Dismiss"
-                  className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-                  onClick={() => {
-                    setDismissedJobs((prev) => {
-                      const next = new Set(prev);
-                      next.add(jobId);
-                      return next;
-                    });
-                  }}
-                >
-                  <HugeiconsIcon icon={Cancel01Icon} size={12} />
-                </Button>
-              </div>
-            </motion.div>
-          );
-        })}
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Dismiss"
+              className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => clear()}
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={12} />
+            </Button>
+          </div>
+        </motion.div>
       </AnimatePresence>
     </div>
   );

@@ -6,6 +6,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
+import { useIndexProgressStore } from "@/features/rag/stores/index-progress-store";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { acquireIndexSlot, releaseIndexSlot } from "../utils/rag-index-queue";
@@ -89,12 +90,17 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
         ...prev,
         { id: localChipId, file, status: "uploading" },
       ]);
+      // Register in the aggregate-progress store now (synchronously, for the
+      // whole batch) so the single toast counts queued files too.
+      const indexProgress = useIndexProgressStore.getState();
+      indexProgress.add(localChipId, file.name);
 
       void (async () => {
         // Hold an indexing slot for this document's whole lifecycle so bulk /
         // folder uploads drain at the configured concurrency instead of
         // spawning every ingestion at once. Released on every terminal path.
         await acquireIndexSlot();
+        indexProgress.setIndexing(localChipId);
         let slotReleased = false;
         const releaseSlot = () => {
           if (!slotReleased) {
@@ -127,6 +133,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
               ),
             );
             toast.error("Could not create thread for upload");
+            indexProgress.setError(localChipId);
             releaseSlot();
             return;
           }
@@ -165,6 +172,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             ) {
               useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
             }
+            indexProgress.setReady(localChipId);
             releaseSlot();
             return;
           }
@@ -177,7 +185,9 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           );
           subscribeToJobEvents(jobId, {
             onEvent: (event) => {
-              if (event.type === "complete") {
+              if (event.type === "progress") {
+                indexProgress.setProgress(localChipId, event.progress);
+              } else if (event.type === "complete") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
                     d.id === localChipId ? { ...d, status: "ready" } : d,
@@ -194,6 +204,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                     .getState()
                     .setRagSource({ kind: "thread" });
                 }
+                indexProgress.setReady(localChipId);
                 releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
@@ -203,6 +214,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                       : d,
                   ),
                 );
+                indexProgress.setError(localChipId);
                 releaseSlot();
               }
             },
@@ -217,6 +229,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             ),
           );
           toast.error(`Document upload failed: ${message}`);
+          indexProgress.setError(localChipId);
           releaseSlot();
         }
       })();

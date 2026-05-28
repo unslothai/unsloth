@@ -38,6 +38,7 @@ import {
 import { Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
+import { useIndexProgressStore } from "@/features/rag/stores/index-progress-store";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { acquireIndexSlot, releaseIndexSlot } from "./utils/rag-index-queue";
 import { toast } from "@/lib/toast";
@@ -590,11 +591,16 @@ export function SharedComposer({
         ...prev,
         { id: localChipId, file, status: "uploading" },
       ]);
+      // Register in the aggregate-progress store now (whole batch) so the
+      // single toast counts queued files too.
+      const indexProgress = useIndexProgressStore.getState();
+      indexProgress.add(localChipId, file.name);
       void (async () => {
         // Hold an indexing slot for the document's whole lifecycle so bulk /
         // folder uploads drain at the configured concurrency. Released on
         // every terminal path below.
         await acquireIndexSlot();
+        indexProgress.setIndexing(localChipId);
         let slotReleased = false;
         const releaseSlot = () => {
           if (!slotReleased) {
@@ -624,6 +630,7 @@ export function SharedComposer({
               ),
             );
             toast.error("Could not create thread for upload");
+            indexProgress.setError(localChipId);
             releaseSlot();
             return;
           }
@@ -658,6 +665,7 @@ export function SharedComposer({
             ) {
               useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
             }
+            indexProgress.setReady(localChipId);
             releaseSlot();
             return;
           }
@@ -670,7 +678,9 @@ export function SharedComposer({
           );
           subscribeToJobEvents(jobId, {
             onEvent: (event) => {
-              if (event.type === "complete") {
+              if (event.type === "progress") {
+                indexProgress.setProgress(localChipId, event.progress);
+              } else if (event.type === "complete") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
                     d.id === localChipId ? { ...d, status: "ready" } : d,
@@ -684,6 +694,7 @@ export function SharedComposer({
                     .getState()
                     .setRagSource({ kind: "thread" });
                 }
+                indexProgress.setReady(localChipId);
                 releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
@@ -693,6 +704,7 @@ export function SharedComposer({
                       : d,
                   ),
                 );
+                indexProgress.setError(localChipId);
                 releaseSlot();
               }
             },
@@ -708,6 +720,7 @@ export function SharedComposer({
             ),
           );
           toast.error(`Document upload failed: ${message}`);
+          indexProgress.setError(localChipId);
           releaseSlot();
         }
       })();
