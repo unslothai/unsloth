@@ -36,6 +36,7 @@ export const CHAT_RAG_TOOL_ENABLED_KEY = "unsloth_chat_rag_tool_enabled";
 // localStorage persistence here the user's external pick is silently
 // reset to the default on every page refresh.
 const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
+const CHAT_ACTIVE_THREAD_KEY = "unsloth_chat_active_thread_id";
 
 function loadLastExternalCheckpoint(): string | null {
   if (typeof window === "undefined") return null;
@@ -610,7 +611,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
-  activeThreadId: null,
+  // Persisted so a draft thread's RAG docs reattach after a page reload.
+  // On reload ActiveThreadSync asks assistant-ui to switch to this id
+  // (the thread was persisted to the backend when its first doc/message
+  // initialized it), keeping aui's mainThreadId and this value unified.
+  activeThreadId: loadString(CHAT_ACTIVE_THREAD_KEY, "") || null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -755,8 +760,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         activeGgufVariant: ggufVariant ?? null,
       };
     }),
-  setActiveThreadId: (activeThreadId) =>
-    set({ activeThreadId, contextUsage: null }),
+  setActiveThreadId: (activeThreadId) => {
+    saveString(CHAT_ACTIVE_THREAD_KEY, activeThreadId ?? "");
+    set({ activeThreadId, contextUsage: null });
+  },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence behavior: dropping the

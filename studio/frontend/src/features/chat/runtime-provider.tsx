@@ -1008,17 +1008,51 @@ function ThreadNewChatSwitch({
 function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
+  const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const setActiveThreadId = useChatRuntimeStore(
     (state) => state.setActiveThreadId,
   );
+  // One-shot guard: we only attempt to re-adopt a persisted draft on the
+  // first settled render after a page load, never again for the lifetime
+  // of this provider (so user-driven new-chat / switches aren't fought).
+  const restoreAttemptedRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || isLoading || !mainThreadId) {
       return;
     }
-    setActiveThreadId(mainThreadId ?? null);
-  }, [enabled, mainThreadId, setActiveThreadId]);
+    const persisted = useChatRuntimeStore.getState().activeThreadId;
+    // On a fresh page load aui mints a new `__LOCALID_*` draft. If we have
+    // a different persisted draft id, ask aui to switch to it so any RAG
+    // docs uploaded under that id reattach. The thread was persisted to
+    // the backend when its first doc/message ran initialize(), so the
+    // adapter's fetch() can resolve it. If it can't (a draft that never
+    // got a doc/message), switchToThread rejects and we fall back to the
+    // fresh draft.
+    if (
+      !restoreAttemptedRef.current
+      && persisted
+      && persisted !== mainThreadId
+      && persisted.startsWith("__LOCALID_")
+      && mainThreadId.startsWith("__LOCALID_")
+    ) {
+      restoreAttemptedRef.current = true;
+      const result = aui.threads().switchToThread(persisted) as unknown;
+      if (
+        result
+        && typeof (result as Promise<void>).catch === "function"
+      ) {
+        void (result as Promise<void>).catch(() => {
+          setActiveThreadId(mainThreadId);
+        });
+      }
+      return;
+    }
+    restoreAttemptedRef.current = true;
+    setActiveThreadId(mainThreadId);
+  }, [aui, enabled, isLoading, mainThreadId, setActiveThreadId]);
 
   return null;
 }
