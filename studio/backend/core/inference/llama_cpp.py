@@ -81,10 +81,9 @@ _MAX_REPROMPTS = 3
 
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
-# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
-# but the llama.cpp README notes it ONLY fires after a newline has been
-# generated -- a model stuck in a long unbroken non-newline sequence is
-# unbounded by it. So we still want a token cap as the front-line limiter.
+# fails. Keep max_tokens as the front-line limiter; do not add a fixed
+# wall-clock cutoff for Studio chat because very slow CPU/GPU-offload
+# generations can legitimately keep producing useful tokens past 10 min.
 #
 # The cap is the model's effective context length when we know it,
 # falling back to a generous floor when metadata is unavailable. 4096 was
@@ -92,7 +91,7 @@ _MAX_REPROMPTS = 3
 # OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
 # curl) sees responses silently truncated mid-sentence.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
-_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
+_DEFAULT_FIRST_TOKEN_TIMEOUT_S = 600.0  # 10 min
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -4171,7 +4170,7 @@ class LlamaCppBackend:
     ):
         """Open an httpx streaming POST with cancel support.
 
-        Sends the request once with a long read timeout (120 s) so
+        Sends the request once with a long read timeout so
         prompt processing (prefill) can finish without triggering a
         retry storm.  The previous 0.5 s timeout caused duplicate POST
         requests every half second, forcing llama-server to restart
@@ -4229,7 +4228,7 @@ class LlamaCppBackend:
             # which closes the response, unblocking any httpx read.
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = 120.0,
+                read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
                 write = 10,
                 pool = 10,
             )
@@ -4300,14 +4299,12 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
         # Default cap to the model's effective context length when known,
-        # otherwise the conservative floor. The wall-clock backstop below
-        # keeps a stuck model from running indefinitely either way.
+        # otherwise the conservative floor.
         payload["max_tokens"] = (
             max_tokens
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -4320,7 +4317,7 @@ class LlamaCppBackend:
         _metadata_timings = None
 
         try:
-            # _stream_with_retry uses a 120 s read timeout so prefill
+            # _stream_with_retry uses the first-token timeout so prefill
             # can finish.  Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
@@ -4533,7 +4530,6 @@ class LlamaCppBackend:
                 if max_tokens is not None
                 else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
-            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -5219,7 +5215,6 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}

@@ -85,6 +85,17 @@ _install_httpcore_asyncgen_silencer()
 
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
+    if isinstance(exc, httpx.ReadTimeout):
+        timeout_label = (
+            f"{int(_DEFAULT_FIRST_TOKEN_TIMEOUT_S // 60)} minutes"
+            if _DEFAULT_FIRST_TOKEN_TIMEOUT_S >= 60
+            else f"{int(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)} seconds"
+        )
+        return (
+            "The model is still processing the prompt but did not produce a "
+            f"first token within {timeout_label}. Try reducing context length, "
+            "using more GPU offload, or loading a smaller model."
+        )
     # httpx transport-layer failures reaching the managed llama-server —
     # raised by the async pass-through helpers that talk to llama-server
     # directly. Treat any RequestError subclass (ConnectError, ReadError,
@@ -119,8 +130,8 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -146,8 +157,8 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
-        _DEFAULT_T_MAX_PREDICT_MS,
         _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -3800,7 +3811,7 @@ async def openai_completions(
             # cancel-scope trace: an anonymous async for leaves the
             # iterator unclosed, so Python's asyncgen GC finalizer runs
             # cleanup on a later pass in a different asyncio task.
-            client = httpx.AsyncClient(timeout = 600)
+            client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             resp = None
             bytes_iter = None
             try:
@@ -3830,7 +3841,9 @@ async def openai_completions(
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+            resp = await client.post(
+                target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            )
         return Response(
             content = resp.content,
             status_code = resp.status_code,
@@ -3867,7 +3880,9 @@ async def openai_embeddings(
     target_url = f"{llama_backend.base_url}/v1/embeddings"
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(
+            target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        )
     return Response(
         content = resp.content,
         status_code = resp.status_code,
@@ -4354,7 +4369,7 @@ async def _responses_stream(
         # no `async with`, explicit aclose of lines_iter BEFORE resp /
         # client so the innermost httpcore byte stream is finalised in
         # this task (not via Python's asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = 600)
+        client = httpx.AsyncClient(timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
         resp = None
         lines_iter = None
         try:
@@ -5262,7 +5277,6 @@ def _build_passthrough_payload(
         if max_tokens is not None
         else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
-    body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
     if stop:
         body["stop"] = stop
     if min_p is not None:
@@ -5363,7 +5377,7 @@ async def _anthropic_passthrough_stream(
         # `try: ... except Exception: pass` so anyio cleanup noise from
         # nested aclose paths can't bubble out.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -5475,7 +5489,9 @@ async def _anthropic_passthrough_non_streaming(
     )
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = 600)
+        resp = await client.post(
+            target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -5839,7 +5855,7 @@ async def _openai_passthrough_stream(
         # and non-200 upstream statuses surface as real HTTP errors --
         # OpenAI SDKs rely on status codes to raise APIError/BadRequestError.
         client = httpx.AsyncClient(
-            timeout = 600,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             limits = httpx.Limits(max_keepalive_connections = 0),
         )
         resp = None
@@ -5986,7 +6002,9 @@ async def _openai_passthrough_non_streaming(
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+            resp = await client.post(
+                target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            )
     except httpx.RequestError as e:
         # llama-server subprocess crashed / still starting / unreachable.
         # Surface the same friendly message the sync chat path emits so

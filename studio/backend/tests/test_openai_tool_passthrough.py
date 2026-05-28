@@ -12,8 +12,8 @@ Covers:
 - anthropic_tool_choice_to_openai() covers all four Anthropic shapes.
 - _build_passthrough_payload() honors a caller-supplied tool_choice and
   defaults to "auto" when unset.
-- _friendly_error() maps httpx transport errors to a "Lost connection"
-  message so passthrough failures are legible instead of bare 500s.
+- _friendly_error() maps httpx transport errors to legible messages
+  instead of bare 500s.
 
 No running server or GPU required.
 """
@@ -476,6 +476,10 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**args)
         assert body.get("stream_options") == {"include_usage": True}
 
+    def test_generation_wall_clock_cap_not_forwarded(self):
+        body = _build_passthrough_payload(**self._args())
+        assert "t_max_predict_ms" not in body
+
     def test_repetition_penalty_renamed(self):
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
@@ -488,14 +492,7 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 class TestFriendlyErrorHttpx:
-    """The async pass-through helpers talk to llama-server via httpx.
-    When the subprocess is down, httpx raises RequestError subclasses
-    whose string form (``"All connection attempts failed"``, ``"[Errno 111]
-    Connection refused"``, ...) does NOT contain the substring
-    ``"Lost connection to llama-server"`` the sync path uses, so the
-    previous substring-only `_friendly_error` returned a useless generic
-    message. These tests pin the new isinstance-based mapping.
-    """
+    """The async pass-through helpers talk to llama-server via httpx."""
 
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
@@ -514,7 +511,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "Lost connection" in _friendly_error(exc)
+        assert "first token within 10 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the existing substring
