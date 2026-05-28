@@ -262,6 +262,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_thread_id ON rag_documents(thread_id)"
     )
+    # content_hash: sha256 of the uploaded bytes, used to skip re-indexing a
+    # file that already exists in the same scope (kb_id / thread_id).
+    rag_documents_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(rag_documents)").fetchall()
+    }
+    if "content_hash" not in rag_documents_columns:
+        conn.execute("ALTER TABLE rag_documents ADD COLUMN content_hash TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_documents_kb_hash "
+        "ON rag_documents(kb_id, content_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rag_documents_thread_hash "
+        "ON rag_documents(thread_id, content_hash)"
+    )
     # kind: text|image|caption. linked_chunk_id pairs image↔caption (both null for text).
     conn.execute(
         """

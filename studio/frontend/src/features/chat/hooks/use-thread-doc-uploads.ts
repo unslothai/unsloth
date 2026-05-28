@@ -123,7 +123,28 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
         setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey }));
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId } = await uploadDocument(scope, file);
+          const { documentId, jobId, alreadyIndexed } = await uploadDocument(
+            scope,
+            file,
+          );
+          if (alreadyIndexed) {
+            // Identical file already in this scope — no re-index.
+            setPendingDocs((prev) =>
+              prev.map((d) =>
+                d.id === localChipId
+                  ? { ...d, status: "ready", documentId }
+                  : d,
+              ),
+            );
+            toast.info(`${file.name} is already indexed`);
+            if (
+              scope?.kind === "thread" &&
+              useChatRuntimeStore.getState().ragSource.kind === "off"
+            ) {
+              useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
+            }
+            return;
+          }
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId

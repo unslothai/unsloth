@@ -56,7 +56,11 @@ interface RagStoreState {
   uploadDocument: (
     scope: { kind: "kb"; kbId: string } | { kind: "thread"; threadId: string },
     file: File,
-  ) => Promise<{ documentId: string; jobId: string }>;
+  ) => Promise<{
+    documentId: string;
+    jobId: string;
+    alreadyIndexed: boolean;
+  }>;
   deleteDocument: (documentId: string, scopeKey: string) => Promise<void>;
 
   loadThreadIndexes: () => Promise<void>;
@@ -199,16 +203,25 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
     } else {
       void get().loadThreadDocuments(scope.threadId);
     }
-    get().subscribeJob(result.job_id, () => {
-      if (scope.kind === "kb") {
-        void get().loadKBDocuments(scope.kbId);
-      } else {
-        void get().loadThreadDocuments(scope.threadId);
-      }
-    });
-    return { documentId: result.document_id, jobId: result.job_id, scopeKey } as {
+    // Identical file already indexed in this scope: no job to track.
+    if (!result.already_indexed && result.job_id) {
+      get().subscribeJob(result.job_id, () => {
+        if (scope.kind === "kb") {
+          void get().loadKBDocuments(scope.kbId);
+        } else {
+          void get().loadThreadDocuments(scope.threadId);
+        }
+      });
+    }
+    return {
+      documentId: result.document_id,
+      jobId: result.job_id,
+      alreadyIndexed: result.already_indexed ?? false,
+      scopeKey,
+    } as {
       documentId: string;
       jobId: string;
+      alreadyIndexed: boolean;
     };
   },
 

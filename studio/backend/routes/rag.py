@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import queue as queue_module
@@ -121,6 +122,9 @@ class UploadResponse(BaseModel):
     document_id: str
     job_id: str
     filename: str
+    # True when an identical file (same content hash) was already indexed
+    # in this scope, so no new ingestion job was started. job_id is "".
+    already_indexed: bool = False
 
 
 class SearchRequest(BaseModel):
@@ -248,7 +252,7 @@ def _document_or_404(document_id: str) -> Any:
     return row
 
 
-async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
+async def _save_upload(file: UploadFile) -> tuple[Path, str, int, str]:
     import anyio
 
     filename = _sanitize_filename(file.filename or "document")
@@ -264,6 +268,9 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
     stored_path = upload_dir / stored_name
     max_bytes = RAG_MAX_UPLOAD_MB * 1024 * 1024
     written = 0
+    # Hash the bytes as they stream so we can dedup identical re-uploads
+    # within a scope without re-reading the file.
+    hasher = hashlib.sha256()
     # Route writes through anyio worker thread so the event loop stays free.
     # Outer try/except cleans up partial files after async-with closes the fd
     # (Windows refuses unlink on an open fd).
@@ -279,6 +286,7 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
                         status_code = 413,
                         detail = f"File exceeds {RAG_MAX_UPLOAD_MB} MB limit",
                     )
+                hasher.update(chunk)
                 await f.write(chunk)
     except HTTPException:
         stored_path.unlink(missing_ok = True)
@@ -286,7 +294,7 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int]:
     if written == 0:
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
-    return stored_path, filename, written
+    return stored_path, filename, written, hasher.hexdigest()
 
 
 def _start_ingestion(
@@ -300,15 +308,46 @@ def _start_ingestion(
     embedding_model: str,
     chunking_strategy: str = "standard",
     mode: str = "text",
+    content_hash: str | None = None,
 ) -> UploadResponse:
     document_id = str(uuid4())
     with get_connection() as conn:
+        # Dedup: if an identical file (same content hash) is already
+        # indexed in this scope, skip re-ingestion. Only a 'completed'
+        # row counts — a failed/in-flight prior attempt should be allowed
+        # to retry. Scope is the same kb_id or thread_id the upload
+        # targets (a file shared across two KBs is indexed in each).
+        if content_hash:
+            if kb_id is not None:
+                existing = conn.execute(
+                    "SELECT id, filename FROM rag_documents "
+                    "WHERE kb_id = ? AND content_hash = ? AND status = 'completed' "
+                    "LIMIT 1",
+                    (kb_id, content_hash),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id, filename FROM rag_documents "
+                    "WHERE thread_id = ? AND content_hash = ? AND status = 'completed' "
+                    "LIMIT 1",
+                    (thread_id, content_hash),
+                ).fetchone()
+            if existing is not None:
+                # Drop the redundant upload we just wrote to disk; the
+                # already-indexed copy stays the source of truth.
+                _unlink_if_under_uploads(stored_path)
+                return UploadResponse(
+                    document_id = existing["id"],
+                    job_id = "",
+                    filename = existing["filename"],
+                    already_indexed = True,
+                )
         conn.execute(
             """
             INSERT INTO rag_documents
             (id, kb_id, thread_id, filename, content_type, stored_path,
-             status, num_chunks, byte_size, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+             status, num_chunks, byte_size, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
             """,
             (
                 document_id,
@@ -318,6 +357,7 @@ def _start_ingestion(
                 content_type,
                 str(stored_path),
                 byte_size,
+                content_hash,
                 _now_ms(),
             ),
         )
@@ -806,7 +846,7 @@ async def upload_kb_document(
     current_subject: str = Depends(get_current_subject),
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
-    stored_path, filename, byte_size = await _save_upload(file)
+    stored_path, filename, byte_size, content_hash = await _save_upload(file)
     # Tolerate pre-Phase-3 rows missing chunking_strategy/mode.
     kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
     chunking_strategy = (
@@ -823,6 +863,7 @@ async def upload_kb_document(
         embedding_model = kb_row["embedding_model"],
         chunking_strategy = chunking_strategy,
         mode = mode,
+        content_hash = content_hash,
     )
 
 
@@ -835,7 +876,7 @@ async def upload_thread_document(
     from utils.rag.config import resolve_embedder
 
     # No chat_threads check — fresh threads aren't persisted until first run.
-    stored_path, filename, byte_size = await _save_upload(file)
+    stored_path, filename, byte_size, content_hash = await _save_upload(file)
     settings = _load_thread_settings(thread_id)
     embedder = settings.embedding_model or resolve_embedder(
         settings.mode,
@@ -851,6 +892,7 @@ async def upload_thread_document(
         embedding_model = embedder,
         chunking_strategy = settings.chunking_strategy,
         mode = settings.mode,
+        content_hash = content_hash,
     )
 
 

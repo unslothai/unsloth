@@ -36,6 +36,9 @@ export interface UploadResponse {
   document_id: string;
   job_id: string;
   filename: string;
+  /** True when an identical file was already indexed in this scope; no
+   *  new ingestion job was started and job_id is "". */
+  already_indexed?: boolean;
 }
 
 export interface SearchHit {

@@ -612,7 +612,27 @@ export function SharedComposer({
         }
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId } = await uploadDocument(scope, file);
+          const { documentId, jobId, alreadyIndexed } = await uploadDocument(
+            scope,
+            file,
+          );
+          if (alreadyIndexed) {
+            setPendingDocs((prev) =>
+              prev.map((d) =>
+                d.id === localChipId
+                  ? { ...d, status: "ready", documentId }
+                  : d,
+              ),
+            );
+            toast.info(`${file.name} is already indexed`);
+            if (
+              scope?.kind === "thread" &&
+              useChatRuntimeStore.getState().ragSource.kind === "off"
+            ) {
+              useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
+            }
+            return;
+          }
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId
