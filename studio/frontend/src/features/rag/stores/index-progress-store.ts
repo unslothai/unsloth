@@ -16,6 +16,8 @@ export interface IndexEntry {
   status: IndexEntryStatus;
   /** 0..1; only meaningful while `indexing`. */
   progress: number;
+  /** Chunks this file produced (from the job's complete event); 0 until done. */
+  chunks: number;
 }
 
 interface IndexProgressState {
@@ -23,7 +25,7 @@ interface IndexProgressState {
   add: (id: string, filename: string) => void;
   setIndexing: (id: string) => void;
   setProgress: (id: string, progress: number) => void;
-  setReady: (id: string) => void;
+  setReady: (id: string, chunks?: number) => void;
   setError: (id: string) => void;
   clear: () => void;
 }
@@ -46,13 +48,14 @@ export const useIndexProgressStore = create<IndexProgressState>((set) => ({
     set((s) => ({
       entries: {
         ...s.entries,
-        [id]: { filename, status: "queued", progress: 0 },
+        [id]: { filename, status: "queued", progress: 0, chunks: 0 },
       },
     })),
   setIndexing: (id) => patch(set, id, { status: "indexing" }),
   setProgress: (id, progress) =>
     patch(set, id, { status: "indexing", progress }),
-  setReady: (id) => patch(set, id, { status: "ready", progress: 1 }),
+  setReady: (id, chunks = 0) =>
+    patch(set, id, { status: "ready", progress: 1, chunks }),
   setError: (id) => patch(set, id, { status: "error" }),
   clear: () => set({ entries: {} }),
 }));

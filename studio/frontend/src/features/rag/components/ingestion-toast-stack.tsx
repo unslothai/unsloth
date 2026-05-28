@@ -27,6 +27,7 @@ export function IngestionToastStack() {
     (e) => e.status === "ready" || e.status === "error",
   ).length;
   const errored = items.filter((e) => e.status === "error").length;
+  const totalChunks = items.reduce((sum, e) => sum + (e.chunks || 0), 0);
   const allDone = total > 0 && done === total;
   // Overall progress: completed/errored files count as 1, in-flight files
   // contribute their fractional progress. Smooth even for a handful of files.
@@ -74,7 +75,8 @@ export function IngestionToastStack() {
   if (allDone) {
     const indexed = total - errored;
     subtitle =
-      `${indexed} document${indexed === 1 ? "" : "s"} indexed` +
+      `${indexed} document${indexed === 1 ? "" : "s"} and ` +
+      `${totalChunks} chunk${totalChunks === 1 ? "" : "s"} indexed` +
       (errored > 0 ? ` · ${errored} failed` : "");
   } else {
     subtitle = `${done}/${total} · ${pct}%`;

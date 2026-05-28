@@ -694,7 +694,7 @@ export function SharedComposer({
                     .getState()
                     .setRagSource({ kind: "thread" });
                 }
-                indexProgress.setReady(localChipId);
+                indexProgress.setReady(localChipId, event.num_chunks);
                 releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
