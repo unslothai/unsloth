@@ -1253,7 +1253,10 @@ shell.Run cmd, 0, False
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = & $NvidiaSmiExe 2>&1 | Out-String
-            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+            # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+            # Accept both spellings so we don't fall through to the cu126 default.
+            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 if ($major -ge 13)                    { return "$baseUrl/cu130" }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
