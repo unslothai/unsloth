@@ -466,8 +466,10 @@ def warmup_rag_embedder(
     try:
         embeddings.get_embedder(model_name)
     except Exception as exc:  # noqa: BLE001
+        # Log the detailed exception server-side; return a generic message
+        # so internal paths / stack info aren't exposed to the client.
         logger.warning("RAG warmup failed for %s: %s", model_name, exc)
-        return {"ok": False, "model": model_name, "error": str(exc)}
+        return {"ok": False, "model": model_name, "error": "Failed to load embedder"}
     return {"ok": True, "model": model_name}
 
 
@@ -488,12 +490,18 @@ def precache_rag_reranker(
     try:
         precache_reranker()
     except Exception as exc:  # noqa: BLE001
+        # Detailed exception logged server-side; client gets a generic
+        # message so internal paths / stack info aren't exposed.
         logger.warning(
             "RAG reranker precache failed",
             model = RAG_RERANKER_MODEL,
             error = str(exc),
         )
-        return {"ok": False, "model": RAG_RERANKER_MODEL, "error": str(exc)}
+        return {
+            "ok": False,
+            "model": RAG_RERANKER_MODEL,
+            "error": "Failed to download reranker",
+        }
     return {"ok": True, "model": RAG_RERANKER_MODEL}
 
 
