@@ -102,28 +102,47 @@ def start(port: int = 8888):
         return
 
     logger.info("   Starting server...")
-    run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+    app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
 
-    logger.info("   Server started!")
+    # run_server auto-increments the port when the requested one is already in
+    # use (e.g. Jupyter occupying 8888). Read back the actual bound port so the
+    # Colab proxy URL and iframe always point at the right place.
+    actual_port: int = (
+        getattr(getattr(app, "state", None), "server_port", None) or port
+    )
+
+    logger.info(f"   Server started on port {actual_port}!")
 
     # Poll health endpoint to confirm the server is truly reachable before
     # showing the link and registering the iframe — avoids the race where
-    # ready_event fires but the Colab proxy hasn't registered the port yet.
+    # ready_event fires but the process hasn't finished binding.
     import urllib.request
+
+    server_ready = False
     for _ in range(40):
         try:
-            urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout=1)
+            urllib.request.urlopen(
+                f"http://localhost:{actual_port}/api/health", timeout = 1
+            )
+            server_ready = True
             break
         except Exception:
             time.sleep(0.5)
 
+    if not server_ready:
+        logger.error(
+            f"❌ Unsloth Studio did not become healthy on port {actual_port}. "
+            "Check for errors above."
+        )
+        return
+
     # Show the clickable link with real URL
-    show_link(port)
+    show_link(actual_port)
 
     # Serve as inline iframe in notebook output
     try:
         from google.colab import output as colab_output
-        colab_output.serve_kernel_port_as_iframe(port, height = 1200, width = "100%")
+        colab_output.serve_kernel_port_as_iframe(actual_port, height = 1200, width = "100%")
     except ImportError:
         pass
 

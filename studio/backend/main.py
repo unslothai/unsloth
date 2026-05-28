@@ -330,11 +330,13 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
 # /content is Colab's working directory — more reliable than env vars which
 # aren't always set depending on Colab runtime version.
+# Use a glob for the google.colab package so Python 3.12+ runtimes are covered.
+import glob as _glob
+
 _IS_COLAB = os.path.isdir("/content") and (
     bool(os.environ.get("COLAB_BACKEND_URL"))
     or bool(os.environ.get("COLAB_JUPYTER_IP"))
-    or os.path.exists("/usr/local/lib/python3.10/dist-packages/google/colab")
-    or os.path.exists("/usr/local/lib/python3.11/dist-packages/google/colab")
+    or bool(_glob.glob("/usr/local/lib/python3.*/dist-packages/google/colab"))
 )
 
 
@@ -342,8 +344,12 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    # Colab's serve_kernel_port_as_iframe embeds the app from *.prod.colab.dev
-    frame_ancestors = "*.prod.colab.dev" if _IS_COLAB else "'none'"
+    # In Colab the parent frame can be colab.research.google.com, a multi-level
+    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — note: CSP
+    # wildcards only match one level, so *.prod.colab.dev misses these), or a
+    # sandboxed null-origin output iframe. Use '*' so any ancestor is allowed;
+    # Colab is already a sandboxed single-user environment.
+    frame_ancestors = "*" if _IS_COLAB else "'none'"
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
