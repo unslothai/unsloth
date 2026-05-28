@@ -99,6 +99,9 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
+    # extra="forbid" requires every persisted key to be listed. Keep
+    # aligned with PERSISTED_INFERENCE_PARAM_KEYS in
+    # studio/frontend/src/features/chat/stores/chat-runtime-store.ts.
     model_config = ConfigDict(extra = "forbid")
 
     temperature: Optional[float] = None
@@ -107,10 +110,47 @@ class ChatInferenceSettings(BaseModel):
     minP: Optional[float] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
+    frequencyPenalty: Optional[float] = Field(default = None, ge = -2.0, le = 2.0)
+    seed: Optional[int] = None
+    stop: Optional[list[str]] = None
+    serviceTier: Optional[
+        Literal["auto", "default", "flex", "priority", "scale", "standard_only"]
+    ] = None
+    parallelToolCalls: Optional[bool] = None
     maxSeqLength: Optional[float] = None
     maxTokens: Optional[float] = None
     systemPrompt: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
+    fastMode: Optional[bool] = None
+    # Extended llama.cpp / vLLM / OpenRouter samplers exposed by PR #5711.
+    typicalP: Optional[float] = None
+    topNSigma: Optional[float] = None
+    repeatLastN: Optional[int] = None
+    dynatempRange: Optional[float] = None
+    dynatempExponent: Optional[float] = None
+    mirostat: Optional[int] = None
+    mirostatTau: Optional[float] = None
+    mirostatEta: Optional[float] = None
+    topA: Optional[float] = None
+    dryMultiplier: Optional[float] = None
+    dryBase: Optional[float] = None
+    dryAllowedLength: Optional[int] = None
+    dryPenaltyLastN: Optional[int] = None
+    xtcProbability: Optional[float] = None
+    xtcThreshold: Optional[float] = None
+    minKeep: Optional[int] = None
+    ignoreEos: Optional[bool] = None
+    minTokens: Optional[int] = None
+    skipSpecialTokens: Optional[bool] = None
+    spacesBetweenSpecialTokens: Optional[bool] = None
+    includeStopStrInOutput: Optional[bool] = None
+    truncatePromptTokens: Optional[int] = None
+    nKeep: Optional[int] = None
+    nProbs: Optional[int] = None
+    cachePrompt: Optional[bool] = None
+    returnTokens: Optional[bool] = None
+    timingsPerToken: Optional[bool] = None
+    postSamplingProbs: Optional[bool] = None
 
 
 class ChatPreset(BaseModel):

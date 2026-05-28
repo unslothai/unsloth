@@ -1,34 +1,126 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Per-provider sampling parameter capability matrix.
- *
- * Values are derived from each provider's published chat-completion docs as of
- * 2026-05. They describe which of our UI knobs map cleanly onto the provider's
- * request body; the panel hides params a provider does not accept so users
- * cannot dial a value that gets silently dropped or rejected.
- *
- * "Local" models (anything that is not an external provider) are represented by
- * a null capability — every knob renders for them.
- */
-
+// Per-provider sampling capability matrix sourced from each provider's
+// chat-completion docs (2026-05); panel hides params the active
+// provider would silently drop or reject.
+// New knobs: default to false on every SaaS bucket; only local +
+// openrouter expose llama.cpp samplers.
 export interface ProviderCapabilities {
-  /**
-   * Temperature sampling. Reasoning-class models (OpenAI's gpt-5.x / o3 via
-   * /v1/responses) reject this with `Unsupported parameter`.
-   */
+  /** OpenAI gpt-5.x / o-series reject via /v1/responses. */
   temperature: boolean;
-  /** Nucleus (top_p) sampling. Same restriction as `temperature` on OpenAI. */
   topP: boolean;
-  /** top-k token sampling (only Anthropic on the providers we ship). */
+  /** Anthropic only among SaaS providers. */
   topK: boolean;
-  /** min-p token cutoff (no SaaS provider currently exposes this). */
   minP: boolean;
-  /** Repetition penalty (no SaaS provider currently exposes this). */
   repetitionPenalty: boolean;
-  /** OpenAI-style presence penalty. */
   presencePenalty: boolean;
+  /** OAI Chat only; rejected by Responses + Anthropic. */
+  frequencyPenalty: boolean;
+  /** OAI Chat + OAI-compat. Responses + Anthropic drop. */
+  seed: boolean;
+  /** Not accepted by Responses; mapped to `stop_sequences` on Anthropic. */
+  stop: boolean;
+  /** Per-provider enum, see getServiceTierOptions. */
+  serviceTier: boolean;
+  /** Anthropic inverts to `disable_parallel_tool_use`. */
+  parallelToolCalls: boolean;
+  /** llama.cpp `typ_p`. */
+  typicalP: boolean;
+  /** llama.cpp `top_n_sigma`. */
+  topNSigma: boolean;
+  /** llama.cpp `repeat_last_n`. */
+  repeatLastN: boolean;
+  /** llama.cpp `dynatemp_range`. */
+  dynatempRange: boolean;
+  /** llama.cpp `dynatemp_exponent`. */
+  dynatempExponent: boolean;
+  /** llama.cpp `mirostat` (0/1/2). */
+  mirostat: boolean;
+  mirostatTau: boolean;
+  mirostatEta: boolean;
+  /** OpenRouter `top_a`. https://openrouter.ai/docs/api/reference/parameters */
+  topA: boolean;
+  /** llama.cpp DRY (4 fields). dryMultiplier is the master switch. */
+  dryMultiplier: boolean;
+  dryBase: boolean;
+  dryAllowedLength: boolean;
+  dryPenaltyLastN: boolean;
+  /** llama.cpp XTC (2 fields). xtcProbability is the master switch. */
+  xtcProbability: boolean;
+  xtcThreshold: boolean;
+  /** llama.cpp `min_keep`. */
+  minKeep: boolean;
+  /** llama.cpp + vLLM. Ollama OAI translator drops it. */
+  ignoreEos: boolean;
+  /** llama.cpp + vLLM. Ollama OAI translator drops it. */
+  minTokens: boolean;
+  /** vLLM only. */
+  skipSpecialTokens: boolean;
+  spacesBetweenSpecialTokens: boolean;
+  /** vLLM only. Useful for agentic tools. */
+  includeStopStrInOutput: boolean;
+  /** vLLM only. Left-truncate the prompt. */
+  truncatePromptTokens: boolean;
+  /** llama.cpp `n_keep` / `n_probs`. */
+  nKeep: boolean;
+  nProbs: boolean;
+  /** llama.cpp `cache_prompt`. */
+  cachePrompt: boolean;
+  /** llama.cpp debug flags. */
+  returnTokens: boolean;
+  timingsPerToken: boolean;
+  postSamplingProbs: boolean;
+}
+
+/**
+ * Per-provider stop-sequence max count. Mirrors backend `stop_max`.
+ *   openai 4 (Chat hard cap; Responses drops stop)
+ *   anthropic 16 (client-side guard, docs no max)
+ *   kimi 5 (https://platform.kimi.ai/docs/api/chat)
+ *   deepseek 16 (https://api-docs.deepseek.com/api/create-chat-completion)
+ *   mistral 16, gemini 4, openrouter 4, default 16 (ollama/vllm/llama.cpp/custom)
+ */
+const PROVIDER_STOP_MAX: Record<string, number> = {
+  openai: 4,
+  anthropic: 16,
+  kimi: 5,
+  deepseek: 16,
+  mistral: 16,
+  gemini: 4,
+  openrouter: 4,
+};
+
+export function getProviderStopMax(
+  providerType: string | null | undefined,
+): number {
+  if (!providerType) return 16; // local backends
+  return PROVIDER_STOP_MAX[providerType] ?? 16;
+}
+
+export type ServiceTierOption =
+  | "auto"
+  | "default"
+  | "flex"
+  | "priority"
+  | "scale"
+  | "standard_only";
+
+/**
+ * Legal `service_tier` per provider. anthropic=auto|standard_only;
+ * openai (/v1/responses)=auto|default|flex|priority (scale excluded
+ * though SDK lists it); others fall through to auto|default.
+ */
+export function getServiceTierOptions(
+  providerType: string | null | undefined,
+): readonly ServiceTierOption[] {
+  if (providerType === "anthropic") {
+    return ["auto", "standard_only"] as const;
+  }
+  if (providerType === "openai") {
+    return ["auto", "default", "flex", "priority"] as const;
+  }
+  return ["auto", "default"] as const;
 }
 
 export type ExternalReasoningCapabilities = {
@@ -76,47 +168,45 @@ export function clampReasoningEffortToLevels(
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
-/**
- * Per-model max-output caps from each provider's docs:
- *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
- *   Anthropic: platform.claude.com/docs/en/about-claude/models
- *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
- *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
- * Local-model path is unaffected.
- */
+// Per-model max-output caps (verified May 2026). Longer prefixes first
+// so .startsWith() picks the specific id over the family root.
+//   OpenAI:    developers.openai.com/api/docs/models/<model>
+//   Anthropic: platform.claude.com/docs/en/about-claude/models/overview
+//   Gemini:    ai.google.dev/gemini-api/docs/models
+//   DeepSeek:  api-docs.deepseek.com/quick_start/pricing
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI
-  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
-  { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
-  { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
-  // Anthropic
+  { providerType: "openai", prefixes: ["gpt-5.3-chat-latest", "gpt-5.1-chat"], cap: 16384 },
+  { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["o1", "o3", "o4", "codex-mini"], cap: 100000 },
+  // Anthropic Opus 4.6 + 4.7 ship 128k Max output; Sonnet 4.5/4.6/4 +
+  // Opus 4.5 + Haiku 4.5 ship 64k; Opus 4.1 / Opus 4 fall through to
+  // the 32k EXTERNAL_MAX_OUTPUT_TOKENS default.
   {
     providerType: "anthropic",
-    prefixes: ["claude-opus-4-7"],
+    prefixes: ["claude-opus-4-7", "claude-opus-4-6"],
     cap: 128000,
   },
   {
     providerType: "anthropic",
     prefixes: [
-      "claude-opus-4-6",
       "claude-sonnet-4-6",
       "claude-opus-4-5",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
+      "claude-sonnet-4",
     ],
     cap: 64000,
   },
-  // Gemini
   {
     providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
-  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
+  // V4: deepseek-chat / deepseek-reasoner alias V4-flash.
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
@@ -160,33 +250,13 @@ function _inferProviderFromOpenrouterId(
   return null;
 }
 
-/**
- * Whether the external provider offers a built-in web-search tool that the
- * model invokes server-side. When `true`, the chat composer's Search button
- * is available for that provider and the chat-adapter forwards
- * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
- * backend routes the call through the provider's tool schema:
- *   - OpenAI:     `tools: [{type: "web_search"}]` on /v1/responses
- *   - Anthropic:  `tools: [{type: "web_search_20250305", name: "web_search",
- *                           max_uses: 5}]` on /v1/messages
- *   - OpenRouter: `plugins: [{id: "web"}]` on /v1/chat/completions (the
- *                 router's universal web-search shape; works for every
- *                 underlying model including the `openrouter/free` router).
- *   - Kimi:       `tools: [{type: "builtin_function", function: {name:
- *                          "$web_search"}}]` with `thinking: {type:
- *                          "disabled"}`. Requires a client round-trip:
- *                 the first call returns the search args; the backend
- *                 echoes them back as a role=tool message; the second
- *                 call streams the answer. Handled in
- *                 _stream_kimi_web_search on the backend.
- *
- * Mistral is intentionally excluded: their `web_search` connector lives on
- * the Agents API (`/v1/agents` + `/v1/conversations`), not chat completions,
- * and returns `"WebSearchTool connector is not supported"` if injected into
- * /v1/chat/completions. Wiring it would require a dedicated Agents streaming
- * path. Gemini's grounded-search can be added with the same pattern when
- * matching backend translation lands.
- */
+// Gates the composer's Search button. Backend maps
+// enable_tools:["web_search"] to each provider's tool schema:
+//   OpenAI: tools:[{type:"web_search"}] on /v1/responses
+//   Anthropic: tools:[{type:"web_search_20250305", max_uses:5}]
+//   OpenRouter: plugins:[{id:"web"}]
+//   Kimi: $web_search builtin (2-call via _stream_kimi_web_search)
+// Mistral excluded (web_search lives on Agents API, 400s on /v1/chat).
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
@@ -218,24 +288,18 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
-/**
- * Whether the external provider exposes a server-side web_fetch tool
- * (single URL, text or PDF) emitting a document block. Anthropic-only
- * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
- * composer's standalone Fetch pill, independent of Search.
- */
+// Anthropic-only server-side web_fetch tool
+// (web_fetch_20250910 / _20260209). Gates the composer's Fetch pill.
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,
 ): boolean {
   return providerType === "anthropic";
 }
 
-/**
- * Whether the active provider + model supports Anthropic fast-mode
- * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
- * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
- * Backend silently drops on unsupported models as a second defence.
- */
+// Anthropic fast-mode (`speed:"fast"` + fast-mode-2026-02-01 header).
+// Opus 4.6 / 4.7 only per
+// https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+// Backend silently drops on unsupported models as a second defence.
 const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
   "claude-opus-4-7",
   "claude-opus-4-6",
@@ -247,38 +311,21 @@ export function providerSupportsFastMode(
 ): boolean {
   if (providerType !== "anthropic") return false;
   if (!modelId) return false;
-  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
-  // / "claude-opus-4-7b" do not match.
+  // Family boundary required so "claude-opus-4-70" doesn't match.
   return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
     (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
   );
 }
 
-/**
- * Whether the selected external provider/model exposes a server-side
- * code-execution tool. Two providers ship one today:
- *
- *   - **Anthropic** (`code_execution_20250825`): Python + bash +
- *     str_replace-based file edits inside a 5 GB sandboxed container
- *     per request. Documented at
- *       https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
- *
- *   - **OpenAI cloud** (`shell` on /v1/responses): bash inside a
- *     reusable container; we auto-create one on the first turn of a
- *     chat thread and reference it on subsequent turns via the
- *     thread's stored `openaiCodeExecContainerId`. Documented at
- *       https://developers.openai.com/api/docs/guides/tools-shell
- *
- * Returns false for every other provider. The backend additionally
- * gates the OpenAI shell tool on `is_openai_cloud` so custom
- * OpenAI-compat servers (ollama / llama.cpp / vLLM) that also report
- * `provider_type="openai"` never receive the tool — but in practice
- * none of those catalogs surface the `gpt-5.5` ids anyway, so the
- * frontend prefix match is enough.
- *
- * v1 wires the tools themselves; file uploads (Anthropic
- * `container_upload` / OpenAI `input_file`) are a deliberate follow-up.
- */
+// Server-side code-execution tools:
+//   Anthropic code_execution_20250825 (Python + bash + str_replace in
+//     a 5 GB sandbox).
+//   OpenAI cloud `shell` on /v1/responses (bash in a reusable container
+//     referenced via openaiCodeExecContainerId across turns).
+// Backend also gates OpenAI on is_openai_cloud so custom OAI-compat
+// servers reporting provider_type="openai" can't accidentally get the
+// shell tool. File uploads (container_upload / input_file) are
+// follow-up work.
 const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
   "claude-opus-4-7",
   "claude-opus-4-6",
@@ -356,18 +403,8 @@ export function providerSupportsBuiltinCodeExecution(
   return false;
 }
 
-/**
- * Whether the selected external provider/model exposes OpenAI's
- * Responses-API server-side image_generation tool. Lit on for OpenAI
- * cloud (`api.openai.com`) when the picked model is a Responses-API
- * family id (gpt-5.x today). The backend additionally gates on
- * `is_openai_cloud`; mirror that here so the pill is hidden on custom
- * OpenAI-compat backends (ollama / llama.cpp / vLLM) that report
- * `provider_type="openai"` but would 400 on a `{type:"image_generation"}`
- * tool. See backend/core/inference/external_provider.py near line 2770
- * for the dispatch and backend/tests/test_openai_image_generation.py
- * for the round-trip coverage.
- */
+// OpenAI Responses-API image_generation. OpenAI cloud +
+// Responses-family ids only; backend mirrors via is_openai_cloud.
 const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
   "gpt-5.5-pro",
   "gpt-5.5",
@@ -457,19 +494,8 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
   );
 }
 
-/**
- * Per-provider minimum on the outbound max_tokens. Kimi's docs require
- * `max_tokens >= 16000` whenever a thinking model is in use so the
- * reasoning_content and final answer both fit in the budget — anything
- * lower truncates the response mid-stream. Other providers don't have a
- * documented floor, so they fall through to the generic min of 64 in
- * the slider.
- *
- * The chat-adapter resolves the effective floor on send and bumps the
- * outbound max_tokens up to this value if the user's stored maxTokens
- * sits below it. The settings panel reflects the same floor as the
- * slider min so the displayed value never drifts from what's sent.
- */
+// Per-provider min on outbound max_tokens. Kimi thinking needs >=16000
+// (truncates mid-stream below); chat-adapter bumps on send.
 const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = {
   kimi: 16000,
 };
@@ -488,37 +514,334 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   minP: false,
   repetitionPenalty: false,
   presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
 };
 
-const ALL_SUPPORTED: ProviderCapabilities = {
+// Unsloth's first-party llama-server runtime (provider type `llama_cpp`)
+// plus the permissive `custom` preset. Exposes the full llama.cpp
+// sampler chain (typical_p / top_n_sigma / mirostat / dynatemp /
+// repeat_last_n) per the upstream server README. Not used for vLLM or
+// Ollama; see VLLM_OLLAMA_CAPABILITIES below.
+const LLAMA_CPP_CAPABILITIES: ProviderCapabilities = {
   temperature: true,
   topP: true,
   topK: true,
   minP: true,
   repetitionPenalty: true,
   presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
+  typicalP: true,
+  topNSigma: true,
+  repeatLastN: true,
+  dynatempRange: true,
+  dynatempExponent: true,
+  mirostat: true,
+  mirostatTau: true,
+  mirostatEta: true,
+  topA: false,
+  dryMultiplier: true,
+  dryBase: true,
+  dryAllowedLength: true,
+  dryPenaltyLastN: true,
+  xtcProbability: true,
+  xtcThreshold: true,
+  minKeep: true,
+  ignoreEos: true,
+  minTokens: true,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: true,
+  nProbs: true,
+  cachePrompt: true,
+  returnTokens: true,
+  timingsPerToken: true,
+  postSamplingProbs: true,
 };
 
+// vLLM SamplingParams: OAI subset + top_k/min_p/repetition_penalty/seed
+// + the 4 vLLM-only output-shape knobs. No DRY / XTC / mirostat /
+// dynatemp / typical_p / min_keep / n_keep / n_probs / cache_prompt /
+// debug flags (none in SamplingParams).
+const VLLM_CAPABILITIES: ProviderCapabilities = {
+  ...LLAMA_CPP_CAPABILITIES,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  skipSpecialTokens: true,
+  spacesBetweenSpecialTokens: true,
+  includeStopStrInOutput: true,
+  truncatePromptTokens: true,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
+};
+
+// Ollama OAI translator (openai/openai.go FromChatRequest) only copies
+// the documented OpenAI subset on /v1/chat/completions: top_k, min_p,
+// repetition_penalty, ignore_eos, min_tokens, and the 4 vLLM output
+// knobs all silently drop on this path. (Native /api/chat would forward
+// them via `options`, but Studio uses /v1.)
+const OLLAMA_CAPABILITIES: ProviderCapabilities = {
+  ...VLLM_CAPABILITIES,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
+  ignoreEos: false,
+  minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+};
+
+// OpenRouter is a router-of-routers: gateway accepts a wider set of
+// OAI-style fields than any single upstream and silently drops what
+// the chosen route doesn't. Surface the full documented set (incl.
+// top_a) and leave llama.cpp-only knobs off.
+// https://openrouter.ai/docs/api/reference/parameters
+const OPENROUTER_CAPABILITIES: ProviderCapabilities = {
+  temperature: true,
+  topP: true,
+  topK: true,
+  minP: true,
+  repetitionPenalty: true,
+  presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  stop: true,
+  serviceTier: false,
+  parallelToolCalls: true,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: true,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
+};
+
+// OpenAI reasoning class via /v1/responses: temperature fixed at 1,
+// top_p ignored, 400s on presence/frequency_penalty/seed. Chat-class
+// (gpt-4o etc) keeps the full surface even via /v1/responses. Both
+// drop `stop` (Responses doesn't surface it).
+// https://platform.openai.com/docs/guides/reasoning
+const OPENAI_REASONING_CAPABILITIES: ProviderCapabilities = {
+  temperature: false,
+  topP: false,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
+  presencePenalty: false,
+  frequencyPenalty: false,
+  seed: false,
+  stop: false,
+  serviceTier: true,
+  parallelToolCalls: true,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
+};
+const OPENAI_CHAT_CAPABILITIES: ProviderCapabilities = {
+  temperature: true,
+  topP: true,
+  topK: false,
+  minP: false,
+  repetitionPenalty: false,
+  presencePenalty: true,
+  frequencyPenalty: true,
+  seed: true,
+  // Responses API does not surface `stop` even for non-reasoning models;
+  // tracked in OpenAI's Responses-vs-ChatCompletions migration notes.
+  stop: false,
+  serviceTier: true,
+  parallelToolCalls: true,
+  typicalP: false,
+  topNSigma: false,
+  repeatLastN: false,
+  dynatempRange: false,
+  dynatempExponent: false,
+  mirostat: false,
+  mirostatTau: false,
+  mirostatEta: false,
+  topA: false,
+  dryMultiplier: false,
+  dryBase: false,
+  dryAllowedLength: false,
+  dryPenaltyLastN: false,
+  xtcProbability: false,
+  xtcThreshold: false,
+  minKeep: false,
+  ignoreEos: false,
+  minTokens: false,
+  skipSpecialTokens: false,
+  spacesBetweenSpecialTokens: false,
+  includeStopStrInOutput: false,
+  truncatePromptTokens: false,
+  nKeep: false,
+  nProbs: false,
+  cachePrompt: false,
+  returnTokens: false,
+  timingsPerToken: false,
+  postSamplingProbs: false,
+};
+
+// Prefix list for OpenAI reasoning-class model ids. Kept in sync with
+// OPENAI_REASONING_MODELS below (used for reasoning_effort capability).
+// Longest prefixes first so "gpt-5.5-pro" wins over "gpt-5.5".
+const OPENAI_REASONING_MODEL_PREFIXES = [
+  "gpt-5.5-pro",
+  "gpt-5.5",
+  "gpt-5.4-pro",
+  "gpt-5.4",
+  "gpt-5.3-chat-latest",
+  "gpt-5.3-codex",
+  "gpt-5.3",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "o1",
+  "o3",
+  "o4",
+] as const;
+
+function isOpenAIReasoningModelId(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return OPENAI_REASONING_MODEL_PREFIXES.some((p) => normalized.startsWith(p));
+}
+
+// Mirror of backend _ANTHROPIC_4_7_SAMPLING_REMOVED. Opus 4.7 removed
+// temperature/top_p/top_k; only Opus shipped in 4.7. The -4-7[-.]/EOL
+// anchor keeps future families (claude-opus-5 etc) unaffected.
+const ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX = /^claude-opus-4-7(?:[-.]|$)/i;
+
+function isClaude47SamplingRemoved(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return ANTHROPIC_4_7_SAMPLING_REMOVED_REGEX.test(normalized);
+}
+
+// DeepSeek reasoner ids silently ignore temperature/top_p/presence/
+// frequency and 400 on logprobs per the reasoning_model guide. Prefix
+// match covers future revisions (deepseek-reasoner-2027 etc).
+const DEEPSEEK_REASONING_MODEL_PREFIXES = [
+  "deepseek-reasoner",
+  "deepseek-r1",
+] as const;
+
+function isDeepSeekReasoningModelId(modelId: string | null | undefined): boolean {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return DEEPSEEK_REASONING_MODEL_PREFIXES.some((p) => normalized.startsWith(p));
+}
+
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
-  // OpenAI's flagship models (gpt-5.x / o3 / gpt-4.5) are reasoning-class
-  // models served via /v1/responses, which rejects temperature, top_p, and
-  // presence/frequency penalty. See backend
-  // external_provider._stream_openai_responses for the proxy.
-  openai: {
-    temperature: false,
-    topP: false,
-    topK: false,
-    minP: false,
-    repetitionPenalty: false,
-    presencePenalty: false,
-  },
-  // Anthropic's Messages API accepts top_k on 3.x and 4.5/4.6, but Claude
-  // 4.7 (Opus/Sonnet/Haiku) deprecated it and returns 400 if it is set.
-  // We surface top_k in the panel for all Anthropic providers and let the
-  // backend strip it per-model — see _stream_anthropic in
-  // studio/backend/core/inference/external_provider.py.
-  // Presence/frequency penalty is not part of the Messages API on any
-  // Claude generation.
+  // Default to reasoning-class; getProviderCapabilities upgrades
+  // non-reasoning ids (gpt-4o etc) to OPENAI_CHAT_CAPABILITIES.
+  openai: OPENAI_REASONING_CAPABILITIES,
+  // Messages API: temperature/top_p/top_k/stop_sequences/service_tier
+  // (auto|standard_only)/disable_parallel_tool_use. Opus 4.7 strips
+  // temperature/top_p/top_k via the regex above. No presence/frequency
+  // penalty / seed / logprobs on any Claude generation.
   anthropic: {
     temperature: true,
     topP: true,
@@ -526,14 +849,44 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: false,
+    frequencyPenalty: false,
+    seed: false,
+    stop: true,
+    serviceTier: true,
+    parallelToolCalls: true,
+    typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  // Gemini's native generationConfig accepts temperature, topP, topK and
-  // presencePenalty (plus a separate frequencyPenalty we do not surface
-  // today). minP and repetitionPenalty are not part of the contract --
-  // see https://ai.google.dev/api/rest/v1beta/GenerationConfig. Backend
-  // request shaping lives in _stream_gemini in
-  // studio/backend/core/inference/external_provider.py.
+  // Gemini generationConfig: temperature/topP/topK/presencePenalty/
+  // frequencyPenalty/seed/stopSequences. No minP/repetitionPenalty.
+  // https://ai.google.dev/api/rest/v1beta/GenerationConfig
   gemini: {
     temperature: true,
     topP: true,
@@ -541,13 +894,43 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: true,
+    frequencyPenalty: false,
+    seed: false,
+    stop: true,
+    serviceTier: false,
+    parallelToolCalls: false,
+    typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
-  // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and
-  // top_p to fixed defaults and 400s on any other value:
-  //   "invalid temperature: only 1 is allowed for this model".
-  // Hide both sliders so the user is not offered knobs the model
-  // silently overrides. Backend additionally strips these fields via
-  // PROVIDER_REGISTRY['kimi']['body_omit'].
+  // Kimi K2.x locks temperature + top_p ("only 1 is allowed for this
+  // model"); seed + parallel_tool_calls aren't in the Chat schema
+  // (platform.kimi.ai/docs/api/chat). Backend strips via body_omit.
   kimi: {
     temperature: false,
     topP: false,
@@ -555,8 +938,45 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: true,
+    // K2.x 400s on non-default frequency_penalty; backend strips too.
+    frequencyPenalty: false,
+    seed: false,
+    stop: true,
+    serviceTier: false,
+    parallelToolCalls: false,
+    typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
-  // DeepSeek deprecated presence/frequency penalty in their current docs.
+  // DeepSeek schema (api-docs.deepseek.com/api/create-chat-completion)
+  // lists temperature/top_p/stop only; no seed or parallel_tool_calls.
+  // Presence/frequency are deprecated. Reasoner ids additionally ignore
+  // temperature/top_p; getProviderCapabilities downshifts them.
   deepseek: {
     temperature: true,
     topP: true,
@@ -564,38 +984,80 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     minP: false,
     repetitionPenalty: false,
     presencePenalty: false,
+    frequencyPenalty: false,
+    seed: false,
+    stop: true,
+    serviceTier: false,
+    parallelToolCalls: false,
+    typicalP: false,
+    topNSigma: false,
+    repeatLastN: false,
+    dynatempRange: false,
+    dynatempExponent: false,
+    mirostat: false,
+    mirostatTau: false,
+    mirostatEta: false,
+    topA: false,
+    dryMultiplier: false,
+    dryBase: false,
+    dryAllowedLength: false,
+    dryPenaltyLastN: false,
+    xtcProbability: false,
+    xtcThreshold: false,
+    minKeep: false,
+    ignoreEos: false,
+    minTokens: false,
+    skipSpecialTokens: false,
+    spacesBetweenSpecialTokens: false,
+    includeStopStrInOutput: false,
+    truncatePromptTokens: false,
+    nKeep: false,
+    nProbs: false,
+    cachePrompt: false,
+    returnTokens: false,
+    timingsPerToken: false,
+    postSamplingProbs: false,
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
-  // OpenRouter silently drops params the target model does not support, so we
-  // surface every knob and let the gateway handle the per-model fan-out.
-  openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compatible connections are proxied through the OpenAI backend
-  // path, but vLLM/Ollama/llama.cpp users often want top_k / min_p /
-  // repetition controls, so be permissive.
-  custom: ALL_SUPPORTED,
-  vllm: ALL_SUPPORTED,
-  ollama: ALL_SUPPORTED,
-  llama_cpp: ALL_SUPPORTED,
+  openrouter: OPENROUTER_CAPABILITIES,
+  // llama_cpp + custom: first-party llama-server, full chain.
+  // vllm: OAI subset + top_k/min_p/repetition_penalty/seed.
+  // ollama: stricter (OAI translator drops top_k/min_p/rep_pen too).
+  custom: LLAMA_CPP_CAPABILITIES,
+  llama_cpp: LLAMA_CPP_CAPABILITIES,
+  vllm: VLLM_CAPABILITIES,
+  ollama: OLLAMA_CAPABILITIES,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
-/**
- * Resolve the capability set for an external provider. Returns `null` for
- * a local model (i.e. when `providerType` is null/undefined), which callers
- * should treat as "every knob applies".
- */
+// Per-model overrides: openai+chat-class -> OPENAI_CHAT_CAPABILITIES;
+// anthropic claude-opus-4-7 strips temp/top_p/top_k; deepseek reasoner
+// hides temp/top_p. Local (no providerType) returns null = every knob.
 export function getProviderCapabilities(
   providerType: string | null | undefined,
+  modelId?: string | null | undefined,
 ): ProviderCapabilities | null {
   if (!providerType) return null;
-  return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
+  const base = PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
+  if (providerType === "openai" && modelId && !isOpenAIReasoningModelId(modelId)) {
+    return OPENAI_CHAT_CAPABILITIES;
+  }
+  if (providerType === "anthropic" && isClaude47SamplingRemoved(modelId)) {
+    return { ...base, temperature: false, topP: false, topK: false };
+  }
+  if (providerType === "deepseek" && isDeepSeekReasoningModelId(modelId)) {
+    return { ...base, temperature: false, topP: false };
+  }
+  return base;
 }
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+// OpenRouter ids with no non-reasoning mode. (google/gemini-pro-latest
+// was dropped: gateway 404s; don't re-pin to a versioned id that may
+// rotate again.)
 const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
-  "google/gemini-pro-latest",
   "baidu/cobuddy:free",
   "inclusionai/ring-2.6-1t:free",
   "deepseek/deepseek-r1",
@@ -626,6 +1088,9 @@ const NO_REASONING_CAPS: ReasoningCaps = {
   reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
 };
 
+// Longest prefixes first (find() must match before the bare-family
+// fallback). Levels per platform.claude.com/docs/en/about-claude/models/overview.
+// 4.5 line maps to budget_tokens; sonnet-4/opus-4 retire 2026-06-15.
 const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-7"],
@@ -637,7 +1102,10 @@ const ANTHROPIC_REASONING_MODELS = [
   },
   {
     prefixes: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
-    // Backend maps semantic levels to manual budget_tokens.
+    levels: ["none", "low", "medium", "high"],
+  },
+  {
+    prefixes: ["claude-opus-4-1", "claude-opus-4", "claude-sonnet-4"],
     levels: ["none", "low", "medium", "high"],
   },
 ] as const;
@@ -681,17 +1149,26 @@ const OPENAI_REASONING_MODELS = [
     levels: ["medium"],
   },
   {
+    // gpt-5.3-codex enum is low/medium/high/xhigh only per dev page.
     prefixes: ["gpt-5.3-codex"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh"],
+  },
+  {
+    // Azure footnote ^7^: minimal supported only on original gpt-5.
+    // Listed before the bare gpt-5 entry so the longer match wins.
+    prefixes: ["gpt-5.1", "gpt-5.2"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
   {
-    prefixes: ["gpt-5", "gpt-5.1", "gpt-5.2"],
+    prefixes: ["gpt-5"],
     supportsOff: false,
     levels: ["minimal", "low", "medium", "high"],
   },
   {
-    prefixes: ["o3"],
+    // o-series all accept low/medium/high per dev pages + Azure table.
+    prefixes: ["o1", "o3", "o4", "codex-mini"],
     supportsOff: false,
     levels: DEFAULT_EFFORT_LEVELS,
   },
@@ -867,19 +1344,27 @@ function resolveGeminiReasoningCapabilities(
 }
 
 function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
-  if (modelId === "magistral-medium-latest") {
-    return withReasoningEffortStyle({
+  // magistral-*: native always-on (422 on reasoning_effort).
+  // mistral-{small,medium,vibe-cli}-latest: none/low/medium/high.
+  // https://docs.mistral.ai/studio-api/conversations/reasoning
+  if (
+    modelId === "magistral-medium-latest" ||
+    modelId === "magistral-small-latest"
+  ) {
+    return withEnableThinkingStyle({
       supportsReasoning: true,
-      supportsReasoningOff: false,
-      // Native reasoning model: present baseline as Medium in the UI.
-      reasoningEffortLevels: ["medium", "high"] as const,
+      reasoningAlwaysOn: true,
     });
   }
-  if (modelId === "mistral-small-latest" || modelId === "mistral-vibe-cli-latest") {
+  if (
+    modelId === "mistral-small-latest" ||
+    modelId === "mistral-medium-latest" ||
+    modelId === "mistral-vibe-cli-latest"
+  ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
-      reasoningEffortLevels: ["none", "high"] as const,
+      reasoningEffortLevels: ["none", "low", "medium", "high"] as const,
     });
   }
   return withEnableThinkingStyle();
@@ -892,7 +1377,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+// vLLM has no per-model reasoning signal on OpenAI-compat; pin via user toggle.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
@@ -906,11 +1391,9 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-/**
- * resolve external-model thinking capabilities.
- * provider-specific matching lives in the OpenAI/Anthropic resolvers.
- * other providers default to no reasoning controls.
- */
+// Provider-specific matching lives in the per-provider resolvers
+// (resolveOpenAI / Anthropic / Kimi / Mistral...). Unknown providers
+// default to no reasoning controls.
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -952,9 +1435,8 @@ export function getExternalReasoningCapabilities(
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
     // OpenRouter's unified `reasoning` parameter is accepted on every
-    // chat-completion request; the gateway silently no-ops for models
-    // that don't reason. Mandatory-reasoning ids are handled by the
-    // early guard above; everything else exposes a toggleable control.
+    // request; gateway no-ops for non-reasoning models. Mandatory ids
+    // already handled above; everything else exposes a toggle.
     return {
       supportsReasoning: true,
       reasoningStyle: "enable_thinking",

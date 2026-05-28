@@ -13,6 +13,11 @@ export interface Preset {
   params: InferenceParams;
 }
 
+// Fields that belong to a preset. Sampling knobs are included so a
+// user can save a preset that fixes their preferred decoding style.
+// Operational knobs (serviceTier, parallelToolCalls) and per-request
+// determinism state (seed) are intentionally excluded so switching
+// presets does not silently change request routing.
 export type PresetOwnedParams = Pick<
   InferenceParams,
   | "temperature"
@@ -21,6 +26,8 @@ export type PresetOwnedParams = Pick<
   | "minP"
   | "repetitionPenalty"
   | "presencePenalty"
+  | "frequencyPenalty"
+  | "stop"
   | "maxTokens"
   | "systemPrompt"
 >;
@@ -103,9 +110,20 @@ export function getPresetOwnedParams(
     minP: params.minP,
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
+    frequencyPenalty: params.frequencyPenalty,
+    stop: params.stop,
     maxTokens: params.maxTokens,
     systemPrompt: params.systemPrompt,
   };
+}
+
+function stopArraysEqual(a: string[], b: string[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 export function isSamePresetConfig(
@@ -121,6 +139,8 @@ export function isSamePresetConfig(
     left.minP === right.minP &&
     left.repetitionPenalty === right.repetitionPenalty &&
     left.presencePenalty === right.presencePenalty &&
+    left.frequencyPenalty === right.frequencyPenalty &&
+    stopArraysEqual(left.stop, right.stop) &&
     left.maxTokens === right.maxTokens &&
     left.systemPrompt === right.systemPrompt
   );

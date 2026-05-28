@@ -40,9 +40,22 @@ const NUMERIC_INFERENCE_FIELDS = [
   "minP",
   "repetitionPenalty",
   "presencePenalty",
+  "frequencyPenalty",
   "maxSeqLength",
   "maxTokens",
 ] as const satisfies readonly (keyof PersistedInferenceParams)[];
+
+// `seed` is nullable so it skips NUMERIC_INFERENCE_FIELDS' finite-number filter.
+// Keep in sync with ServiceTier (../types/runtime.ts) and getServiceTierOptions.
+// "scale" stays for forward-compat with legacy persisted data.
+const VALID_SERVICE_TIERS = new Set([
+  "auto",
+  "default",
+  "flex",
+  "priority",
+  "scale",
+  "standard_only",
+]);
 
 const CHAT_PRESET_SOURCES = new Set<string>([
   "builtin-default",
@@ -139,6 +152,87 @@ function sanitizeInferenceParams(
   }
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
+  }
+  // seed: nullable integer (null = no seed on the wire).
+  if (value.seed === null) {
+    params.seed = null;
+  } else if (typeof value.seed === "number" && Number.isInteger(value.seed)) {
+    params.seed = value.seed;
+  }
+  // stop: cap at 16 (Anthropic widest); backend re-truncates per provider.
+  // Empty array MUST persist or clearing the last chip is reverted on reload.
+  if (Array.isArray(value.stop)) {
+    const stops = value.stop.filter((s): s is string => typeof s === "string");
+    params.stop = stops.slice(0, 16);
+  }
+  if (value.serviceTier === null) {
+    params.serviceTier = null;
+  } else if (
+    typeof value.serviceTier === "string" &&
+    VALID_SERVICE_TIERS.has(value.serviceTier)
+  ) {
+    params.serviceTier = value.serviceTier as PersistedInferenceParams["serviceTier"];
+  }
+  if (typeof value.parallelToolCalls === "boolean") {
+    params.parallelToolCalls = value.parallelToolCalls;
+  }
+  // typicalP: nullable float (null = no typ_p on wire, matches
+  // llama-server default 1.0). Mirrors seed handling.
+  if (value.typicalP === null) {
+    params.typicalP = null;
+  } else if (
+    typeof value.typicalP === "number" &&
+    Number.isFinite(value.typicalP)
+  ) {
+    params.typicalP = value.typicalP;
+  }
+  // Nullable numeric samplers (same handling as typicalP/seed).
+  for (const key of [
+    "topNSigma",
+    "repeatLastN",
+    "dynatempRange",
+    "dynatempExponent",
+    "mirostat",
+    "mirostatTau",
+    "mirostatEta",
+    "topA",
+    "dryMultiplier",
+    "dryBase",
+    "dryAllowedLength",
+    "dryPenaltyLastN",
+    "xtcProbability",
+    "xtcThreshold",
+    "minKeep",
+    "minTokens",
+    "truncatePromptTokens",
+    "nKeep",
+    "nProbs",
+  ] as const) {
+    const raw = value[key];
+    if (raw === null) {
+      (params as Record<string, unknown>)[key] = null;
+    } else if (typeof raw === "number" && Number.isFinite(raw)) {
+      (params as Record<string, unknown>)[key] = raw;
+    }
+  }
+  // Nullable booleans (ignoreEos, skip/spaces special-tokens, include-stop,
+  // cache_prompt, return_tokens, timings_per_token, post_sampling_probs).
+  for (const key of [
+    "ignoreEos",
+    "skipSpecialTokens",
+    "spacesBetweenSpecialTokens",
+    "includeStopStrInOutput",
+    "cachePrompt",
+    "returnTokens",
+    "timingsPerToken",
+    "postSamplingProbs",
+  ] as const) {
+    const raw = value[key];
+    if (raw === null) {
+      (params as Record<string, unknown>)[key] = null;
+    } else if (typeof raw === "boolean") {
+      (params as Record<string, unknown>)[key] = raw;
+    }
   }
   // Mirror trustRemoteCode handling so the toggle survives reload
   // and the /api/chat/settings round-trip.

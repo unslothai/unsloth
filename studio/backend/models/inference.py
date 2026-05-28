@@ -863,13 +863,187 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+    frequency_penalty: Optional[float] = Field(
+        None,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "OpenAI Chat Completions frequency penalty (-2.0 to 2.0). "
+            "Forwarded only on providers that accept it; Anthropic "
+            "Messages and the OpenAI Responses family silently drop it."
+        ),
+    )
+    seed: Optional[int] = Field(
+        None,
+        description = (
+            "Best-effort determinism seed. Forwarded to OpenAI Chat and "
+            "OAI-compat local backends; dropped on Anthropic and OpenAI Responses."
+        ),
+    )
+    service_tier: Optional[
+        Literal["auto", "default", "flex", "priority", "scale", "standard_only"]
+    ] = Field(
+        None,
+        description = (
+            "Provider service tier. Anthropic: auto|standard_only. "
+            "OpenAI Chat: auto|default|flex|priority|scale. "
+            "OpenAI Responses: auto|default|flex|priority. "
+            "Unsupported values are dropped per provider rather than 422'd here."
+        ),
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "Allow parallel tool calls. Forwarded as `parallel_tool_calls` "
+            "on OpenAI; inverted to `disable_parallel_tool_use` on Anthropic. "
+            "None preserves upstream default (currently true everywhere)."
+        ),
+    )
+    typical_p: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "llama.cpp `typ_p`. 1.0 disables. Local only.",
+    )
+    top_n_sigma: Optional[float] = Field(
+        None,
+        description = "llama.cpp `top_n_sigma`. -1 disables. Local only.",
+    )
+    repeat_last_n: Optional[int] = Field(
+        None,
+        description = "llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. Local only.",
+    )
+    dynatemp_range: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `dynatemp_range`. 0 disables. Local only.",
+    )
+    dynatemp_exponent: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `dynatemp_exponent`. Pairs with dynatemp_range. Local only.",
+    )
+    mirostat: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2,
+        description = "llama.cpp `mirostat` (0=off, 1=Mirostat, 2=Mirostat 2.0). Local only.",
+    )
+    mirostat_tau: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `mirostat_tau`. Local only.",
+    )
+    mirostat_eta: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = "llama.cpp `mirostat_eta`. Local only.",
+    )
+    top_a: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "OpenRouter `top_a`. OpenRouter-only. "
+            "https://openrouter.ai/docs/api/reference/parameters"
+        ),
+    )
+    dry_multiplier: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        description = (
+            "llama.cpp DRY multiplier. 0 disables the dry_base / "
+            "dry_allowed_length / dry_penalty_last_n chain. Local only."
+        ),
+    )
+    dry_base: Optional[float] = Field(
+        None,
+        ge = 1.0,
+        description = "llama.cpp DRY base. Default 1.75. Local only.",
+    )
+    dry_allowed_length: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "llama.cpp DRY allowed-length. Default 2. Local only.",
+    )
+    dry_penalty_last_n: Optional[int] = Field(
+        None,
+        description = "llama.cpp DRY scan window. 0 disables, -1 = ctx-size. Local only.",
+    )
+    xtc_probability: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "llama.cpp XTC probability. 0 disables; pairs with xtc_threshold. Local only.",
+    )
+    xtc_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "llama.cpp XTC threshold. Default 0.1. Local only.",
+    )
+    min_keep: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "llama.cpp `min_keep` (force min N past every filter). Local only.",
+    )
+    ignore_eos: Optional[bool] = Field(
+        None,
+        description = "Continue past EOS. llama.cpp + vLLM only.",
+    )
+    min_tokens: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Min output tokens before stop / EOS. llama.cpp + vLLM only.",
+    )
+    skip_special_tokens: Optional[bool] = Field(
+        None,
+        description = "vLLM `skip_special_tokens` (default true). vLLM only.",
+    )
+    spaces_between_special_tokens: Optional[bool] = Field(
+        None,
+        description = "vLLM `spaces_between_special_tokens` (default true). vLLM only.",
+    )
+    include_stop_str_in_output: Optional[bool] = Field(
+        None,
+        description = "vLLM `include_stop_str_in_output`. Useful for agentic tools. vLLM only.",
+    )
+    truncate_prompt_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "vLLM `truncate_prompt_tokens` (left-truncate prompt). vLLM only.",
+    )
+    n_keep: Optional[int] = Field(
+        None,
+        description = "llama.cpp `n_keep`. 0 disables, -1 = keep all. Local only.",
+    )
+    n_probs: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "llama.cpp `n_probs` (top-N token probs). 0 disables. Local only.",
+    )
+    cache_prompt: Optional[bool] = Field(
+        None,
+        description = "llama.cpp `cache_prompt` (default true upstream). Local only.",
+    )
+    return_tokens: Optional[bool] = Field(
+        None,
+        description = "llama.cpp `return_tokens` (debug). Local only.",
+    )
+    timings_per_token: Optional[bool] = Field(
+        None,
+        description = "llama.cpp `timings_per_token` (perf debug). Local only.",
+    )
+    post_sampling_probs: Optional[bool] = Field(
+        None,
+        description = "llama.cpp `post_sampling_probs` (sampler debug). Local only.",
+    )
     fast_mode: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Anthropic fast-mode toggle. On Claude Opus 4.6 / "
-            "4.7 adds the `fast-mode-2026-02-01` beta header and sends "
-            "`speed: 'fast'` for higher OTPS at premium pricing. Silently "
-            "ignored on every other model + provider. See "
+            "[x-unsloth] Anthropic fast-mode on Opus 4.6 / 4.7. Adds the "
+            "fast-mode-2026-02-01 beta header + speed:'fast' for higher "
+            "OTPS at premium pricing. Silently dropped elsewhere. "
             "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
         ),
     )

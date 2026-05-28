@@ -137,11 +137,20 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
             r")$"
         ),
+        # Gemini OAI-compat inherits OpenAI's 4-stop cap; default 16
+        # silently truncates upstream.
+        # https://ai.google.dev/gemini-api/docs/openai
+        "stop_max": 4,
     },
     "deepseek": {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
+        # deepseek-chat / deepseek-reasoner retire 2026-07-24; list
+        # v4-pro / v4-flash alongside for cutover.
+        # https://api-docs.deepseek.com/updates
         "default_models": [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
             "deepseek-chat",
             "deepseek-reasoner",
         ],
@@ -150,7 +159,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
+        "notes": "OpenAI-compatible API. deepseek-v4-pro / deepseek-v4-flash are the new canonical ids; deepseek-chat / deepseek-reasoner remain as legacy aliases until 2026-07-24.",
     },
     "mistral": {
         "display_name": "Mistral AI",
@@ -180,6 +189,12 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"mistral-(?:large|medium|small|tiny)-latest|"
             r"mistral-vibe-cli-latest)$"
         ),
+        # Mistral renames OpenAI's `seed` to `random_seed` on
+        # /v1/chat/completions. https://docs.mistral.ai/api/endpoint/chat
+        "seed_field": "random_seed",
+        # Mistral's docs publish no max but third-party shims cap at 4;
+        # match OpenAI Chat's cap to avoid silent upstream truncation.
+        "stop_max": 4,
     },
     "kimi": {
         "display_name": "Kimi",
@@ -203,11 +218,21 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
-        # Both k2.6 and k2.5 are reasoning-class. The API rejects custom
-        # sampling: "invalid temperature: only 1 is allowed for this model"
-        # (and the same shape for top_p). Strip both fields from the
-        # outbound body so the server falls back to its required defaults.
-        "body_omit": ("temperature", "top_p"),
+        # k2.5/k2.6 are reasoning-class: API locks temperature=1, top_p=1,
+        # frequency_penalty; presence_penalty / seed / parallel_tool_calls
+        # are undocumented in the Kimi chat schema.
+        "body_omit": (
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "seed",
+            "parallel_tool_calls",
+        ),
+        # Kimi accepts at most 5 stop strings (each <= 32 bytes) per
+        # https://platform.kimi.ai/docs/api/chat
+        "stop_max": 5,
+        "stop_max_bytes": 32,
     },
     "qwen": {
         "display_name": "Qwen",
@@ -354,6 +379,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         },
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
+        # OpenRouter normalises to OpenAI's chat schema and inherits
+        # the 4-entry stop cap.
+        "stop_max": 4,
     },
 }
 

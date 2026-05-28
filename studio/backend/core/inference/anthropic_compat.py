@@ -404,12 +404,18 @@ class AnthropicPassthroughEmitter:
     streaming response back to Anthropic format without executing anything.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, parallel_tool_calls: Optional[bool] = None) -> None:
         self.block_index: int = -1
         self._current_block_type: Optional[str] = None  # "text" | "tool_use" | None
         self._tool_call_states: dict = {}  # delta index -> {block_index, id, name}
         self._usage: dict = {}
         self._stop_reason: str = "end_turn"
+        # parallel_tool_calls=False (Anthropic
+        # tool_choice.disable_parallel_tool_use=true): emit only the first
+        # tool-call index; llama.cpp's flag isn't enforced by every jinja
+        # template (ggml-org/llama.cpp#22043).
+        self._serial_tool_calls: bool = parallel_tool_calls is False
+        self._first_tool_call_idx: Optional[int] = None
 
     def start(self, message_id: str, model: str) -> list[str]:
         return [
@@ -470,6 +476,13 @@ class AnthropicPassthroughEmitter:
         tool_calls = delta.get("tool_calls") or []
         for tc in tool_calls:
             tc_idx = tc.get("index", 0)
+            # Serial-tool-call gate: latch on the first index we see
+            # and silently drop deltas for any other.
+            if self._serial_tool_calls:
+                if self._first_tool_call_idx is None:
+                    self._first_tool_call_idx = tc_idx
+                if tc_idx != self._first_tool_call_idx:
+                    continue
             fn = tc.get("function") or {}
             if tc_idx not in self._tool_call_states:
                 # New tool call — close prior block, open tool_use block

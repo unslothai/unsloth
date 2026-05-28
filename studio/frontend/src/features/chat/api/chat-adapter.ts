@@ -1806,6 +1806,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
+          externalSelection?.modelId,
         );
         const externalReasoningCaps: ReturnType<
           typeof getExternalReasoningCapabilities
@@ -1990,6 +1991,166 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
+              // Optional sampling extras. Per-provider gates live in
+              // provider-capabilities.ts; backend drops unknown fields.
+              ...(externalCapabilities?.frequencyPenalty
+                ? { frequency_penalty: params.frequencyPenalty }
+                : {}),
+              ...(externalCapabilities?.seed && params.seed !== null
+                ? { seed: params.seed }
+                : {}),
+              ...(externalCapabilities?.stop && params.stop.length > 0
+                ? { stop: params.stop }
+                : {}),
+              ...(externalCapabilities?.serviceTier && params.serviceTier
+                ? { service_tier: params.serviceTier }
+                : {}),
+              // Upstream default is true on every shipped provider;
+              // forward only on explicit opt-out.
+              ...(externalCapabilities?.parallelToolCalls &&
+              params.parallelToolCalls === false
+                ? { parallel_tool_calls: false }
+                : {}),
+              // llama.cpp / vLLM / OpenRouter extras: cap-flag plus
+              // non-default value gates so only meaningful knobs hit wire.
+              ...(externalCapabilities?.typicalP &&
+              params.typicalP !== null &&
+              params.typicalP !== 1
+                ? { typical_p: params.typicalP }
+                : {}),
+              ...(externalCapabilities?.topNSigma &&
+              params.topNSigma !== null &&
+              params.topNSigma !== -1
+                ? { top_n_sigma: params.topNSigma }
+                : {}),
+              ...(externalCapabilities?.repeatLastN &&
+              params.repeatLastN !== null
+                ? { repeat_last_n: params.repeatLastN }
+                : {}),
+              // Dynatemp: range>0 unlocks both fields.
+              ...(externalCapabilities?.dynatempRange &&
+              params.dynatempRange !== null &&
+              params.dynatempRange > 0
+                ? {
+                    dynatemp_range: params.dynatempRange,
+                    ...(externalCapabilities?.dynatempExponent &&
+                    params.dynatempExponent !== null
+                      ? { dynatemp_exponent: params.dynatempExponent }
+                      : {}),
+                  }
+                : {}),
+              // Mirostat: mode!=0 unlocks tau + eta.
+              ...(externalCapabilities?.mirostat &&
+              params.mirostat !== null &&
+              params.mirostat !== 0
+                ? {
+                    mirostat: params.mirostat,
+                    ...(externalCapabilities?.mirostatTau &&
+                    params.mirostatTau !== null
+                      ? { mirostat_tau: params.mirostatTau }
+                      : {}),
+                    ...(externalCapabilities?.mirostatEta &&
+                    params.mirostatEta !== null
+                      ? { mirostat_eta: params.mirostatEta }
+                      : {}),
+                  }
+                : {}),
+              ...(externalCapabilities?.topA &&
+              params.topA !== null &&
+              params.topA > 0
+                ? { top_a: params.topA }
+                : {}),
+              // DRY: multiplier>0 unlocks the 4-field chain.
+              ...(externalCapabilities?.dryMultiplier &&
+              params.dryMultiplier !== null &&
+              params.dryMultiplier > 0
+                ? {
+                    dry_multiplier: params.dryMultiplier,
+                    ...(externalCapabilities?.dryBase &&
+                    params.dryBase !== null
+                      ? { dry_base: params.dryBase }
+                      : {}),
+                    ...(externalCapabilities?.dryAllowedLength &&
+                    params.dryAllowedLength !== null
+                      ? { dry_allowed_length: params.dryAllowedLength }
+                      : {}),
+                    ...(externalCapabilities?.dryPenaltyLastN &&
+                    params.dryPenaltyLastN !== null
+                      ? { dry_penalty_last_n: params.dryPenaltyLastN }
+                      : {}),
+                  }
+                : {}),
+              // XTC: probability>0 unlocks threshold.
+              ...(externalCapabilities?.xtcProbability &&
+              params.xtcProbability !== null &&
+              params.xtcProbability > 0
+                ? {
+                    xtc_probability: params.xtcProbability,
+                    ...(externalCapabilities?.xtcThreshold &&
+                    params.xtcThreshold !== null
+                      ? { xtc_threshold: params.xtcThreshold }
+                      : {}),
+                  }
+                : {}),
+              ...(externalCapabilities?.minKeep &&
+              params.minKeep !== null &&
+              params.minKeep > 0
+                ? { min_keep: params.minKeep }
+                : {}),
+              ...(externalCapabilities?.ignoreEos && params.ignoreEos === true
+                ? { ignore_eos: true }
+                : {}),
+              ...(externalCapabilities?.minTokens &&
+              params.minTokens !== null &&
+              params.minTokens > 0
+                ? { min_tokens: params.minTokens }
+                : {}),
+              // vLLM output-shape: default true for skip/spaces, false
+              // for include-stop. Forward only on user opt-out.
+              ...(externalCapabilities?.skipSpecialTokens &&
+              params.skipSpecialTokens === false
+                ? { skip_special_tokens: false }
+                : {}),
+              ...(externalCapabilities?.spacesBetweenSpecialTokens &&
+              params.spacesBetweenSpecialTokens === false
+                ? { spaces_between_special_tokens: false }
+                : {}),
+              ...(externalCapabilities?.includeStopStrInOutput &&
+              params.includeStopStrInOutput === true
+                ? { include_stop_str_in_output: true }
+                : {}),
+              ...(externalCapabilities?.truncatePromptTokens &&
+              params.truncatePromptTokens !== null &&
+              params.truncatePromptTokens > 0
+                ? { truncate_prompt_tokens: params.truncatePromptTokens }
+                : {}),
+              // n_keep accepts -1 (keep all), so the gate is != 0.
+              ...(externalCapabilities?.nKeep &&
+              params.nKeep !== null &&
+              params.nKeep !== 0
+                ? { n_keep: params.nKeep }
+                : {}),
+              ...(externalCapabilities?.nProbs &&
+              params.nProbs !== null &&
+              params.nProbs > 0
+                ? { n_probs: params.nProbs }
+                : {}),
+              ...(externalCapabilities?.cachePrompt &&
+              params.cachePrompt === false
+                ? { cache_prompt: false }
+                : {}),
+              ...(externalCapabilities?.returnTokens &&
+              params.returnTokens === true
+                ? { return_tokens: true }
+                : {}),
+              ...(externalCapabilities?.timingsPerToken &&
+              params.timingsPerToken === true
+                ? { timings_per_token: true }
+                : {}),
+              ...(externalCapabilities?.postSamplingProbs &&
+              params.postSamplingProbs === true
+                ? { post_sampling_probs: true }
+                : {}),
               // Compose the enabled_tools list from the active pills;
               // backend maps each name to the provider's tool schema.
               ...(webSearchEnabledForThisTurn ||
@@ -2045,9 +2206,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
-              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
-              // silently drops on unsupported models as a second
-              // line of defence.
+              // Fast mode (Anthropic Opus 4.6 / 4.7). Backend drops on
+              // unsupported models as second defence.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,
@@ -2080,6 +2240,107 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // llama-server (_build_passthrough_payload) accepts OAI
+            // extras and ignores unknown; parallel_tool_calls default
+            // false upstream so forward unconditionally.
+            ...(params.frequencyPenalty !== 0
+              ? { frequency_penalty: params.frequencyPenalty }
+              : {}),
+            ...(params.seed !== null ? { seed: params.seed } : {}),
+            ...(params.stop.length > 0 ? { stop: params.stop } : {}),
+            ...(params.typicalP !== null && params.typicalP !== 1
+              ? { typical_p: params.typicalP }
+              : {}),
+            ...(params.topNSigma !== null && params.topNSigma !== -1
+              ? { top_n_sigma: params.topNSigma }
+              : {}),
+            ...(params.repeatLastN !== null
+              ? { repeat_last_n: params.repeatLastN }
+              : {}),
+            ...(params.dynatempRange !== null && params.dynatempRange > 0
+              ? {
+                  dynatemp_range: params.dynatempRange,
+                  ...(params.dynatempExponent !== null
+                    ? { dynatemp_exponent: params.dynatempExponent }
+                    : {}),
+                }
+              : {}),
+            ...(params.mirostat !== null && params.mirostat !== 0
+              ? {
+                  mirostat: params.mirostat,
+                  ...(params.mirostatTau !== null
+                    ? { mirostat_tau: params.mirostatTau }
+                    : {}),
+                  ...(params.mirostatEta !== null
+                    ? { mirostat_eta: params.mirostatEta }
+                    : {}),
+                }
+              : {}),
+            // DRY: multiplier>0 unlocks the 4-field chain.
+            ...(params.dryMultiplier !== null && params.dryMultiplier > 0
+              ? {
+                  dry_multiplier: params.dryMultiplier,
+                  ...(params.dryBase !== null
+                    ? { dry_base: params.dryBase }
+                    : {}),
+                  ...(params.dryAllowedLength !== null
+                    ? { dry_allowed_length: params.dryAllowedLength }
+                    : {}),
+                  ...(params.dryPenaltyLastN !== null
+                    ? { dry_penalty_last_n: params.dryPenaltyLastN }
+                    : {}),
+                }
+              : {}),
+            // XTC: probability>0 unlocks threshold.
+            ...(params.xtcProbability !== null && params.xtcProbability > 0
+              ? {
+                  xtc_probability: params.xtcProbability,
+                  ...(params.xtcThreshold !== null
+                    ? { xtc_threshold: params.xtcThreshold }
+                    : {}),
+                }
+              : {}),
+            ...(params.minKeep !== null && params.minKeep > 0
+              ? { min_keep: params.minKeep }
+              : {}),
+            ...(params.ignoreEos === true ? { ignore_eos: true } : {}),
+            ...(params.minTokens !== null && params.minTokens > 0
+              ? { min_tokens: params.minTokens }
+              : {}),
+            // Forward only on non-default; per-backend cap-gates wire visibility.
+            ...(params.skipSpecialTokens === false
+              ? { skip_special_tokens: false }
+              : {}),
+            ...(params.spacesBetweenSpecialTokens === false
+              ? { spaces_between_special_tokens: false }
+              : {}),
+            ...(params.includeStopStrInOutput === true
+              ? { include_stop_str_in_output: true }
+              : {}),
+            ...(params.truncatePromptTokens !== null &&
+            params.truncatePromptTokens > 0
+              ? { truncate_prompt_tokens: params.truncatePromptTokens }
+              : {}),
+            ...(params.nKeep !== null && params.nKeep !== 0
+              ? { n_keep: params.nKeep }
+              : {}),
+            ...(params.nProbs !== null && params.nProbs > 0
+              ? { n_probs: params.nProbs }
+              : {}),
+            ...(params.cachePrompt === false ? { cache_prompt: false } : {}),
+            ...(params.returnTokens === true ? { return_tokens: true } : {}),
+            ...(params.timingsPerToken === true
+              ? { timings_per_token: true }
+              : {}),
+            ...(params.postSamplingProbs === true
+              ? { post_sampling_probs: true }
+              : {}),
+            // Forward only on explicit opt-out (default true on every
+            // backend; default omit keeps wire-shape stable for users
+            // who never opened the new settings panel).
+            ...(params.parallelToolCalls === false
+              ? { parallel_tool_calls: false }
+              : {}),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,

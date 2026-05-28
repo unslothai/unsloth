@@ -239,6 +239,19 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+def _clean_local_stop_list(stop) -> Optional[list[str]]:
+    """Strip empty/non-string stop entries; returns None when empty so
+    callers can omit. Mirrors `_normalize_stop_for_provider` so
+    `stop=["", "END"]` cannot 400 llama-server.
+    """
+    if isinstance(stop, str):
+        return [stop] if stop else None
+    if isinstance(stop, list):
+        cleaned = [s for s in stop if isinstance(s, str) and s]
+        return cleaned or None
+    return None
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so
     flags match across backends. gpt-oss is overridden because Harmony
@@ -2147,9 +2160,42 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            frequency_penalty = payload.frequency_penalty,
+            seed = payload.seed,
+            stop = payload.stop,
+            service_tier = payload.service_tier,
+            parallel_tool_calls = payload.parallel_tool_calls,
             tools = payload.tools,
             tool_choice = payload.tool_choice,
             fast_mode = payload.fast_mode,
+            typical_p = payload.typical_p,
+            top_n_sigma = payload.top_n_sigma,
+            repeat_last_n = payload.repeat_last_n,
+            dynatemp_range = payload.dynatemp_range,
+            dynatemp_exponent = payload.dynatemp_exponent,
+            mirostat = payload.mirostat,
+            mirostat_tau = payload.mirostat_tau,
+            mirostat_eta = payload.mirostat_eta,
+            top_a = payload.top_a,
+            dry_multiplier = payload.dry_multiplier,
+            dry_base = payload.dry_base,
+            dry_allowed_length = payload.dry_allowed_length,
+            dry_penalty_last_n = payload.dry_penalty_last_n,
+            xtc_probability = payload.xtc_probability,
+            xtc_threshold = payload.xtc_threshold,
+            min_keep = payload.min_keep,
+            ignore_eos = payload.ignore_eos,
+            min_tokens = payload.min_tokens,
+            skip_special_tokens = payload.skip_special_tokens,
+            spaces_between_special_tokens = payload.spaces_between_special_tokens,
+            include_stop_str_in_output = payload.include_stop_str_in_output,
+            truncate_prompt_tokens = payload.truncate_prompt_tokens,
+            n_keep = payload.n_keep,
+            n_probs = payload.n_probs,
+            cache_prompt = payload.cache_prompt,
+            return_tokens = payload.return_tokens,
+            timings_per_token = payload.timings_per_token,
+            post_sampling_probs = payload.post_sampling_probs,
             stream = payload.stream,
         )
         try:
@@ -2776,6 +2822,7 @@ async def openai_chat_completions(
                     max_tokens = payload.max_tokens,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
+                    stop = _clean_local_stop_list(payload.stop),
                     cancel_event = cancel_event,
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
@@ -2790,6 +2837,36 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    frequency_penalty = payload.frequency_penalty,
+                    seed = payload.seed,
+                    parallel_tool_calls = payload.parallel_tool_calls,
+                    typical_p = payload.typical_p,
+                    dry_multiplier = payload.dry_multiplier,
+                    dry_base = payload.dry_base,
+                    dry_allowed_length = payload.dry_allowed_length,
+                    dry_penalty_last_n = payload.dry_penalty_last_n,
+                    xtc_probability = payload.xtc_probability,
+                    xtc_threshold = payload.xtc_threshold,
+                    min_keep = payload.min_keep,
+                    ignore_eos = payload.ignore_eos,
+                    min_tokens = payload.min_tokens,
+                    skip_special_tokens = payload.skip_special_tokens,
+                    spaces_between_special_tokens = payload.spaces_between_special_tokens,
+                    include_stop_str_in_output = payload.include_stop_str_in_output,
+                    truncate_prompt_tokens = payload.truncate_prompt_tokens,
+                    n_keep = payload.n_keep,
+                    n_probs = payload.n_probs,
+                    cache_prompt = payload.cache_prompt,
+                    return_tokens = payload.return_tokens,
+                    timings_per_token = payload.timings_per_token,
+                    post_sampling_probs = payload.post_sampling_probs,
+                    top_n_sigma = payload.top_n_sigma,
+                    repeat_last_n = payload.repeat_last_n,
+                    dynatemp_range = payload.dynatemp_range,
+                    dynatemp_exponent = payload.dynatemp_exponent,
+                    mirostat = payload.mirostat,
+                    mirostat_tau = payload.mirostat_tau,
+                    mirostat_eta = payload.mirostat_eta,
                 )
 
             _tool_sentinel = object()
@@ -2955,10 +3032,41 @@ async def openai_chat_completions(
                 max_tokens = payload.max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
+                stop = _clean_local_stop_list(payload.stop),
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                frequency_penalty = payload.frequency_penalty,
+                seed = payload.seed,
+                parallel_tool_calls = payload.parallel_tool_calls,
+                typical_p = payload.typical_p,
+                dry_multiplier = payload.dry_multiplier,
+                dry_base = payload.dry_base,
+                dry_allowed_length = payload.dry_allowed_length,
+                dry_penalty_last_n = payload.dry_penalty_last_n,
+                xtc_probability = payload.xtc_probability,
+                xtc_threshold = payload.xtc_threshold,
+                min_keep = payload.min_keep,
+                ignore_eos = payload.ignore_eos,
+                min_tokens = payload.min_tokens,
+                skip_special_tokens = payload.skip_special_tokens,
+                spaces_between_special_tokens = payload.spaces_between_special_tokens,
+                include_stop_str_in_output = payload.include_stop_str_in_output,
+                truncate_prompt_tokens = payload.truncate_prompt_tokens,
+                n_keep = payload.n_keep,
+                n_probs = payload.n_probs,
+                cache_prompt = payload.cache_prompt,
+                return_tokens = payload.return_tokens,
+                timings_per_token = payload.timings_per_token,
+                post_sampling_probs = payload.post_sampling_probs,
+                top_n_sigma = payload.top_n_sigma,
+                repeat_last_n = payload.repeat_last_n,
+                dynatemp_range = payload.dynatemp_range,
+                dynatemp_exponent = payload.dynatemp_exponent,
+                mirostat = payload.mirostat,
+                mirostat_tau = payload.mirostat_tau,
+                mirostat_eta = payload.mirostat_eta,
             )
 
         _gguf_sentinel = object()
@@ -3310,6 +3418,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                parallel_tool_calls = payload.parallel_tool_calls,
             )
 
         _sf_tool_sentinel = object()
@@ -4113,6 +4222,9 @@ def _build_chat_request(
         chat_kwargs["top_p"] = payload.top_p
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
+    # Forward parallel_tool_calls from Responses caller through to llama-server.
+    if payload.parallel_tool_calls is not None:
+        chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
     chat_tools = _translate_responses_tools_to_chat(payload.tools)
     if chat_tools is not None:
@@ -4122,13 +4234,7 @@ def _build_chat_request(
     if chat_tool_choice is not None:
         chat_kwargs["tool_choice"] = chat_tool_choice
 
-    req = ChatCompletionRequest(**chat_kwargs)
-    # `parallel_tool_calls` is not a first-class field on ChatCompletionRequest,
-    # but the model allows extras and _build_openai_passthrough_body forwards
-    # only explicitly-known fields. Llama-server does not currently implement
-    # parallel_tool_calls semantics, so we accept-and-ignore it on the
-    # Responses side to avoid breaking SDK clients that always send it.
-    return req
+    return ChatCompletionRequest(**chat_kwargs)
 
 
 def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
@@ -4179,6 +4285,10 @@ async def _responses_non_streaming(
         msg = choices[0].get("message", {}) or {}
         text = msg.get("content", "") or ""
         tool_calls = msg.get("tool_calls") or []
+    # parallel_tool_calls=False -> cap to 1 (llama.cpp flag isn't enforced;
+    # mirrors GGUF/Anthropic/safetensors paths).
+    if payload.parallel_tool_calls is False and tool_calls:
+        tool_calls = tool_calls[:1]
 
     usage_data = body.get("usage", {})
     input_tokens = usage_data.get("prompt_tokens", 0)
@@ -4300,6 +4410,11 @@ async def _responses_stream(
         tool_call_state: dict[int, dict] = {}
         # Text message lives at output_index 0; tool calls claim 1, 2, ...
         next_output_index = 1
+        # parallel_tool_calls=False: latch the first tc index, drop the
+        # rest; llama.cpp flag isn't enforced by every jinja template
+        # (ggml-org/llama.cpp#22043).
+        serial_tool_calls = payload.parallel_tool_calls is False
+        first_serial_idx: Optional[int] = None
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
@@ -4416,6 +4531,11 @@ async def _responses_stream(
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
+                    if serial_tool_calls:
+                        if first_serial_idx is None:
+                            first_serial_idx = idx
+                        if idx != first_serial_idx:
+                            continue
                     st = tool_call_state.get(idx)
                     fn = tc.get("function") or {}
                     if st is None:
@@ -4785,6 +4905,15 @@ async def anthropic_messages(
     if openai_tool_choice is None:
         openai_tool_choice = "auto"
 
+    # Anthropic nests `disable_parallel_tool_use` under `tool_choice`;
+    # flip to OAI `parallel_tool_calls` so the local GGUF tool loop honors it.
+    # https://docs.claude.com/en/docs/agents-and-tools/tool-use/implement-tool-use
+    anthropic_parallel_tool_calls: Optional[bool] = None
+    if isinstance(payload.tool_choice, dict):
+        _disable = payload.tool_choice.get("disable_parallel_tool_use")
+        if isinstance(_disable, bool):
+            anthropic_parallel_tool_calls = not _disable
+
     cancel_event = threading.Event()
 
     # ── Tool routing ──────────────────────────────────────────
@@ -4881,6 +5010,7 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
+                parallel_tool_calls = anthropic_parallel_tool_calls,
                 session_id = payload.session_id,
                 cancel_id = payload.cancel_id,
             )
@@ -4899,6 +5029,7 @@ async def anthropic_messages(
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
             tool_choice = openai_tool_choice,
+            parallel_tool_calls = anthropic_parallel_tool_calls,
         )
 
     if server_tools:
@@ -4990,6 +5121,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                parallel_tool_calls = anthropic_parallel_tool_calls,
             )
 
         if payload.stream:
@@ -5241,6 +5373,36 @@ def _build_passthrough_payload(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    frequency_penalty = None,
+    seed = None,
+    parallel_tool_calls = None,
+    typical_p = None,
+    top_n_sigma = None,
+    repeat_last_n = None,
+    dynatemp_range = None,
+    dynatemp_exponent = None,
+    mirostat = None,
+    mirostat_tau = None,
+    mirostat_eta = None,
+    dry_multiplier = None,
+    dry_base = None,
+    dry_allowed_length = None,
+    dry_penalty_last_n = None,
+    xtc_probability = None,
+    xtc_threshold = None,
+    min_keep = None,
+    ignore_eos = None,
+    min_tokens = None,
+    skip_special_tokens = None,
+    spaces_between_special_tokens = None,
+    include_stop_str_in_output = None,
+    truncate_prompt_tokens = None,
+    n_keep = None,
+    n_probs = None,
+    cache_prompt = None,
+    return_tokens = None,
+    timings_per_token = None,
+    post_sampling_probs = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -5263,8 +5425,16 @@ def _build_passthrough_payload(
         else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
+    # Strip empty stop entries (mirrors `_normalize_stop_for_provider`);
+    # stale `stop=["", "END"]` would 400 llama-server.
     if stop:
-        body["stop"] = stop
+        if isinstance(stop, str):
+            if stop:
+                body["stop"] = stop
+        elif isinstance(stop, list):
+            cleaned = [s for s in stop if isinstance(s, str) and s]
+            if cleaned:
+                body["stop"] = cleaned
     if min_p is not None:
         body["min_p"] = min_p
     if repetition_penalty is not None:
@@ -5272,16 +5442,76 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
+    # parallel_tool_calls is a no-op on llama-server today but forwarded
+    # for future support. `is not None` gate lets explicit 0/False through;
+    # llama-server ignores unknowns, Ollama drops non-OAI fields.
+    if frequency_penalty is not None:
+        body["frequency_penalty"] = frequency_penalty
+    if seed is not None:
+        body["seed"] = seed
+    if parallel_tool_calls is not None:
+        body["parallel_tool_calls"] = parallel_tool_calls
+    if typical_p is not None:
+        body["typical_p"] = typical_p
+    if top_n_sigma is not None:
+        body["top_n_sigma"] = top_n_sigma
+    if repeat_last_n is not None:
+        body["repeat_last_n"] = repeat_last_n
+    if dynatemp_range is not None:
+        body["dynatemp_range"] = dynatemp_range
+    if dynatemp_exponent is not None:
+        body["dynatemp_exponent"] = dynatemp_exponent
+    if mirostat is not None:
+        body["mirostat"] = mirostat
+    if mirostat_tau is not None:
+        body["mirostat_tau"] = mirostat_tau
+    if mirostat_eta is not None:
+        body["mirostat_eta"] = mirostat_eta
+    if dry_multiplier is not None:
+        body["dry_multiplier"] = dry_multiplier
+    if dry_base is not None:
+        body["dry_base"] = dry_base
+    if dry_allowed_length is not None:
+        body["dry_allowed_length"] = dry_allowed_length
+    if dry_penalty_last_n is not None:
+        body["dry_penalty_last_n"] = dry_penalty_last_n
+    if xtc_probability is not None:
+        body["xtc_probability"] = xtc_probability
+    if xtc_threshold is not None:
+        body["xtc_threshold"] = xtc_threshold
+    if min_keep is not None:
+        body["min_keep"] = min_keep
+    if ignore_eos is not None:
+        body["ignore_eos"] = ignore_eos
+    if min_tokens is not None:
+        body["min_tokens"] = min_tokens
+    if skip_special_tokens is not None:
+        body["skip_special_tokens"] = skip_special_tokens
+    if spaces_between_special_tokens is not None:
+        body["spaces_between_special_tokens"] = spaces_between_special_tokens
+    if include_stop_str_in_output is not None:
+        body["include_stop_str_in_output"] = include_stop_str_in_output
+    if truncate_prompt_tokens is not None:
+        body["truncate_prompt_tokens"] = truncate_prompt_tokens
+    if n_keep is not None:
+        body["n_keep"] = n_keep
+    if n_probs is not None:
+        body["n_probs"] = n_probs
+    if cache_prompt is not None:
+        body["cache_prompt"] = cache_prompt
+    if return_tokens is not None:
+        body["return_tokens"] = return_tokens
+    if timings_per_token is not None:
+        body["timings_per_token"] = timings_per_token
+    if post_sampling_probs is not None:
+        body["post_sampling_probs"] = post_sampling_probs
     if response_format is not None:
-        # llama-server applies a GBNF grammar derived from the JSON schema
-        # when response_format is present. Field is documented flat at the
-        # request root (tools/server/README.md), which is also what the
-        # OpenAI SDK produces by spreading extra_body into the body top.
+        # llama-server applies a GBNF grammar from the JSON schema.
+        # Field is documented flat at the request root.
         body["response_format"] = response_format
     if chat_template_kwargs is not None:
-        # Propagate reasoning / template overrides (e.g. enable_thinking)
-        # so llama-server renders the Jinja template in the mode the caller
-        # asked for instead of whatever default the model was loaded with.
+        # Reasoning / template overrides (e.g. enable_thinking) so
+        # llama-server renders the Jinja template in the requested mode.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
 
@@ -5303,6 +5533,7 @@ async def _anthropic_passthrough_stream(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    parallel_tool_calls = None,
     session_id = None,
     cancel_id = None,
 ):
@@ -5321,6 +5552,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        parallel_tool_calls = parallel_tool_calls,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
     )
@@ -5331,7 +5563,9 @@ async def _anthropic_passthrough_stream(
     _tracker.__enter__()
 
     async def _stream():
-        emitter = AnthropicPassthroughEmitter()
+        emitter = AnthropicPassthroughEmitter(
+            parallel_tool_calls = parallel_tool_calls,
+        )
         for line in emitter.start(message_id, model_name):
             yield line
 
@@ -5455,6 +5689,7 @@ async def _anthropic_passthrough_non_streaming(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    parallel_tool_calls = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -5470,6 +5705,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        parallel_tool_calls = parallel_tool_calls,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
     )
@@ -5496,6 +5732,10 @@ async def _anthropic_passthrough_non_streaming(
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
     tool_calls = message.get("tool_calls") or []
+    # parallel_tool_calls=False: cap to 1 tool_use block; llama.cpp flag
+    # isn't enforced by every jinja template (ggml-org/llama.cpp#22043).
+    if parallel_tool_calls is False and tool_calls:
+        tool_calls = tool_calls[:1]
     for tc in tool_calls:
         fn = tc.get("function") or {}
         try:
@@ -5798,6 +6038,36 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
         min_p = payload.min_p,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
+        frequency_penalty = payload.frequency_penalty,
+        seed = payload.seed,
+        parallel_tool_calls = payload.parallel_tool_calls,
+        typical_p = payload.typical_p,
+        top_n_sigma = payload.top_n_sigma,
+        repeat_last_n = payload.repeat_last_n,
+        dynatemp_range = payload.dynatemp_range,
+        dynatemp_exponent = payload.dynatemp_exponent,
+        mirostat = payload.mirostat,
+        mirostat_tau = payload.mirostat_tau,
+        mirostat_eta = payload.mirostat_eta,
+        dry_multiplier = payload.dry_multiplier,
+        dry_base = payload.dry_base,
+        dry_allowed_length = payload.dry_allowed_length,
+        dry_penalty_last_n = payload.dry_penalty_last_n,
+        xtc_probability = payload.xtc_probability,
+        xtc_threshold = payload.xtc_threshold,
+        min_keep = payload.min_keep,
+        ignore_eos = payload.ignore_eos,
+        min_tokens = payload.min_tokens,
+        skip_special_tokens = payload.skip_special_tokens,
+        spaces_between_special_tokens = payload.spaces_between_special_tokens,
+        include_stop_str_in_output = payload.include_stop_str_in_output,
+        truncate_prompt_tokens = payload.truncate_prompt_tokens,
+        n_keep = payload.n_keep,
+        n_probs = payload.n_probs,
+        cache_prompt = payload.cache_prompt,
+        return_tokens = payload.return_tokens,
+        timings_per_token = payload.timings_per_token,
+        post_sampling_probs = payload.post_sampling_probs,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,

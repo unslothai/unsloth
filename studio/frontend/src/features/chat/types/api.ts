@@ -314,12 +314,81 @@ export interface OpenAIChatCompletionsRequest {
    * the Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
-  /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
-   * silently on every other model + provider. See
-   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
-   */
+  /** OpenAI Chat only. Range -2..2. */
+  frequency_penalty?: number;
+  /** OAI Chat + most OAI-compat. Responses + Anthropic drop. */
+  seed?: number;
+  /** OAI Chat caps at 4; Anthropic mapped to `stop_sequences`. */
+  stop?: string[];
+  /** Per-provider enum (see getServiceTierOptions); external_provider.py drops unsupported values. */
+  service_tier?:
+    | "auto"
+    | "default"
+    | "flex"
+    | "priority"
+    | "scale"
+    | "standard_only";
+  /** Anthropic inverts to `disable_parallel_tool_use`. */
+  parallel_tool_calls?: boolean;
+  /** llama.cpp `typ_p`. 1.0 disables. */
+  typical_p?: number;
+  /** llama.cpp `top_n_sigma`. -1 disables. */
+  top_n_sigma?: number;
+  /** llama.cpp `repeat_last_n`. 0 disables, -1 = ctx-size. */
+  repeat_last_n?: number;
+  /** llama.cpp `dynatemp_range`. 0 disables. */
+  dynatemp_range?: number;
+  /** llama.cpp `dynatemp_exponent`. Pairs with dynatemp_range. */
+  dynatemp_exponent?: number;
+  /** llama.cpp `mirostat` (0/1/2). 0 disables. */
+  mirostat?: number;
+  mirostat_tau?: number;
+  mirostat_eta?: number;
+  /** OpenRouter `top_a`. https://openrouter.ai/docs/api/reference/parameters */
+  top_a?: number;
+  /** Anthropic Opus 4.6 / 4.7 only. https://platform.claude.com/docs/en/build-with-claude/fast-mode */
   fast_mode?: boolean | null;
+  /**
+   * llama.cpp DRY sampler (4 fields). `dry_multiplier=0` disables.
+   * https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+   */
+  dry_multiplier?: number;
+  /** Default 1.75. */
+  dry_base?: number;
+  /** Default 2. */
+  dry_allowed_length?: number;
+  /** 0 disables, -1 = ctx-size. */
+  dry_penalty_last_n?: number;
+  /** llama.cpp XTC. 0 disables. */
+  xtc_probability?: number;
+  /** Default 0.1. */
+  xtc_threshold?: number;
+  /** llama.cpp `min_keep`. */
+  min_keep?: number;
+  /** Continue past EOS. llama.cpp + vLLM. */
+  ignore_eos?: boolean;
+  /** Min tokens before stop / EOS. llama.cpp + vLLM. */
+  min_tokens?: number;
+  /** vLLM only. */
+  skip_special_tokens?: boolean;
+  /** vLLM only. */
+  spaces_between_special_tokens?: boolean;
+  /** vLLM only. Useful for agentic tools. */
+  include_stop_str_in_output?: boolean;
+  /** vLLM only. Left-truncate the prompt. */
+  truncate_prompt_tokens?: number;
+  /** llama.cpp `n_keep`. -1 = keep all. */
+  n_keep?: number;
+  /** llama.cpp `n_probs`. */
+  n_probs?: number;
+  /** llama.cpp `cache_prompt`. */
+  cache_prompt?: boolean;
+  /** llama.cpp `return_tokens` (debug). */
+  return_tokens?: boolean;
+  /** llama.cpp `timings_per_token` (perf debug). */
+  timings_per_token?: boolean;
+  /** llama.cpp `post_sampling_probs` (sampler debug). */
+  post_sampling_probs?: boolean;
 }
 
 export interface OpenAIChatDelta {

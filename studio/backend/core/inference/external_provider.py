@@ -29,30 +29,62 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
-# the API returns 400 "<param> is deprecated for this model" if any of
-# them is set to a non-default value. The "Sampling parameters removed"
-# section of the 4.7 release notes is the authoritative reference:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
-# 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
-# the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
-# anchor keeps future versions (e.g. claude-opus-5) unaffected.
+def _normalize_stop_for_provider(
+    stop: Optional[Union[str, list[str]]],
+    provider_info: dict[str, Any],
+) -> Optional[Union[str, list[str]]]:
+    """Apply per-provider stop_max / stop_max_bytes caps and dedup.
+
+    Returns None when nothing survives the filter so callers can omit
+    the field. Single strings are returned verbatim when they fit.
+    """
+    if not stop:
+        return None
+
+    stop_max = int(provider_info.get("stop_max", 16))
+    stop_max_bytes_raw = provider_info.get("stop_max_bytes")
+    stop_max_bytes = int(stop_max_bytes_raw) if stop_max_bytes_raw is not None else None
+
+    def allowed(s: str) -> bool:
+        if not s:
+            return False
+        if stop_max_bytes is not None and len(s.encode("utf-8")) > stop_max_bytes:
+            logger.warning(
+                "dropping stop sequence longer than %d bytes",
+                stop_max_bytes,
+            )
+            return False
+        return True
+
+    if isinstance(stop, str):
+        return stop if allowed(stop) else None
+    if isinstance(stop, list):
+        sequences = list(
+            dict.fromkeys(s for s in stop if isinstance(s, str) and allowed(s))
+        )
+        if len(sequences) > stop_max:
+            logger.warning(
+                "stop sequences truncated to %d entries (received %d)",
+                stop_max,
+                len(sequences),
+            )
+            sequences = sequences[:stop_max]
+        return sequences or None
+    return None
+
+
+# Opus 4.7 removed temperature/top_p/top_k (400s on any non-default).
+# Only Opus shipped in 4.7; 3.x and 4.5/4.6 still accept all three.
+# Trailing -4-7[-.]/EOL anchor keeps future families (claude-opus-5
+# etc) unaffected.
+# https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
-    Anchored to the URL host so an attacker can't bypass the gate with a
-    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
-    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
-    substring-sanitization). Used to scope cloud-only Responses-API
-    extensions (prompt_cache_retention, context_management compaction,
-    container shell tool) that 400 on non-cloud OpenAI-compatible
-    servers (ollama / llama.cpp / vLLM).
-
-    Azure Foundry resources are scoped to
-    ``<resource-name>.openai.azure.com``; match any subdomain via an
-    `endswith` on the lowercased hostname, with the leading dot so
-    `openai.azure.com` itself doesn't slip through (there is no
-    apex-hosted Azure Foundry endpoint).
+    Host-anchored against subdomain-injection (api.openai.com.attacker.com).
+    Gates Responses-API extensions (prompt_cache_retention, context_management,
+    container shell) that 400 on non-cloud OAI-compat servers. Azure Foundry
+    matches via .openai.azure.com suffix; leading dot blocks the apex.
     """
     if not base_url:
         return False
@@ -65,9 +97,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
-    r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
-)
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-opus-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
@@ -866,9 +896,42 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        stop: Optional[Union[str, list[str]]] = None,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        typical_p: Optional[float] = None,
+        top_n_sigma: Optional[float] = None,
+        repeat_last_n: Optional[int] = None,
+        dynatemp_range: Optional[float] = None,
+        dynatemp_exponent: Optional[float] = None,
+        mirostat: Optional[int] = None,
+        mirostat_tau: Optional[float] = None,
+        mirostat_eta: Optional[float] = None,
+        top_a: Optional[float] = None,
+        dry_multiplier: Optional[float] = None,
+        dry_base: Optional[float] = None,
+        dry_allowed_length: Optional[int] = None,
+        dry_penalty_last_n: Optional[int] = None,
+        xtc_probability: Optional[float] = None,
+        xtc_threshold: Optional[float] = None,
+        min_keep: Optional[int] = None,
+        ignore_eos: Optional[bool] = None,
+        min_tokens: Optional[int] = None,
+        skip_special_tokens: Optional[bool] = None,
+        spaces_between_special_tokens: Optional[bool] = None,
+        include_stop_str_in_output: Optional[bool] = None,
+        truncate_prompt_tokens: Optional[int] = None,
+        n_keep: Optional[int] = None,
+        n_probs: Optional[int] = None,
+        cache_prompt: Optional[bool] = None,
+        return_tokens: Optional[bool] = None,
+        timings_per_token: Optional[bool] = None,
+        post_sampling_probs: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -877,13 +940,14 @@ class ExternalProviderClient:
         For OpenAI-compatible providers, lines are forwarded verbatim.
         For Anthropic, the native Messages API SSE is translated to OpenAI format.
 
-        ``top_k`` and ``presence_penalty`` are forwarded only when the caller
-        supplies a value the provider accepts — the frontend's
-        provider-capability map already filters these per provider, so we
-        treat them as opt-in here.
+        Optional sampling extras (``top_k``, ``presence_penalty``,
+        ``frequency_penalty``, ``seed``, ``stop``, ``service_tier``,
+        ``parallel_tool_calls``) are opt-in. Per-provider helpers silently
+        drop fields the upstream rejects (Responses: seed/freq/stop;
+        Anthropic: seed/freq/logprobs).
 
-        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
-        dropped elsewhere); adds the beta header and ``speed: "fast"``.
+        ``fast_mode``: Anthropic Opus 4.6/4.7 only; adds the beta header
+        and ``speed: "fast"``.
         """
         # tool_choice="none" hard-disables hosted/builtin tools across
         # every provider so enabled_tools cannot accidentally bill or leak.
@@ -911,6 +975,7 @@ class ExternalProviderClient:
                     reasoning_effort,
                     tools,
                     tool_choice,
+                    stop = stop,
                 ):
                     yield line
                 return
@@ -929,6 +994,9 @@ class ExternalProviderClient:
                 prompt_cache_ttl,
                 compaction_threshold,
                 tool_choice,
+                stop = stop,
+                service_tier = service_tier,
+                parallel_tool_calls = parallel_tool_calls,
                 fast_mode = fast_mode,
             ):
                 yield line
@@ -954,6 +1022,8 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                service_tier = service_tier,
+                parallel_tool_calls = parallel_tool_calls,
             ):
                 yield line
             return
@@ -978,6 +1048,11 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                frequency_penalty = frequency_penalty,
+                seed = seed,
+                stop = stop,
+                parallel_tool_calls = parallel_tool_calls,
+                presence_penalty = presence_penalty,
             ):
                 yield line
             return
@@ -997,14 +1072,99 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        # Drop fields the registry flags as unusable so reasoning-class
-        # models with fixed defaults (Kimi k2.6 etc) don't 400 on pydantic
-        # default values that the route layer still fills in.
+        # Optional sampling extras; `seed_field` renames seed (Mistral),
+        # `body_omit` strips upstream-rejected fields.
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
+        if frequency_penalty is not None:
+            body["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            # Mistral renames `seed` to `random_seed` on /v1/chat/completions.
+            seed_field = provider_info.get("seed_field", "seed")
+            body[seed_field] = seed
+        normalized_stop = _normalize_stop_for_provider(stop, provider_info)
+        if normalized_stop:
+            body["stop"] = normalized_stop
+        # service_tier is OAI-Chat-only here (accepts_service_tier registry
+        # opt-in); Anthropic/Responses branches set it themselves.
+        if service_tier is not None and provider_info.get(
+            "accepts_service_tier", False
+        ):
+            body["service_tier"] = service_tier
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = parallel_tool_calls
+
+        # Extended OAI-compat samplers (OpenRouter `top_a`, vLLM output
+        # knobs, llama.cpp samplers on custom proxies). Each is gated `is
+        # not None` so explicit 0/False reach the wire; `body_omit` below
+        # strips fields the upstream rejects.
+        if typical_p is not None:
+            body["typical_p"] = typical_p
+        if top_n_sigma is not None:
+            body["top_n_sigma"] = top_n_sigma
+        if repeat_last_n is not None:
+            body["repeat_last_n"] = repeat_last_n
+        if dynatemp_range is not None:
+            body["dynatemp_range"] = dynatemp_range
+        if dynatemp_exponent is not None:
+            body["dynatemp_exponent"] = dynatemp_exponent
+        if mirostat is not None:
+            body["mirostat"] = mirostat
+        if mirostat_tau is not None:
+            body["mirostat_tau"] = mirostat_tau
+        if mirostat_eta is not None:
+            body["mirostat_eta"] = mirostat_eta
+        if top_a is not None:
+            body["top_a"] = top_a
+        if dry_multiplier is not None:
+            body["dry_multiplier"] = dry_multiplier
+        if dry_base is not None:
+            body["dry_base"] = dry_base
+        if dry_allowed_length is not None:
+            body["dry_allowed_length"] = dry_allowed_length
+        if dry_penalty_last_n is not None:
+            body["dry_penalty_last_n"] = dry_penalty_last_n
+        if xtc_probability is not None:
+            body["xtc_probability"] = xtc_probability
+        if xtc_threshold is not None:
+            body["xtc_threshold"] = xtc_threshold
+        if min_keep is not None:
+            body["min_keep"] = min_keep
+        if ignore_eos is not None:
+            body["ignore_eos"] = ignore_eos
+        if min_tokens is not None:
+            body["min_tokens"] = min_tokens
+        if skip_special_tokens is not None:
+            body["skip_special_tokens"] = skip_special_tokens
+        if spaces_between_special_tokens is not None:
+            body["spaces_between_special_tokens"] = spaces_between_special_tokens
+        if include_stop_str_in_output is not None:
+            body["include_stop_str_in_output"] = include_stop_str_in_output
+        if truncate_prompt_tokens is not None:
+            body["truncate_prompt_tokens"] = truncate_prompt_tokens
+        if n_keep is not None:
+            body["n_keep"] = n_keep
+        if n_probs is not None:
+            body["n_probs"] = n_probs
+        if cache_prompt is not None:
+            body["cache_prompt"] = cache_prompt
+        if return_tokens is not None:
+            body["return_tokens"] = return_tokens
+        if timings_per_token is not None:
+            body["timings_per_token"] = timings_per_token
+        if post_sampling_probs is not None:
+            body["post_sampling_probs"] = post_sampling_probs
+
+        # Drop body fields the provider's registry entry locks down
+        # (e.g. Kimi k2.5/k2.6 only accept temperature=1, top_p=1).
+        # Also pop the renamed seed field so `body_omit=("seed",)` on a
+        # provider with `seed_field` rename still strips correctly.
+        _seed_field = provider_info.get("seed_field", "seed")
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+            if field == "seed" and _seed_field != "seed":
+                body.pop(_seed_field, None)
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is
         # always on (ignore the toggle); kimi-k2.6 defaults on, can be
@@ -1345,6 +1505,12 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         max_tokens: Optional[int],
+        *,
+        frequency_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        stop: Optional[Union[str, list[str]]] = None,
+        parallel_tool_calls: Optional[bool] = None,
+        presence_penalty: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Kimi $web_search round-trip.
@@ -1384,11 +1550,25 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
 
-        # Strip body fields the Kimi registry declares unusable
-        # (temperature/top_p — see body_omit in providers.py).
+        # Kimi-with-search returns early before the default OAI-compat
+        # body build; re-apply provider-aware sampling/stop here.
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
+        if presence_penalty is not None:
+            body["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            body["frequency_penalty"] = frequency_penalty
+        if seed is not None:
+            seed_field = provider_info.get("seed_field", "seed")
+            body[seed_field] = seed
+        normalized_stop = _normalize_stop_for_provider(stop, provider_info)
+        if normalized_stop:
+            body["stop"] = normalized_stop
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = parallel_tool_calls
+
+        # Drop body fields the provider's registry entry locks down.
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
@@ -1736,6 +1916,9 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tool_choice: Optional[Any] = None,
         *,
+        stop: Optional[Union[str, list[str]]] = None,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
         fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -2037,6 +2220,32 @@ class ExternalProviderClient:
             body["temperature"] = temperature
         if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
+
+        # Anthropic body-knob mapping: stop -> stop_sequences (ws-stripped,
+        # dedup), service_tier (auto|standard_only). parallel_tool_calls is
+        # handled after tools wiring (Anthropic nests under tool_choice).
+        if stop:
+            sequences: list[str]
+            if isinstance(stop, str):
+                sequences = [stop] if stop.strip() else []
+            else:
+                # Anthropic rejects whitespace-only stop_sequences ("must
+                # contain non-whitespace"); 16-cap is a client-side guard
+                # (undocumented max; every SDK uses 16, Bedrock at 8191).
+                sequences = list(
+                    dict.fromkeys(s for s in stop if isinstance(s, str) and s.strip())
+                )
+            if len(sequences) > 16:
+                logger.warning(
+                    "stop_sequences truncated to 16 entries "
+                    "(received %d, client-side guard ceiling)",
+                    len(sequences),
+                )
+                sequences = sequences[:16]
+            if sequences:
+                body["stop_sequences"] = sequences
+        if service_tier in ("auto", "standard_only"):
+            body["service_tier"] = service_tier
         # Anthropic only caches a prefix when at least one cache_control
         # marker is attached to it — the frontend defaults
         # enable_prompt_caching to True for Anthropic, so treat `None` the
@@ -2231,6 +2440,16 @@ class ExternalProviderClient:
             # persists. Stale ids 4xx and clear via container_invalidated.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
+
+        # parallel_tool_calls=False -> tool_choice.disable_parallel_tool_use=True
+        # (top-level 400s; no-op without tools).
+        # https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use
+        if parallel_tool_calls is False and body.get("tools"):
+            tc = body.get("tool_choice")
+            if not isinstance(tc, dict):
+                tc = {"type": "auto"}
+            tc["disable_parallel_tool_use"] = True
+            body["tool_choice"] = tc
 
         # Server-side compaction (beta `compact-2026-01-12`). Clamps
         # below-min thresholds to 50K so the request doesn't 400.
@@ -3235,6 +3454,8 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        *,
+        stop: Optional[Union[str, list[str]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -3927,6 +4148,14 @@ class ExternalProviderClient:
                 gen_config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget,
                 }
+
+        # Gemini's generationConfig.stopSequences (max 5 per native docs).
+        # https://ai.google.dev/api/generate-content#generationconfig
+        if stop is not None:
+            seqs = [stop] if isinstance(stop, str) else list(stop)
+            seqs = [s for s in seqs if isinstance(s, str) and s][:5]
+            if seqs:
+                gen_config["stopSequences"] = seqs
 
         if gen_config:
             body["generationConfig"] = gen_config
@@ -4951,6 +5180,9 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        *,
+        service_tier: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -5272,6 +5504,12 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        # Responses: auto|default|flex|priority (SDK type lists "scale"
+        # but server 400s; Scale Tier stays on Chat Completions).
+        if service_tier in ("auto", "default", "flex", "priority"):
+            body["service_tier"] = service_tier
+        if parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = bool(parallel_tool_calls)
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning
