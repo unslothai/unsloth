@@ -617,13 +617,21 @@ export function SharedComposer({
             file,
           );
           if (alreadyIndexed) {
-            setPendingDocs((prev) =>
-              prev.map((d) =>
+            // Drop the just-added chip if this doc is already represented
+            // so the composer never shows the same document twice.
+            setPendingDocs((prev) => {
+              const dupExists = prev.some(
+                (d) => d.id !== localChipId && d.documentId === documentId,
+              );
+              if (dupExists) {
+                return prev.filter((d) => d.id !== localChipId);
+              }
+              return prev.map((d) =>
                 d.id === localChipId
                   ? { ...d, status: "ready", documentId }
                   : d,
-              ),
-            );
+              );
+            });
             toast.info(`${file.name} is already indexed`);
             if (
               scope?.kind === "thread" &&

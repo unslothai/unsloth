@@ -128,14 +128,23 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             file,
           );
           if (alreadyIndexed) {
-            // Identical file already in this scope — no re-index.
-            setPendingDocs((prev) =>
-              prev.map((d) =>
+            // Identical file already in this scope — no re-index. If a
+            // chip for this document already exists, drop the one we just
+            // added so the composer doesn't show the same doc twice;
+            // otherwise mark this chip ready.
+            setPendingDocs((prev) => {
+              const dupExists = prev.some(
+                (d) => d.id !== localChipId && d.documentId === documentId,
+              );
+              if (dupExists) {
+                return prev.filter((d) => d.id !== localChipId);
+              }
+              return prev.map((d) =>
                 d.id === localChipId
                   ? { ...d, status: "ready", documentId }
                   : d,
-              ),
-            );
+              );
+            });
             toast.info(`${file.name} is already indexed`);
             if (
               scope?.kind === "thread" &&
