@@ -140,7 +140,9 @@ def cache_tools(server_id: str, tools: list[dict]) -> None:
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
     cooloff = (
-        OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+        OAUTH_FAILED_PROBE_COOLOFF_SECONDS
+        if use_oauth
+        else FAILED_PROBE_COOLOFF_SECONDS
     )
     _probe_cooloff_until[server_id] = time.monotonic() + cooloff
 

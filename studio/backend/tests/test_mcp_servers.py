@@ -962,7 +962,9 @@ def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
     assert mcp_client.get_cached_tools("s1") is None  # ...nor cached
 
 
-def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monkeypatch):
+def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(
+    tmp_path, monkeypatch
+):
     """A down server is probed once, then skipped during the cool-off instead
     of being re-probed (and re-hung) on every send."""
     import asyncio
