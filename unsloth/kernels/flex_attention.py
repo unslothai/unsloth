@@ -35,7 +35,7 @@ try:
     _flex_attention = torch.compile(
         _flex_attention, dynamic = True, options = torch_compile_options
     )
-    HAS_FLEX_ATTENTION = False
+    HAS_FLEX_ATTENTION = True
 except:
     HAS_FLEX_ATTENTION = False
 
