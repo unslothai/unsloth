@@ -11,7 +11,10 @@ peft==0.18.1
 
 # TRL and related packages
 trl==0.23.1
-git+https://github.com/meta-pytorch/OpenEnv.git
+# OpenEnv moved from meta-pytorch/ to the huggingface/ org; the old URL
+# relies on a GitHub redirect that uv's git cache can fail to follow
+# (manifests as a credential prompt). Point at the canonical repo.
+git+https://github.com/huggingface/OpenEnv.git
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 # Bumped from 5.2.0 to expose the `sentence_transformers.base.modules`
