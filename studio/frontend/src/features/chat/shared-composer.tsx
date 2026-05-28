@@ -39,6 +39,7 @@ import { Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { useRagStore } from "@/features/rag/stores/rag-store";
+import { acquireIndexSlot, releaseIndexSlot } from "./utils/rag-index-queue";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -590,6 +591,17 @@ export function SharedComposer({
         { id: localChipId, file, status: "uploading" },
       ]);
       void (async () => {
+        // Hold an indexing slot for the document's whole lifecycle so bulk /
+        // folder uploads drain at the configured concurrency. Released on
+        // every terminal path below.
+        await acquireIndexSlot();
+        let slotReleased = false;
+        const releaseSlot = () => {
+          if (!slotReleased) {
+            slotReleased = true;
+            releaseIndexSlot();
+          }
+        };
         const ragSource = useChatRuntimeStore.getState().ragSource;
         let scope:
           | { kind: "kb"; kbId: string }
@@ -612,6 +624,7 @@ export function SharedComposer({
               ),
             );
             toast.error("Could not create thread for upload");
+            releaseSlot();
             return;
           }
           scope = { kind: "thread", threadId };
@@ -645,6 +658,7 @@ export function SharedComposer({
             ) {
               useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
             }
+            releaseSlot();
             return;
           }
           setPendingDocs((prev) =>
@@ -670,6 +684,7 @@ export function SharedComposer({
                     .getState()
                     .setRagSource({ kind: "thread" });
                 }
+                releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
@@ -678,6 +693,7 @@ export function SharedComposer({
                       : d,
                   ),
                 );
+                releaseSlot();
               }
             },
           });
@@ -692,6 +708,7 @@ export function SharedComposer({
             ),
           );
           toast.error(`Document upload failed: ${message}`);
+          releaseSlot();
         }
       })();
     },

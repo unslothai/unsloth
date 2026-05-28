@@ -330,6 +330,10 @@ type ChatRuntimeStore = {
   ragTopK: number;
   // Cosine floor; 0 disables. Set > 0 to drop off-topic hits.
   ragMinScore: number;
+  // Max documents indexed in parallel (bulk/folder uploads drain at this
+  // rate). 1 = sequential. Keeps many concurrent ingestion subprocesses
+  // from thrashing the GPU/CPU.
+  ragIndexConcurrency: number;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -384,6 +388,7 @@ type ChatRuntimeStore = {
   setEnableRerank: (value: boolean) => void;
   setRagTopK: (value: number) => void;
   setRagMinScore: (value: number) => void;
+  setRagIndexConcurrency: (value: number) => void;
   setRagToolEnabled: (value: boolean) => void;
 };
 
@@ -405,7 +410,8 @@ type ScalarSettingKey =
   | "ragMode"
   | "enableRerank"
   | "ragTopK"
-  | "ragMinScore";
+  | "ragMinScore"
+  | "ragIndexConcurrency";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -445,6 +451,7 @@ const SCALAR_SETTING_KEYS = [
   "enableRerank",
   "ragTopK",
   "ragMinScore",
+  "ragIndexConcurrency",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -660,6 +667,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   enableRerank: false,
   ragTopK: 5,
   ragMinScore: 0,
+  ragIndexConcurrency: 1,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -933,6 +941,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("ragMinScore", ragMinScore, state.ragMinScore);
       return { ragMinScore };
+    }),
+  setRagIndexConcurrency: (ragIndexConcurrency) =>
+    set((state) => {
+      const clamped = Math.max(1, Math.min(8, Math.round(ragIndexConcurrency)));
+      setScalarSettingVersion(
+        "ragIndexConcurrency",
+        clamped,
+        state.ragIndexConcurrency,
+      );
+      return { ragIndexConcurrency: clamped };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
     set(() => {

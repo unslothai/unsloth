@@ -38,6 +38,7 @@ export interface PersistedChatSettings {
   enableRerank?: boolean;
   ragTopK?: number;
   ragMinScore?: number;
+  ragIndexConcurrency?: number;
 }
 
 interface ChatSettingsResponse {

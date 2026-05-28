@@ -494,6 +494,12 @@ export function ChatSettingsPanel({
   const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
   const setRagTopK = useChatRuntimeStore((s) => s.setRagTopK);
+  const ragIndexConcurrency = useChatRuntimeStore(
+    (s) => s.ragIndexConcurrency,
+  );
+  const setRagIndexConcurrency = useChatRuntimeStore(
+    (s) => s.setRagIndexConcurrency,
+  );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const { knowledgeBases, deleteKB } = useKnowledgeBases();
   const { documents: threadDocs, remove: removeThreadDoc } = useThreadDocuments(
@@ -1702,6 +1708,30 @@ export function ChatSettingsPanel({
                     }}
                     disabled={!ragEnabled}
                   />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[12px] font-medium text-muted-foreground">
+                      Parallel indexing
+                    </label>
+                    <span className="text-[12px] tabular-nums text-muted-foreground">
+                      {ragIndexConcurrency}
+                    </span>
+                  </div>
+                  <Slider
+                    value={[ragIndexConcurrency]}
+                    min={1}
+                    max={8}
+                    step={1}
+                    onValueChange={([v]) =>
+                      v != null && setRagIndexConcurrency(v)
+                    }
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    How many documents index at once when you upload several
+                    (or a folder). 1 = one at a time. Higher is faster but uses
+                    more GPU/CPU.
+                  </p>
                 </div>
               </div>
             </CollapsibleSection>

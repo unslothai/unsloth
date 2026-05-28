@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { acquireIndexSlot, releaseIndexSlot } from "../utils/rag-index-queue";
 
 export type PendingDoc = {
   id: string;
@@ -90,6 +91,17 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       ]);
 
       void (async () => {
+        // Hold an indexing slot for this document's whole lifecycle so bulk /
+        // folder uploads drain at the configured concurrency instead of
+        // spawning every ingestion at once. Released on every terminal path.
+        await acquireIndexSlot();
+        let slotReleased = false;
+        const releaseSlot = () => {
+          if (!slotReleased) {
+            slotReleased = true;
+            releaseIndexSlot();
+          }
+        };
         const ragSource = useChatRuntimeStore.getState().ragSource;
         let scope:
           | { kind: "kb"; kbId: string }
@@ -115,6 +127,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
               ),
             );
             toast.error("Could not create thread for upload");
+            releaseSlot();
             return;
           }
           scope = { kind: "thread", threadId };
@@ -152,6 +165,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             ) {
               useChatRuntimeStore.getState().setRagSource({ kind: "thread" });
             }
+            releaseSlot();
             return;
           }
           setPendingDocs((prev) =>
@@ -180,6 +194,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                     .getState()
                     .setRagSource({ kind: "thread" });
                 }
+                releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
                   prev.map((d) =>
@@ -188,6 +203,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                       : d,
                   ),
                 );
+                releaseSlot();
               }
             },
           });
@@ -201,6 +217,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             ),
           );
           toast.error(`Document upload failed: ${message}`);
+          releaseSlot();
         }
       })();
     },

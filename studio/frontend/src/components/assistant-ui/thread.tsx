@@ -81,6 +81,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
+  FolderIcon,
   GlobeIcon,
   HeadphonesIcon,
   ImageIcon,
@@ -1243,10 +1244,21 @@ const ToolStatusDisplay: FC = () => {
 };
 
 // RAG-aware + button: picks doc formats and routes to ingest pipeline.
+// A second button picks a whole folder (webkitdirectory) and routes every
+// compatible file through the same pipeline (which drains at the configured
+// parallel-indexing rate).
 const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
   onSelect,
 }) => {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const selectCompatible = (files: FileList | null) => {
+    if (!files) return;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (f && isDocumentFile(f)) onSelect(f);
+    }
+  };
   return (
     <>
       <input
@@ -1256,12 +1268,23 @@ const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
         multiple
         className="hidden"
         onChange={(e) => {
-          const files = e.target.files;
-          if (!files) return;
-          for (let i = 0; i < files.length; i++) {
-            const f = files[i];
-            if (f && isDocumentFile(f)) onSelect(f);
-          }
+          selectCompatible(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        // webkitdirectory isn't in React's input prop types; set it on the
+        // element directly so the picker selects a folder (returns every
+        // file recursively, which selectCompatible then filters).
+        ref={(el) => {
+          folderInputRef.current = el;
+          if (el) el.setAttribute("webkitdirectory", "");
+        }}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          selectCompatible(e.target.files);
           e.target.value = "";
         }}
       />
@@ -1273,6 +1296,15 @@ const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
         onClick={() => inputRef.current?.click()}
       >
         <PaperclipIcon className="size-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        tooltip="Attach a folder for RAG"
+        aria-label="Attach a folder for RAG"
+        variant="ghost"
+        className="size-8 rounded-full text-muted-foreground"
+        onClick={() => folderInputRef.current?.click()}
+      >
+        <FolderIcon className="size-4" />
       </TooltipIconButton>
     </>
   );
