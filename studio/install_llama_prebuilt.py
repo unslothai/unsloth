@@ -114,12 +114,13 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
 
     When llama_tag is unset or "latest", point at /releases/latest. When the
     caller has pinned a specific tag (e.g. "b1260"), point at the same tag in
-    lemonade. Lemonade tags match `ggml-org/llama.cpp` upstream tags 1:1
-    (NOT `unslothai/llama.cpp` which has its own fork-specific tag namespace),
-    so passing an unsloth-fork tag to this helper will produce a 404 and the
-    caller will fall through to the upstream tarball. That is intentional:
-    pinned installs stay reproducible instead of silently drifting to whatever
-    lemonade ships as latest.
+    lemonade. Lemonade tracks `ggml-org/llama.cpp` build tags (e.g. "b1260")
+    but is NOT guaranteed to publish every upstream build -- lemonade may be
+    several builds behind ggml-org. Pinning to a specific tag that lemonade
+    skipped will produce a 404 and the caller falls through to the upstream
+    tarball; that is intentional so pinned installs stay reproducible.
+    Do NOT pass a `unslothai/llama.cpp` fork tag -- the fork uses its own
+    namespace and will always 404 against lemonade.
 
     The tag is URL-encoded with `safe=""` so an unexpected slash / hash / query
     character cannot reshape the URL.
@@ -1309,16 +1310,19 @@ def direct_linux_release_plan(
         # The "ubuntu" label is lemonade's asset naming convention only --
         # the binary is a manylinux-style glibc build that runs on Arch,
         # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
-        # If the host glibc is too old, validate_prebuilt_attempts will fail
-        # the lemonade attempt and we fall through to the source build.
+        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
+        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
+        # so the caller triggers the HIP source build, not silently install a
+        # CPU-only binary.
         lemonade_choice = resolve_lemonade_rocm_choice(
             host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
         if lemonade_choice is not None:
             attempts.append(lemonade_choice)
-    cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
-    if cpu_choice is not None:
-        attempts.append(cpu_choice)
+    else:
+        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        if cpu_choice is not None:
+            attempts.append(cpu_choice)
     if not attempts:
         raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
     approved_checksums = synthetic_checksums_for_release(
@@ -5314,6 +5318,15 @@ def apply_approved_hashes(
     approved_attempts: list[AssetChoice] = []
     missing_assets: list[str] = []
     for attempt in attempts:
+        # External prebuilts (e.g. lemonade-sdk) are not listed in the
+        # approved-hash manifest; they are explicitly documented as relying
+        # on functional validation only (llama-bench / smoke tests).
+        # Passing them through here lets the caller include both a lemonade
+        # attempt and a hash-approved upstream fallback in the same list
+        # without apply_approved_hashes discarding the lemonade entry.
+        if attempt.source_label == "lemonade":
+            approved_attempts.append(attempt)
+            continue
         approved = approved_hash_for_attempt(attempt)
         if approved is None:
             missing_assets.append(attempt.name)
