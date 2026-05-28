@@ -8,6 +8,8 @@ import { useIngestionEvents } from "../hooks/use-ingestion-events";
 const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   parse: "Parsing document",
+  caption_images: "Captioning images",
+  extract_images: "Extracting images",
   load_model: "Loading embedder",
   chunk: "Chunking text",
   embed: "Embedding chunks",
@@ -39,9 +41,10 @@ export function IngestionProgress({
   }
 
   if (event.type === "complete") {
+    const chunks = event.num_chunks;
     return (
       <div className={cn("text-xs text-muted-foreground", className)}>
-        Indexed {event.num_chunks} chunks
+        1 document and {chunks} chunk{chunks === 1 ? "" : "s"} indexed
       </div>
     );
   }

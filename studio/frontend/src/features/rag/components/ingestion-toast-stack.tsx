@@ -79,7 +79,7 @@ export function IngestionToastStack() {
                     {isError
                       ? "Ingestion failed"
                       : event.type === "complete"
-                        ? "Indexed"
+                        ? "RAG index ready"
                         : "Indexing document"}
                   </span>
                   <IngestionProgress jobId={jobId} />
