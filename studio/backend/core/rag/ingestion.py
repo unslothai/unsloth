@@ -64,6 +64,20 @@ def _subprocess_worker(
     vlm_url: str | None = None,
     vlm_model: str | None = None,
 ) -> None:
+    # Spawned subprocess: structlog isn't configured here (the parent's
+    # setup runs in the FastAPI process only), so configure it the same
+    # way so captioner / parser logs render as JSON like the rest, not
+    # structlog's default dev ConsoleRenderer.
+    try:
+        import os as _os
+
+        from loggers.config import LogConfig
+
+        LogConfig.setup_logging(
+            env = _os.getenv("ENVIRONMENT_TYPE", "production"),
+        )
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from core.rag.captioner import caption_images
         from core.rag.chunking import chunk_pages

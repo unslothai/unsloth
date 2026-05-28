@@ -170,13 +170,7 @@ def caption_images(
         if vlm_url and vlm_model:
             endpoint = f"{vlm_url.rstrip('/')}/v1/chat/completions"
             model_name = vlm_model
-            logger.info(
-                "caption_images: using loaded chat VLM",
-                endpoint = endpoint,
-                model = model_name,
-            )
         else:
-            logger.info("caption_images: chat VLM unavailable, loading helper")
             loaded = _load_helper_vlm()
             if loaded is None:
                 logger.warning(
@@ -186,20 +180,12 @@ def caption_images(
             helper_backend, helper_base_url, helper_model_name = loaded
             endpoint = f"{helper_base_url.rstrip('/')}/v1/chat/completions"
             model_name = helper_model_name
-            logger.info("caption_images: using helper VLM", endpoint = endpoint)
 
         out: list[str] = []
         with httpx.Client(timeout = _REQUEST_TIMEOUT_SECONDS) as client:
             for idx, blob in enumerate(image_bytes_list):
                 try:
-                    caption = _post_one(client, endpoint, model_name, blob)
-                    out.append(caption)
-                    logger.info(
-                        "caption_images: per-image done",
-                        idx = idx,
-                        caption_len = len(caption),
-                        preview = caption[:80],
-                    )
+                    out.append(_post_one(client, endpoint, model_name, blob))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "caption_images: per-image request failed",
