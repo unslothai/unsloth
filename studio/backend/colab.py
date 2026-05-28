@@ -163,67 +163,26 @@ def _show_and_embed(port: int):
         # when multiple Studio instances are embedded in the same notebook.
         iframe_id = f"unsloth-studio-{port}"
 
-        display(
-            HTML(f"""
-<div id="{iframe_id}-wrap" style="position:relative;width:100%;">
-  <iframe
-    id="{iframe_id}"
-    src="{url}"
-    style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
-    allow="clipboard-read; clipboard-write"
-  ></iframe>
-  <button
-    id="{iframe_id}-fs"
-    title="Fullscreen"
-    style="position:absolute;top:10px;right:10px;z-index:9999;
-           background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:6px;
-           width:34px;height:34px;cursor:pointer;font-size:16px;
-           display:flex;align-items:center;justify-content:center;
-           opacity:0;transition:opacity 0.2s;"
-    onmouseenter="this.style.opacity='1'"
-    onmouseleave="this.style.opacity='0.15'"
-  >&#x26F6;</button>
-</div>
+        display(HTML(f"""
+<iframe
+  id="{iframe_id}"
+  src="{url}"
+  style="width:100%;height:900px;min-height:600px;border:none;display:block;box-sizing:border-box;"
+  allow="clipboard-read; clipboard-write"
+></iframe>
 <script>
 (function() {{
-  var wrap = document.getElementById('{iframe_id}-wrap');
-  var el   = document.getElementById('{iframe_id}');
-  var btn  = document.getElementById('{iframe_id}-fs');
-  if (!el || !btn) return;
-
+  var el = document.getElementById('{iframe_id}');
+  if (!el) return;
   function fit() {{
     var h = Math.max(600, Math.min(Math.round((window.screen.availHeight || 900) * 0.82), 1100));
     el.style.height = h + 'px';
   }}
   fit();
   window.addEventListener('resize', fit, {{passive: true}});
-
-  // Show button faintly when hovering the wrapper
-  wrap.addEventListener('mouseenter', function() {{ btn.style.opacity = '0.15'; }});
-  wrap.addEventListener('mouseleave', function() {{ btn.style.opacity = '0'; }});
-
-  btn.addEventListener('click', function() {{
-    var target = wrap;
-    var req = target.requestFullscreen || target.webkitRequestFullscreen || target.mozRequestFullScreen;
-    if (req) {{
-      req.call(target);
-      // After entering fullscreen, make the iframe fill it
-      document.addEventListener('fullscreenchange', function onFs() {{
-        if (document.fullscreenElement === target) {{
-          el.style.height = '100vh';
-          el.style.width  = '100vw';
-        }} else {{
-          fit();
-          el.style.width = '100%';
-        }}
-        document.removeEventListener('fullscreenchange', onFs);
-      }});
-    }}
-  }});
 }})();
 </script>
-""")
-        )
+"""))
     except Exception:
         # Fallback: Colab's built-in (less sizing control, but always works)
         try:
