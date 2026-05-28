@@ -431,11 +431,13 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
     router_stub = SimpleNamespace(
         auth_router = APIRouter(),
+        chat_history_router = APIRouter(),
         data_recipe_router = APIRouter(),
         datasets_router = APIRouter(),
         export_router = APIRouter(),
         inference_router = APIRouter(),
         inference_studio_router = APIRouter(),
+        mcp_servers_router = APIRouter(),
         models_router = APIRouter(),
         providers_router = APIRouter(),
         training_history_router = APIRouter(),
@@ -483,11 +485,14 @@ from typer.testing import CliRunner
 studio_home = Path(sys.argv[1])
 real_import = builtins.__import__
 
-def guarded_import(name, *args, **kwargs):
+def guarded_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    # Only gate absolute imports; relative `from .utils import x` inside
+    # third-party packages (e.g. typer._click.decorators) hits level > 0
+    # with name="utils" and must pass through.
     blocked = ("auth", "fastapi", "structlog", "utils")
-    if name in blocked or name.startswith(("auth.", "utils.")):
+    if level == 0 and (name in blocked or name.startswith(("auth.", "utils."))):
         raise ModuleNotFoundError(name)
-    return real_import(name, *args, **kwargs)
+    return real_import(name, globals, locals, fromlist, level)
 
 builtins.__import__ = guarded_import
 from unsloth_cli.commands import studio as studio_cli

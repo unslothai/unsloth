@@ -3,6 +3,10 @@
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
+import {
+  thinkEffortAriaLabel,
+  thinkToggleAriaLabel,
+} from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -17,7 +21,20 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  DownloadIcon,
+  GlobeIcon,
+  HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
+  MicIcon,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
+import { Image03Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -29,6 +46,8 @@ import {
 import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -327,6 +346,16 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
+  const setWebFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.setWebFetchToolsEnabled,
+  );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -367,6 +396,7 @@ export function SharedComposer({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
       : null;
@@ -412,10 +442,48 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
+  const supportsBuiltinImageGeneration = providerSupportsBuiltinImageGeneration(
+    selectedExternalProvider?.providerType,
+    effectiveExternalModelId,
+    selectedExternalProvider?.baseUrl,
+  );
+  const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+    selectedExternalProvider?.providerType,
+  );
+  // Gemini rejects codeExecution alongside image modalities. Search is
+  // blocked on older Gemini image ids but allowed on Gemini 3 image
+  // models -- supportsBuiltinWebSearch already encodes the per-model
+  // allowance, so we only disable Code unconditionally in Gemini
+  // image mode.
+  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
+  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  const imageModeDisablesCode =
+    isExternalGemini && imageToolsEnabled && !imageDisabled;
+  // Image-tier Gemini models always reject codeExecution and reject
+  // web_search on older ids (Gemini 3.x Pro/Flash allow it -- encoded
+  // in supportsBuiltinWebSearch). Don't let the local `supportsTools`
+  // runtime flag re-enable a pill the Gemini backend will silently
+  // drop. Detect "external provider is Gemini AND model is image-tier"
+  // and gate strictly on the provider builtin support.
+  const isGeminiImageTier =
+    isExternalGemini && supportsBuiltinImageGeneration;
   const searchDisabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+    !modelLoaded ||
+    (isGeminiImageTier
+      ? !supportsBuiltinWebSearch
+      : !(supportsTools || supportsBuiltinWebSearch));
   const codeDisabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+    !modelLoaded ||
+    (isGeminiImageTier
+      ? true
+      : !(supportsTools || supportsBuiltinCodeExecution)) ||
+    imageModeDisablesCode;
+  // Images pill is only ever lit on OpenAI cloud's Responses-API models
+  // and Gemini Nano Banana family. No local tool runtime fallback.
+  const showImagePill = supportsBuiltinImageGeneration;
+  // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
+  const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
+  const showWebFetchPill = supportsBuiltinWebFetch;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -846,7 +914,7 @@ export function SharedComposer({
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => {
               // The picker accepts both image and audio. Don't gate the
               // button on image-availability — addFiles still filters
@@ -898,7 +966,11 @@ export function SharedComposer({
                         ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                         : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
                   )}
-                  aria-label={`Reasoning effort: ${reasoningEffort}`}
+                  aria-label={thinkEffortAriaLabel({
+                    modelLoaded,
+                    reasoningDisabled,
+                    reasoningEffort,
+                  })}
                 >
                   {effectiveReasoningVisualEnabled ? (
                     <LightbulbIcon className="size-3.5" />
@@ -990,13 +1062,12 @@ export function SharedComposer({
                       ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                       : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
-              aria-label={
-                reasoningLockedOn
-                  ? "Thinking is required for this model"
-                  : effectiveReasoningEnabled
-                    ? "Disable thinking"
-                    : "Enable thinking"
-              }
+              aria-label={thinkToggleAriaLabel({
+                reasoningLockedOn,
+                modelLoaded,
+                reasoningDisabled,
+                effectiveReasoningEnabled,
+              })}
             >
               {reasoningLockedOn ||
               (effectiveReasoningEnabled && !reasoningDisabled) ? (
@@ -1067,6 +1138,42 @@ export function SharedComposer({
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
           </button>
+          {showImagePill && (
+            <button
+              type="button"
+              disabled={imageDisabled}
+              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
+              aria-label={
+                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+              }
+            >
+              <HugeiconsIcon
+                icon={Image03Icon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
+              <span>Images</span>
+            </button>
+          )}
+          {showWebFetchPill && (
+            <button
+              type="button"
+              disabled={webFetchDisabled}
+              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+              }
+              aria-label={
+                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+              }
+            >
+              <DownloadIcon className="size-3.5" />
+              <span>Fetch</span>
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (

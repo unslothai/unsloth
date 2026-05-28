@@ -285,7 +285,15 @@ jobs:
           # The PR-time CI must validate the code in this PR; PyPI unsloth
           # may lag the in-repo CPU-torch fallback in unsloth/kernels/utils.py
           # (lines 162-170) that handles missing torch._C._cuda_getCurrentRawStream.
-          pip install --no-deps unsloth_zoo
+          # unsloth_zoo from git main mirrors every other CI (Core / MLX /
+          # install.sh) so PR-time validation sees the same zoo HEAD.
+          for attempt in 1 2 3; do
+            if pip install --no-deps "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
+            sleep $((5 * attempt))
+          done
           pip install --no-deps -e ./unsloth
 
       - name: Convert notebooks for AST scan
