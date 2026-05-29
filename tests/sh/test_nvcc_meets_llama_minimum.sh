@@ -1,10 +1,7 @@
 #!/bin/bash
 # Unit tests for _nvcc_meets_llama_minimum() from studio/setup.sh.
-#
-# Background: llama.cpp requires CUDA toolkit >= 12.4. setup.ps1 already
-# aborts on older toolkits via PR #4517 (issue #4437); the Linux side was
-# silent and surfaced as a generic cmake failure. This test covers the
-# follow-up Linux fix.
+# llama.cpp needs CUDA toolkit >= 12.4 (#4437); setup.ps1 aborts via #4517,
+# the Linux side was silent until this fix.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,9 +25,8 @@ assert_eq() {
     fi
 }
 
-# Make a fake nvcc binary that prints "release X.Y" in the canonical nvcc -V
-# layout. The helper greps for "release X.Y", which is stable across CUDA
-# 9.x through 13.x.
+# Fake nvcc printing "release X.Y" in the canonical nvcc -V layout (the helper
+# greps for "release X.Y", stable across CUDA 9.x-13.x).
 make_mock_nvcc() {
     _ver=$1
     _dir=$(mktemp -d)
@@ -90,8 +86,7 @@ _out=$(run_check "$_bin")
 assert_eq "13.0 status" "ok" "$(echo "$_out" | sed -n '1p')"
 rm -rf "$(dirname "$_bin")"
 
-# 7) CUDA 13.3 -> ok. This is the freshly shipped toolkit the reddit thread
-#    is hitting; the helper must accept it.
+# 7) CUDA 13.3 -> ok (the freshly shipped toolkit this fix targets).
 _bin=$(make_mock_nvcc "13.3")
 _out=$(run_check "$_bin")
 assert_eq "13.3 status" "ok" "$(echo "$_out" | sed -n '1p')"
@@ -104,8 +99,7 @@ _out=$(run_check "$_bin")
 assert_eq "14.0 status" "ok" "$(echo "$_out" | sed -n '1p')"
 rm -rf "$(dirname "$_bin")"
 
-# 9) Empty argument -> unknown (defensive; do not block the build on
-#    detection failure).
+# 9) Empty argument -> unknown (defensive; never block the build on detection).
 _out=$(run_check "")
 assert_eq "empty path status" "unknown" "$(echo "$_out" | sed -n '1p')"
 

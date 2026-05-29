@@ -2589,16 +2589,10 @@ if (-not $NeedLlamaSourceBuild) {
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
             $CmakeArgs += '-DGGML_CUDA=ON'
-            # Let nvcc accept a host MSVC newer than its release-time whitelist
-            # instead of aborting with "#error -- unsupported Microsoft Visual
-            # Studio version!". This mirrors the Linux setup.sh fix (PR #5826)
-            # for fresh CUDA toolkits (e.g. 13.3) whose host-compiler whitelist
-            # lags the installed toolchain. It is a no-op when the compiler is
-            # already supported. Delivered via NVCC_PREPEND_FLAGS (set here,
-            # after the Refresh-Environment calls above) so it also covers
-            # cmake's configure-time CUDA compiler-id probe, and persists for
-            # the cmake --build step below. Appended idempotently to any value
-            # the user already set.
+            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+            # (covers the configure probe + build), after Refresh-Environment, idempotent.
             $nvccAllowFlag = '-allow-unsupported-compiler'
             if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
                 $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag

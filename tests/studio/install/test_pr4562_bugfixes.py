@@ -727,12 +727,9 @@ class TestSourceCodePatterns:
         assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
 
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
-        """If Metal/CUDA/ROCm configure or build fails, setup should retry with
-        CPU fallback. The PR4562 wording was Metal-specific; PR #5826
-        generalised the wording via $_FB_LABEL so the same branch covers
-        CUDA-13.3-on-old-driver and ROCm configure failures too. The check
-        below stays agnostic to that label so it does not have to be revised
-        every time a new GPU backend is wired in."""
+        """If Metal/CUDA/ROCm configure or build fails, setup retries a CPU
+        build. PR #5826 generalised the Metal-only wording via $_FB_LABEL; this
+        check stays label-agnostic so new GPU backends don't require edits."""
         content = SETUP_SH.read_text()
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
         assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
@@ -751,14 +748,11 @@ class TestSourceCodePatterns:
         assert 'echo "Metal"' in content
 
     def test_setup_sh_exports_allow_unsupported_compiler(self):
-        """Headline fix for PR #5826: the day a new CUDA toolkit ships, its
-        host-compiler whitelist lags the distro's gcc/clang, so nvcc rejects
-        the host compiler with a wall of "#error -- unsupported GNU version"
-        before any real compile runs. setup.sh exports
-        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler so the CUDA build (and
-        cmake's own CUDA compiler-id probe) proceeds. Assert the flag stays
-        wired and is delivered via the environment, not CMAKE_ARGS, so bash
-        word-splitting on the cmake call stays safe."""
+        """Headline fix for PR #5826: a fresh CUDA toolkit's host-compiler
+        whitelist lags the distro gcc/clang, so nvcc rejects the host with
+        "#error -- unsupported GNU version". setup.sh exports
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler (via env, not CMAKE_ARGS,
+        for word-splitting safety) so the build and compiler-id probe proceed."""
         content = SETUP_SH.read_text()
         assert "-allow-unsupported-compiler" in content
         # Delivered via NVCC_PREPEND_FLAGS (covers the configure-time compiler
@@ -772,15 +766,11 @@ class TestSourceCodePatterns:
         ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
 
     def test_setup_ps1_exports_allow_unsupported_compiler(self):
-        """Windows parity for the PR #5826 headline fix: a fresh CUDA toolkit's
-        host-compiler whitelist also lags MSVC, so nvcc can reject the host
-        compiler with "#error -- unsupported Microsoft Visual Studio version!"
-        before any real compile runs. setup.ps1 sets
-        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA build branch
-        (-allow-unsupported-compiler disables the gcc *and* MSVC host checks)
-        so the CUDA configure + build proceed. Delivered via the environment so
-        it also covers cmake's configure-time CUDA compiler-id probe, kept out
-        of the $CmakeArgs array, and scoped to the GPU branch."""
+        """Windows parity for the PR #5826 fix: a fresh CUDA toolkit's whitelist
+        also lags MSVC, so nvcc can reject the host with "#error -- unsupported
+        Microsoft Visual Studio version!". setup.ps1 sets
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA branch (via
+        env, out of $CmakeArgs) so the configure probe + build proceed."""
         content = SETUP_PS1.read_text()
         assert "-allow-unsupported-compiler" in content
         # Delivered via the process environment, not the $CmakeArgs array, so it

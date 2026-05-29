@@ -131,9 +131,8 @@ run_quiet_no_exit() {
 }
 
 _nvcc_meets_llama_minimum() {
-    # Echo "ok", "too_old", or "unknown" plus the parsed "X.Y" version on
-    # stdout, one per line. llama.cpp needs CUDA toolkit >= 12.4 (#4437);
-    # the setup.ps1 side already aborts on older toolkits via #4517.
+    # Echo "ok|too_old|unknown" then the parsed "X.Y" version, one per line.
+    # llama.cpp needs CUDA toolkit >= 12.4 (#4437; setup.ps1 aborts via #4517).
     _nvcc_bin=$1
     [ -n "$_nvcc_bin" ] || { echo "unknown"; echo ""; return 0; }
     _raw=$("$_nvcc_bin" --version 2>/dev/null \
@@ -1070,13 +1069,10 @@ else
 
                     CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
 
-                    # Let nvcc accept gcc/clang versions newer than its release-time
-                    # whitelist. Without this, fresh CUDA toolkits (e.g. CUDA 13.3
-                    # the day it shipped) hitting a host gcc above the whitelist
-                    # emit a wall of "#error -- unsupported GNU version" before any
-                    # real compile runs. NVCC_PREPEND_FLAGS keeps the flag out of
-                    # CMAKE_ARGS so bash word-splitting on the cmake call stays
-                    # safe.
+                    # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
+                    # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
+                    # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
+                    # word-splitting.
                     export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
@@ -1148,9 +1144,8 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            # Pick a fallback label when the GPU configure fails: prefer the
-            # explicit Metal flag, then GPU_BACKEND (cuda/rocm). On a bare CPU
-            # build there is nothing to fall back to, so leave it empty.
+            # GPU label for the CPU-fallback message: Metal, else GPU_BACKEND
+            # (cuda/rocm). Empty on a bare CPU build (nothing to fall back from).
             _gpu_fallback_label() {
                 if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
                     echo "Metal"
@@ -1167,9 +1162,8 @@ else
                     rm -rf "$_BUILD_TMP/build"
                     if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
                         _BUILD_DESC="building (CPU fallback after $_FB_LABEL configure failed)"
-                        # Build dir is now configured for CPU; clear GPU_BACKEND
-                        # so a later build-step failure does not re-enter this
-                        # fallback against the same CPU config.
+                        # Now configured for CPU; clear GPU_BACKEND so a later
+                        # build-step failure won't re-enter fallback on this config.
                         GPU_BACKEND=""
                     else
                         BUILD_OK=false

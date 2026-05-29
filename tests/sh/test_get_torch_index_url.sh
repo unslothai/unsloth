@@ -320,17 +320,13 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
 rm -rf "$_dir"
 
-# 32) Legacy "CUDA Version: 13.3" header (driver-reported, freshly shipped CUDA
-#     13.3) -> cu130. The reddit thread that motivated this test showed that
-#     CUDA 13.3 on a 595.x driver still surfaces the legacy header rather than
-#     the new UMD layout.
+# 32) Driver-reported "CUDA Version: 13.3" (legacy header) -> cu130.
 _dir=$(make_mock_smi "13.3")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.3 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 33) Future-proofing: "CUDA Version: 13.7" still maps to cu130 until we ship
-#     a cu137 wheel index. Avoids silent CPU fallback on the next 13.x.
+# 33) "CUDA Version: 13.7" -> cu130 (until a cu137 wheel index exists).
 _dir=$(make_mock_smi "13.7")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
