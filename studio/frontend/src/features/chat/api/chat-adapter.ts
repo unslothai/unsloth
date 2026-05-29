@@ -1304,6 +1304,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         codeToolsEnabled,
         imageToolsEnabled,
         mcpEnabledForChat,
+        confirmToolCalls,
         webFetchToolsEnabled,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
@@ -2101,6 +2102,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  confirm_tool_calls: confirmToolCalls,
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

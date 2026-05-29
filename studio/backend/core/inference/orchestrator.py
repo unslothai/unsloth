@@ -839,6 +839,7 @@ class InferenceOrchestrator:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
+        confirm_tool_calls: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in this (parent)
@@ -895,6 +896,7 @@ class InferenceOrchestrator:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            confirm_tool_calls = confirm_tool_calls,
         )
 
     def generate_with_adapter_control(

@@ -105,6 +105,23 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+/**
+ * Allow or deny a tool call that is paused awaiting user confirmation
+ * (when the "Confirm tool calls" toggle is on). The backend gates on the
+ * session id alone, since at most one call awaits a decision per thread.
+ */
+export async function resolveToolConfirmation(
+  sessionId: string,
+  decision: "allow" | "deny",
+): Promise<void> {
+  const response = await authFetch("/api/inference/tool-confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, decision }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;

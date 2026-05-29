@@ -186,6 +186,7 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    ToolConfirmRequest,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -1258,6 +1259,22 @@ async def cancel_inference(
 
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
+
+
+@studio_router.post("/tool-confirm")
+async def confirm_tool_call(
+    body: ToolConfirmRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Allow or deny a tool call awaiting user confirmation.
+
+    Returns {"resolved": bool}. ``False`` means no matching call was
+    waiting (e.g. a stale or duplicate confirmation).
+    """
+    from state.tool_approvals import resolve_tool_decision
+
+    resolved = resolve_tool_decision(body.session_id, body.decision)
+    return {"resolved": resolved}
 
 
 @router.post("/generate/stream")
@@ -2790,6 +2807,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    confirm_tool_calls = bool(payload.confirm_tool_calls),
                 )
 
             _tool_sentinel = object()
@@ -3310,6 +3328,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                confirm_tool_calls = bool(payload.confirm_tool_calls),
             )
 
         _sf_tool_sentinel = object()

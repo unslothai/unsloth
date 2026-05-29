@@ -720,6 +720,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -943,6 +947,11 @@ class ChatCompletionRequest(BaseModel):
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
         return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
 
 
 # ── OpenAI shell-tool container management ─────────────────────

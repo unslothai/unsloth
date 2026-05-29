@@ -4452,6 +4452,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        confirm_tool_calls: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -4462,6 +4463,10 @@ class LlamaCppBackend:
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
         from core.inference.tools import execute_tool
+        from state.tool_approvals import (
+            TOOL_REJECTED_MESSAGE,
+            request_tool_decision,
+        )
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -5085,7 +5090,12 @@ class LlamaCppBackend:
                     # so insertion order is deterministic (Python 3.7+).
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
-                    if _prev and _prev[0] == _tc_key and not _prev[1]:
+                    _denied = confirm_tool_calls and request_tool_decision(
+                        session_id, cancel_event=cancel_event
+                    ) == "deny"
+                    if _denied:
+                        result = TOOL_REJECTED_MESSAGE
+                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
                         result = (
                             "You already made this exact call. "
                             "Do not repeat the same tool call. "
@@ -5144,7 +5154,11 @@ class LlamaCppBackend:
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
                     )
-                    _tool_call_history.append((_tc_key, _is_error))
+                    # A user-denied call never executed, so it must not count
+                    # toward duplicate detection — otherwise re-issuing and
+                    # approving the same call would be rejected as a duplicate.
+                    if not _denied:
+                        _tool_call_history.append((_tc_key, _is_error))
                     # Strip image sentinel before feeding result to the LLM
                     # (the full result with sentinel is still yielded via
                     # tool_end so the frontend can extract image paths).

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 from loggers import get_logger
 
+from state.tool_approvals import TOOL_REJECTED_MESSAGE, request_tool_decision
+
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
     DUPLICATE_CALL_NUDGE,
@@ -105,6 +107,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    confirm_tool_calls: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -317,7 +320,12 @@ def run_safetensors_tool_loop(
             }
 
             tc_key = tool_name + str(arguments)
-            if allowed_tool_names and tool_name not in allowed_tool_names:
+            denied = confirm_tool_calls and request_tool_decision(
+                session_id, cancel_event=cancel_event
+            ) == "deny"
+            if denied:
+                result = TOOL_REJECTED_MESSAGE
+            elif allowed_tool_names and tool_name not in allowed_tool_names:
                 result = (
                     f"Error: tool '{tool_name}' is not enabled for this "
                     "request. Use one of the enabled tools or provide a "
@@ -355,7 +363,11 @@ def run_safetensors_tool_loop(
             is_error = isinstance(result, str) and result.lstrip().startswith(
                 TOOL_ERROR_PREFIXES
             )
-            tool_call_history.append((tc_key, is_error))
+            # A user-denied call never executed, so it must not count toward
+            # duplicate detection — otherwise re-issuing and approving the
+            # same call would be wrongly rejected as a duplicate.
+            if not denied:
+                tool_call_history.append((tc_key, is_error))
 
             # Strip frontend image sentinel from the model's view.
             # Cut at the first occurrence so leading and consecutive
