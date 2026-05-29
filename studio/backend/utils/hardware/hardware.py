@@ -508,6 +508,38 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     }
 
 
+def _windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
+    """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
+
+    Uses the same data source as Task Manager so it reflects cross-process
+    usage accurately. Works for any GPU vendor without amd-smi or nvidia-smi.
+    Returns (used_gb, total_gb) or (None, None) on failure.
+    """
+    import subprocess as _sp
+    if platform.system() != "Windows":
+        return None, None
+    try:
+        ps = (
+            "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
+            " -ErrorAction SilentlyContinue).CounterSamples;"
+            "if($s){($s|Measure-Object CookedValue -Sum).Sum}else{-1}"
+        )
+        r = _sp.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None, None
+        used_bytes = float(r.stdout.strip())
+        if used_bytes < 0:
+            return None, None
+        import torch as _torch
+        total_bytes = _torch.cuda.get_device_properties(0).total_memory
+        return round(used_bytes / (1024 ** 3), 2), round(total_bytes / (1024 ** 3), 2)
+    except Exception:
+        return None, None
+
+
 def get_gpu_utilization() -> Dict[str, Any]:
     """Return a live snapshot of device utilization information."""
     device = get_device()
@@ -522,11 +554,27 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     result, _get_parent_visible_gpu_spec()
                 )
             return result
-        # amd-smi / nvidia-smi unavailable or returned no usable data (common on
-        # HIP SDK-only Windows, Docker containers, and some amd-smi JSON versions).
-        # Fall back to torch.cuda.mem_get_info which gives system-wide VRAM
-        # occupancy rather than process-only memory_allocated, so the monitor
-        # shows real GPU usage even without an SMI tool present.
+        # SMI tool unavailable or returned no usable data. On Windows, query
+        # the Performance Counter API (same source as Task Manager) for
+        # system-wide dedicated VRAM — covers cross-process usage that
+        # torch.cuda.mem_get_info cannot see from the Studio server process.
+        if platform.system() == "Windows":
+            _win_used, _win_total = _windows_perf_counter_vram_gb()
+            if _win_used is not None and _win_total is not None:
+                return {
+                    "available": True,
+                    "backend": _backend_label(device),
+                    "gpu_utilization_pct": None,
+                    "temperature_c": None,
+                    "vram_used_gb": _win_used,
+                    "vram_total_gb": _win_total,
+                    "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
+                    if _win_total > 0 else None,
+                    "power_draw_w": None,
+                    "power_limit_w": None,
+                    "power_utilization_pct": None,
+                }
+        # Linux/macOS fallback: torch.cuda.mem_get_info is system-wide on Linux ROCm.
         _visible_spec = _get_parent_visible_gpu_spec()
         _numeric_ids = _visible_spec.get("numeric_ids") or [0]
         _primary_idx = [_numeric_ids[0]] if _numeric_ids else [0]
