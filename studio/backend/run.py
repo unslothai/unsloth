@@ -653,7 +653,7 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
-    from main import app, setup_frontend
+    from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
     # Create all standard directories on startup
@@ -737,14 +737,22 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
-    config = uvicorn.Config(
-        app,
+    config_kwargs = dict(
         host = host,
         port = port,
         log_level = "info",
         access_log = False,
         server_header = False,
     )
+    # Only in Colab: trust X-Forwarded-* from Colab's reverse proxy so the app
+    # sees the real https origin. forwarded_allow_ips="*" is fine inside Colab's
+    # single-user sandbox, but would be an unwanted security relaxation for a
+    # normal local/standalone Studio, so leave uvicorn's safe defaults
+    # (forwarded headers trusted from loopback only) in place there.
+    if _IS_COLAB:
+        config_kwargs["proxy_headers"] = True
+        config_kwargs["forwarded_allow_ips"] = "*"
+    config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
@@ -766,14 +774,21 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # Run server in a daemon thread
+    # Run server in a daemon thread.
+    # Use an explicit new_event_loop() + run_until_complete() instead of
+    # asyncio.run() to avoid nest_asyncio's global patches to asyncio.run
+    # interfering when called from a thread while Colab/IPython already has
+    # a running loop on the main thread.
     def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            asyncio.run(_server.serve())
+            loop.run_until_complete(_server.serve())
         except BaseException as exc:
             startup_errors.append(exc)
             startup_failed.set()
         finally:
+            loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
 
