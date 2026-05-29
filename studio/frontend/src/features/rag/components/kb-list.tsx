@@ -4,17 +4,22 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { FilesIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import type { KnowledgeBase } from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
 
+export type KBPanel = "upload" | "files";
+
 export function KBList({
-  selectedId,
-  onSelect,
+  activeKbId,
+  activePanel,
+  onPanel,
+  onDeleted,
 }: {
-  selectedId: string | null;
-  onSelect: (kb: KnowledgeBase | null) => void;
+  activeKbId: string | null;
+  activePanel: KBPanel | null;
+  onPanel: (kb: KnowledgeBase, panel: KBPanel) => void;
+  onDeleted: (kbId: string) => void;
 }) {
   const { knowledgeBases, loading, error, deleteKB } = useKnowledgeBases();
 
@@ -22,8 +27,7 @@ export function KBList({
     <div className="flex flex-col gap-1">
       {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
-      {/* Capped, content-sized list: stays short when empty (no oddly-tall
-          box) and scrolls internally once there are many bases. */}
+      {/* Capped, content-sized list: short when empty, scrolls when long. */}
       <ScrollArea className="max-h-[320px]">
         <div className="flex flex-col gap-1 pr-2">
           {knowledgeBases.length === 0 && !loading ? (
@@ -32,17 +36,16 @@ export function KBList({
             </div>
           ) : null}
           {knowledgeBases.map((kb) => {
-            const isSelected = kb.id === selectedId;
+            const isActive = kb.id === activeKbId;
             return (
               <div
                 key={kb.id}
                 className={cn(
-                  "group flex items-center justify-between gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors",
-                  isSelected
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-accent/50",
+                  "group flex items-center justify-between gap-2 rounded-md border px-3 py-2 transition-colors",
+                  isActive
+                    ? "border-primary/50 bg-accent"
+                    : "border-border/60 hover:bg-accent/50",
                 )}
-                onClick={() => onSelect(kb)}
               >
                 <div className="flex min-w-0 flex-col">
                   <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
@@ -70,26 +73,52 @@ export function KBList({
                     </span>
                   ) : null}
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Delete knowledge base"
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (
-                      window.confirm(
-                        `Delete "${kb.name}" and all its documents?`,
-                      )
-                    ) {
-                      void deleteKB(kb.id).then(() => {
-                        if (isSelected) onSelect(null);
-                      });
-                    }
-                  }}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} size={14} />
-                </Button>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Upload documents to ${kb.name}`}
+                    title="Upload documents"
+                    className={cn(
+                      "h-7 w-7",
+                      isActive && activePanel === "upload" && "text-primary",
+                    )}
+                    onClick={() => onPanel(kb, "upload")}
+                  >
+                    <UploadIcon className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`View documents in ${kb.name}`}
+                    title="View documents"
+                    className={cn(
+                      "h-7 w-7",
+                      isActive && activePanel === "files" && "text-primary",
+                    )}
+                    onClick={() => onPanel(kb, "files")}
+                  >
+                    <FilesIcon className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete ${kb.name}`}
+                    title="Delete knowledge base"
+                    className="h-7 w-7 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Delete "${kb.name}" and all its documents?`,
+                        )
+                      ) {
+                        void deleteKB(kb.id).then(() => onDeleted(kb.id));
+                      }
+                    }}
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                </div>
               </div>
             );
           })}

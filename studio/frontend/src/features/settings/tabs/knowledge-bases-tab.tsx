@@ -6,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import type { KnowledgeBase } from "@/features/rag/api/rag-api";
 import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { KBDetailPanel } from "@/features/rag/components/kb-detail-panel";
-import { KBList } from "@/features/rag/components/kb-list";
+import { KBList, type KBPanel } from "@/features/rag/components/kb-list";
 import { PreviewPanel } from "@/features/rag/components/preview-panel";
 import { RagDefaultsSection } from "@/features/rag/components/rag-defaults-section";
 import { ThreadIndexList } from "@/features/rag/components/thread-index-list";
@@ -17,12 +17,14 @@ import { Add01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type CSSProperties, useState } from "react";
 
-// Height of the master-detail workspace shown once a knowledge base is
-// selected. Only rendered then, so the section stays compact when empty.
+// Height of the master-detail workspace, only rendered once a KB's upload or
+// files panel is open (or a preview is active) so the section stays compact
+// when just browsing the list.
 const KB_WORKSPACE_HEIGHT = "h-[360px]";
 
 export function KnowledgeBasesTab() {
-  const [selected, setSelected] = useState<KnowledgeBase | null>(null);
+  const [activeKb, setActiveKb] = useState<KnowledgeBase | null>(null);
+  const [activePanel, setActivePanel] = useState<KBPanel | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const previewTarget = usePreviewStore((s) => s.target);
   const previewStatus = usePreviewStore((s) => s.status);
@@ -30,6 +32,24 @@ export function KnowledgeBasesTab() {
     previewTarget !== null ||
     previewStatus === "loading" ||
     previewStatus === "error";
+
+  const closePanel = () => {
+    setActiveKb(null);
+    setActivePanel(null);
+  };
+
+  const handlePanel = (kb: KnowledgeBase, panel: KBPanel) => {
+    // Re-clicking the active KB's active button collapses back to full width.
+    if (activeKb?.id === kb.id && activePanel === panel) {
+      closePanel();
+    } else {
+      setActiveKb(kb);
+      setActivePanel(panel);
+    }
+  };
+
+  const panelOpen = activeKb !== null && activePanel !== null;
+  const splitOpen = panelOpen || previewActive;
 
   const {
     width: previewWidth,
@@ -69,26 +89,34 @@ export function KnowledgeBasesTab() {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Select a knowledge base to manage its documents, or create a new one
-          to get started.
+          Create a knowledge base and pick its defaults. Use the upload and
+          files buttons on a base to add or manage its documents.
         </p>
         <div
           className={cn(
             "flex min-h-0 gap-4",
-            (selected || previewActive) && KB_WORKSPACE_HEIGHT,
+            splitOpen && KB_WORKSPACE_HEIGHT,
           )}
         >
-          {/* Full width when browsing (so the list / empty-state matches the
-              thread rows below); shrinks to a sidebar once a KB is selected
-              and the detail pane needs the room. */}
-          <div className={selected ? "w-[220px] shrink-0" : "min-w-0 flex-1"}>
-            <KBList selectedId={selected?.id ?? null} onSelect={setSelected} />
+          <div className={splitOpen ? "w-[260px] shrink-0" : "min-w-0 flex-1"}>
+            <KBList
+              activeKbId={activeKb?.id ?? null}
+              activePanel={activePanel}
+              onPanel={handlePanel}
+              onDeleted={(id) => {
+                if (activeKb?.id === id) closePanel();
+              }}
+            />
           </div>
-          {selected ? (
+          {panelOpen && activeKb && activePanel ? (
             <>
               <Separator orientation="vertical" className="h-auto" />
               <div className="min-w-0 flex-1">
-                <KBDetailPanel kb={selected} />
+                <KBDetailPanel
+                  kb={activeKb}
+                  panel={activePanel}
+                  onClose={closePanel}
+                />
               </div>
             </>
           ) : null}
@@ -147,7 +175,7 @@ export function KnowledgeBasesTab() {
         <KBCreateDialog
           open={createOpen}
           onOpenChange={setCreateOpen}
-          onCreated={(kb) => setSelected(kb)}
+          onCreated={(kb) => handlePanel(kb, "upload")}
         />
       </div>
 
