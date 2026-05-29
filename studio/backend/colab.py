@@ -129,53 +129,53 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
 
 
 def _show_and_embed(port: int):
-    """Show the link card and embed the Studio inline for *port*.
+    """Embed the Studio inline for *port* with a branded header bar.
 
-    The URL is fetched once and shared between the link card and the iframe so
-    ``google.colab.kernel.proxyPort`` is only called once per invocation.
-
-    We inject a raw ``<iframe>`` via ``IPython.display.HTML`` rather than
-    ``serve_kernel_port_as_iframe`` for two reasons:
-
-    1. **Width responsiveness** — ``serve_kernel_port_as_iframe`` sets the
-       iframe width as a DOM *attribute* (``width="100%"``), which Colab's
-       output machinery can "bake in" to a fixed pixel value on first render.
-       A CSS *style* (``style="width:100%"``) is recalculated every time the
-       parent container reflows, so the Studio actually follows the Colab
-       notebook panel width when it opens/closes or the window is resized.
-
-    2. **Height sizing** — a hardcoded ``height=1200`` is too tall on short
-       monitors (forces outer-page scroll) and wastes space on tall ones.
-       ``height: 82vh`` fills ~82 % of the viewport and re-fits automatically
-       on resize and zoom with no JS needed.
+    Fetches the Colab proxy URL once (registering the port with Colab's
+    reverse-proxy at the same time) then renders a header bar + full-height
+    iframe as a single HTML block.
 
     Falls back to ``serve_kernel_port_as_iframe`` if ``IPython.display.HTML``
     is unavailable for any reason.
     """
-    # Single eval_js round-trip: get_colab_url() calls proxyPort() which both
-    # returns the URL and registers the port with Colab's reverse-proxy.
     url = get_colab_url(port)
-    show_link(port, _url = url)
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
 
     try:
-        from IPython.display import display, HTML
+        from IPython.display import HTML, display
 
-        # Use a unique element id so the resize script can find the iframe even
-        # when multiple Studio instances are embedded in the same notebook.
         iframe_id = f"unsloth-studio-{port}"
+
+        # Truncated URL shown in the header — best-effort, falls back to full URL.
+        try:
+            port_prefix = f"{port}-"
+            idx = url.index(port_prefix)
+            next_dash = url.index("-", idx + len(port_prefix))
+            short_url = url[: next_dash + 1] + "..."
+        except (ValueError, IndexError):
+            short_url = url
 
         display(
             HTML(f"""
-<iframe
-  id="{iframe_id}"
-  src="{url}"
-  style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
-  allow="clipboard-read; clipboard-write"
-></iframe>
+<div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;
+            border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.18);">
+  <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;background:#000;">
+    <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
+         height="26" style="display:block;">
+    <span style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-0.2px;">Unsloth Studio</span>
+    <span style="margin-left:auto;color:#666;font-size:11px;font-family:monospace;">{short_url}</span>
+  </div>
+  <iframe
+    id="{iframe_id}"
+    src="{url}"
+    style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
+    allow="clipboard-read; clipboard-write"
+  ></iframe>
+</div>
 """)
         )
     except Exception:
-        # Fallback: Colab's built-in (less sizing control, but always works)
+        # Fallback: Colab's built-in helper (less control, but always works)
         try:
             from google.colab import output as colab_output
 
