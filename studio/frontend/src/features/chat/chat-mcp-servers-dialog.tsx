@@ -85,8 +85,10 @@ function isValidAddress(value: string): boolean {
     }
   }
   // Anything else is treated as a local command (stdio); the backend gates
-  // whether stdio servers are allowed on this host. Reject other URL schemes.
-  return !trimmed.includes("://");
+  // whether stdio servers are allowed on this host. Reject other URL schemes
+  // only when the command itself is a URL; "://" is fine inside an argument
+  // (e.g. a database connection string passed to the server).
+  return !trimmed.split(/\s+/)[0].includes("://");
 }
 
 function HeadersEditor({

@@ -28,7 +28,17 @@ def is_stdio(address: str) -> bool:
 def parse_stdio_command(address: str) -> list[str]:
     """Split a stdio command line into argv. Shared by route validation and the
     transport so both agree on quoting (notably Windows backslash paths)."""
-    return shlex.split(address, posix = sys.platform != "win32")
+    posix = sys.platform != "win32"
+    parts = shlex.split(address, posix = posix)
+    if not posix:
+        # posix=False keeps backslash paths intact but also keeps the surrounding
+        # quotes on a token. Strip a matched pair so the argv reaches the
+        # subprocess clean ('"C:\\Program Files\\node"' -> C:\\Program Files\\node).
+        parts = [
+            p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+            for p in parts
+        ]
+    return parts
 
 
 def stdio_mcp_enabled() -> bool:
@@ -109,6 +119,8 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
         from fastmcp.client.transports import StdioTransport
 
         parts = parse_stdio_command(url)
+        if not parts:
+            raise ValueError(f"Empty stdio command: {url!r}")
         # stdio env vars ride the (HTTP-only) headers field. The MCP SDK merges
         # them over its default safe env (PATH etc.), so pass them through as-is.
         return Client(
