@@ -103,39 +103,41 @@ export function KBDetailPanel({
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-3">
           <h2 className="truncate text-lg font-semibold">{kb.name}</h2>
-          <p className="text-xs text-muted-foreground">
-            {kb.mode === "multimodal" ? "🖼️ Multimodal · " : ""}
-            {kb.chunking_strategy === "late" ? "⚡ Late · " : ""}
-            Embedder: <code>{kb.embedding_model}</code>
-          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setReconfigureOpen(true)}
+              disabled={documents.length === 0}
+              title={
+                documents.length === 0
+                  ? "Upload at least one document before re-indexing"
+                  : undefined
+              }
+            >
+              Reconfigure…
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Close panel"
+              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+              onClick={onClose}
+            >
+              <XIcon className="size-4" />
+            </Button>
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setReconfigureOpen(true)}
-            disabled={documents.length === 0}
-            title={
-              documents.length === 0
-                ? "Upload at least one document before re-indexing"
-                : undefined
-            }
-          >
-            Reconfigure…
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Close panel"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-            onClick={onClose}
-          >
-            <XIcon className="size-4" />
-          </Button>
-        </div>
+        {/* Own full-width row so the embedder id fits on one line instead of
+            wrapping next to the action buttons. */}
+        <p className="truncate text-xs text-muted-foreground">
+          {kb.mode === "multimodal" ? "🖼️ Multimodal · " : ""}
+          {kb.chunking_strategy === "late" ? "⚡ Late · " : ""}
+          Embedder: <code>{kb.embedding_model}</code>
+        </p>
       </div>
 
       {panel === "upload" ? (
@@ -157,14 +159,14 @@ export function KBDetailPanel({
                 No documents yet. Use the upload button to add some.
               </div>
             ) : (
-              <div className="flex flex-wrap gap-2 pr-2">
+              <div className="flex flex-col gap-2 pr-2">
                 {documents.map((doc) => {
                   const previewable = doc.status === "completed";
                   return (
                     <div
                       key={doc.id}
                       className={cn(
-                        "flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs",
+                        "flex w-full items-center justify-between gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs",
                         previewable && "cursor-pointer hover:bg-muted/70",
                       )}
                       onClick={
@@ -173,28 +175,27 @@ export function KBDetailPanel({
                           : undefined
                       }
                     >
-                      <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                      <div className="flex min-w-0 flex-col">
-                        <span
-                          className="max-w-48 truncate"
-                          title={doc.filename}
-                        >
-                          {doc.filename}
-                        </span>
-                        <span
-                          className={cn(
-                            "text-[10px] leading-tight text-muted-foreground",
-                            doc.status === "failed" && "text-destructive",
-                          )}
-                        >
-                          {humanBytes(doc.byte_size)} · {doc.num_chunks} chunks
-                          {" · "}
-                          {STATUS_LABEL[doc.status]}
-                        </span>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                        <div className="flex min-w-0 flex-col">
+                          <span className="truncate" title={doc.filename}>
+                            {doc.filename}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-[10px] leading-tight text-muted-foreground",
+                              doc.status === "failed" && "text-destructive",
+                            )}
+                          >
+                            {humanBytes(doc.byte_size)} · {doc.num_chunks} chunks
+                            {" · "}
+                            {STATUS_LABEL[doc.status]}
+                          </span>
+                        </div>
                       </div>
                       <button
                         type="button"
-                        className="text-muted-foreground hover:text-destructive"
+                        className="shrink-0 text-muted-foreground hover:text-destructive"
                         aria-label={`Delete ${doc.filename}`}
                         onClick={(e) => {
                           e.stopPropagation();
