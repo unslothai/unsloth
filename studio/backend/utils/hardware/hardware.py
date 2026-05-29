@@ -516,6 +516,7 @@ def _windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
     Returns (used_gb, total_gb) or (None, None) on failure.
     """
     import subprocess as _sp
+
     if platform.system() != "Windows":
         return None, None
     try:
@@ -526,7 +527,9 @@ def _windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
         )
         r = _sp.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None, None
@@ -534,8 +537,9 @@ def _windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
         if used_bytes < 0:
             return None, None
         import torch as _torch
+
         total_bytes = _torch.cuda.get_device_properties(0).total_memory
-        return round(used_bytes / (1024 ** 3), 2), round(total_bytes / (1024 ** 3), 2)
+        return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
     except Exception:
         return None, None
 
@@ -569,7 +573,8 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     "vram_used_gb": _win_used,
                     "vram_total_gb": _win_total,
                     "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
-                    if _win_total > 0 else None,
+                    if _win_total > 0
+                    else None,
                     "power_draw_w": None,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
