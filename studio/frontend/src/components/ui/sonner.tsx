@@ -63,7 +63,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
         {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          // No border line; elevation comes from the composer's drop shadow.
+          "--normal-border": "transparent",
           "--border-radius": "var(--radius)",
           // Pin close button to the top-right corner inside the toast.
           // Overrides sonner's default left placement and outside-corner

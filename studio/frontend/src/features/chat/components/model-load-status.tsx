@@ -88,7 +88,7 @@ export function ModelLoadDescription({
           size="xs"
           variant="ghost"
           aria-label="Stop model loading"
-          className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:bg-transparent hover:text-destructive focus-visible:text-destructive"
+          className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:!bg-transparent dark:hover:!bg-transparent hover:text-destructive focus-visible:text-destructive"
           onClick={onStop}
         >
           Cancel

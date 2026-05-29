@@ -785,28 +785,25 @@
 	.chat-composer-surface {
 		@apply relative flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
-		border: 1px solid oklch(0.93 0 0 / 1);
 		background-clip: padding-box;
-		box-shadow:
-			0 1px 2px oklch(0 0 0 / 0.04),
-			0 6px 14px oklch(0 0 0 / 0.05),
-			0 18px 40px oklch(0 0 0 / 0.05);
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
 	}
 
 	.dark .chat-composer-surface {
-		border-color: #34363a;
-		box-shadow: 0 -6px 36px -14px rgba(0, 0, 0, 0.15);
+		background-color: #2a2a2c;
+		box-shadow: none;
 	}
 
 	.composer-pill-btn {
-		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
+
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
 
 	.composer-input {
-		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
@@ -816,6 +813,171 @@
 	.composer-footer-note {
 		@apply mt-1.5 text-center text-[11px] tracking-[0.04em] text-muted-foreground;
 		font-family: var(--font-sans);
+	}
+
+	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
+	.unsloth-composer-surface {
+		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card px-3 py-2.5 outline-none transition-shadow;
+		font-family: var(--font-sans);
+		background-clip: padding-box;
+		/* Composer elevation: one soft shadow (on-surface @ 16%). */
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	}
+
+	.unsloth-composer-surface:focus-within {
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	}
+
+	.dark .unsloth-composer-surface {
+		background-color: #2a2a2c;
+		box-shadow: none;
+	}
+
+	/* Composer row: one centered line when empty; two rows (input over controls)
+	   when filled, so the textarea never remounts. */
+	.unsloth-composer-line {
+		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
+	}
+
+	.unsloth-composer-left {
+		@apply flex shrink-0 items-center gap-0.5;
+		order: 1;
+		/* Pull the plus button closer to the composer edge. */
+		margin-left: -0.375rem;
+	}
+
+	.unsloth-composer-line .unsloth-composer-input {
+		order: 2;
+	}
+
+	.unsloth-composer-line .aui-composer-action-wrapper {
+		order: 3;
+		margin-left: auto;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		/* Sits close to the left edge, near the plus. */
+		padding-left: 0.375rem;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
+		order: 2;
+	}
+
+	/* Empty (placeholder shown): clamp back to one row. max-height beats the
+	   autosize textarea's inline !important height, so a cleared message leaves
+	   no stale tall box or stray scrollbar. */
+	.unsloth-composer-input:placeholder-shown {
+		max-height: 40px !important;
+		overflow-y: hidden !important;
+	}
+
+	.unsloth-composer-input {
+		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-[15px] font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	.unsloth-composer-plus {
+		@apply flex size-9 shrink-0 items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	.unsloth-composer-plus[data-state="open"] {
+		@apply bg-muted-foreground/15;
+		/* Radix's modal menu sets body pointer-events:none; re-enable on the open
+		   trigger so the cursor and click-to-close work. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
+	.unsloth-welcome-title {
+		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
+		font-weight: 500;
+	}
+
+	/* Right-side Thinking pill (toggle or dropdown). */
+	.unsloth-thinking-pill {
+		@apply inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-muted-foreground/10 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	.unsloth-thinking-pill[data-active="true"] {
+		color: var(--primary);
+	}
+
+	.unsloth-thinking-pill[data-state="open"] {
+		@apply bg-muted-foreground/10;
+		/* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Smaller tick for selected Thinking options. */
+	.unsloth-tick {
+		width: 0.8rem !important;
+		height: 0.8rem !important;
+	}
+
+	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
+	.unsloth-plus-menu[data-slot] {
+		/* Pin radius so dark matches light (rounded-lg resolves smaller in dark). */
+		border-radius: 18px;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+		box-shadow:
+			0 1px 2px oklch(0 0 0 / 0.04),
+			0 6px 18px oklch(0 0 0 / 0.08);
+	}
+
+	.dark .unsloth-plus-menu[data-slot] {
+		background-color: #2a2a2c;
+		/* Shadow tinted to the page bg so it blends, not a dark halo. */
+		box-shadow: 0 4px 14px var(--background);
+	}
+
+	/* Compact items; also applied to portaled sub-content. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-3 pl-4 pr-3 py-2 text-[14px];
+		cursor: pointer;
+		/* Pin hover-box radius so dark matches light (same as the container). */
+		border-radius: 1.1rem;
+	}
+
+	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
+		@apply pl-4 pr-3 py-1.5 text-[12px];
+	}
+
+	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
+	.dark .unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(255, 255, 255, 0.08) !important;
+	}
+
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		)
+		svg {
+		width: 1.05rem;
+		height: 1.05rem;
+	}
+
+	/* Thinking menu: tighter gap; nowrap keeps "Preserve thinking" on one line
+	   so the menu sizes to its content. */
+	.unsloth-thinking-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-1.5 pl-2.5 pr-2.5;
+		white-space: nowrap;
 	}
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
@@ -996,15 +1158,19 @@
 	}
 }
 
-/* Lighter shadow + tighter vertical padding than Sonner's defaults; !important because Sonner injects its base rules at runtime. */
+/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+   !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: 10px 16px !important;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+	box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
+	/* Pin to the light --radius so dark mode (smaller --radius) matches. */
+	border-radius: 1.1rem !important;
 }
 
-/* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
+/* Match the composer (.unsloth-composer-surface) in dark mode: same surface color, no shadow. */
 .dark [data-sonner-toast][data-styled='true'] {
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+	background-color: #2a2a2c !important;
+	box-shadow: none !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -1177,15 +1343,21 @@
 	top: 8px !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
-	border-color: var(--border) !important;
+	border-color: transparent !important;
 }
+
+/* Keep the (borderless) close button blended with the dark toast surface. */
+.dark [data-sonner-toast][data-styled="true"] [data-close-button] {
+	background: #2a2a2c !important;
+}
+
 [data-sonner-toast][data-styled="true"] [data-close-button] svg {
 	stroke-width: 2.25;
 }
 [data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
 	background: var(--muted) !important;
 	color: var(--popover-foreground) !important;
-	border-color: var(--border) !important;
+	border-color: transparent !important;
 }
 
 .generated-image-loading-card {
