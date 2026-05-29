@@ -957,6 +957,19 @@ class ChatCompletionRequest(BaseModel):
             msg.tool_call_id = picked
         return self
 
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected.
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
 
 # ── OpenAI shell-tool container management ─────────────────────
 

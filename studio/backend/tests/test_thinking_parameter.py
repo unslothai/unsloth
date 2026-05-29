@@ -38,7 +38,7 @@ def test_thinking_config_explicit_enabled():
 
 
 def test_chat_completion_request_with_thinking_disabled():
-    """ChatCompletionRequest should accept thinking parameter."""
+    """thinking.type='disabled' should map to enable_thinking=False."""
     req = ChatCompletionRequest.model_validate(
         {
             "model": "test-model",
@@ -48,11 +48,11 @@ def test_chat_completion_request_with_thinking_disabled():
     )
     assert req.thinking is not None
     assert req.thinking.type == "disabled"
-    assert req.enable_thinking is None
+    assert req.enable_thinking is False
 
 
 def test_chat_completion_request_with_thinking_enabled():
-    """ChatCompletionRequest should accept thinking.enabled."""
+    """thinking.type='enabled' should map to enable_thinking=True."""
     req = ChatCompletionRequest.model_validate(
         {
             "model": "test-model",
@@ -62,7 +62,7 @@ def test_chat_completion_request_with_thinking_enabled():
     )
     assert req.thinking is not None
     assert req.thinking.type == "enabled"
-    assert req.enable_thinking is None
+    assert req.enable_thinking is True
 
 
 def test_chat_completion_request_without_thinking():
