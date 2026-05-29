@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { ComposerMobileActionsMenu } from "@/features/chat/composer-mobile-actions-menu";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -1182,13 +1183,22 @@ const ComposerAction: FC<{
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-0.5">
-        <ComposerAddAttachment />
+        <ComposerMobileActionsMenu />
+        <div className="hidden sm:contents">
+          <ComposerAddAttachment />
+        </div>
         <ComposerAudioUpload />
         <ReasoningToggle />
-        <PreserveThinkingToggle />
-        <WebSearchToggle />
-        <CodeToolsToggle />
-        <ImagesToggle />
+        <div className="hidden sm:contents">
+          <PreserveThinkingToggle />
+        </div>
+        <div className="hidden sm:contents">
+          <WebSearchToggle />
+        </div>
+        <div className="hidden sm:contents">
+          <CodeToolsToggle />
+          <ImagesToggle />
+        </div>
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

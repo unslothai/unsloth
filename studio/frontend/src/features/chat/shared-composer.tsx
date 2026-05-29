@@ -15,6 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ComposerMobileActionsMenu } from "./composer-mobile-actions-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
@@ -909,12 +910,15 @@ export function SharedComposer({
               e.target.value = "";
             }}
           />
+          <ComposerMobileActionsMenu
+            onAddAttachment={() => fileInputRef.current?.click()}
+          />
           <TooltipIconButton
             tooltip="Add Attachment"
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+            className="hidden size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 sm:inline-flex dark:hover:bg-muted-foreground/30"
             onClick={() => {
               // The picker accepts both image and audio. Don't gate the
               // button on image-availability — addFiles still filters
@@ -1085,7 +1089,7 @@ export function SharedComposer({
               disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                "hidden items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors sm:flex",
                 !modelLoaded
                   ? "cursor-not-allowed opacity-40"
                   : preserveThinking
@@ -1120,7 +1124,7 @@ export function SharedComposer({
                 applyQwenThinkingParams(!next);
               }
             }}
-            className="composer-pill-btn"
+            className="composer-pill-btn hidden sm:flex"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
@@ -1131,7 +1135,7 @@ export function SharedComposer({
             type="button"
             disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className="composer-pill-btn"
+            className="composer-pill-btn hidden sm:flex"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
@@ -1143,7 +1147,7 @@ export function SharedComposer({
               type="button"
               disabled={imageDisabled}
               onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
-              className="composer-pill-btn"
+              className="composer-pill-btn hidden sm:flex"
               data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
               aria-label={
                 imageToolsEnabled ? "Disable image generation" : "Enable image generation"
@@ -1162,7 +1166,7 @@ export function SharedComposer({
               type="button"
               disabled={webFetchDisabled}
               onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
-              className="composer-pill-btn"
+              className="composer-pill-btn hidden sm:flex"
               data-active={
                 webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
               }
