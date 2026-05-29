@@ -513,16 +513,18 @@ export function SharedComposer({
   // and gate strictly on the provider builtin support.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
   const searchDisabled =
-    !modelLoaded ||
+    modelLoaded &&
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
       : !(supportsTools || supportsBuiltinWebSearch));
   const codeDisabled =
-    !modelLoaded ||
-    (isGeminiImageTier
-      ? true
-      : !(supportsTools || supportsBuiltinCodeExecution)) ||
+    (modelLoaded &&
+      (isGeminiImageTier
+        ? true
+        : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.

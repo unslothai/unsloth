@@ -1137,7 +1137,9 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  const disabled = !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
@@ -1180,8 +1182,9 @@ const CodeToolsToggle: FC = () => {
   );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const disabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
