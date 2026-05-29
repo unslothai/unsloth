@@ -152,10 +152,12 @@ export function KBDetailPanel({
           {error ? (
             <div className="text-xs text-destructive">{error}</div>
           ) : null}
-          {/* Native scroll (not Radix ScrollArea): Radix wraps content in a
-              display:table min-width:100% element that breaks filename
-              truncation at narrow widths, forcing the panel wider. */}
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {/* Native scroll, not Radix ScrollArea (its display:table wrapper
+              breaks truncation). overflow-x-hidden is explicit because WebKit
+              (Tauri webview) does NOT auto-compute overflow-x to auto when
+              only overflow-y is set, so a long filename would otherwise spill
+              and widen the whole dialog. */}
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">
             {documents.length === 0 && !loading ? (
               <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
                 No documents yet. Use the upload button to add some.
@@ -168,7 +170,10 @@ export function KBDetailPanel({
                     <div
                       key={doc.id}
                       className={cn(
-                        "flex w-full items-center justify-between gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs",
+                        // grid minmax(0,1fr)/auto (same as the Connections
+                        // rows) so the name column shrinks and the delete
+                        // button stays put — never widening the panel.
+                        "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs",
                         previewable && "cursor-pointer hover:bg-muted/70",
                       )}
                       onClick={
