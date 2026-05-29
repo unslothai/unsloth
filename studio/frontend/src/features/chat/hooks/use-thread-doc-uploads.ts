@@ -186,7 +186,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           scope = { kind: "thread", threadId };
           scopeKey = `thread:${threadId}`;
         }
-        setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey }));
+        setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey as string }));
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
           const {
