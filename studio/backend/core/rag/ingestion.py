@@ -63,6 +63,7 @@ def _subprocess_worker(
     document_id: str = "",
     vlm_url: str | None = None,
     vlm_model: str | None = None,
+    enable_captions: bool = True,
 ) -> None:
     # Spawned subprocess: structlog isn't configured here (the parent's
     # setup runs in the FastAPI process only), so configure it the same
@@ -101,7 +102,7 @@ def _subprocess_worker(
         # passes these same captions through to _stream_image_chunks
         # below — no duplicate VLM calls per image.
         captions: list[str] = []
-        if parsed.images:
+        if parsed.images and enable_captions:
             out_queue.put(
                 {"type": "progress", "stage": "caption_images", "progress": 0.08}
             )
@@ -838,6 +839,7 @@ def enqueue_ingestion(
     embedding_model: str | None = None,
     chunking_strategy: str = "standard",
     mode: str = "text",
+    enable_captions: bool = True,
 ) -> str:
     """Create the job row, spawn the subprocess, start the pump; return job_id."""
     from utils.rag.config import resolve_embedder
@@ -853,19 +855,25 @@ def enqueue_ingestion(
     # for both modes — text mode splices captions into markdown, and
     # multimodal mode additionally feeds them to the image-vector
     # encoder. If no vision chat model is loaded, the subprocess falls
-    # back to the helper VLM (pre-cached at studio startup).
-    vlm_url, vlm_model = _probe_loaded_vlm()
-    if vlm_url:
-        logger.info(
-            "RAG ingest: will caption figures via loaded chat VLM",
-            vlm_model = vlm_model,
-            vlm_url = vlm_url,
-        )
+    # back to the helper VLM (pre-cached at studio startup). Skipped
+    # entirely when captioning is disabled for this upload.
+    vlm_url: str | None = None
+    vlm_model: str | None = None
+    if enable_captions:
+        vlm_url, vlm_model = _probe_loaded_vlm()
+        if vlm_url:
+            logger.info(
+                "RAG ingest: will caption figures via loaded chat VLM",
+                vlm_model = vlm_model,
+                vlm_url = vlm_url,
+            )
+        else:
+            logger.info(
+                "RAG ingest: no vision-capable chat model loaded; "
+                "subprocess will use the helper gemma-3n VLM fallback."
+            )
     else:
-        logger.info(
-            "RAG ingest: no vision-capable chat model loaded; "
-            "subprocess will use the helper gemma-3n VLM fallback."
-        )
+        logger.info("RAG ingest: figure captioning disabled for this upload")
     job_id = str(uuid4())
     with get_connection() as conn:
         conn.execute(
@@ -898,6 +906,7 @@ def enqueue_ingestion(
             document_id,
             vlm_url,
             vlm_model,
+            enable_captions,
         ),
         daemon = True,
     )

@@ -188,12 +188,14 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
         }
         setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey as string }));
         const uploadDocument = useRagStore.getState().uploadDocument;
+        const captionImages =
+          useChatRuntimeStore.getState().ragCaptionImages;
         try {
           const {
             documentId: did,
             jobId: jid,
             alreadyIndexed,
-          } = await uploadDocument(scope, file);
+          } = await uploadDocument(scope, file, captionImages);
           documentId = did;
           jobId = jid;
           if (abort.signal.aborted) {

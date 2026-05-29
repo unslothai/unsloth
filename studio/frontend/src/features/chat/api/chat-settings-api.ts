@@ -39,6 +39,7 @@ export interface PersistedChatSettings {
   ragTopK?: number;
   ragMinScore?: number;
   ragIndexConcurrency?: number;
+  ragCaptionImages?: boolean;
 }
 
 interface ChatSettingsResponse {

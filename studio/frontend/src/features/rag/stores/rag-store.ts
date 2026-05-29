@@ -56,6 +56,7 @@ interface RagStoreState {
   uploadDocument: (
     scope: { kind: "kb"; kbId: string } | { kind: "thread"; threadId: string },
     file: File,
+    captionImages?: boolean,
   ) => Promise<{
     documentId: string;
     jobId: string;
@@ -189,11 +190,11 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
     }
   },
 
-  async uploadDocument(scope, file) {
+  async uploadDocument(scope, file, captionImages = true) {
     const result =
       scope.kind === "kb"
-        ? await uploadKBDocument(scope.kbId, file)
-        : await uploadThreadDocument(scope.threadId, file);
+        ? await uploadKBDocument(scope.kbId, file, captionImages)
+        : await uploadThreadDocument(scope.threadId, file, captionImages);
     const scopeKey =
       scope.kind === "kb"
         ? kbScopeKey(scope.kbId)

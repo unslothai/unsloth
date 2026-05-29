@@ -334,6 +334,9 @@ type ChatRuntimeStore = {
   // rate). 1 = sequential. Keeps many concurrent ingestion subprocesses
   // from thrashing the GPU/CPU.
   ragIndexConcurrency: number;
+  // Caption figures/images during ingestion (default on). Off skips the VLM
+  // captioning pass for faster, text-only indexing.
+  ragCaptionImages: boolean;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -389,6 +392,7 @@ type ChatRuntimeStore = {
   setRagTopK: (value: number) => void;
   setRagMinScore: (value: number) => void;
   setRagIndexConcurrency: (value: number) => void;
+  setRagCaptionImages: (value: boolean) => void;
   setRagToolEnabled: (value: boolean) => void;
 };
 
@@ -411,7 +415,8 @@ type ScalarSettingKey =
   | "enableRerank"
   | "ragTopK"
   | "ragMinScore"
-  | "ragIndexConcurrency";
+  | "ragIndexConcurrency"
+  | "ragCaptionImages";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -452,6 +457,7 @@ const SCALAR_SETTING_KEYS = [
   "ragTopK",
   "ragMinScore",
   "ragIndexConcurrency",
+  "ragCaptionImages",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -668,6 +674,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragTopK: 5,
   ragMinScore: 0,
   ragIndexConcurrency: 1,
+  ragCaptionImages: true,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -951,6 +958,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.ragIndexConcurrency,
       );
       return { ragIndexConcurrency: clamped };
+    }),
+  setRagCaptionImages: (ragCaptionImages) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "ragCaptionImages",
+        ragCaptionImages,
+        state.ragCaptionImages,
+      );
+      return { ragCaptionImages };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
     set(() => {

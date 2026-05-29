@@ -500,6 +500,10 @@ export function ChatSettingsPanel({
   const setRagIndexConcurrency = useChatRuntimeStore(
     (s) => s.setRagIndexConcurrency,
   );
+  const ragCaptionImages = useChatRuntimeStore((s) => s.ragCaptionImages);
+  const setRagCaptionImages = useChatRuntimeStore(
+    (s) => s.setRagCaptionImages,
+  );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const { knowledgeBases, deleteKB } = useKnowledgeBases();
   const { documents: threadDocs, remove: removeThreadDoc } = useThreadDocuments(
@@ -573,7 +577,10 @@ export function ChatSettingsPanel({
           `with the new settings? Existing chunks will be deleted and rebuilt.`,
       );
       if (ok) {
-        void reingestThread(threadId, patch);
+        void reingestThread(threadId, {
+          ...patch,
+          caption_images: ragCaptionImages,
+        });
       } else {
         // User declined: refresh so the select snaps back.
         void loadThreadSettings(threadId);
@@ -1466,6 +1473,22 @@ export function ChatSettingsPanel({
                     source before sending.
                   </p>
                 </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <span className="text-[13px] font-medium">
+                      Caption images
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      Describe figures with a vision model during indexing so
+                      they're searchable. Off = faster, text-only indexing.
+                    </span>
+                  </div>
+                  <Switch
+                    checked={ragCaptionImages}
+                    onCheckedChange={(next) => setRagCaptionImages(next)}
+                    disabled={!ragEnabled}
+                  />
+                </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium text-muted-foreground">
                     Search mode
@@ -1611,7 +1634,9 @@ export function ChatSettingsPanel({
                                     `Re-index all ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"}? Existing chunks will be deleted and rebuilt; search will be unavailable until ingestion finishes.`,
                                   )
                                 ) {
-                                  void reingestThread(activeThreadId);
+                                  void reingestThread(activeThreadId, {
+                                    caption_images: ragCaptionImages,
+                                  });
                                 }
                               }}
                             >

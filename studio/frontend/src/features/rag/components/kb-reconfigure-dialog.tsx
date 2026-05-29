@@ -25,6 +25,7 @@ import type {
   KBMode,
   KnowledgeBase,
 } from "../api/rag-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useRagStore } from "../stores/rag-store";
 
 export function KBReconfigureDialog({
@@ -93,6 +94,7 @@ export function KBReconfigureDialog({
         chunking_strategy: chunkingStrategy,
         mode,
         embedding_model: embeddingModel.trim() || undefined,
+        caption_images: useChatRuntimeStore.getState().ragCaptionImages,
       });
       onOpenChange(false);
     } catch (err) {

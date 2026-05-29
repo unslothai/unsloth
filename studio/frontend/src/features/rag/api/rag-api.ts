@@ -232,11 +232,12 @@ export async function listThreadDocuments(
 export async function uploadKBDocument(
   kbId: string,
   file: File,
+  captionImages = true,
 ): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   const response = await authFetch(
-    `/api/rag/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
+    `/api/rag/knowledge-bases/${encodeURIComponent(kbId)}/documents?caption_images=${captionImages}`,
     { method: "POST", body: form },
   );
   return parseJsonOrThrow<UploadResponse>(response);
@@ -245,11 +246,12 @@ export async function uploadKBDocument(
 export async function uploadThreadDocument(
   threadId: string,
   file: File,
+  captionImages = true,
 ): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   const response = await authFetch(
-    `/api/rag/threads/${encodeURIComponent(threadId)}/documents`,
+    `/api/rag/threads/${encodeURIComponent(threadId)}/documents?caption_images=${captionImages}`,
     { method: "POST", body: form },
   );
   return parseJsonOrThrow<UploadResponse>(response);
@@ -295,6 +297,7 @@ export interface ReingestKBOptions {
   chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
   embedding_model?: string;
+  caption_images?: boolean;
 }
 
 export async function reingestKnowledgeBase(
@@ -322,6 +325,8 @@ export interface UpdateThreadRagSettingsRequest {
   chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
   embedding_model?: string | null;
+  // Only consulted by reingest (not persisted as a thread setting).
+  caption_images?: boolean;
 }
 
 export async function getThreadRagSettings(

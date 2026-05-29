@@ -328,6 +328,7 @@ def _start_ingestion(
     embedding_model: str,
     chunking_strategy: str = "standard",
     mode: str = "text",
+    caption_images: bool = True,
     content_hash: str | None = None,
 ) -> UploadResponse:
     document_id = str(uuid4())
@@ -390,6 +391,7 @@ def _start_ingestion(
         embedding_model = embedding_model,
         chunking_strategy = chunking_strategy,
         mode = mode,
+        enable_captions = caption_images,
     )
     return UploadResponse(document_id = document_id, job_id = job_id, filename = filename)
 
@@ -608,6 +610,9 @@ class UpdateThreadRagSettingsRequest(BaseModel):
     chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
+    # Only consulted by reingest (not persisted as a thread setting); omit or
+    # None keeps captioning on.
+    caption_images: bool | None = None
 
 
 def _thread_settings_key(thread_id: str) -> str:
@@ -681,6 +686,8 @@ class ReingestKBRequest(BaseModel):
     chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
+    # Not persisted on the KB; omit or None keeps captioning on for the rebuild.
+    caption_images: bool | None = None
 
 
 class ReingestResponse(BaseModel):
@@ -695,6 +702,7 @@ def _reingest_scope(
     chunking_strategy: str,
     mode: str,
     embedding_model: str,
+    caption_images: bool = True,
 ) -> ReingestResponse:
     """Wipe scope artifacts and re-enqueue every document; metadata untouched."""
     scope = kb_scope(kb_id) if kb_id else thread_scope(thread_id)  # type: ignore[arg-type]
@@ -742,6 +750,7 @@ def _reingest_scope(
             embedding_model = embedding_model,
             chunking_strategy = chunking_strategy,
             mode = mode,
+            caption_images = caption_images,
         )
         job_ids.append(upload.job_id)
         new_doc_ids.append(upload.document_id)
@@ -794,6 +803,7 @@ def reingest_knowledge_base(
         chunking_strategy = new_strategy,
         mode = new_mode,
         embedding_model = new_embedder,
+        caption_images = payload.caption_images is not False,
     )
 
 
@@ -834,6 +844,7 @@ def reingest_thread_documents(
         chunking_strategy = settings.chunking_strategy,
         mode = settings.mode,
         embedding_model = embedder,
+        caption_images = payload.caption_images is not False,
     )
 
 
@@ -863,6 +874,7 @@ def delete_knowledge_base(
 async def upload_kb_document(
     kb_id: str,
     file: UploadFile,
+    caption_images: bool = True,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
@@ -883,6 +895,7 @@ async def upload_kb_document(
         embedding_model = kb_row["embedding_model"],
         chunking_strategy = chunking_strategy,
         mode = mode,
+        caption_images = caption_images,
         content_hash = content_hash,
     )
 
@@ -891,6 +904,7 @@ async def upload_kb_document(
 async def upload_thread_document(
     thread_id: str,
     file: UploadFile,
+    caption_images: bool = True,
     current_subject: str = Depends(get_current_subject),
 ) -> UploadResponse:
     from utils.rag.config import resolve_embedder
@@ -912,6 +926,7 @@ async def upload_thread_document(
         embedding_model = embedder,
         chunking_strategy = settings.chunking_strategy,
         mode = settings.mode,
+        caption_images = caption_images,
         content_hash = content_hash,
     )
 
