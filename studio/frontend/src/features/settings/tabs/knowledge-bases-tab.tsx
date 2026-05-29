@@ -37,7 +37,7 @@ export function KnowledgeBasesTab() {
   });
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div>
         <h2 className="text-lg font-semibold">Knowledge bases</h2>
         <p className="text-sm text-muted-foreground">
@@ -46,7 +46,11 @@ export function KnowledgeBasesTab() {
         </p>
       </div>
       <Separator />
-      <div className="flex min-h-0 flex-1 gap-4">
+      {/* Fixed-height workspace so the KB list / detail / preview have a
+          bounded area to scroll within; the rest of the tab flows and the
+          settings dialog body scrolls. A flex-1 fill here collapsed under the
+          tall thread-index + defaults sections below, overlapping them. */}
+      <div className="flex h-[360px] min-h-0 gap-4">
         <div className="w-[220px] shrink-0">
           <KBList selectedId={selected?.id ?? null} onSelect={setSelected} />
         </div>
