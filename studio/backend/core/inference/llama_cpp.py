@@ -1253,9 +1253,10 @@ class LlamaCppBackend:
                 return False
             for _i in range(torch.cuda.device_count()):
                 try:
-                    _arch = getattr(
-                        torch.cuda.get_device_properties(_i), "gcnArchName", ""
-                    ) or ""
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "")
+                        or ""
+                    )
                 except Exception:
                     continue
                 if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:

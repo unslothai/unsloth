@@ -775,7 +775,9 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # stale HIP_VISIBLE_DEVICES on an NVIDIA host can't override CUDA_VISIBLE_DEVICES.
     _is_rocm_spec = IS_ROCM or (
         "CUDA_VISIBLE_DEVICES" not in os.environ
-        and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
+        and (
+            "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+        )
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")

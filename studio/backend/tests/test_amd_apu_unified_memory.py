@@ -28,13 +28,13 @@ def _fake_torch(hip, archs, *, cuda_ok = True):
 @pytest.mark.parametrize(
     "hip,archs,expected",
     [
-        ("6.2.0", ["gfx1151:xnack-"], True),     # Strix Halo APU (suffix stripped)
-        ("6.2.0", ["gfx1150"], True),            # Strix Point APU
-        ("6.2.0", ["gfx1100"], False),           # discrete RDNA3
-        ("6.2.0", ["gfx1201"], False),           # discrete RDNA4
-        ("6.2.0", ["gfx942"], False),            # MI300X (data center)
-        (None, ["sm_90"], False),                # NVIDIA (no torch.version.hip)
-        ("6.2.0", ["gfx1100", "gfx1151"], True), # mixed dGPU + APU
+        ("6.2.0", ["gfx1151:xnack-"], True),  # Strix Halo APU (suffix stripped)
+        ("6.2.0", ["gfx1150"], True),  # Strix Point APU
+        ("6.2.0", ["gfx1100"], False),  # discrete RDNA3
+        ("6.2.0", ["gfx1201"], False),  # discrete RDNA4
+        ("6.2.0", ["gfx942"], False),  # MI300X (data center)
+        (None, ["sm_90"], False),  # NVIDIA (no torch.version.hip)
+        ("6.2.0", ["gfx1100", "gfx1151"], True),  # mixed dGPU + APU
     ],
 )
 def test_apu_unified_memory_gating(monkeypatch, hip, archs, expected):
