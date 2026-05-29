@@ -750,6 +750,27 @@ class TestSourceCodePatterns:
         assert "_gpu_fallback_label()" in content
         assert 'echo "Metal"' in content
 
+    def test_setup_sh_exports_allow_unsupported_compiler(self):
+        """Headline fix for PR #5826: the day a new CUDA toolkit ships, its
+        host-compiler whitelist lags the distro's gcc/clang, so nvcc rejects
+        the host compiler with a wall of "#error -- unsupported GNU version"
+        before any real compile runs. setup.sh exports
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler so the CUDA build (and
+        cmake's own CUDA compiler-id probe) proceeds. Assert the flag stays
+        wired and is delivered via the environment, not CMAKE_ARGS, so bash
+        word-splitting on the cmake call stays safe."""
+        content = SETUP_SH.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via NVCC_PREPEND_FLAGS (covers the configure-time compiler
+        # probe too), not embedded in the word-split CMAKE_ARGS string.
+        assert "export NVCC_PREPEND_FLAGS=" in content
+        cmake_args_lines = [
+            line for line in content.splitlines() if "CMAKE_ARGS=" in line
+        ]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
+
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
         """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
         script = (
