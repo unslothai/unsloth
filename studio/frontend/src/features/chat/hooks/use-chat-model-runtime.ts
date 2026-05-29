@@ -27,6 +27,7 @@ import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
   type ReasoningEffort,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -701,11 +702,11 @@ export function useChatModelRuntime() {
               toolsEnabled:
                 reloadingSameModel && supportsTools
                   ? stateBeforeUnload.toolsEnabled
-                  : supportsTools,
+                  : resolveToolsEnabledOnLoad(supportsTools).toolsEnabled,
               codeToolsEnabled:
                 reloadingSameModel && supportsTools
                   ? stateBeforeUnload.codeToolsEnabled
-                  : supportsTools,
+                  : resolveToolsEnabledOnLoad(supportsTools).codeToolsEnabled,
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,
