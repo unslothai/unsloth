@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -23,7 +22,6 @@ export function RagDefaultsSection() {
   const [chunkingStrategy, setChunkingStrategy] =
     useState<ChunkingStrategy>("standard");
   const [mode, setMode] = useState<KBMode>("text");
-  const [embeddingModel, setEmbeddingModel] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,7 +32,6 @@ export function RagDefaultsSection() {
     if (defaults) {
       setChunkingStrategy(defaults.chunking_strategy);
       setMode(defaults.mode);
-      setEmbeddingModel(defaults.embedding_model ?? "");
     }
   }, [defaults]);
 
@@ -120,18 +117,6 @@ export function RagDefaultsSection() {
             </SelectContent>
           </Select>
         </div>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="defaults-model">
-          Default embedding model override (optional)
-        </Label>
-        <Input
-          id="defaults-model"
-          value={embeddingModel}
-          onChange={(e) => setEmbeddingModel(e.target.value)}
-          onBlur={() => persist({ embedding_model: embeddingModel })}
-          placeholder="Leave blank to use the matrix default"
-        />
       </div>
       {error ? <div className="text-xs text-destructive">{error}</div> : null}
     </div>

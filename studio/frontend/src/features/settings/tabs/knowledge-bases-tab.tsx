@@ -66,7 +66,7 @@ export function KnowledgeBasesTab() {
   });
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       <div>
         <h2 className="text-lg font-semibold">Knowledge bases</h2>
         <p className="text-sm text-muted-foreground">
@@ -76,7 +76,7 @@ export function KnowledgeBasesTab() {
       </div>
       <Separator />
 
-      <div className="flex flex-col gap-2">
+      <div className="flex min-w-0 flex-col gap-2">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Knowledge bases</h3>
           <Button
@@ -94,7 +94,7 @@ export function KnowledgeBasesTab() {
         </p>
         <div
           className={cn(
-            "flex min-h-0 gap-4",
+            "flex min-h-0 min-w-0 gap-4",
             splitOpen && KB_WORKSPACE_HEIGHT,
           )}
         >

@@ -102,7 +102,7 @@ export function KBDetailPanel({
   };
 
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div className="flex h-full min-w-0 flex-col gap-3">
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between gap-3">
           <h2 className="truncate text-lg font-semibold">{kb.name}</h2>
