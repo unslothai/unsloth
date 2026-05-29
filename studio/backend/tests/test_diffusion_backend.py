@@ -542,6 +542,86 @@ def test_generate_image_reuses_prompt_embedding_cache(monkeypatch):
     assert backend._prompt_embedding_cache_value[0][0].device.type == "cpu"
 
 
+def test_prompt_embedding_cache_unwraps_flux2_klein_auxiliary_text_ids(monkeypatch):
+    import torch
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    fam = next(f for f in d._FAMILIES if f.name == "flux.2-klein")
+
+    class _Flux2KleinPromptCachePipe:
+        _execution_device = "cpu"
+
+        def __init__(self):
+            self.encode_calls = 0
+            self.prompt_embeds_seen = []
+
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+            num_images_per_prompt = 1,
+            prompt_embeds = None,
+            max_sequence_length = 512,
+            text_encoder_out_layers = (9, 18, 27),
+        ):
+            self.encode_calls += 1
+            embeds = torch.ones(1, 2, 3, device = device)
+            text_ids = torch.zeros(1, 2, 4, device = device)
+            return embeds, text_ids
+
+        def __call__(
+            self,
+            *,
+            prompt = None,
+            prompt_embeds = None,
+            negative_prompt_embeds = None,
+            num_inference_steps,
+            width,
+            height,
+            guidance_scale = None,
+            generator = None,
+        ):
+            assert prompt is None
+            assert hasattr(prompt_embeds, "shape")
+            assert negative_prompt_embeds is None
+            self.prompt_embeds_seen.append(prompt_embeds)
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 255, 0))]
+            return out
+
+    pipe = _Flux2KleinPromptCachePipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = fam
+    backend._repo_id = "stub/flux2-klein"
+
+    backend.generate_image(
+        prompt = "same prompt",
+        width = 256,
+        height = 256,
+        guidance_scale = 1,
+        seed = 1,
+    )
+    backend.generate_image(
+        prompt = "same prompt",
+        width = 256,
+        height = 256,
+        guidance_scale = 1,
+        seed = 2,
+    )
+
+    assert pipe.encode_calls == 1
+    assert len(pipe.prompt_embeds_seen) == 2
+    assert backend._prompt_embedding_cache_value is not None
+    assert hasattr(backend._prompt_embedding_cache_value[0], "shape")
+
+
 def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance():
     import torch
     from core.inference import diffusion as d

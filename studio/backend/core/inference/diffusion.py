@@ -1074,6 +1074,19 @@ def _store_prompt_embeds_on_cpu(value: Any) -> Any:
     return value
 
 
+def _primary_prompt_embeds(value: Any) -> Any:
+    """Unwrap Diffusers encode_prompt auxiliary outputs.
+
+    Some pipelines return only prompt embeddings, while Flux2/Klein returns
+    ``(prompt_embeds, text_ids)``. The pipeline call accepts only
+    ``prompt_embeds`` and recomputes text ids internally, so cache the tensor
+    payload rather than the auxiliary tuple.
+    """
+    if isinstance(value, tuple) and value and hasattr(value[0], "shape"):
+        return value[0]
+    return value
+
+
 def _env_pin_cpu_resident_gguf() -> bool:
     return (
         os.environ.get("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", "")
@@ -2539,6 +2552,12 @@ class DiffusionBackend:
                     device = execution_device,
                     max_sequence_length = max_sequence_length,
                 )
+                prompt_embeds = _primary_prompt_embeds(prompt_embeds)
+                negative_prompt_embeds = (
+                    _primary_prompt_embeds(negative_prompt_embeds)
+                    if do_classifier_free_guidance
+                    else None
+                )
             except TypeError:
                 try:
                     prompt_for_encode: Any = prompt
@@ -2563,6 +2582,7 @@ class DiffusionBackend:
                         execution_device,
                         1,
                     )
+                    prompt_embeds = _primary_prompt_embeds(prompt_embeds)
                     if do_classifier_free_guidance:
                         negative_values: Any = negative_prompt or ""
                         prompt_count = (
@@ -2576,6 +2596,9 @@ class DiffusionBackend:
                             negative_values,
                             execution_device,
                             1,
+                        )
+                        negative_prompt_embeds = _primary_prompt_embeds(
+                            negative_prompt_embeds
                         )
                     else:
                         negative_prompt_embeds = None
