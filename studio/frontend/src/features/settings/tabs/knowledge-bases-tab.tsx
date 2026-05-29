@@ -119,7 +119,10 @@ export function KnowledgeBasesTab() {
           {panelOpen && activeKb && activePanel ? (
             <>
               <Separator orientation="vertical" className="h-auto" />
-              <div className="min-w-0 flex-1">
+              {/* overflow-hidden so long document names (which spill past the
+                  flex slot before truncation kicks in) can never widen the
+                  workspace and shift the whole dialog right. */}
+              <div className="min-w-0 flex-1 overflow-hidden">
                 <KBDetailPanel
                   kb={activeKb}
                   panel={activePanel}
