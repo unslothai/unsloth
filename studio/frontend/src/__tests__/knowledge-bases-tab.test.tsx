@@ -25,6 +25,11 @@ vi.mock("@/features/rag/components/kb-list", () => ({
   KBList: () => React.createElement("div", { "data-testid": "kb-list" }),
 }));
 
+vi.mock("@/features/rag/components/kb-create-dialog", () => ({
+  KBCreateDialog: () =>
+    React.createElement("div", { "data-testid": "kb-create-dialog" }),
+}));
+
 vi.mock("@/features/rag/components/kb-detail-panel", () => ({
   KBDetailPanel: () =>
     React.createElement("div", { "data-testid": "kb-detail-panel" }),

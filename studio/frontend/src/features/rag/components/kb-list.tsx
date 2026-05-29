@@ -4,12 +4,10 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
 import type { KnowledgeBase } from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
-import { KBCreateDialog } from "./kb-create-dialog";
 
 export function KBList({
   selectedId,
@@ -19,25 +17,14 @@ export function KBList({
   onSelect: (kb: KnowledgeBase | null) => void;
 }) {
   const { knowledgeBases, loading, error, deleteKB } = useKnowledgeBases();
-  const [createOpen, setCreateOpen] = useState(false);
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">Knowledge bases</h3>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Create knowledge base"
-          onClick={() => setCreateOpen(true)}
-        >
-          <HugeiconsIcon icon={Add01Icon} size={16} />
-        </Button>
-      </div>
-
+    <div className="flex flex-col gap-1">
       {error ? <div className="text-xs text-destructive">{error}</div> : null}
 
-      <ScrollArea className="flex-1">
+      {/* Capped, content-sized list: stays short when empty (no oddly-tall
+          box) and scrolls internally once there are many bases. */}
+      <ScrollArea className="max-h-[320px]">
         <div className="flex flex-col gap-1 pr-2">
           {knowledgeBases.length === 0 && !loading ? (
             <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
@@ -108,12 +95,6 @@ export function KBList({
           })}
         </div>
       </ScrollArea>
-
-      <KBCreateDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onCreated={(kb) => onSelect(kb)}
-      />
     </div>
   );
 }
