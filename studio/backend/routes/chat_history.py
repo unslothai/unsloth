@@ -111,6 +111,7 @@ class ChatInferenceSettings(BaseModel):
     maxTokens: Optional[float] = None
     systemPrompt: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
+    fastMode: Optional[bool] = None
 
 
 class ChatPreset(BaseModel):

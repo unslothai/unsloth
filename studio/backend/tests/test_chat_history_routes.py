@@ -57,6 +57,40 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /api/chat/settings
+# ---------------------------------------------------------------------------
+
+
+def test_chat_settings_payload_accepts_fast_mode_presets():
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "inferenceParams": {"fastMode": False},
+            "customPresets": [
+                {
+                    "name": "Fast Opus",
+                    "params": {
+                        "temperature": 0.6,
+                        "topP": 0.95,
+                        "topK": 20,
+                        "minP": 0.01,
+                        "repetitionPenalty": 1.0,
+                        "presencePenalty": 0.0,
+                        "maxTokens": 8192,
+                        "systemPrompt": "",
+                        "trustRemoteCode": False,
+                        "fastMode": True,
+                    },
+                },
+            ],
+        }
+    )
+
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["inferenceParams"]["fastMode"] is False
+    assert dumped["customPresets"][0]["params"]["fastMode"] is True
+
+
+# ---------------------------------------------------------------------------
 # /api/chat/import-ledger
 # ---------------------------------------------------------------------------
 
