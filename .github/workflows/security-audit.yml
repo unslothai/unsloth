@@ -72,6 +72,31 @@ concurrency:
 permissions:
   contents: read
 
+# ──────────────────────────────────────────────────────────────────────
+# Network-resilience knobs, applied to every job/step. These add retries
+# and backoff ONLY; they do not relax a single integrity check. cargo
+# still resolves against Cargo.lock (--locked), pip still verifies the
+# wheels it downloads, npm still enforces package-lock integrity, the
+# harden-runner egress allowlists below are unchanged, and every action
+# stays SHA-pinned. The advisory-audit run on 2026-05-29 red-failed when
+# one crates.io tarball fetch hit "Recv failure: Connection reset by
+# peer" (curl 56); cargo's default of 3 retries over an HTTP/2-multiplexed
+# connection did not recover. The settings below make that class of
+# transient fault self-heal instead of failing the whole run.
+env:
+  # pip: raise the built-in retry count and per-connection timeout.
+  PIP_RETRIES: "10"
+  PIP_DEFAULT_TIMEOUT: "60"
+  # cargo: retry network ops and disable HTTP/2 multiplexing -- the
+  # documented mitigation for the curl-56 connection resets above.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  # npm: retry registry fetches with capped exponential backoff.
+  NPM_CONFIG_FETCH_RETRIES: "5"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "2000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
+
 jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Combined advisory-DB audit: pip-audit + npm audit + cargo audit
@@ -153,8 +178,23 @@ jobs:
         # crashes with a TOML parse error on that file.
         # npm audit is bundled with the node toolchain, no install.
         run: |
-          python -m pip install --upgrade pip 'pip-audit>=2.7'
-          cargo install --locked --version '^0.22' cargo-audit
+          retry() {  # retry <max-attempts> <command...> with exponential backoff
+            local max="$1"; shift
+            local n=1 delay=5
+            until "$@"; do
+              if [ "$n" -ge "$max" ]; then
+                echo "::error::command failed after ${n} attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt ${n}/${max} failed; retrying in ${delay}s: $*" >&2
+              sleep "$delay"; n=$((n + 1)); delay=$((delay * 2))
+            done
+          }
+          retry 5 python -m pip install --upgrade pip 'pip-audit>=2.7'
+          # --locked keeps the resolved tree identical to Cargo.lock; the
+          # CARGO_NET_* env above plus this outer loop survive transient
+          # crates.io connection resets without weakening that guarantee.
+          retry 5 cargo install --locked --version '^0.22' cargo-audit
 
       # ─────────────────────────────────────────────────────────────
       # Python: pip-audit
@@ -341,9 +381,24 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          # OSV-Scanner ships a raw binary (no tarball) in v2.x.
-          curl -fsSL -o /tmp/osv-scanner \
-            https://github.com/google/osv-scanner/releases/download/v2.0.2/osv-scanner_linux_amd64
+          # OSV-Scanner ships a raw binary (no tarball) in v2.x. Fetch it
+          # with retries, then verify the SHA-256 against the pinned value
+          # BEFORE chmod +x / exec. A swapped release asset would otherwise
+          # drop an attacker-controlled binary onto a runner with repo read
+          # access -- exactly the Trivy-style pivot this workflow refuses.
+          # Bump OSV_SHA256 in lockstep with OSV_VERSION (value taken from
+          # the release's osv-scanner_SHA256SUMS asset).
+          OSV_VERSION="v2.0.2"
+          OSV_SHA256="3abcfd7126c453a00421487e721b296e0cb68085bd431d6cef60872774170fc8"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
+            -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+          if ! echo "${OSV_SHA256}  /tmp/osv-scanner" | sha256sum -c -; then
+            echo "::error::osv-scanner checksum mismatch; refusing to execute" >&2
+            rm -f /tmp/osv-scanner
+            exit 1
+          fi
           chmod +x /tmp/osv-scanner
           /tmp/osv-scanner --version
           /tmp/osv-scanner scan source \
@@ -1075,7 +1130,23 @@ jobs:
         # new-install-script gate below protects against, and we must
         # not run any third-party hook to set up the audit.
         working-directory: studio/frontend
-        run: npm ci --ignore-scripts
+        run: |
+          retry() {  # retry <max-attempts> <command...> with exponential backoff
+            local max="$1"; shift
+            local n=1 delay=5
+            until "$@"; do
+              if [ "$n" -ge "$max" ]; then
+                echo "::error::command failed after ${n} attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt ${n}/${max} failed; retrying in ${delay}s: $*" >&2
+              sleep "$delay"; n=$((n + 1)); delay=$((delay * 2))
+            done
+          }
+          # --ignore-scripts is mandatory here (no third-party hook runs);
+          # the retry only re-attempts the registry fetch, it never relaxes
+          # that flag or the package-lock integrity check npm ci enforces.
+          retry 5 npm ci --ignore-scripts
 
       - name: npm audit signatures (informational)
         # Surfaces unsigned / mis-signed packages from the npm
