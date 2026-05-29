@@ -73,16 +73,24 @@ def test_diffusion_owned_targets_includes_lazy_text_encoder_gguf():
         "active_base_repo": "black-forest-labs/FLUX.2-dev",
         "active_text_encoder_gguf_repo": "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
         "active_text_encoder_gguf_filename": "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+        "active_prompt_enhancer_gguf_repo": "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF",
+        "active_prompt_enhancer_gguf_filename": "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
         "pending_repo_id": None,
         "pending_gguf_filename": None,
         "pending_base_repo": None,
         "pending_text_encoder_gguf_repo": None,
         "pending_text_encoder_gguf_filename": None,
+        "pending_prompt_enhancer_gguf_repo": None,
+        "pending_prompt_enhancer_gguf_filename": None,
     }
 
     assert (
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
         "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+    ) in models_route._diffusion_owned_targets(status)
+    assert (
+        "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF",
+        "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
     ) in models_route._diffusion_owned_targets(status)
 
 

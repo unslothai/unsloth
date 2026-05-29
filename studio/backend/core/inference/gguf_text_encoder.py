@@ -82,6 +82,7 @@ class TextEncoderGGUFInfo:
 
 _SUPPORTED_LAZY_TEXT_ARCHITECTURES = frozenset(
     {
+        "mistral3",
         "t5",
         "t5encoder",
         "llama",
@@ -499,6 +500,24 @@ def map_t5_text_gguf_name(name: str) -> _GGUFNameTarget | None:
     return _GGUFNameTarget(hf_name)
 
 
+def map_mistral3_causal_gguf_name(
+    name: str,
+    *,
+    num_attention_heads: int | None = None,
+    num_key_value_heads: int | None = None,
+) -> _GGUFNameTarget | None:
+    """Map Mistral3/Ministral3 causal GGUF names to HF module names."""
+
+    return map_llama_style_text_gguf_name(
+        name,
+        root_prefix = "model",
+        include_lm_head = True,
+        reverse_permute_qk = True,
+        num_attention_heads = num_attention_heads,
+        num_key_value_heads = num_key_value_heads,
+    )
+
+
 def map_qwen2vl_mmproj_gguf_name(name: str) -> Qwen2VLMmprojTarget | None:
     """Map Qwen2VL mmproj GGUF tensor names to Transformers names.
 
@@ -821,6 +840,19 @@ def _materialize_gemma3_buffers(text_encoder: nn.Module, config: Any) -> None:
     local_config.rope_theta = local_config.rope_local_base_freq
     local_config.rope_scaling = {"rope_type": "default"}
     text_encoder.model.rotary_emb_local = Gemma3RotaryEmbedding(config = local_config)
+
+
+def _materialize_ministral3_rotary_buffers(text_encoder: nn.Module, config: Any) -> None:
+    try:
+        from transformers.models.ministral3.modeling_ministral3 import (
+            Ministral3RotaryEmbedding,
+        )
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError(
+            "Ministral3 GGUF loading requires a Transformers build with "
+            "Ministral3RotaryEmbedding."
+        ) from exc
+    text_encoder.model.rotary_emb = Ministral3RotaryEmbedding(config)
 
 
 def _gguf_field_scalar(reader: Any, name: str, default: Any = None) -> Any:
@@ -1424,6 +1456,65 @@ class LazyFlux2MistralTextEncoder(Mistral3ForConditionalGeneration):
         # quantized tensors that were wrapped without a CPU copy.
         text_encoder._gguf_reader = gguf_reader
         return text_encoder
+
+
+class LazyMistral3TextEncoder(LazyFlux2MistralTextEncoder):
+    """Generic hidden-state Mistral3 GGUF encoder for diffusion prompts."""
+
+
+class LazyMinistral3PromptEnhancer:
+    """Factory for ERNIE's Ministral3 prompt-enhancer GGUF component."""
+
+    @classmethod
+    def from_gguf(
+        cls,
+        gguf_path: str | Path,
+        *,
+        base_repo_or_path: str | Path,
+        subfolder: str = "pe",
+        compute_dtype: torch.dtype = torch.bfloat16,
+        resident_device: torch.device | str | None = None,
+        token: str | None = None,
+    ) -> Any:
+        try:
+            from transformers.models.ministral3.modeling_ministral3 import (
+                Ministral3ForCausalLM,
+            )
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise RuntimeError(
+                "ERNIE prompt-enhancer GGUF loading requires a Transformers "
+                "build with Ministral3ForCausalLM."
+            ) from exc
+
+        base_path = Path(base_repo_or_path).expanduser()
+        if base_path.exists():
+            config = AutoConfig.from_pretrained(base_path / subfolder, token = token)
+        else:
+            config = AutoConfig.from_pretrained(
+                str(base_repo_or_path),
+                subfolder = subfolder,
+                token = token,
+            )
+
+        with torch.device("meta"):
+            prompt_enhancer = Ministral3ForCausalLM(config)
+        _materialize_ministral3_rotary_buffers(prompt_enhancer, config)
+
+        gguf_reader, stats = replace_mapped_text_modules_with_lazy_gguf(
+            prompt_enhancer,
+            Path(gguf_path),
+            map_name = lambda name: map_mistral3_causal_gguf_name(
+                name,
+                num_attention_heads = getattr(config, "num_attention_heads", None),
+                num_key_value_heads = getattr(config, "num_key_value_heads", None),
+            ),
+            compute_dtype = compute_dtype,
+            resident_device = resident_device,
+        )
+        prompt_enhancer.requires_grad_(False)
+        prompt_enhancer._gguf_reader = gguf_reader
+        prompt_enhancer._gguf_text_replacement_stats = stats
+        return prompt_enhancer
 
 
 class LazyQwen2VLTextEncoder:

@@ -1622,10 +1622,28 @@ class DiffusionLoadRequest(BaseModel):
         max_length = 64,
         description = (
             "Optional Diffusers pipeline component slot for a text-encoder GGUF "
-            "(text_encoder, text_encoder_2, or text_encoder_3). Required for "
-            "generic supported text architectures outside the built-in "
-            "Qwen/Z/FLUX/SD3 mappings."
+            "(text_encoder, text_encoder_2, text_encoder_3, or pe). Required "
+            "for generic supported text architectures outside the built-in "
+            "Qwen/Z/FLUX/SD3/ERNIE mappings."
         ),
+    )
+    prompt_enhancer_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for an ERNIE "
+            "prompt-enhancer GGUF. Defaults to the known ERNIE PE GGUF repo "
+            "when prompt_enhancer_gguf_filename is set."
+        ),
+    )
+    prompt_enhancer_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for an ERNIE prompt-enhancer component",
+    )
+    prompt_enhancer_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local prompt_enhancer_gguf_repo",
     )
     text_encoder_gguf_repo_native_path_lease: Optional[str] = Field(
         None,
@@ -1685,6 +1703,8 @@ class DiffusionLoadRequest(BaseModel):
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
         "text_encoder_gguf_component",
+        "prompt_enhancer_gguf_repo",
+        "prompt_enhancer_gguf_filename",
         "family",
     )
     @classmethod
@@ -1697,6 +1717,8 @@ class DiffusionLoadRequest(BaseModel):
         "base_repo",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
+        "prompt_enhancer_gguf_repo",
+        "prompt_enhancer_gguf_filename",
     )
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):

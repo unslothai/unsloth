@@ -2502,6 +2502,11 @@ async def diffusion_load(
             payload.text_encoder_gguf_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
+        resolved_prompt_enhancer_gguf_repo = _resolve_diffusion_repo_for_request(
+            payload.prompt_enhancer_gguf_repo,
+            payload.prompt_enhancer_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
         # Round 18 P1 #3 + P1 #7: the route used to drop chat and
         # idle export BEFORE ``backend.load_model`` ran its cheap
         # validation (family inference, GGUF filename checks,
@@ -2527,6 +2532,8 @@ async def diffusion_load(
                     text_encoder_gguf_repo = resolved_text_encoder_gguf_repo,
                     text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
                     text_encoder_gguf_component = payload.text_encoder_gguf_component,
+                    prompt_enhancer_gguf_repo = resolved_prompt_enhancer_gguf_repo,
+                    prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
                     family_override = payload.family,
                     hf_token = payload.hf_token,
                     enable_model_cpu_offload = payload.enable_model_cpu_offload,

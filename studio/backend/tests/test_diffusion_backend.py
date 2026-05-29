@@ -282,6 +282,8 @@ def test_status_shape_unloaded():
         "gguf_filename",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
+        "prompt_enhancer_gguf_repo",
+        "prompt_enhancer_gguf_filename",
         "gguf_quantized_cpu_resident",
         "gguf_pin_cpu_resident",
         "offload_policy",
@@ -301,11 +303,15 @@ def test_status_shape_unloaded():
         "active_gguf_filename",
         "active_text_encoder_gguf_repo",
         "active_text_encoder_gguf_filename",
+        "active_prompt_enhancer_gguf_repo",
+        "active_prompt_enhancer_gguf_filename",
         "pending_repo_id",
         "pending_base_repo",
         "pending_gguf_filename",
         "pending_text_encoder_gguf_repo",
         "pending_text_encoder_gguf_filename",
+        "pending_prompt_enhancer_gguf_repo",
+        "pending_prompt_enhancer_gguf_filename",
     ):
         assert guard_key not in s, f"public status() must not expose {guard_key}"
     assert s["is_loaded"] is False
@@ -318,6 +324,8 @@ def test_status_shape_unloaded():
     assert s_internal["pending_gguf_filename"] is None
     assert s_internal["active_text_encoder_gguf_filename"] is None
     assert s_internal["pending_text_encoder_gguf_filename"] is None
+    assert s_internal["active_prompt_enhancer_gguf_filename"] is None
+    assert s_internal["pending_prompt_enhancer_gguf_filename"] is None
 
 
 # ── encode_png_base64 ───────────────────────────────────────────
@@ -816,18 +824,156 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     return fake
 
 
-def test_load_model_rejects_family_without_gguf_single_file_support(monkeypatch):
+def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
+    fake = _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    class _ErnieTransformerWithoutSingleFile:
+        @classmethod
+        def load_config(cls, *_args, **_kwargs):
+            return {"ok": True}
+
+        @classmethod
+        def from_config(cls, _config):
+            return cls()
+
+    fake.ErnieImageTransformer2DModel = _ErnieTransformerWithoutSingleFile
+    calls: list[dict[str, Any]] = []
+
+    def _fake_state_dict_loader(transformer_cls, path, **kwargs):
+        calls.append(
+            {
+                "transformer_cls": transformer_cls,
+                "path": path,
+                **kwargs,
+            }
+        )
+        return SimpleNamespace(source = "state-dict-fallback")
+
+    monkeypatch.setattr(d, "_load_transformer_gguf_from_state_dict", _fake_state_dict_loader)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/ERNIE-Image-Turbo-GGUF",
+        gguf_filename = "ernie-image-turbo-UD-Q4_K_M.gguf",
+        base_repo = "baidu/ERNIE-Image-Turbo",
+        family_override = "ernie-image-turbo",
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "ernie-image-turbo"
+    assert calls
+    assert calls[0]["transformer_cls"] is _ErnieTransformerWithoutSingleFile
+    assert calls[0]["base_repo"] == "baidu/ERNIE-Image-Turbo"
+    assert calls[0]["path"].endswith("ernie-image-turbo-UD-Q4_K_M.gguf")
+
+
+def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
     _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+
+    class _FakeMistral3TextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return SimpleNamespace(kind = "text", path = path)
+
+    class _FakePromptEnhancer:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            subfolder = "pe",
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "subfolder": subfolder,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return SimpleNamespace(kind = "pe", path = path)
+
+    fake_text_mod.LazyMistral3TextEncoder = _FakeMistral3TextEncoder
+    fake_text_mod.LazyMinistral3PromptEnhancer = _FakePromptEnhancer
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
     from core.inference.diffusion import get_diffusion_backend
 
     backend = get_diffusion_backend()
-    with pytest.raises(RuntimeError, match = "cannot load GGUF single-file"):
-        backend.load_model(
-            "unsloth/ERNIE-Image-Turbo-GGUF",
-            gguf_filename = "ernie-image-turbo-UD-Q4_K_M.gguf",
-            base_repo = "baidu/ERNIE-Image-Turbo",
-            family_override = "ernie-image-turbo",
-        )
+    status = backend.load_model(
+        "unsloth/ERNIE-Image-Turbo-GGUF",
+        gguf_filename = "ernie-image-turbo-UD-Q4_K_M.gguf",
+        base_repo = "baidu/ERNIE-Image-Turbo",
+        family_override = "ernie-image-turbo",
+        text_encoder_gguf_filename = "Ministral-3-3B-Instruct-2512-UD-Q4_K_XL.gguf",
+        prompt_enhancer_gguf_filename = "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "ernie-image-turbo"
+    assert status["text_encoder_gguf_repo"] == "unsloth/Ministral-3-3B-Instruct-2512-GGUF"
+    assert status["prompt_enhancer_gguf_repo"] == (
+        "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF"
+    )
+    assert backend._pipe.kwargs["text_encoder"].kind == "text"
+    assert backend._pipe.kwargs["pe"].kind == "pe"
+    assert _FakeMistral3TextEncoder.calls == [
+        {
+            "path": "/fake/unsloth/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-UD-Q4_K_XL.gguf",
+            "base_repo_or_path": "baidu/ERNIE-Image-Turbo",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert _FakePromptEnhancer.calls == [
+        {
+            "path": "/fake/Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF/Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
+            "base_repo_or_path": "baidu/ERNIE-Image-Turbo",
+            "subfolder": "pe",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
 
 
 def test_load_model_unknown_family(monkeypatch):

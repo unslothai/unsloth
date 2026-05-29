@@ -229,7 +229,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 8,
         default_guidance_scale = 1.0,
         default_call_kwargs = {"use_pe": True},
-        supports_gguf_single_file = False,
+        supports_gguf_single_file = True,
         aliases = ("ernieimage-turbo", "ernie_image_turbo", "ernie-image-turbo"),
     ),
     DiffusionFamily(
@@ -240,7 +240,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_call_kwargs = {"use_pe": True},
-        supports_gguf_single_file = False,
+        supports_gguf_single_file = True,
         aliases = ("ernieimage", "ernie_image", "ernie-image"),
     ),
     DiffusionFamily(
@@ -331,6 +331,7 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
 
 _TEXT_ENCODER_GGUF_COMPONENTS = frozenset(
     {
+        "pe",
         "text_encoder",
         "text_encoder_2",
         "text_encoder_3",
@@ -338,6 +339,8 @@ _TEXT_ENCODER_GGUF_COMPONENTS = frozenset(
 )
 
 _FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+_ERNIE_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Ministral-3-3B-Instruct-2512-GGUF"
+_ERNIE_DEFAULT_PROMPT_ENHANCER_GGUF_REPO = "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF"
 _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
 _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen3-4B-GGUF"
 
@@ -349,11 +352,19 @@ class _TextEncoderGgufPlan:
 
 
 def _default_text_encoder_gguf_repo(fam: DiffusionFamily) -> str:
+    if fam.name.startswith("ernie-image"):
+        return _ERNIE_DEFAULT_TEXT_ENCODER_GGUF_REPO
     if fam.name.startswith("qwen-image"):
         return _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO
     if fam.name.startswith("z-image") or fam.name == "flux.2-klein":
         return _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO
     return _FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO
+
+
+def _default_prompt_enhancer_gguf_repo(fam: DiffusionFamily) -> Optional[str]:
+    if fam.name.startswith("ernie-image"):
+        return _ERNIE_DEFAULT_PROMPT_ENHANCER_GGUF_REPO
+    return None
 
 
 def _resolve_text_encoder_gguf_plan(
@@ -377,6 +388,18 @@ def _resolve_text_encoder_gguf_plan(
             loader_name = "LazyFlux2MistralTextEncoder",
             component_name = "text_encoder",
         )
+
+    if fam.name.startswith("ernie-image"):
+        if component_name == "text_encoder":
+            return _TextEncoderGgufPlan(
+                loader_name = "LazyMistral3TextEncoder",
+                component_name = "text_encoder",
+            )
+        if component_name == "pe":
+            return _TextEncoderGgufPlan(
+                loader_name = "LazyMinistral3PromptEnhancer",
+                component_name = "pe",
+            )
 
     if architecture == "qwen2vl" and fam.name.startswith("qwen-image"):
         return _TextEncoderGgufPlan(
@@ -411,6 +434,7 @@ def _resolve_text_encoder_gguf_plan(
         return None
 
     generic_loader_by_architecture = {
+        "mistral3": "LazyMistral3TextEncoder",
         "llama": "LazyLlamaTextEncoder",
         "qwen2vl": "LazyQwen2VLTextEncoder",
         "qwen3": "LazyQwen3TextEncoder",
@@ -457,6 +481,7 @@ def _load_text_encoder_gguf_from_plan(
         "LazyQwen3VLTextEncoder",
         "LazyGemma3TextEncoder",
         "LazyT5TextEncoder",
+        "LazyMinistral3PromptEnhancer",
     }:
         return loader.from_gguf(
             gguf_path,
@@ -1151,6 +1176,9 @@ class DiffusionBackend:
         self._text_encoder_gguf_repo: Optional[str] = None
         self._text_encoder_gguf_path: Optional[str] = None
         self._text_encoder_gguf_filename: Optional[str] = None
+        self._prompt_enhancer_gguf_repo: Optional[str] = None
+        self._prompt_enhancer_gguf_path: Optional[str] = None
+        self._prompt_enhancer_gguf_filename: Optional[str] = None
         self._base_repo: Optional[str] = None
         self._device: Optional[str] = None
         self._dtype: Optional[str] = None
@@ -1183,6 +1211,8 @@ class DiffusionBackend:
         self._pending_gguf_filename: Optional[str] = None
         self._pending_text_encoder_gguf_repo: Optional[str] = None
         self._pending_text_encoder_gguf_filename: Optional[str] = None
+        self._pending_prompt_enhancer_gguf_repo: Optional[str] = None
+        self._pending_prompt_enhancer_gguf_filename: Optional[str] = None
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -1224,11 +1254,15 @@ class DiffusionBackend:
             active_gguf = self._gguf_filename
             active_te_repo = self._text_encoder_gguf_repo
             active_te_gguf = self._text_encoder_gguf_filename
+            active_pe_repo = self._prompt_enhancer_gguf_repo
+            active_pe_gguf = self._prompt_enhancer_gguf_filename
             pending_repo = self._pending_repo_id if self._loading else None
             pending_base = self._pending_base_repo if self._loading else None
             pending_gguf = self._pending_gguf_filename if self._loading else None
             pending_te_repo = self._pending_text_encoder_gguf_repo if self._loading else None
             pending_te_gguf = self._pending_text_encoder_gguf_filename if self._loading else None
+            pending_pe_repo = self._pending_prompt_enhancer_gguf_repo if self._loading else None
+            pending_pe_gguf = self._pending_prompt_enhancer_gguf_filename if self._loading else None
             # When a swap is in flight, the UI-facing repo_id /
             # base_repo / gguf_filename advertise the PENDING model
             # but ``self._family`` still points at the previously
@@ -1253,6 +1287,8 @@ class DiffusionBackend:
             ui_gguf_basename = Path(ui_gguf).name if ui_gguf else None
             ui_te_gguf = pending_te_gguf or active_te_gguf
             ui_te_gguf_basename = Path(ui_te_gguf).name if ui_te_gguf else None
+            ui_pe_gguf = pending_pe_gguf or active_pe_gguf
+            ui_pe_gguf_basename = Path(ui_pe_gguf).name if ui_pe_gguf else None
             # UI-facing ``repo_id`` / ``base_repo`` collapse absolute
             # local paths to their leaf name so ``/images/status``
             # does not leak the user's filesystem layout to other
@@ -1271,6 +1307,8 @@ class DiffusionBackend:
                 "gguf_filename": ui_gguf_basename,
                 "text_encoder_gguf_repo": _display_repo_id(pending_te_repo or active_te_repo),
                 "text_encoder_gguf_filename": ui_te_gguf_basename,
+                "prompt_enhancer_gguf_repo": _display_repo_id(pending_pe_repo or active_pe_repo),
+                "prompt_enhancer_gguf_filename": ui_pe_gguf_basename,
                 "gguf_quantized_cpu_resident": self._gguf_quantized_cpu_resident,
                 "gguf_pin_cpu_resident": self._gguf_pin_cpu_resident,
                 "offload_policy": self._offload_policy,
@@ -1296,11 +1334,15 @@ class DiffusionBackend:
                         "active_gguf_filename": active_gguf,
                         "active_text_encoder_gguf_repo": active_te_repo,
                         "active_text_encoder_gguf_filename": active_te_gguf,
+                        "active_prompt_enhancer_gguf_repo": active_pe_repo,
+                        "active_prompt_enhancer_gguf_filename": active_pe_gguf,
                         "pending_repo_id": pending_repo,
                         "pending_base_repo": pending_base,
                         "pending_gguf_filename": pending_gguf,
                         "pending_text_encoder_gguf_repo": pending_te_repo,
                         "pending_text_encoder_gguf_filename": pending_te_gguf,
+                        "pending_prompt_enhancer_gguf_repo": pending_pe_repo,
+                        "pending_prompt_enhancer_gguf_filename": pending_pe_gguf,
                     }
                 )
             return payload
@@ -1357,6 +1399,8 @@ class DiffusionBackend:
         text_encoder_gguf_repo: Optional[str] = None,
         text_encoder_gguf_filename: Optional[str] = None,
         text_encoder_gguf_component: Optional[str] = None,
+        prompt_enhancer_gguf_repo: Optional[str] = None,
+        prompt_enhancer_gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         family_override: Optional[str] = None,
         enable_model_cpu_offload: bool = True,
@@ -1487,6 +1531,11 @@ class DiffusionBackend:
                 "text_encoder_gguf_component must be one of: "
                 f"{allowed_components}."
             )
+        if prompt_enhancer_gguf_filename and text_encoder_gguf_component == "pe":
+            raise ValueError(
+                "Use either text_encoder_gguf_component='pe' or "
+                "prompt_enhancer_gguf_filename, not both."
+            )
 
         device, dtype = self._pick_device_and_dtype()
 
@@ -1525,6 +1574,8 @@ class DiffusionBackend:
                 self._pending_gguf_filename = gguf_filename if gguf_filename else None
                 self._pending_text_encoder_gguf_repo = text_encoder_gguf_repo
                 self._pending_text_encoder_gguf_filename = text_encoder_gguf_filename
+                self._pending_prompt_enhancer_gguf_repo = prompt_enhancer_gguf_repo
+                self._pending_prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename
             try:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
@@ -1610,11 +1661,15 @@ class DiffusionBackend:
                 transformer = None
                 local_gguf_path: Optional[str] = None
                 text_encoder = None
+                prompt_enhancer = None
                 local_text_encoder_gguf_path: Optional[str] = None
                 effective_text_encoder_gguf_repo: Optional[str] = None
                 text_encoder_gguf_info: Any = None
                 text_encoder_mmproj_path: Any = None
                 text_encoder_gguf_plan: Optional[_TextEncoderGgufPlan] = None
+                local_prompt_enhancer_gguf_path: Optional[str] = None
+                effective_prompt_enhancer_gguf_repo: Optional[str] = None
+                prompt_enhancer_gguf_plan: Optional[_TextEncoderGgufPlan] = None
                 prepared_gguf_module_counts: dict[str, int] = {}
                 text_encoder_component_name = (
                     text_encoder_gguf_component or "text_encoder"
@@ -1647,9 +1702,12 @@ class DiffusionBackend:
                             f"Family {fam.name} does not have a GGUF transformer "
                             "path wired in this build; load the full repo instead."
                         )
-                    if not fam.supports_gguf_single_file or not hasattr(
-                        transformer_cls,
-                        "from_single_file",
+                    has_single_file_loader = hasattr(transformer_cls, "from_single_file")
+                    has_state_dict_loader = _transformer_supports_gguf_state_dict_load(
+                        transformer_cls
+                    )
+                    if not fam.supports_gguf_single_file or (
+                        not has_single_file_loader and not has_state_dict_loader
                     ):
                         raise RuntimeError(
                             f"Family {fam.name} cannot load GGUF single-file "
@@ -1747,6 +1805,44 @@ class DiffusionBackend:
                             + arch_note
                         )
                     text_encoder_component_name = text_encoder_gguf_plan.component_name
+                if prompt_enhancer_gguf_filename:
+                    effective_prompt_enhancer_gguf_repo = (
+                        prompt_enhancer_gguf_repo
+                        or _default_prompt_enhancer_gguf_repo(fam)
+                    )
+                    if not effective_prompt_enhancer_gguf_repo:
+                        raise RuntimeError(
+                            "prompt_enhancer_gguf_filename is only supported for "
+                            "families with a prompt-enhancer component."
+                        )
+                    with self._lock:
+                        self._pending_prompt_enhancer_gguf_repo = (
+                            effective_prompt_enhancer_gguf_repo
+                        )
+                    pe_repo_path = Path(effective_prompt_enhancer_gguf_repo).expanduser()
+                    if pe_repo_path.is_dir():
+                        local_prompt_enhancer_gguf_path = str(
+                            _resolve_local_gguf_child(
+                                pe_repo_path,
+                                prompt_enhancer_gguf_filename,
+                            )
+                        )
+                    else:
+                        local_prompt_enhancer_gguf_path = hf_hub_download(
+                            repo_id = effective_prompt_enhancer_gguf_repo,
+                            filename = prompt_enhancer_gguf_filename,
+                            token = hf_token,
+                        )
+                    prompt_enhancer_gguf_plan = _resolve_text_encoder_gguf_plan(
+                        fam,
+                        architecture = "mistral3",
+                        requested_component = "pe",
+                    )
+                    if prompt_enhancer_gguf_plan is None:
+                        raise RuntimeError(
+                            f"Family {fam.name} does not support a prompt-enhancer "
+                            "GGUF component."
+                        )
 
                 # Round 20 P1 #1: every load mode (full diffusers
                 # repo, GGUF + explicit base_repo, GGUF + auto-picked
@@ -1863,6 +1959,9 @@ class DiffusionBackend:
                         self._text_encoder_gguf_repo = None
                         self._text_encoder_gguf_path = None
                         self._text_encoder_gguf_filename = None
+                        self._prompt_enhancer_gguf_repo = None
+                        self._prompt_enhancer_gguf_path = None
+                        self._prompt_enhancer_gguf_filename = None
                         self._base_repo = None
                         self._device = None
                         self._dtype = None
@@ -1887,24 +1986,34 @@ class DiffusionBackend:
                 if gguf_filename:
                     # ``quant_config`` was already constructed above
                     # (round 20 P1 #2 pre-release fail-fast).
-                    # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
-                    # SD3) need the matching base repo's component config
-                    # at config=<base_repo>, subfolder="transformer".
-                    # Older converted GGUFs ignore those kwargs. The
-                    # token is also passed because gated GGUF repos
-                    # require it both at download and at config read time.
-                    single_file_kwargs: dict[str, Any] = {
-                        "quantization_config": quant_config,
-                        "torch_dtype": dtype,
-                        "config": effective_base,
-                        "subfolder": "transformer",
-                    }
-                    if hf_token:
-                        single_file_kwargs["token"] = hf_token
-                    with _patch_diffusers_gguf_checkpoint_loader_no_copy():
-                        transformer = transformer_cls.from_single_file(
+                    if hasattr(transformer_cls, "from_single_file"):
+                        # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
+                        # SD3) need the matching base repo's component config
+                        # at config=<base_repo>, subfolder="transformer".
+                        # Older converted GGUFs ignore those kwargs. The
+                        # token is also passed because gated GGUF repos
+                        # require it both at download and at config read time.
+                        single_file_kwargs: dict[str, Any] = {
+                            "quantization_config": quant_config,
+                            "torch_dtype": dtype,
+                            "config": effective_base,
+                            "subfolder": "transformer",
+                        }
+                        if hf_token:
+                            single_file_kwargs["token"] = hf_token
+                        with _patch_diffusers_gguf_checkpoint_loader_no_copy():
+                            transformer = transformer_cls.from_single_file(
+                                local_gguf_path,
+                                **single_file_kwargs,
+                            )
+                    else:
+                        transformer = _load_transformer_gguf_from_state_dict(
+                            transformer_cls,
                             local_gguf_path,
-                            **single_file_kwargs,
+                            base_repo = effective_base,
+                            dtype = dtype,
+                            quant_config = quant_config,
+                            token = hf_token,
                         )
                     lazy_linear_count = _replace_diffusers_gguf_linear_parameters(
                         transformer,
@@ -1984,6 +2093,44 @@ class DiffusionBackend:
                                     "CPU-resident quantized weights.",
                                     patched_text_modules,
                                 )
+                if local_prompt_enhancer_gguf_path:
+                    from . import gguf_text_encoder as gguf_text_encoder_mod
+
+                    if prompt_enhancer_gguf_plan is None:
+                        raise RuntimeError(
+                            "Internal error: missing prompt-enhancer GGUF load plan."
+                        )
+                    prompt_enhancer = _load_text_encoder_gguf_from_plan(
+                        gguf_text_encoder_mod,
+                        prompt_enhancer_gguf_plan,
+                        local_prompt_enhancer_gguf_path,
+                        base_repo_or_path = effective_base,
+                        mmproj_gguf_path = None,
+                        compute_dtype = dtype,
+                        resident_device = text_encoder_resident_device,
+                        token = hf_token,
+                    )
+                    if text_encoder_resident_device is not None:
+                        patch_text_encoder = getattr(
+                            gguf_text_encoder_mod,
+                            "patch_gguf_text_encoder_for_resident_device",
+                            None,
+                        )
+                        if patch_text_encoder is not None:
+                            patched_pe_modules = patch_text_encoder(
+                                prompt_enhancer,
+                                text_encoder_resident_device,
+                                pin_memory = gguf_pin_cpu_resident_active,
+                            )
+                            if patched_pe_modules:
+                                prepared_gguf_module_counts[
+                                    "prompt_enhancer_cpu_resident_modules"
+                                ] = patched_pe_modules
+                                logger.info(
+                                    "Patched %d prompt-enhancer GGUF modules for "
+                                    "CPU-resident quantized weights.",
+                                    patched_pe_modules,
+                                )
 
                 extra_components = _family_load_components(
                     diffusers,
@@ -2006,6 +2153,8 @@ class DiffusionBackend:
                     pipe_kwargs["transformer"] = transformer
                 if text_encoder is not None:
                     pipe_kwargs[text_encoder_component_name] = text_encoder
+                if prompt_enhancer is not None:
+                    pipe_kwargs["pe"] = prompt_enhancer
                 pipe_kwargs.update(extra_components)
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
@@ -2050,6 +2199,9 @@ class DiffusionBackend:
                     if text_encoder is not None:
                         _release(text_encoder)
                         text_encoder = None
+                    if prompt_enhancer is not None:
+                        _release(prompt_enhancer)
+                        prompt_enhancer = None
                     for component in (extra_components or {}).values():
                         _release(component)
                     extra_components = {}
@@ -2070,6 +2222,13 @@ class DiffusionBackend:
                     self._text_encoder_gguf_filename = (
                         text_encoder_gguf_filename if text_encoder_gguf_filename else None
                     )
+                    self._prompt_enhancer_gguf_repo = effective_prompt_enhancer_gguf_repo
+                    self._prompt_enhancer_gguf_path = local_prompt_enhancer_gguf_path
+                    self._prompt_enhancer_gguf_filename = (
+                        prompt_enhancer_gguf_filename
+                        if prompt_enhancer_gguf_filename
+                        else None
+                    )
                     self._base_repo = effective_base
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
@@ -2082,7 +2241,11 @@ class DiffusionBackend:
                     self._gguf_pin_cpu_resident = bool(gguf_pin_cpu_resident_active)
                     self._gguf_execution_backend = (
                         _detect_gguf_execution_backend(device)
-                        if (gguf_filename or text_encoder_gguf_filename)
+                        if (
+                            gguf_filename
+                            or text_encoder_gguf_filename
+                            or prompt_enhancer_gguf_filename
+                        )
                         else None
                     )
                     self._gguf_prepared_module_counts = dict(
@@ -2102,6 +2265,8 @@ class DiffusionBackend:
                     self._pending_gguf_filename = None
                     self._pending_text_encoder_gguf_repo = None
                     self._pending_text_encoder_gguf_filename = None
+                    self._pending_prompt_enhancer_gguf_repo = None
+                    self._pending_prompt_enhancer_gguf_filename = None
 
                 return self.status()
             except Exception as exc:
@@ -2201,6 +2366,9 @@ class DiffusionBackend:
                 exc_msg = _collapse_local(exc_msg, _locals.get("effective_text_encoder_gguf_repo"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("text_encoder_gguf_filename"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("local_text_encoder_gguf_path"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("effective_prompt_enhancer_gguf_repo"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("prompt_enhancer_gguf_filename"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("local_prompt_enhancer_gguf_path"))
                 with self._lock:
                     self._last_error = exc_msg
                 # ``logger.exception`` would emit the raw exception
@@ -2232,6 +2400,8 @@ class DiffusionBackend:
                     self._pending_gguf_filename = None
                     self._pending_text_encoder_gguf_repo = None
                     self._pending_text_encoder_gguf_filename = None
+                    self._pending_prompt_enhancer_gguf_repo = None
+                    self._pending_prompt_enhancer_gguf_filename = None
                 # Round 32 P1 #3: clear the backend-side public-load
                 # pending publish if it was set. Skipped when the
                 # helper-busy snapshot raised (no publish to clear)
@@ -2267,6 +2437,9 @@ class DiffusionBackend:
                 self._text_encoder_gguf_repo = None
                 self._text_encoder_gguf_path = None
                 self._text_encoder_gguf_filename = None
+                self._prompt_enhancer_gguf_repo = None
+                self._prompt_enhancer_gguf_path = None
+                self._prompt_enhancer_gguf_filename = None
                 self._base_repo = None
                 self._device = None
                 self._dtype = None
@@ -2333,6 +2506,10 @@ class DiffusionBackend:
             return
 
         max_sequence_length = int(call_kwargs.get("max_sequence_length", 512))
+        num_images_per_prompt = int(call_kwargs.get("num_images_per_prompt", 1))
+        use_pe = bool(call_kwargs.get("use_pe", False))
+        width = int(call_kwargs.get("width", 0) or 0)
+        height = int(call_kwargs.get("height", 0) or 0)
         negative_key = negative_prompt if do_classifier_free_guidance else None
         cache_key = (
             id(pipe),
@@ -2341,6 +2518,10 @@ class DiffusionBackend:
             negative_key or "",
             do_classifier_free_guidance,
             max_sequence_length,
+            num_images_per_prompt,
+            use_pe,
+            width,
+            height,
         )
         cached = (
             self._prompt_embedding_cache_value
@@ -2359,7 +2540,47 @@ class DiffusionBackend:
                     max_sequence_length = max_sequence_length,
                 )
             except TypeError:
-                return
+                try:
+                    prompt_for_encode: Any = prompt
+                    if (
+                        use_pe
+                        and callable(getattr(pipe, "_enhance_prompt_with_pe", None))
+                        and getattr(pipe, "pe", None) is not None
+                        and getattr(pipe, "pe_tokenizer", None) is not None
+                    ):
+                        prompt_values = [prompt] if isinstance(prompt, str) else list(prompt)
+                        prompt_for_encode = [
+                            pipe._enhance_prompt_with_pe(
+                                item,
+                                execution_device,
+                                width = width or 1024,
+                                height = height or 1024,
+                            )
+                            for item in prompt_values
+                        ]
+                    prompt_embeds = encode_prompt(
+                        prompt_for_encode,
+                        execution_device,
+                        1,
+                    )
+                    if do_classifier_free_guidance:
+                        negative_values: Any = negative_prompt or ""
+                        prompt_count = (
+                            len(prompt_for_encode)
+                            if isinstance(prompt_for_encode, list)
+                            else 1
+                        )
+                        if isinstance(negative_values, str):
+                            negative_values = [negative_values] * prompt_count
+                        negative_prompt_embeds = encode_prompt(
+                            negative_values,
+                            execution_device,
+                            1,
+                        )
+                    else:
+                        negative_prompt_embeds = None
+                except TypeError:
+                    return
             cached = (
                 _store_prompt_embeds_on_cpu(prompt_embeds),
                 _store_prompt_embeds_on_cpu(negative_prompt_embeds),
@@ -3064,6 +3285,108 @@ def _patch_diffusers_gguf_checkpoint_loader_no_copy():
         yield
     finally:
         model_loading_utils.load_gguf_checkpoint = original
+
+
+def _transformer_supports_gguf_state_dict_load(transformer_cls: Any) -> bool:
+    return bool(
+        hasattr(transformer_cls, "load_config")
+        and hasattr(transformer_cls, "from_config")
+    )
+
+
+def _set_module_tensor_no_copy(root: Any, tensor_name: str, value: Any, dtype: Any) -> None:
+    """Attach a checkpoint tensor to an already-created module.
+
+    This mirrors the small assignment part of Diffusers' quantized loader, but
+    keeps it local so model classes without ``from_single_file`` can still
+    share Studio's GGUF lazy/offload path.
+    """
+
+    import torch
+
+    module, leaf = _module_and_leaf(root, tensor_name)
+    if leaf in getattr(module, "_parameters", {}):
+        if hasattr(value, "quant_type"):
+            parameter = value.to("cpu")
+            try:
+                parameter.requires_grad_(False)
+            except Exception:
+                pass
+        else:
+            tensor = value.detach()
+            if tensor.is_floating_point() and isinstance(dtype, torch.dtype):
+                tensor = tensor.to(dtype = dtype)
+            parameter = torch.nn.Parameter(tensor.contiguous(), requires_grad = False)
+        module._parameters[leaf] = parameter
+        return
+    if leaf in getattr(module, "_buffers", {}):
+        tensor = value.to("cpu") if hasattr(value, "to") else value
+        if (
+            hasattr(tensor, "is_floating_point")
+            and tensor.is_floating_point()
+            and isinstance(dtype, torch.dtype)
+        ):
+            tensor = tensor.to(dtype = dtype)
+        module._buffers[leaf] = tensor
+        return
+    raise RuntimeError(f"{tensor_name} is not a parameter or buffer on {type(module).__name__}.")
+
+
+def _load_transformer_gguf_from_state_dict(
+    transformer_cls: Any,
+    gguf_path: str,
+    *,
+    base_repo: str,
+    dtype: Any,
+    quant_config: Any,
+    token: Optional[str],
+) -> Any:
+    """Load a GGUF transformer for classes that lack ``from_single_file``.
+
+    ERNIE's current Diffusers implementation has a normal config/from_config
+    path but no single-file GGUF convenience method. The GGUF files already use
+    the Diffusers state-dict keyspace, so the clean fallback is:
+
+    1. read the GGUF state dict with Studio's mmap/no-copy reader;
+    2. instantiate the transformer on meta tensors from the official config;
+    3. ask Diffusers' GGUF quantizer to replace matching linear modules;
+    4. attach GGUFParameter objects directly, preserving quant metadata.
+    """
+
+    if not _transformer_supports_gguf_state_dict_load(transformer_cls):
+        raise RuntimeError(
+            f"{transformer_cls.__name__} cannot be constructed from a Diffusers config."
+        )
+
+    try:
+        from accelerate import init_empty_weights
+        from diffusers.quantizers.gguf import GGUFQuantizer
+    except Exception as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError(
+            "Fallback diffusion GGUF loading requires accelerate and Diffusers "
+            "GGUFQuantizer support."
+        ) from exc
+
+    config_kwargs: dict[str, Any] = {"subfolder": "transformer"}
+    if token:
+        config_kwargs["token"] = token
+    config = transformer_cls.load_config(base_repo, **config_kwargs)
+
+    state_dict = _load_gguf_checkpoint_no_copy(gguf_path)
+    with init_empty_weights():
+        transformer = transformer_cls.from_config(config)
+
+    quantizer = GGUFQuantizer(quant_config)
+    quantizer._process_model_before_weight_loading(
+        transformer,
+        device_map = None,
+        state_dict = state_dict,
+        keep_in_fp32_modules = [],
+    )
+    for name, value in state_dict.items():
+        _set_module_tensor_no_copy(transformer, name, value, dtype)
+    transformer.requires_grad_(False)
+    return transformer
 
 
 def _materialize_gguf_embedding_parameters(root: Any, dtype: Any = None) -> int:
