@@ -2566,6 +2566,27 @@ class LlamaCppBackend:
 
         return str(mmproj)
 
+    def _mmproj_vram_bytes(self, launch_mmproj_path: Optional[str]) -> int:
+        """VRAM (bytes) the resolved vision projector adds on the GPU.
+
+        ``launch_mmproj_path`` is the path returned by
+        :meth:`_resolve_launch_mmproj_path` (``None`` when no projector will
+        be launched). llama-server loads it onto the GPU via ``--mmproj``
+        alongside the weights, so its footprint must count toward the fit
+        budget that drives context auto-sizing and GPU selection -- counting
+        only the weight file made the budget too optimistic and tight loads
+        spilled to system RAM / OOM'd (#5825).
+
+        Returns 0 when no projector resolved or the file is unreadable.
+        """
+        if not launch_mmproj_path:
+            return 0
+        try:
+            return self._get_gguf_size_bytes(launch_mmproj_path)
+        except OSError as e:
+            logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
+            return 0
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def load_model(
@@ -2749,8 +2770,35 @@ class LlamaCppBackend:
                 )
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
+                # Resolve the vision projector once. The fit budget below and
+                # the launch flags further down must agree on whether (and
+                # which) mmproj loads, so they share a single resolution
+                # rather than each re-deriving it (#5825).
+                launch_mmproj_path = self._resolve_launch_mmproj_path(
+                    model_path = model_path,
+                    mmproj_path = mmproj_path,
+                )
+                # Need both a resolved mmproj AND the config vision flag; a stray
+                # mmproj passing the family-name heuristic must not flip a non-VLM
+                # GGUF into vision mode.
+                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                if is_vision and not effective_is_vision:
+                    logger.warning(
+                        "Vision-capable GGUF loaded without a usable mmproj; "
+                        "image input will be disabled for this session"
+                    )
                 try:
-                    model_size = self._get_gguf_size_bytes(model_path)
+                    gguf_size = self._get_gguf_size_bytes(model_path)
+                    # The projector is loaded onto the GPU via --mmproj
+                    # alongside the weights, so fold it into the fit budget
+                    # that drives context auto-sizing + GPU selection;
+                    # otherwise tight vision loads over-promise VRAM (#5825).
+                    mmproj_size = (
+                        self._mmproj_vram_bytes(launch_mmproj_path)
+                        if effective_is_vision
+                        else 0
+                    )
+                    model_size = gguf_size + mmproj_size
                     gpus = self._get_gpu_free_memory()
 
                     # Resolve effective context: 0 means let llama-server use the
@@ -2948,8 +2996,13 @@ class LlamaCppBackend:
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
                     logger.info(
-                        f"GGUF size: {model_size / (1024**3):.1f} GB, "
-                        f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                        f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
+                        + (
+                            f"mmproj: {mmproj_size / (1024**3):.1f} GB, "
+                            if mmproj_size
+                            else ""
+                        )
+                        + f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
@@ -2957,20 +3010,6 @@ class LlamaCppBackend:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
                     effective_ctx = requested_ctx  # fall back to original
-
-                launch_mmproj_path = self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
-                )
-                # Need both a resolved mmproj AND the config vision flag; a stray
-                # mmproj passing the family-name heuristic must not flip a non-VLM
-                # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
-                    logger.warning(
-                        "Vision-capable GGUF loaded without a usable mmproj; "
-                        "image input will be disabled for this session"
-                    )
 
                 cmd = [
                     binary,
