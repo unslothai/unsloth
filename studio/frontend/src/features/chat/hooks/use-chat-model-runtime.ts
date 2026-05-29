@@ -699,14 +699,12 @@ export function useChatModelRuntime() {
               reasoningEffort: clampedReasoningEffort,
               supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools,
-              toolsEnabled:
-                reloadingSameModel && supportsTools
-                  ? stateBeforeUnload.toolsEnabled
-                  : resolveToolsEnabledOnLoad(supportsTools).toolsEnabled,
-              codeToolsEnabled:
-                reloadingSameModel && supportsTools
-                  ? stateBeforeUnload.codeToolsEnabled
-                  : resolveToolsEnabledOnLoad(supportsTools).codeToolsEnabled,
+              ...(reloadingSameModel && supportsTools
+                ? {
+                    toolsEnabled: stateBeforeUnload.toolsEnabled,
+                    codeToolsEnabled: stateBeforeUnload.codeToolsEnabled,
+                  }
+                : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,
