@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
+import sys
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -16,7 +19,45 @@ MCP_TOOL_PREFIX = "mcp__"
 _oauth_token_store = None
 
 
+def is_stdio(address: str) -> bool:
+    """A non-HTTP address is a local stdio command, e.g.
+    'npx -y @modelcontextprotocol/server-filesystem /path'."""
+    return not address.strip().lower().startswith(("http://", "https://"))
+
+
+def parse_stdio_command(address: str) -> list[str]:
+    """Split a stdio command line into argv. Shared by route validation and the
+    transport so both agree on quoting (notably Windows backslash paths)."""
+    return shlex.split(address, posix = sys.platform != "win32")
+
+
+def stdio_mcp_enabled() -> bool:
+    """stdio MCP servers spawn local processes as the backend user (and bypass
+    the python/terminal sandbox), so they are only allowed when the backend
+    host is the user's own machine. The Tauri desktop app sets
+    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see main.py); advanced localhost /
+    self-hosted users can opt in with the same variable. It stays off for
+    Colab and any network (0.0.0.0) bind."""
+    return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
+
+
+# Probe timeouts for discovering a server's tool list. OAuth needs minutes for
+# first-connect/expired-token browser sign-in; stdio allows for first-run
+# package download (e.g. `npx -y ...`); HTTP fails fast.
+_HTTP_PROBE_TIMEOUT = 8.0
+_OAUTH_PROBE_TIMEOUT = 305.0
+_STDIO_PROBE_TIMEOUT = 60.0
+
+
+def probe_timeout(address: str, use_oauth: bool) -> float:
+    if use_oauth:
+        return _OAUTH_PROBE_TIMEOUT
+    return _STDIO_PROBE_TIMEOUT if is_stdio(address) else _HTTP_PROBE_TIMEOUT
+
+
 def parse_server_headers(server: dict) -> Optional[dict]:
+    """Parsed headers_json. For stdio servers this dict is the process
+    environment instead of HTTP headers (see _client)."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -63,6 +104,17 @@ async def clear_oauth_tokens_async(url: str) -> None:
 
 def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     from fastmcp import Client
+
+    if is_stdio(url):
+        from fastmcp.client.transports import StdioTransport
+
+        parts = parse_stdio_command(url)
+        # stdio env vars ride the (HTTP-only) headers field. The MCP SDK merges
+        # them over its default safe env (PATH etc.), so pass them through as-is.
+        return Client(
+            StdioTransport(command = parts[0], args = parts[1:], env = headers or None)
+        )
+
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
