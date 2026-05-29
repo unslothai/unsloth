@@ -78,10 +78,24 @@ export function ComposerMobileActionsMenu({
       ? externalProvidersAll.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
 
-  const searchDisabled = !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
-  const codeDisabled = !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
-  const imageDisabled = !modelLoaded;
+  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  const imageModeDisablesCode =
+    isExternalGemini && imageToolsEnabled && !imageDisabled;
+  const isGeminiImageTier =
+    isExternalGemini && supportsBuiltinImageGeneration;
+  const searchDisabled =
+    !modelLoaded ||
+    (isGeminiImageTier
+      ? !supportsBuiltinWebSearch
+      : !(supportsTools || supportsBuiltinWebSearch));
+  const codeDisabled =
+    !modelLoaded ||
+    (isGeminiImageTier
+      ? true
+      : !(supportsTools || supportsBuiltinCodeExecution)) ||
+    imageModeDisablesCode;
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
 
   const addAttachmentItem = (
@@ -117,7 +131,7 @@ export function ComposerMobileActionsMenu({
             const next = Boolean(checked);
             setToolsEnabled(next);
             if (isKimiExternal) {
-              setReasoningEnabled(!next);
+              setReasoningEnabled(!next, { persist: false });
               applyQwenThinkingParams(!next);
             }
           }}
