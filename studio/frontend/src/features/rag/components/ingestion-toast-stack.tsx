@@ -108,7 +108,7 @@ export function IngestionToastStack() {
           transition={{ duration: reduced ? 0 : 0.15 }}
           className="pointer-events-auto rounded-md border border-border bg-popover px-3 py-2 shadow-md"
         >
-          <div className="flex items-stretch justify-between gap-2">
+          <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 flex-col gap-1.5">
               <span className="truncate text-xs font-medium">{title}</span>
               {allDone ? (
@@ -125,11 +125,21 @@ export function IngestionToastStack() {
                 </div>
               )}
             </div>
-            {/* While indexing: "Cancel" stops the batch and resets the index;
-                the "X" only dismisses the toast and lets indexing continue in
-                the background. When done, just the dismiss X. The X stays
-                top-right; Cancel sits centered down the toast's height. */}
-            <div className="flex shrink-0 flex-col items-end">
+            {/* While indexing: "Cancel" (left) stops the batch and resets the
+                index; the "X" (right) only dismisses the toast and lets
+                indexing continue in the background. When done, just the X. */}
+            <div className="flex shrink-0 items-center gap-1">
+              {!allDone && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={cancelling}
+                  className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={onCancel}
+                >
+                  {cancelling ? "Cancelling…" : "Cancel"}
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
@@ -139,17 +149,6 @@ export function IngestionToastStack() {
               >
                 <HugeiconsIcon icon={Cancel01Icon} size={12} />
               </Button>
-              {!allDone && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={cancelling}
-                  className="my-auto h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
-                  onClick={onCancel}
-                >
-                  {cancelling ? "Cancelling…" : "Cancel"}
-                </Button>
-              )}
             </div>
           </div>
         </motion.div>
