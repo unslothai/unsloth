@@ -653,7 +653,7 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
-    from main import app, setup_frontend
+    from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
     # Create all standard directories on startup
@@ -737,17 +737,22 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
-    # proxy_headers=True + forwarded_allow_ips="*" trusts X-Forwarded-* from Colab's reverse proxy.
-    config = uvicorn.Config(
-        app,
+    config_kwargs = dict(
         host = host,
         port = port,
         log_level = "info",
         access_log = False,
         server_header = False,
-        proxy_headers = True,
-        forwarded_allow_ips = "*",
     )
+    # Only in Colab: trust X-Forwarded-* from Colab's reverse proxy so the app
+    # sees the real https origin. forwarded_allow_ips="*" is fine inside Colab's
+    # single-user sandbox, but would be an unwanted security relaxation for a
+    # normal local/standalone Studio, so leave uvicorn's safe defaults
+    # (forwarded headers trusted from loopback only) in place there.
+    if _IS_COLAB:
+        config_kwargs["proxy_headers"] = True
+        config_kwargs["forwarded_allow_ips"] = "*"
+    config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
