@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   acquireIndexSlot,
@@ -153,13 +152,16 @@ export function KBDetailPanel({
           {error ? (
             <div className="text-xs text-destructive">{error}</div>
           ) : null}
-          <ScrollArea className="flex-1">
+          {/* Native scroll (not Radix ScrollArea): Radix wraps content in a
+              display:table min-width:100% element that breaks filename
+              truncation at narrow widths, forcing the panel wider. */}
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             {documents.length === 0 && !loading ? (
               <div className="rounded-md border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
                 No documents yet. Use the upload button to add some.
               </div>
             ) : (
-              <div className="flex flex-col gap-2 pr-2">
+              <div className="flex flex-col gap-2">
                 {documents.map((doc) => {
                   const previewable = doc.status === "completed";
                   return (
@@ -209,7 +211,7 @@ export function KBDetailPanel({
                 })}
               </div>
             )}
-          </ScrollArea>
+          </div>
         </>
       )}
 
