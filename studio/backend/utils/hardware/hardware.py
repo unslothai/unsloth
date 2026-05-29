@@ -542,7 +542,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 "temperature_c": None,
                 "vram_used_gb": _used,
                 "vram_total_gb": _total,
-                "vram_utilization_pct": round((_used / _total) * 100, 1) if _total > 0 else None,
+                "vram_utilization_pct": round((_used / _total) * 100, 1)
+                if _total > 0
+                else None,
                 "power_draw_w": None,
                 "power_limit_w": None,
                 "power_utilization_pct": None,
