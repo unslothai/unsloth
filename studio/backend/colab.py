@@ -97,7 +97,7 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
                  height="48" style="display:block;">
             Unsloth Studio is Ready!
         </h2>
-        <a href="{url}" onclick="window.open('{url}','_blank');return false;"
+        <a href="{url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
            style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
                   background: #000000; color: white; text-decoration: none; border-radius: 8px;
                   font-weight: 800; font-size: 16px; cursor: pointer;">
