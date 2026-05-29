@@ -1349,6 +1349,24 @@ def direct_upstream_release_plan(
                     install_kind = "windows-cpu",
                 )
             )
+    elif host.is_windows and host.is_arm64:
+        # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-win-cpu-arm64.zip
+        # (visible in the b9334 release manifest). Without this branch the
+        # selector returned 0 attempts and the installer fell back to a
+        # source build on every Windows ARM64 host.
+        cpu_asset = f"llama-{release_tag}-bin-win-cpu-arm64.zip"
+        cpu_url = assets.get(cpu_asset)
+        if cpu_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = cpu_asset,
+                    url = cpu_url,
+                    source_label = "upstream",
+                    install_kind = "windows-arm64",
+                )
+            )
     elif host.is_macos and host.is_arm64:
         asset_name = f"llama-{release_tag}-bin-macos-arm64.tar.gz"
         asset_url = assets.get(asset_name)
@@ -1389,6 +1407,25 @@ def direct_upstream_release_plan(
                     url = asset_url,
                     source_label = "upstream",
                     install_kind = "linux-cpu",
+                )
+            )
+    elif host.is_linux and host.is_arm64 and not host.has_usable_nvidia:
+        # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-ubuntu-arm64.tar.gz
+        # (visible in the b9334 release manifest). Without this branch the
+        # selector returned 0 attempts and the installer fell back to a
+        # source build on every Linux ARM64 host (DGX Spark, Ampere
+        # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
+        asset_name = f"llama-{release_tag}-bin-ubuntu-arm64.tar.gz"
+        asset_url = assets.get(asset_name)
+        if asset_url:
+            attempts.append(
+                AssetChoice(
+                    repo = repo,
+                    tag = release_tag,
+                    name = asset_name,
+                    url = asset_url,
+                    source_label = "upstream",
+                    install_kind = "linux-arm64",
                 )
             )
     if not attempts:
@@ -2603,12 +2640,18 @@ def detect_host() -> HostInfo:
         try:
             result = run_capture([nvidia_smi], timeout = 20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
-            for line in merged.splitlines():
-                if "CUDA Version:" in line:
-                    raw = line.split("CUDA Version:", 1)[1].strip().split()[0]
-                    major, minor = raw.split(".", 1)
-                    driver_cuda_version = (int(major), int(minor))
-                    break
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+            # "CUDA UMD Version: X.Y" instead of the legacy
+            # "CUDA Version: X.Y"; accept both spellings.
+            cuda_match = re.search(
+                r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)",
+                merged,
+            )
+            if cuda_match is not None:
+                driver_cuda_version = (
+                    int(cuda_match.group(1)),
+                    int(cuda_match.group(2)),
+                )
         except Exception:
             pass
 
@@ -3833,11 +3876,16 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # libraries between b9279 and b9283) without us re-enumerating
     # every new file. Studio only invokes llama-server and llama-quantize;
     # other CLIs upstream ships (llama-cli, llama-bench, ...) are skipped.
-    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
+    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm", "linux-arm64"}:
         return ["llama-server", "llama-quantize", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
-    if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip"}:
+    if choice.install_kind in {
+        "windows-cpu",
+        "windows-cuda",
+        "windows-hip",
+        "windows-arm64",
+    }:
         return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
     raise PrebuiltFallback(
         f"unsupported install kind for runtime overlay: {choice.install_kind}"
@@ -5188,7 +5236,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
-    if choice.install_kind == "linux-cpu":
+    if choice.install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -5223,7 +5271,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
-    if choice.install_kind == "windows-cpu":
+    if choice.install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
@@ -5297,6 +5345,15 @@ def existing_install_matches_choice(
     ext = ".exe" if host.is_windows else ""
     for binary in ("llama-server", "llama-quantize"):
         if not (runtime_dir / f"{binary}{ext}").exists():
+            return False
+    if host.is_linux:
+        try:
+            preflight_linux_installed_binaries(
+                [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
+                install_dir,
+                host,
+            )
+        except Exception:
             return False
     expected_fingerprint = expected_install_fingerprint(
         llama_tag = llama_tag,

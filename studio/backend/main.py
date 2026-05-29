@@ -18,6 +18,17 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# `uvicorn main:app` bypasses run.py; seed thread caps here too.
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    _raw = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
+    ) from None
+
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
@@ -122,6 +133,7 @@ from routes import (
     export_router,
     inference_router,
     inference_studio_router,
+    mcp_servers_router,
     models_router,
     providers_router,
     training_history_router,
@@ -316,20 +328,58 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
 
+# /content is Colab's working directory — more reliable than env vars which
+# aren't always set depending on Colab runtime version.
+import importlib.util as _importlib_util
+
+_IS_COLAB = os.path.isdir("/content") and (
+    bool(os.environ.get("COLAB_BACKEND_URL"))
+    or bool(os.environ.get("COLAB_JUPYTER_IP"))
+    or _importlib_util.find_spec("google.colab") is not None
+)
+
+
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
+    # In Colab the parent frame can be colab.research.google.com, a multi-level
+    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — note: CSP
+    # wildcards only match one level, so *.prod.colab.dev misses these), or a
+    # sandboxed null-origin output iframe. Use '*' so any ancestor is allowed;
+    # Colab is already a sandboxed single-user environment.
+    frame_ancestors = "*" if _IS_COLAB else "'none'"
+
+    # In Colab the frontend is served over the Colab reverse-proxy at an HTTPS
+    # *.prod.colab.dev URL. Colab's kernel communication layer and the output
+    # iframe scaffolding inject scripts from *.prod.colab.dev and
+    # *.googleusercontent.com, and make fetch/WebSocket connections to those
+    # same origins. Widen script-src and connect-src in Colab mode so those
+    # requests are not blocked. 'unsafe-inline' for scripts is still omitted;
+    # our own inline script uses a nonce.
+    if _IS_COLAB:
+        script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
+        connect_src = (
+            "'self' blob: data: "
+            "https://huggingface.co https://datasets-server.huggingface.co "
+            "https://*.prod.colab.dev wss://*.prod.colab.dev "
+            "https://*.googleusercontent.com wss://*.googleusercontent.com"
+        )
+    else:
+        connect_src = (
+            "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        )
+
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
         "https://t3.gstatic.com https://www.google.com; "
-        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        f"connect-src {connect_src}; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
-        "frame-ancestors 'none'; "
+        f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
         "base-uri 'self'"
     )
@@ -345,7 +395,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if nonce is not None:
             del response.headers[_CSP_SCRIPT_NONCE_HEADER]
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        response.headers.setdefault("X-Frame-Options", "DENY")
+        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
+        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+        if not _IS_COLAB:
+            response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
@@ -524,6 +577,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

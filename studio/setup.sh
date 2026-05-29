@@ -130,6 +130,30 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
+_nvcc_meets_llama_minimum() {
+    # Echo "ok|too_old|unknown" then the parsed "X.Y" version, one per line.
+    # llama.cpp needs CUDA toolkit >= 12.4 (#4437; setup.ps1 aborts via #4517).
+    _nvcc_bin=$1
+    [ -n "$_nvcc_bin" ] || { echo "unknown"; echo ""; return 0; }
+    _raw=$("$_nvcc_bin" --version 2>/dev/null \
+        | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | head -1)
+    if [ -z "$_raw" ]; then
+        echo "unknown"; echo ""; return 0
+    fi
+    _maj=${_raw%%.*}
+    _min_raw=${_raw#*.}
+    _min=${_min_raw%%.*}
+    if [ "$_maj" -lt 12 ] 2>/dev/null; then
+        echo "too_old"
+    elif [ "$_maj" -eq 12 ] && [ "$_min" -lt 4 ] 2>/dev/null; then
+        echo "too_old"
+    else
+        echo "ok"
+    fi
+    echo "$_raw"
+}
+
 print_llama_error_log() {
     local log_file=$1
     [ -s "$log_file" ] || return 0
@@ -671,6 +695,16 @@ elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+elif [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && [ "$_LINUX_HAS_GPU" = false ]; then
+    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
+    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
+    # the Linux CUDA bundles, so without this branch the prebuilt
+    # resolver returns 0 attempts on every release and the installer
+    # falls all the way back to a source build. Upstream ggml-org ships
+    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
@@ -995,32 +1029,52 @@ else
                 CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
                 _TRY_METAL_CPU_FALLBACK=true
             elif [ -n "$NVCC_PATH" ]; then
-                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+                # Returns "ok|too_old|unknown\nX.Y" on stdout.
+                _NVCC_CHECK="$(_nvcc_meets_llama_minimum "$NVCC_PATH")"
+                _NVCC_STATUS="$(printf '%s\n' "$_NVCC_CHECK" | sed -n '1p')"
+                _NVCC_VER="$(printf '%s\n' "$_NVCC_CHECK" | sed -n '2p')"
 
-                CUDA_ARCHS=""
-                if command -v nvidia-smi &>/dev/null; then
-                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                    while IFS= read -r _cap; do
-                        _cap=$(echo "$_cap" | tr -d '[:space:]')
-                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                            # Append if not already present
-                            case ";$CUDA_ARCHS;" in
-                                *";$_arch;"*) ;;
-                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                            esac
-                        fi
-                    done <<< "$_raw_caps"
-                fi
-
-                if [ -n "$CUDA_ARCHS" ]; then
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
-                    _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                if [ "$_NVCC_STATUS" = "too_old" ]; then
+                    substep "CUDA toolkit $_NVCC_VER is below llama.cpp minimum (12.4)." "$C_ERR"
+                    substep "install a newer CUDA toolkit: https://developer.nvidia.com/cuda-toolkit-archive" "$C_WARN"
+                    substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
+                    NVCC_PATH=""
+                    GPU_BACKEND=""
+                    _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
-                    _BUILD_DESC="building (CUDA)"
-                fi
+                    CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
-                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+                    CUDA_ARCHS=""
+                    if command -v nvidia-smi &>/dev/null; then
+                        _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        while IFS= read -r _cap; do
+                            _cap=$(echo "$_cap" | tr -d '[:space:]')
+                            if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                                _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                                # Append if not already present
+                                case ";$CUDA_ARCHS;" in
+                                    *";$_arch;"*) ;;
+                                    *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                                esac
+                            fi
+                        done <<< "$_raw_caps"
+                    fi
+
+                    if [ -n "$CUDA_ARCHS" ]; then
+                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                        _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                    else
+                        _BUILD_DESC="building (CUDA)"
+                    fi
+
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+
+                    # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
+                    # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
+                    # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
+                    # word-splitting.
+                    export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
+                fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
                 # Resolve hipcc symlinks to find the real ROCm root
                 _HIPCC_REAL="$(readlink -f "$ROCM_HIPCC" 2>/dev/null || printf '%s' "$ROCM_HIPCC")"
@@ -1090,14 +1144,29 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            # GPU label for the CPU-fallback message: Metal, else GPU_BACKEND
+            # (cuda/rocm). Empty on a bare CPU build (nothing to fall back from).
+            _gpu_fallback_label() {
                 if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    echo "Metal"
+                elif [ -n "$GPU_BACKEND" ]; then
+                    printf '%s' "$GPU_BACKEND" | tr '[:lower:]' '[:upper:]'
+                fi
+            }
+
+            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                _FB_LABEL="$(_gpu_fallback_label)"
+                if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
-                    substep "Metal configure failed; retrying CPU build..." "$C_WARN"
+                    substep "$_FB_LABEL configure failed; retrying CPU build..." "$C_WARN"
                     rm -rf "$_BUILD_TMP/build"
-                    run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
-                    if [ "$BUILD_OK" = true ]; then
-                        _BUILD_DESC="building (CPU fallback)"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL configure failed)"
+                        # Now configured for CPU; clear GPU_BACKEND so a later
+                        # build-step failure won't re-enter fallback on this config.
+                        GPU_BACKEND=""
+                    else
+                        BUILD_OK=false
                     fi
                 else
                     BUILD_OK=false
@@ -1107,12 +1176,14 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             if ! run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
-                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                _FB_LABEL="$(_gpu_fallback_label)"
+                if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
-                    substep "Metal build failed; retrying CPU build..." "$C_WARN"
+                    substep "$_FB_LABEL build failed; retrying CPU build..." "$C_WARN"
                     rm -rf "$_BUILD_TMP/build"
                     if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
-                        _BUILD_DESC="building (CPU fallback)"
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL build failed)"
+                        GPU_BACKEND=""
                         run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
                     else
                         BUILD_OK=false
