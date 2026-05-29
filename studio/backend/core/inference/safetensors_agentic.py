@@ -320,9 +320,11 @@ def run_safetensors_tool_loop(
             }
 
             tc_key = tool_name + str(arguments)
-            denied = confirm_tool_calls and request_tool_decision(
-                session_id, cancel_event=cancel_event
-            ) == "deny"
+            denied = (
+                confirm_tool_calls
+                and request_tool_decision(session_id, cancel_event = cancel_event)
+                == "deny"
+            )
             if denied:
                 result = TOOL_REJECTED_MESSAGE
             elif allowed_tool_names and tool_name not in allowed_tool_names:

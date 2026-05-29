@@ -5090,9 +5090,11 @@ class LlamaCppBackend:
                     # so insertion order is deterministic (Python 3.7+).
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
-                    _denied = confirm_tool_calls and request_tool_decision(
-                        session_id, cancel_event=cancel_event
-                    ) == "deny"
+                    _denied = (
+                        confirm_tool_calls
+                        and request_tool_decision(session_id, cancel_event = cancel_event)
+                        == "deny"
+                    )
                     if _denied:
                         result = TOOL_REJECTED_MESSAGE
                     elif _prev and _prev[0] == _tc_key and not _prev[1]:

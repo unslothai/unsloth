@@ -33,7 +33,7 @@ def _key(session_id: Optional[str]) -> str:
     return session_id or ""
 
 
-def request_tool_decision(session_id, cancel_event=None, timeout=_DECISION_TIMEOUT):
+def request_tool_decision(session_id, cancel_event = None, timeout = _DECISION_TIMEOUT):
     """Block until the user allows/denies the pending tool call.
 
     Returns ``"allow"`` or ``"deny"``. Falls back to ``"deny"`` if the wait
@@ -45,7 +45,7 @@ def request_tool_decision(session_id, cancel_event=None, timeout=_DECISION_TIMEO
         _pending[key] = {"event": event, "decision": None}
     try:
         waited = 0.0
-        while not event.wait(timeout=0.5):
+        while not event.wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return "deny"
             waited += 0.5
