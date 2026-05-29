@@ -54,3 +54,4 @@ einops
 tabulate
 openai>=2.7.2
 websockets>=15.0.1
+auto-round
