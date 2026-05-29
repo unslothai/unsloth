@@ -75,12 +75,12 @@ class TextEncoderGGUFInfo:
     path: Path
     architecture: str | None
     model_type: str | None
-    supported_by_comfyui_gguf: bool
+    supported_by_lazy_loader: bool
     requires_mmproj: bool
     mmproj_path: Path | None
 
 
-_COMFY_TEXT_ARCHITECTURES = frozenset(
+_SUPPORTED_LAZY_TEXT_ARCHITECTURES = frozenset(
     {
         "t5",
         "t5encoder",
@@ -245,8 +245,8 @@ def _read_gguf_scalar_field(reader: Any, field_name: str, field_type: type) -> A
 def strip_gguf_quant_suffix(name: str) -> str:
     """Remove common GGUF quant suffixes from a filename stem.
 
-    Mirrors the matching rule ComfyUI-GGUF uses before looking for a
-    sibling mmproj file, e.g. ``Qwen2.5-VL-7B-Instruct-Q4_K_M`` becomes
+    This is used before looking for a sibling mmproj file, e.g.
+    ``Qwen2.5-VL-7B-Instruct-Q4_K_M`` becomes
     ``Qwen2.5-VL-7B-Instruct``.
     """
 
@@ -298,7 +298,7 @@ def inspect_text_encoder_gguf(path: str | Path) -> TextEncoderGGUFInfo:
         path = gguf_path,
         architecture = architecture,
         model_type = model_type,
-        supported_by_comfyui_gguf = architecture in _COMFY_TEXT_ARCHITECTURES,
+        supported_by_lazy_loader = architecture in _SUPPORTED_LAZY_TEXT_ARCHITECTURES,
         requires_mmproj = requires_mmproj,
         mmproj_path = resolve_text_encoder_mmproj_gguf(gguf_path) if requires_mmproj else None,
     )
@@ -315,9 +315,9 @@ def map_llama_style_text_gguf_name(
 ) -> _GGUFNameTarget | None:
     """Map llama.cpp text GGUF tensor names to Transformers module names.
 
-    ComfyUI-GGUF uses the same string replacements for llama, qwen2vl,
-    qwen3, and qwen3vl text backbones. This helper makes that mapping
-    explicit so architecture-specific lazy loaders can target the right
+    The llama.cpp GGUF names are shared across llama, qwen2vl, qwen3,
+    and qwen3vl text backbones. This helper makes that mapping explicit
+    so architecture-specific lazy loaders can target the right
     module/parameter without materializing a full state dict.
     """
 
@@ -466,7 +466,7 @@ def map_gemma3_text_gguf_name(name: str) -> _GGUFNameTarget | None:
 
 
 def map_t5_text_gguf_name(name: str) -> _GGUFNameTarget | None:
-    """Map ComfyUI-GGUF T5/T5Encoder tensor names to HF T5 names."""
+    """Map T5/T5Encoder GGUF tensor names to HF T5 names."""
 
     if name == "token_embd.weight":
         return _GGUFNameTarget("shared.weight")
@@ -503,9 +503,10 @@ def map_qwen2vl_mmproj_gguf_name(name: str) -> Qwen2VLMmprojTarget | None:
     """Map Qwen2VL mmproj GGUF tensor names to Transformers names.
 
     Qwen2VL mmproj files store the visual tower separately from the text
-    GGUF. Most tensors are one-to-one after ComfyUI-GGUF's replacements,
-    while `attn_q/k/v` must be grouped into HF's fused `attn.qkv`
-    tensor and dual `v.patch_embd.weight*` tensors must be stacked.
+    GGUF. Most tensors are one-to-one after applying the GGUF-to-HF
+    name mapping, while `attn_q/k/v` must be grouped into HF's fused
+    `attn.qkv` tensor and dual `v.patch_embd.weight*` tensors must be
+    stacked.
     """
 
     if name == "v.post_ln.weight":
@@ -561,11 +562,11 @@ def patch_gguf_text_encoder_for_resident_device(
       with ``quant_type`` metadata and dequantize / fused-matmul inside
       their own forward path.
 
-    The second case is the same ComfyUI-style contract as diffusion
-    transformers: module ``.to(...)`` calls should not permanently move
-    quantized bytes away from the offload device, while forward briefly
-    copies the active quantized weight to the activation device before
-    upstream dequantization or fused execution.
+    The second case follows the same native residency contract as
+    diffusion transformers: module ``.to(...)`` calls should not
+    permanently move quantized bytes away from the offload device, while
+    forward briefly copies the active quantized weight to the activation
+    device before upstream dequantization or fused execution.
     """
 
     import types
@@ -997,6 +998,22 @@ class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Module):
             self.bias = nn.Parameter(bias.to(dtype = compute_dtype), requires_grad = False)
         self._place_resident_qweight()
 
+    @property
+    def weight(self) -> torch.Tensor:
+        """Metadata-only compatibility shim for modules that inspect weight.dtype.
+
+        Some Diffusers model code reads ``linear.weight.dtype`` to pick an
+        activation dtype without using the weight tensor itself. Returning
+        the packed ``qweight`` would report ``uint8`` and materializing the
+        dense weight here would defeat lazy GGUF residency, so expose a
+        zero-element tensor with the compute dtype instead.
+        """
+
+        device = self.qweight.device
+        if device.type == "meta":
+            device = torch.device("cpu")
+        return torch.empty(0, device = device, dtype = self.compute_dtype)
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         qweight = self._compute_qweight(inputs.device)
         weight = _dequantize_gguf_bytes(qweight, self.quant_type, dtype = self.compute_dtype)
@@ -1359,10 +1376,14 @@ class LazyFlux2MistralTextEncoder(Mistral3ForConditionalGeneration):
 
     @property
     def device(self) -> torch.device:
-        for tensor in self.buffers(recurse = True):
-            return tensor.device
         for param in self.parameters(recurse = True):
             return param.device
+        for name, tensor in self.named_buffers(recurse = True):
+            if name.rsplit(".", 1)[-1] in {"qweight", "qbias"}:
+                continue
+            return tensor.device
+        for tensor in self.buffers(recurse = True):
+            return tensor.device
         return torch.device("cpu")
 
     def forward(self, *args, **kwargs):
@@ -1741,8 +1762,8 @@ def _gguf_bfloat16_type(gguf: Any) -> Any:
     return getattr(gguf.GGMLQuantizationType, "BF16", None)
 
 
-def _read_comfy_gguf_orig_shape(reader: Any, tensor_name: str) -> tuple[int, ...] | None:
-    """Read ComfyUI-GGUF's original-shape metadata for a tensor."""
+def _read_gguf_orig_shape_metadata(reader: Any, tensor_name: str) -> tuple[int, ...] | None:
+    """Read optional original-shape metadata for a GGUF tensor."""
 
     if reader is None or not tensor_name:
         return None
@@ -1776,7 +1797,7 @@ def _read_comfy_gguf_orig_shape(reader: Any, tensor_name: str) -> tuple[int, ...
 
 
 def _gguf_tensor_logical_shape(tensor: Any, *, reader: Any = None) -> tuple[int, ...]:
-    orig_shape = _read_comfy_gguf_orig_shape(reader, getattr(tensor, "name", ""))
+    orig_shape = _read_gguf_orig_shape_metadata(reader, getattr(tensor, "name", ""))
     if orig_shape is not None:
         return orig_shape
     return tuple(int(v) for v in reversed(tensor.shape))
@@ -1999,7 +2020,7 @@ def replace_qwen2vl_mmproj_modules_with_gguf(
 ) -> tuple[Any, Qwen2VLMmprojReplacementStats]:
     """Load Qwen2VL mmproj GGUF tensors into a Transformers visual tower.
 
-    ComfyUI-GGUF handles two Qwen2VL mmproj tensor layout differences
+    This helper handles two Qwen2VL mmproj tensor layout differences
     before loading the visual module:
 
     * `v.patch_embd.weight` and `v.patch_embd.weight.1` are stacked into

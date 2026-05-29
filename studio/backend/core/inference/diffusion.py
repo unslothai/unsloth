@@ -48,6 +48,19 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE = "aggressive"
+DIFFUSION_OFFLOAD_POLICY_BALANCED = "balanced"
+DIFFUSION_OFFLOAD_POLICY_NONE = "none"
+DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE = "less_aggressive"
+DIFFUSION_OFFLOAD_POLICY_HYBRID = "hybrid"
+DIFFUSION_OFFLOAD_POLICIES = {
+    DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE,
+    DIFFUSION_OFFLOAD_POLICY_BALANCED,
+    DIFFUSION_OFFLOAD_POLICY_NONE,
+    DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+    DIFFUSION_OFFLOAD_POLICY_HYBRID,
+}
+
 
 # ─── Pipeline registry ────────────────────────────────────────────────
 #
@@ -316,18 +329,6 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
 )
 
-_TEXT_ENCODER_GGUF_ARCHITECTURES = frozenset(
-    {
-        "t5",
-        "t5encoder",
-        "llama",
-        "qwen2vl",
-        "qwen3",
-        "qwen3vl",
-        "gemma3",
-    }
-)
-
 _TEXT_ENCODER_GGUF_COMPONENTS = frozenset(
     {
         "text_encoder",
@@ -339,6 +340,130 @@ _TEXT_ENCODER_GGUF_COMPONENTS = frozenset(
 _FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
 _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
 _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen3-4B-GGUF"
+
+
+@dataclass(frozen = True)
+class _TextEncoderGgufPlan:
+    loader_name: str
+    component_name: str
+
+
+def _default_text_encoder_gguf_repo(fam: DiffusionFamily) -> str:
+    if fam.name.startswith("qwen-image"):
+        return _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO
+    if fam.name.startswith("z-image") or fam.name == "flux.2-klein":
+        return _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO
+    return _FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO
+
+
+def _resolve_text_encoder_gguf_plan(
+    fam: DiffusionFamily,
+    *,
+    architecture: Optional[str],
+    requested_component: Optional[str],
+) -> Optional[_TextEncoderGgufPlan]:
+    component_name = requested_component or "text_encoder"
+
+    # FLUX.2 dev uses a Mistral3 text encoder. Some Mistral-family GGUFs
+    # report a llama-like architecture, so the pipeline family must win
+    # over the generic architecture mapping here.
+    if fam.name == "flux.2":
+        if component_name != "text_encoder":
+            raise RuntimeError(
+                "FLUX.2 text_encoder_gguf_filename can only replace "
+                "the text_encoder component."
+            )
+        return _TextEncoderGgufPlan(
+            loader_name = "LazyFlux2MistralTextEncoder",
+            component_name = "text_encoder",
+        )
+
+    if architecture == "qwen2vl" and fam.name.startswith("qwen-image"):
+        return _TextEncoderGgufPlan(
+            loader_name = "LazyQwen2VLTextEncoder",
+            component_name = component_name,
+        )
+
+    if architecture == "qwen3" and (
+        fam.name.startswith("z-image") or fam.name == "flux.2-klein"
+    ):
+        return _TextEncoderGgufPlan(
+            loader_name = "LazyQwen3TextEncoder",
+            component_name = component_name,
+        )
+
+    if architecture in {"t5", "t5encoder"} and fam.name in {
+        "flux.1",
+        "stable-diffusion-3",
+    }:
+        if requested_component is None:
+            component_name = (
+                "text_encoder_3"
+                if fam.name == "stable-diffusion-3"
+                else "text_encoder_2"
+            )
+        return _TextEncoderGgufPlan(
+            loader_name = "LazyT5TextEncoder",
+            component_name = component_name,
+        )
+
+    if requested_component is None:
+        return None
+
+    generic_loader_by_architecture = {
+        "llama": "LazyLlamaTextEncoder",
+        "qwen2vl": "LazyQwen2VLTextEncoder",
+        "qwen3": "LazyQwen3TextEncoder",
+        "qwen3vl": "LazyQwen3VLTextEncoder",
+        "gemma3": "LazyGemma3TextEncoder",
+        "t5": "LazyT5TextEncoder",
+        "t5encoder": "LazyT5TextEncoder",
+    }
+    loader_name = generic_loader_by_architecture.get(architecture or "")
+    if loader_name is None:
+        return None
+    return _TextEncoderGgufPlan(
+        loader_name = loader_name,
+        component_name = component_name,
+    )
+
+
+def _load_text_encoder_gguf_from_plan(
+    gguf_text_encoder_mod: Any,
+    plan: _TextEncoderGgufPlan,
+    gguf_path: str,
+    *,
+    base_repo_or_path: str,
+    mmproj_gguf_path: Any,
+    compute_dtype: Any,
+    resident_device: Any,
+    token: Optional[str],
+) -> Any:
+    loader = getattr(gguf_text_encoder_mod, plan.loader_name)
+    common_kwargs = {
+        "base_repo_or_path": base_repo_or_path,
+        "compute_dtype": compute_dtype,
+        "resident_device": resident_device,
+        "token": token,
+    }
+    if plan.loader_name == "LazyQwen2VLTextEncoder":
+        return loader.from_gguf(
+            gguf_path,
+            mmproj_gguf_path = mmproj_gguf_path,
+            **common_kwargs,
+        )
+    if plan.loader_name in {
+        "LazyLlamaTextEncoder",
+        "LazyQwen3VLTextEncoder",
+        "LazyGemma3TextEncoder",
+        "LazyT5TextEncoder",
+    }:
+        return loader.from_gguf(
+            gguf_path,
+            subfolder = plan.component_name,
+            **common_kwargs,
+        )
+    return loader.from_gguf(gguf_path, **common_kwargs)
 
 
 def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
@@ -807,6 +932,178 @@ def supported_families() -> list[dict[str, Any]]:
     ]
 
 
+def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFamily]) -> bool:
+    """Make Flux2 Klein use Flux-style single-pass guidance.
+
+    Diffusers' Flux2KleinPipeline currently treats non-distilled Klein
+    guidance_scale > 1 as classifier-free guidance, which runs the
+    transformer twice per denoising step. The Flux-style path
+    sends the scalar guidance into Flux2Transformer2DModel.forward as a
+    conditioning embedding and keeps denoising single-pass.
+    """
+
+    if fam is None or fam.name != "flux.2-klein":
+        return False
+    transformer = getattr(pipe, "transformer", None)
+    original_forward = getattr(transformer, "forward", None)
+    if transformer is None or original_forward is None:
+        return False
+    if getattr(transformer, "_unsloth_flux2_klein_guidance_patched", False):
+        setattr(pipe, "_unsloth_flux2_klein_embedded_guidance", True)
+        return True
+
+    def _set_distilled_flag(value: bool) -> None:
+        if hasattr(pipe, "register_to_config"):
+            pipe.register_to_config(is_distilled = value)
+        elif hasattr(pipe, "config"):
+            with contextlib.suppress(Exception):
+                setattr(pipe.config, "is_distilled", value)
+
+    def _forward_with_embedded_guidance(*args: Any, guidance: Any = None, **kwargs: Any) -> Any:
+        if (
+            guidance is None
+            and len(args) < 6
+            and getattr(pipe, "_unsloth_flux2_klein_embedded_guidance", False)
+        ):
+            hidden_states = kwargs.get("hidden_states")
+            if hidden_states is None and args:
+                hidden_states = args[0]
+            guidance_scale = getattr(pipe, "_guidance_scale", None)
+            if hidden_states is not None and guidance_scale is not None:
+                import torch
+
+                batch = int(getattr(hidden_states, "shape", [1])[0])
+                guidance = torch.full(
+                    [1],
+                    float(guidance_scale),
+                    device = hidden_states.device,
+                    dtype = torch.float32,
+                ).expand(batch)
+        return original_forward(*args, guidance = guidance, **kwargs)
+
+    transformer.forward = _forward_with_embedded_guidance
+    setattr(transformer, "_unsloth_flux2_klein_guidance_patched", True)
+    setattr(pipe, "_unsloth_flux2_klein_embedded_guidance", True)
+
+    # Flux2KleinPipeline.do_classifier_free_guidance is derived from
+    # config.is_distilled. Keep the flag false while check_inputs runs
+    # so Diffusers does not emit its "guidance ignored" warning, then
+    # mark this instance distilled before the denoising loop so the
+    # unconditional CFG pass is skipped.
+    original_check_inputs = getattr(pipe, "check_inputs", None)
+    if original_check_inputs is not None and not getattr(
+        pipe,
+        "_unsloth_flux2_klein_check_inputs_patched",
+        False,
+    ):
+
+        def _check_inputs_then_disable_cfg(*args: Any, **kwargs: Any) -> Any:
+            _set_distilled_flag(False)
+            try:
+                return original_check_inputs(*args, **kwargs)
+            finally:
+                _set_distilled_flag(True)
+
+        pipe.check_inputs = _check_inputs_then_disable_cfg
+        setattr(pipe, "_unsloth_flux2_klein_check_inputs_patched", True)
+        _set_distilled_flag(False)
+    else:
+        _set_distilled_flag(True)
+    return True
+
+
+def _apply_diffusion_memory_policy(pipe: Any, offload_policy: Optional[str]) -> None:
+    """Apply small per-pipeline memory knobs for Studio's VRAM presets."""
+
+    if offload_policy != DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE:
+        return
+    vae = getattr(pipe, "vae", None)
+    if vae is None:
+        return
+    for method_name in ("enable_slicing", "enable_tiling"):
+        method = getattr(vae, method_name, None)
+        if method is not None:
+            method()
+
+
+def _clone_prompt_embeds_to_device(value: Any, device: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [
+            item.to(device, non_blocking = True) if hasattr(item, "to") else item
+            for item in value
+        ]
+    if hasattr(value, "to"):
+        return value.to(device, non_blocking = True)
+    return value
+
+
+def _store_prompt_embeds_on_cpu(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [_store_prompt_embeds_on_cpu(item) for item in value]
+    if hasattr(value, "detach") and hasattr(value, "to"):
+        return value.detach().to("cpu", copy = True)
+    return value
+
+
+def _env_pin_cpu_resident_gguf() -> bool:
+    return (
+        os.environ.get("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
+def _normalize_diffusion_offload_policy(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in {"", "legacy", "auto"}:
+        return None
+    if normalized not in DIFFUSION_OFFLOAD_POLICIES:
+        allowed = ", ".join(sorted(DIFFUSION_OFFLOAD_POLICIES))
+        raise ValueError(f"offload_policy must be one of: {allowed}")
+    return normalized
+
+
+def _resolve_diffusion_offload_policy(
+    *,
+    offload_policy: Optional[str],
+    enable_model_cpu_offload: bool,
+    gguf_quantized_cpu_resident: Optional[bool],
+    gguf_pin_cpu_resident: Optional[bool],
+) -> tuple[Optional[str], bool, bool, bool]:
+    """Resolve Studio's user-facing VRAM policy to backend switches."""
+
+    normalized = _normalize_diffusion_offload_policy(offload_policy)
+    if normalized == DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE:
+        return normalized, True, True, True
+    if normalized == DIFFUSION_OFFLOAD_POLICY_BALANCED:
+        return normalized, False, True, True
+    if normalized in {
+        DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+        DIFFUSION_OFFLOAD_POLICY_HYBRID,
+    }:
+        return normalized, False, False, True
+    if normalized == DIFFUSION_OFFLOAD_POLICY_NONE:
+        return normalized, False, False, False
+
+    if gguf_quantized_cpu_resident is None:
+        gguf_quantized_cpu_resident = bool(enable_model_cpu_offload)
+    if gguf_pin_cpu_resident is None:
+        gguf_pin_cpu_resident = _env_pin_cpu_resident_gguf()
+    return (
+        None,
+        bool(enable_model_cpu_offload),
+        bool(gguf_quantized_cpu_resident),
+        bool(gguf_pin_cpu_resident),
+    )
+
+
 # ─── Backend ──────────────────────────────────────────────────────────
 
 
@@ -865,10 +1162,13 @@ class DiffusionBackend:
         # this is True, seeded generation has to use a CPU generator
         # regardless of self._device.
         self._cpu_offload_enabled: bool = False
+        self._offload_policy: Optional[str] = None
         self._gguf_quantized_cpu_resident: bool = False
         self._gguf_pin_cpu_resident: bool = False
         self._gguf_execution_backend: Optional[str] = None
         self._gguf_prepared_module_counts: dict[str, int] = {}
+        self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
+        self._prompt_embedding_cache_value: Optional[tuple[Any, Any]] = None
         self._loaded_at: Optional[float] = None
         self._loading: bool = False
         self._last_error: Optional[str] = None
@@ -973,6 +1273,7 @@ class DiffusionBackend:
                 "text_encoder_gguf_filename": ui_te_gguf_basename,
                 "gguf_quantized_cpu_resident": self._gguf_quantized_cpu_resident,
                 "gguf_pin_cpu_resident": self._gguf_pin_cpu_resident,
+                "offload_policy": self._offload_policy,
                 "gguf_execution_backend": self._gguf_execution_backend,
                 "gguf_prepared_module_counts": dict(self._gguf_prepared_module_counts),
                 "device": self._device,
@@ -1059,6 +1360,7 @@ class DiffusionBackend:
         hf_token: Optional[str] = None,
         family_override: Optional[str] = None,
         enable_model_cpu_offload: bool = True,
+        offload_policy: Optional[str] = None,
         gguf_quantized_cpu_resident: Optional[bool] = None,
         gguf_pin_cpu_resident: Optional[bool] = None,
         ignore_public_load_pending_workload: Optional[str] = None,
@@ -1074,6 +1376,17 @@ class DiffusionBackend:
         ``base_repo`` overrides the auto-detected diffusers base used
         for VAE / text encoders. ``family_override`` short-circuits the
         substring matcher when an exotic repo name confuses it.
+
+        ``offload_policy`` is the preferred VRAM control for GGUF image
+        models. ``aggressive`` installs Diffusers CPU offload hooks and
+        keeps packed GGUF tensors CPU-resident; ``balanced`` keeps all
+        packed GGUF tensors CPU-resident without full Diffusers CPU
+        offload hooks; ``less_aggressive`` keeps only text-encoder GGUF
+        tensors CPU-resident while the diffusion transformer stays on
+        GPU; ``none`` keeps the pipeline resident on the selected device
+        and does not force GGUF tensors to stay on CPU. The lower-level
+        booleans remain accepted for existing callers. When
+        ``offload_policy`` is supplied, it owns those booleans.
 
         ``gguf_quantized_cpu_resident`` controls whether packed GGUF
         tensors stay on CPU and are copied/dequantized on demand. When
@@ -1110,15 +1423,17 @@ class DiffusionBackend:
                 "loading an image model."
             ) from exc
 
-        if gguf_quantized_cpu_resident is None:
-            gguf_quantized_cpu_resident = bool(enable_model_cpu_offload)
-        if gguf_pin_cpu_resident is None:
-            gguf_pin_cpu_resident = (
-                os.environ.get("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", "")
-                .strip()
-                .lower()
-                in {"1", "true", "yes", "on"}
-            )
+        (
+            resolved_offload_policy,
+            enable_model_cpu_offload,
+            gguf_quantized_cpu_resident,
+            gguf_pin_cpu_resident,
+        ) = _resolve_diffusion_offload_policy(
+            offload_policy = offload_policy,
+            enable_model_cpu_offload = enable_model_cpu_offload,
+            gguf_quantized_cpu_resident = gguf_quantized_cpu_resident,
+            gguf_pin_cpu_resident = gguf_pin_cpu_resident,
+        )
 
         # Round 30 P1 #11: also preflight transformers BEFORE any
         # destructive unload. Diffusers can expose stub pipeline
@@ -1299,17 +1614,32 @@ class DiffusionBackend:
                 effective_text_encoder_gguf_repo: Optional[str] = None
                 text_encoder_gguf_info: Any = None
                 text_encoder_mmproj_path: Any = None
+                text_encoder_gguf_plan: Optional[_TextEncoderGgufPlan] = None
                 prepared_gguf_module_counts: dict[str, int] = {}
                 text_encoder_component_name = (
                     text_encoder_gguf_component or "text_encoder"
                 )
-                gguf_resident_device = (
+                diffusion_gguf_resident_device = (
                     "cpu"
                     if gguf_quantized_cpu_resident and device == "cuda"
                     else None
                 )
+                text_encoder_resident_device = diffusion_gguf_resident_device
+                if (
+                    resolved_offload_policy
+                    in {
+                        DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+                        DIFFUSION_OFFLOAD_POLICY_HYBRID,
+                    }
+                    and device == "cuda"
+                ):
+                    text_encoder_resident_device = "cpu"
                 gguf_pin_cpu_resident_active = bool(
-                    gguf_pin_cpu_resident and gguf_resident_device == "cpu"
+                    gguf_pin_cpu_resident
+                    and (
+                        diffusion_gguf_resident_device == "cpu"
+                        or text_encoder_resident_device == "cpu"
+                    )
                 )
                 if gguf_filename:
                     if transformer_cls is None:
@@ -1355,16 +1685,7 @@ class DiffusionBackend:
                         )
                 if text_encoder_gguf_filename:
                     effective_text_encoder_gguf_repo = (
-                        text_encoder_gguf_repo
-                        or (
-                            _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO
-                            if fam.name.startswith("qwen-image")
-                            else (
-                                _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO
-                                if fam.name.startswith("z-image")
-                                else _FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO
-                            )
-                        )
+                        text_encoder_gguf_repo or _default_text_encoder_gguf_repo(fam)
                     )
                     with self._lock:
                         self._pending_text_encoder_gguf_repo = effective_text_encoder_gguf_repo
@@ -1394,11 +1715,8 @@ class DiffusionBackend:
                         if text_encoder_gguf_info is not None
                         else None
                     )
-                    text_encoder_is_qwen2vl = text_encoder_gguf_arch == "qwen2vl"
-                    text_encoder_is_qwen3 = text_encoder_gguf_arch == "qwen3"
-                    text_encoder_is_t5 = text_encoder_gguf_arch in {"t5", "t5encoder"}
                     if (
-                        text_encoder_is_qwen2vl
+                        text_encoder_gguf_arch == "qwen2vl"
                         and text_encoder_mmproj_path is None
                         and not te_repo_path.is_dir()
                     ):
@@ -1408,21 +1726,12 @@ class DiffusionBackend:
                             text_encoder_gguf_filename = text_encoder_gguf_filename,
                             token = hf_token,
                         )
-                    text_encoder_is_comfy_supported = (
-                        text_encoder_gguf_arch in _TEXT_ENCODER_GGUF_ARCHITECTURES
+                    text_encoder_gguf_plan = _resolve_text_encoder_gguf_plan(
+                        fam,
+                        architecture = text_encoder_gguf_arch,
+                        requested_component = text_encoder_gguf_component,
                     )
-                    text_encoder_allowed = (
-                        (
-                            text_encoder_gguf_component is not None
-                            and text_encoder_is_comfy_supported
-                        )
-                        or fam.name == "flux.2"
-                        or (fam.name == "flux.1" and text_encoder_is_t5)
-                        or (fam.name == "stable-diffusion-3" and text_encoder_is_t5)
-                        or (fam.name.startswith("qwen-image") and text_encoder_is_qwen2vl)
-                        or (fam.name.startswith("z-image") and text_encoder_is_qwen3)
-                    )
-                    if not text_encoder_allowed:
+                    if text_encoder_gguf_plan is None:
                         arch_note = ""
                         if text_encoder_gguf_info is not None:
                             arch_note = (
@@ -1433,16 +1742,11 @@ class DiffusionBackend:
                             "text_encoder_gguf_filename is currently supported for FLUX.2 dev "
                             "Mistral text encoders, Qwen-Image Qwen2VL text encoders, "
                             "Z-Image Qwen3 text encoders, FLUX.1 T5 encoders, "
-                            "SD3 T5 encoders, or any ComfyUI-GGUF text architecture "
+                            "SD3 T5 encoders, or any supported lazy text architecture "
                             "when text_encoder_gguf_component is explicitly set."
                             + arch_note
                         )
-                    if text_encoder_is_t5 and text_encoder_gguf_component is None:
-                        text_encoder_component_name = (
-                            "text_encoder_3"
-                            if fam.name == "stable-diffusion-3"
-                            else "text_encoder_2"
-                        )
+                    text_encoder_component_name = text_encoder_gguf_plan.component_name
 
                 # Round 20 P1 #1: every load mode (full diffusers
                 # repo, GGUF + explicit base_repo, GGUF + auto-picked
@@ -1563,10 +1867,13 @@ class DiffusionBackend:
                         self._device = None
                         self._dtype = None
                         self._cpu_offload_enabled = False
+                        self._offload_policy = None
                         self._gguf_quantized_cpu_resident = False
                         self._gguf_pin_cpu_resident = False
                         self._gguf_execution_backend = None
                         self._gguf_prepared_module_counts = {}
+                        self._prompt_embedding_cache_key = None
+                        self._prompt_embedding_cache_value = None
                         self._loaded_at = None
                     _release(old)
                     old = None
@@ -1583,7 +1890,7 @@ class DiffusionBackend:
                     # Diffusers-format GGUFs (FLUX.2 klein / Qwen-Image /
                     # SD3) need the matching base repo's component config
                     # at config=<base_repo>, subfolder="transformer".
-                    # Older city96-style GGUFs ignore those kwargs. The
+                    # Older converted GGUFs ignore those kwargs. The
                     # token is also passed because gated GGUF repos
                     # require it both at download and at config read time.
                     single_file_kwargs: dict[str, Any] = {
@@ -1602,7 +1909,7 @@ class DiffusionBackend:
                     lazy_linear_count = _replace_diffusers_gguf_linear_parameters(
                         transformer,
                         dtype,
-                        resident_device = gguf_resident_device,
+                        resident_device = diffusion_gguf_resident_device,
                     )
                     if lazy_linear_count:
                         prepared_gguf_module_counts["diffusion_linear_lazy"] = lazy_linear_count
@@ -1614,7 +1921,7 @@ class DiffusionBackend:
                     prepared_gguf_non_linear = _prepare_gguf_non_linear_parameters(
                         transformer,
                         dtype,
-                        resident_device = gguf_resident_device,
+                        resident_device = diffusion_gguf_resident_device,
                     )
                     for key, count in prepared_gguf_non_linear.items():
                         prepared_gguf_module_counts[f"diffusion_{key}"] = count
@@ -1624,10 +1931,10 @@ class DiffusionBackend:
                             "Diffusers does not execute lazily: %s.",
                             prepared_gguf_non_linear,
                         )
-                    if gguf_resident_device is not None:
+                    if diffusion_gguf_resident_device is not None:
                         patched_gguf_modules = _patch_gguf_modules_for_resident_device(
                             transformer,
-                            gguf_resident_device,
+                            diffusion_gguf_resident_device,
                             pin_memory = gguf_pin_cpu_resident_active,
                             )
                         if patched_gguf_modules:
@@ -1642,82 +1949,20 @@ class DiffusionBackend:
                 if local_text_encoder_gguf_path:
                     from . import gguf_text_encoder as gguf_text_encoder_mod
 
-                    text_encoder_resident_device = gguf_resident_device
-                    text_encoder_arch = (
-                        getattr(text_encoder_gguf_info, "architecture", None)
-                        if text_encoder_gguf_info is not None
-                        else None
+                    if text_encoder_gguf_plan is None:
+                        raise RuntimeError(
+                            "Internal error: missing text GGUF load plan."
+                        )
+                    text_encoder = _load_text_encoder_gguf_from_plan(
+                        gguf_text_encoder_mod,
+                        text_encoder_gguf_plan,
+                        local_text_encoder_gguf_path,
+                        base_repo_or_path = effective_base,
+                        mmproj_gguf_path = text_encoder_mmproj_path,
+                        compute_dtype = dtype,
+                        resident_device = text_encoder_resident_device,
+                        token = hf_token,
                     )
-                    if text_encoder_arch == "qwen2vl":
-                        text_encoder = gguf_text_encoder_mod.LazyQwen2VLTextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            mmproj_gguf_path = text_encoder_mmproj_path,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    elif text_encoder_arch == "qwen3":
-                        text_encoder = gguf_text_encoder_mod.LazyQwen3TextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    elif text_encoder_arch in {"t5", "t5encoder"}:
-                        text_encoder = gguf_text_encoder_mod.LazyT5TextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            subfolder = text_encoder_component_name,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    elif (
-                        text_encoder_arch == "llama"
-                        and text_encoder_gguf_component is not None
-                    ):
-                        text_encoder = gguf_text_encoder_mod.LazyLlamaTextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            subfolder = text_encoder_component_name,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    elif (
-                        text_encoder_arch == "qwen3vl"
-                        and text_encoder_gguf_component is not None
-                    ):
-                        text_encoder = gguf_text_encoder_mod.LazyQwen3VLTextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            subfolder = text_encoder_component_name,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    elif (
-                        text_encoder_arch == "gemma3"
-                        and text_encoder_gguf_component is not None
-                    ):
-                        text_encoder = gguf_text_encoder_mod.LazyGemma3TextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            subfolder = text_encoder_component_name,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
-                    else:
-                        text_encoder = gguf_text_encoder_mod.LazyFlux2MistralTextEncoder.from_gguf(
-                            local_text_encoder_gguf_path,
-                            base_repo_or_path = effective_base,
-                            compute_dtype = dtype,
-                            resident_device = text_encoder_resident_device,
-                            token = hf_token,
-                        )
                     if text_encoder_resident_device is not None:
                         patch_text_encoder = getattr(
                             gguf_text_encoder_mod,
@@ -1726,9 +1971,9 @@ class DiffusionBackend:
                         )
                         if patch_text_encoder is not None:
                             patched_text_modules = patch_text_encoder(
-                                text_encoder,
-                                text_encoder_resident_device,
-                                pin_memory = gguf_pin_cpu_resident_active,
+                            text_encoder,
+                            text_encoder_resident_device,
+                            pin_memory = gguf_pin_cpu_resident_active,
                             )
                             if patched_text_modules:
                                 prepared_gguf_module_counts[
@@ -1784,6 +2029,17 @@ class DiffusionBackend:
                         pipe.enable_model_cpu_offload()
                     else:
                         pipe.to(device)
+                        if (
+                            text_encoder is not None
+                            and text_encoder_resident_device is not None
+                            and hasattr(text_encoder, "to")
+                        ):
+                            text_encoder.to(device)
+                    if _enable_flux2_klein_embedded_guidance(pipe, fam):
+                        logger.info(
+                            "Enabled single-pass embedded guidance for Flux2 Klein."
+                        )
+                    _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
                 except Exception:
                     if pipe is not None:
                         _release(pipe)
@@ -1818,7 +2074,11 @@ class DiffusionBackend:
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
                     self._cpu_offload_enabled = cpu_offload_enabled
-                    self._gguf_quantized_cpu_resident = bool(gguf_resident_device is not None)
+                    self._offload_policy = resolved_offload_policy
+                    self._gguf_quantized_cpu_resident = bool(
+                        diffusion_gguf_resident_device is not None
+                        or text_encoder_resident_device is not None
+                    )
                     self._gguf_pin_cpu_resident = bool(gguf_pin_cpu_resident_active)
                     self._gguf_execution_backend = (
                         _detect_gguf_execution_backend(device)
@@ -1828,6 +2088,8 @@ class DiffusionBackend:
                     self._gguf_prepared_module_counts = dict(
                         prepared_gguf_module_counts
                     )
+                    self._prompt_embedding_cache_key = None
+                    self._prompt_embedding_cache_value = None
                     self._loaded_at = time.time()
                     # Clear loading + pending here, BEFORE returning,
                     # so the response payload reports the resident
@@ -2009,10 +2271,13 @@ class DiffusionBackend:
                 self._device = None
                 self._dtype = None
                 self._cpu_offload_enabled = False
+                self._offload_policy = None
                 self._gguf_quantized_cpu_resident = False
                 self._gguf_pin_cpu_resident = False
                 self._gguf_execution_backend = None
                 self._gguf_prepared_module_counts = {}
+                self._prompt_embedding_cache_key = None
+                self._prompt_embedding_cache_value = None
                 self._loaded_at = None
             try:
                 _release(old)
@@ -2024,6 +2289,96 @@ class DiffusionBackend:
         return {"is_loaded": False}
 
     # ── generation ────────────────────────────────────────────────
+
+    def _apply_prompt_embedding_cache_unlocked(
+        self,
+        *,
+        pipe: Any,
+        fam: Optional[DiffusionFamily],
+        call_kwargs: dict[str, Any],
+        prompt: str,
+        negative_prompt: Optional[str],
+        guidance_scale: float,
+        device: str,
+    ) -> None:
+        """Reuse prompt embeddings for repeated generations on one pipeline.
+
+        Graph/workflow engines naturally cache upstream text-encoder nodes
+        when only the seed changes. Studio's direct pipeline path has no graph,
+        so repeated warm generations used to re-run the text encoder every
+        time. Keep the cache tiny and model-agnostic: only activate for
+        pipelines that expose Diffusers' `encode_prompt` plus
+        `prompt_embeds`/`negative_prompt_embeds` call kwargs, and store the
+        cached tensors on CPU so low-VRAM policies do not inherit persistent
+        CUDA embeddings.
+        """
+
+        input_images = call_kwargs.get("image")
+        if not prompt or input_images is not None:
+            # Image-to-image/edit pipelines can have additional conditioning
+            # semantics. Keep this cache to text-to-image until those APIs are
+            # benchmarked separately.
+            return
+        if not _pipe_accepts_kwarg(pipe, "prompt_embeds"):
+            return
+        encode_prompt = getattr(pipe, "encode_prompt", None)
+        if not callable(encode_prompt):
+            return
+
+        do_classifier_free_guidance = bool(guidance_scale > 1.0)
+        if do_classifier_free_guidance and not _pipe_accepts_kwarg(
+            pipe,
+            "negative_prompt_embeds",
+        ):
+            return
+
+        max_sequence_length = int(call_kwargs.get("max_sequence_length", 512))
+        negative_key = negative_prompt if do_classifier_free_guidance else None
+        cache_key = (
+            id(pipe),
+            fam.name if fam is not None else None,
+            prompt,
+            negative_key or "",
+            do_classifier_free_guidance,
+            max_sequence_length,
+        )
+        cached = (
+            self._prompt_embedding_cache_value
+            if self._prompt_embedding_cache_key == cache_key
+            else None
+        )
+
+        if cached is None:
+            execution_device = getattr(pipe, "_execution_device", None) or device
+            try:
+                prompt_embeds, negative_prompt_embeds = encode_prompt(
+                    prompt = prompt,
+                    negative_prompt = negative_prompt,
+                    do_classifier_free_guidance = do_classifier_free_guidance,
+                    device = execution_device,
+                    max_sequence_length = max_sequence_length,
+                )
+            except TypeError:
+                return
+            cached = (
+                _store_prompt_embeds_on_cpu(prompt_embeds),
+                _store_prompt_embeds_on_cpu(negative_prompt_embeds),
+            )
+            self._prompt_embedding_cache_key = cache_key
+            self._prompt_embedding_cache_value = cached
+
+        execution_device = getattr(pipe, "_execution_device", None) or device
+        call_kwargs["prompt"] = None
+        call_kwargs["prompt_embeds"] = _clone_prompt_embeds_to_device(
+            cached[0],
+            execution_device,
+        )
+        if _pipe_accepts_kwarg(pipe, "negative_prompt_embeds"):
+            call_kwargs["negative_prompt_embeds"] = _clone_prompt_embeds_to_device(
+                cached[1],
+                execution_device,
+            )
+        call_kwargs.pop("negative_prompt", None)
 
     def generate_image(
         self,
@@ -2096,6 +2451,9 @@ class DiffusionBackend:
             fam = self._family
             device = self._device or "cpu"
             cpu_offload_enabled = self._cpu_offload_enabled
+            drain_cache_after_generation = (
+                bool(self._gguf_quantized_cpu_resident) and device == "cuda"
+            )
         resolved_steps = int(
             num_inference_steps
             if num_inference_steps is not None
@@ -2234,6 +2592,18 @@ class DiffusionBackend:
         if generator is not None:
             call_kwargs["generator"] = generator
 
+        self._apply_prompt_embedding_cache_unlocked(
+            pipe = pipe,
+            fam = fam,
+            call_kwargs = call_kwargs,
+            prompt = prompt,
+            negative_prompt = (
+                effective_negative_prompt if should_forward_negative else None
+            ),
+            guidance_scale = resolved_guidance,
+            device = device,
+        )
+
         # QwenImageLayeredPipeline takes a fixed layer resolution rather
         # than width/height in its public signature. The UI still sends
         # width/height for consistency with image generation, so map the
@@ -2250,8 +2620,12 @@ class DiffusionBackend:
             call_kwargs.setdefault("cfg_normalize", True)
             call_kwargs.setdefault("use_en_prompt", True)
 
-        out = pipe(**call_kwargs)
-        images = _extract_pipeline_images(out)
+        try:
+            out = pipe(**call_kwargs)
+            images = _extract_pipeline_images(out)
+        finally:
+            if drain_cache_after_generation:
+                _drain_cuda_cache()
         if not images:
             raise RuntimeError("Diffusion pipeline returned no images.")
         if return_all_images:
@@ -2539,7 +2913,7 @@ def _patch_gguf_modules_for_resident_device(
     *,
     pin_memory: bool | None = None,
 ) -> int:
-    """Patch GGUF modules with the shared Comfy-style residency helper."""
+    """Patch GGUF modules with the shared native residency helper."""
 
     from .gguf_text_encoder import patch_gguf_text_encoder_for_resident_device
 
@@ -2588,10 +2962,10 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
     Upstream Diffusers currently builds every GGUF tensor with
     ``torch.from_numpy(tensor.data.copy())``. That preserves quantized
     storage, but still performs a full CPU copy of the file before the
-    quantizer can replace modules or Studio can pin/offload them. ComfyUI
-    and ComfyUI-GGUF keep the GGUF arrays mmap-backed and defer transfer
-    and dequantization to the layer op. This loader mirrors Diffusers'
-    state-dict shape while using ``torch.from_numpy(tensor.data)``.
+    quantizer can replace modules or Studio can pin/offload them. This
+    loader keeps the GGUF arrays mmap-backed so transfer and
+    dequantization can be deferred to the layer op while retaining
+    Diffusers' expected state-dict shape.
     """
 
     del return_tensors  # Diffusers' implementation accepts but ignores it.
@@ -2701,9 +3075,8 @@ def _materialize_gguf_embedding_parameters(root: Any, dtype: Any = None) -> int:
     dimensions, e.g. Qwen-Image-Layered's logical ``(2, 3072)``
     ``addition_t_embedding`` appears as ``(2, 6144)``. Running the
     regular ``nn.Embedding`` forward on that raw parameter then produces
-    a width-6144 tensor and breaks the model. ComfyUI-GGUF handles this
-    with a GGUF-aware Embedding op; in the Diffusers path we keep the
-    scope conservative and materialize only embedding weights.
+    a width-6144 tensor and breaks the model. In the Diffusers path we
+    keep the scope conservative and materialize only embedding weights.
     """
 
     if not hasattr(root, "modules"):
@@ -2752,10 +3125,10 @@ def _prepare_gguf_non_linear_parameters(
     """Prepare non-linear GGUF parameters left raw by Diffusers.
 
     Upstream Diffusers replaces GGUF linear layers, but other modules can
-    retain raw byte-shaped ``GGUFParameter`` weights.  ComfyUI-GGUF has
-    GGUF-aware ops for these cases.  Studio mirrors that where it matters
-    for memory by wrapping quantized ``Embedding``, ``Conv2d``, and norm
-    weights lazily where their GGUF logical shapes are representable.
+    retain raw byte-shaped ``GGUFParameter`` weights. Studio handles the
+    cases that matter for memory by wrapping quantized ``Embedding``,
+    ``Conv2d``, and norm weights lazily where their GGUF logical shapes
+    are representable.
     """
 
     stats = {
@@ -2808,7 +3181,7 @@ def _replace_diffusers_gguf_linear_parameters(
     and Studio's CPU-resident wrapper has to swap temporary GGUFParameter
     objects into the module before every forward.  Our lazy module stores the
     same packed bytes as buffers, so CPU-resident execution keeps the
-    Comfy-style transfer/dequant contract without per-forward parameter
+    native transfer/dequant contract without per-forward parameter
     mutation.  When Diffusers' fused CUDA extension is available, keep the
     upstream module so the fused matmul path remains usable.
     """

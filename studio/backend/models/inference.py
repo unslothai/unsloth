@@ -1623,7 +1623,7 @@ class DiffusionLoadRequest(BaseModel):
         description = (
             "Optional Diffusers pipeline component slot for a text-encoder GGUF "
             "(text_encoder, text_encoder_2, or text_encoder_3). Required for "
-            "generic ComfyUI-GGUF text architectures outside the built-in "
+            "generic supported text architectures outside the built-in "
             "Qwen/Z/FLUX/SD3 mappings."
         ),
     )
@@ -1648,6 +1648,19 @@ class DiffusionLoadRequest(BaseModel):
     enable_model_cpu_offload: bool = Field(
         True,
         description = "Offload submodules to CPU between forwards. Trades a small speed hit for ~6 GB less VRAM on FLUX-class models.",
+    )
+    offload_policy: Optional[
+        Literal["aggressive", "balanced", "less_aggressive", "hybrid", "none"]
+    ] = Field(
+        None,
+        description = (
+            "Preferred image VRAM policy. aggressive = full Diffusers CPU offload "
+            "plus CPU-resident GGUF tensors; balanced = CPU-resident GGUF tensors "
+            "without full Diffusers offload; less_aggressive/hybrid = keep diffusion "
+            "GGUF on GPU while keeping text GGUF CPU-resident; none = keep the "
+            "pipeline resident on the selected device. When set, this overrides the "
+            "lower-level offload booleans."
+        ),
     )
     gguf_quantized_cpu_resident: Optional[bool] = Field(
         None,

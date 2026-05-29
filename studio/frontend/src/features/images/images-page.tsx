@@ -23,6 +23,7 @@ import {
   generateDiffusionImage,
   loadDiffusionModel,
   unloadDiffusionModel,
+  type DiffusionOffloadPolicy,
   type DiffusionGenerateResponse,
   type DiffusionStatus,
 } from "./api";
@@ -30,10 +31,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Curated short list of working diffusion GGUFs. Picked to span
 // size + license so any GPU class has at least one viable option:
-//   FLUX.2 klein 4B  -> ~13 GB VRAM with Q4_K_S, Apache 2.0
-//   FLUX.2 klein 9B  -> ~17 GB VRAM, FLUX [klein] non-commercial (gated)
-//   FLUX.2 dev       -> ~24+ GB VRAM, FLUX [dev] non-commercial (gated)
-//   FLUX.1 dev       -> ~12 GB VRAM, older but widely tested (gated)
+//   FLUX.2 klein base 4B -> low-VRAM Apache 2.0 baseline
+//   FLUX.2 klein 4B      -> distilled 4-step baseline
+//   FLUX.2 klein 9B      -> distilled 4-step higher quality baseline
+//   FLUX.2 dev           -> 50-step gated baseline
+//   FLUX.1 dev           -> older but widely tested gated baseline
 //
 // Filenames mirror the Hub canonical case (lowercase 'flux-2-klein-4b')
 // and base_repo is set explicitly so the backend never falls back to the
@@ -53,37 +55,37 @@ const CURATED_MODELS: Array<{
   notes: string;
 }> = [
   {
-    label: "FLUX.2 klein base 4B (Q4_K_S, Apache 2.0)",
+    label: "FLUX.2 klein base 4B (Q4_K_M, Apache 2.0)",
     repo_id: "unsloth/FLUX.2-klein-base-4B-GGUF",
-    default_gguf: "flux-2-klein-base-4b-Q4_K_S.gguf",
+    default_gguf: "flux-2-klein-base-4b-Q4_K_M.gguf",
     base_repo: "black-forest-labs/FLUX.2-klein-base-4B",
     family: "flux.2-klein",
-    default_steps: 24,
-    default_guidance: 3.5,
-    notes: "13 GB VRAM, fastest. Apache 2.0, ungated.",
+    default_steps: 50,
+    default_guidance: 4.0,
+    notes: "Apache 2.0, ungated. Official base settings: 50 steps, guidance 4.",
   },
   {
-    label: "FLUX.2 klein 4B (Q4_K_S, distilled)",
+    label: "FLUX.2 klein 4B (Q4_K_M, distilled)",
     repo_id: "unsloth/FLUX.2-klein-4B-GGUF",
-    default_gguf: "flux-2-klein-4b-Q4_K_S.gguf",
+    default_gguf: "flux-2-klein-4b-Q4_K_M.gguf",
     // Distilled GGUF must pair with the distilled base, not the Base
     // checkpoint. The Hub model card for the GGUF lists
     // base_model: black-forest-labs/FLUX.2-klein-4B.
     base_repo: "black-forest-labs/FLUX.2-klein-4B",
     family: "flux.2-klein",
-    default_steps: 24,
-    default_guidance: 3.5,
-    notes: "13 GB VRAM. Distilled klein 4B. Requires HF access to FLUX.2 klein 4B.",
+    default_steps: 4,
+    default_guidance: 1.0,
+    notes: "Distilled klein 4B. Official distilled settings: 4 steps, guidance 1.",
   },
   {
-    label: "FLUX.2 klein 9B (Q4_K_S, gated)",
+    label: "FLUX.2 klein 9B (Q4_K_M, gated)",
     repo_id: "unsloth/FLUX.2-klein-9B-GGUF",
-    default_gguf: "flux-2-klein-9b-Q4_K_S.gguf",
+    default_gguf: "flux-2-klein-9b-Q4_K_M.gguf",
     base_repo: "black-forest-labs/FLUX.2-klein-9B",
     family: "flux.2-klein",
-    default_steps: 24,
-    default_guidance: 3.5,
-    notes: "17 GB VRAM. Higher quality distilled. Requires HF access to FLUX.2 klein 9B.",
+    default_steps: 4,
+    default_guidance: 1.0,
+    notes: "Higher quality distilled. Official distilled settings: 4 steps, guidance 1.",
   },
   {
     label: "FLUX.2 dev (Q4_K_M + text UD-Q4, gated)",
@@ -94,8 +96,8 @@ const CURATED_MODELS: Array<{
     text_encoder_gguf_filename: "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
     family: "flux.2",
     default_steps: 50,
-    default_guidance: 3.5,
-    notes: "34 GB VRAM. Uses GGUF transformer + GGUF Mistral text encoder. Requires HF access to FLUX.2 dev.",
+    default_guidance: 4.0,
+    notes: "Uses GGUF transformer + GGUF Mistral text encoder. Official dev settings: 50 steps, guidance 4.",
   },
   {
     label: "FLUX.1 dev (Q4_K_S, city96, gated)",
@@ -141,6 +143,33 @@ const CURATED_MODELS: Array<{
 
 const DEFAULT_PRESET = CURATED_MODELS[0];
 
+const OFFLOAD_POLICY_OPTIONS: Array<{
+  value: DiffusionOffloadPolicy;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "aggressive",
+    label: "Aggressive",
+    description: "Lowest VRAM: CPU-resident GGUF weights, CPU offload hooks, tiled VAE.",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    description: "CPU-resident GGUF weights without full CPU offload.",
+  },
+  {
+    value: "less_aggressive",
+    label: "Less aggressive",
+    description: "Keep diffusion weights on GPU and offload GGUF text weights.",
+  },
+  {
+    value: "none",
+    label: "No offload",
+    description: "Keep the pipeline resident on the selected device.",
+  },
+];
+
 const RESOLUTION_PRESETS: Array<{ label: string; w: number; h: number }> = [
   { label: "Square 1024", w: 1024, h: 1024 },
   { label: "Square 768", w: 768, h: 768 },
@@ -163,6 +192,7 @@ export function ImagesPage() {
   const [customFamily, setCustomFamily] = useState<string>("auto");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
+  const [offloadPolicy, setOffloadPolicy] = useState<DiffusionOffloadPolicy>("aggressive");
 
   const [prompt, setPrompt] = useState("a tiny ginger sloth coding in a sunlit treehouse, photorealistic");
   const [negativePrompt, setNegativePrompt] = useState("");
@@ -270,6 +300,7 @@ export function ImagesPage() {
         text_encoder_gguf_component: textEncoderComponent,
         family,
         hf_token: hfToken.trim() || undefined,
+        offload_policy: offloadPolicy,
       });
       setStatus(next);
       toast.success("Loaded image model", { description: next.repo_id ?? undefined });
@@ -295,6 +326,7 @@ export function ImagesPage() {
     customFamily,
     preset,
     hfToken,
+    offloadPolicy,
     refreshStatus,
   ]);
 
@@ -544,6 +576,28 @@ export function ImagesPage() {
               placeholder="hf_..."
               autoComplete="off"
             />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label>VRAM policy</Label>
+            <Select
+              value={offloadPolicy}
+              onValueChange={(value) => setOffloadPolicy(value as DiffusionOffloadPolicy)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {OFFLOAD_POLICY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {OFFLOAD_POLICY_OPTIONS.find((option) => option.value === offloadPolicy)?.description}
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

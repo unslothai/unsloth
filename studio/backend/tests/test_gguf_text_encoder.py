@@ -116,7 +116,7 @@ def test_inspect_text_encoder_gguf_reports_qwen2vl_mmproj(monkeypatch, tmp_path)
     assert info.path == text
     assert info.architecture == "qwen2vl"
     assert info.model_type == "model"
-    assert info.supported_by_comfyui_gguf is True
+    assert info.supported_by_lazy_loader is True
     assert info.requires_mmproj is True
     assert info.mmproj_path == mmproj
 
@@ -511,6 +511,22 @@ def test_lazy_flux2_text_encoder_uses_local_text_encoder_dir(monkeypatch, tmp_pa
     assert calls == [(base / "text_encoder", {"token": "hf_local"})]
     assert isinstance(encoder, Mistral3ForConditionalGeneration)
     assert encoder.dtype is torch.float16
+
+
+def test_lazy_flux2_text_encoder_device_ignores_resident_quant_buffers():
+    import core.inference.gguf_text_encoder as g
+
+    language_model = nn.Module()
+    language_model.register_buffer("qweight", torch.zeros(1, dtype = torch.uint8))
+    language_model.register_buffer("position_ids", torch.empty(1, device = "meta"))
+
+    encoder = g.LazyFlux2MistralTextEncoder(
+        _fake_flux2_config(),
+        language_model,
+        compute_dtype = torch.bfloat16,
+    )
+
+    assert encoder.device == torch.device("meta")
 
 
 def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(monkeypatch, tmp_path):
@@ -1099,6 +1115,22 @@ def test_lazy_gguf_linear_dequantizes_during_forward(monkeypatch):
 
     assert calls == 1
     torch.testing.assert_close(out, torch.tensor([[50.0, 110.0]]))
+
+
+def test_lazy_gguf_linear_weight_is_metadata_only_for_dtype_inspection():
+    import core.inference.gguf_text_encoder as g
+
+    layer = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.bfloat16,
+    )
+
+    assert layer.weight.dtype is torch.bfloat16
+    assert layer.weight.numel() == 0
+    assert layer.qweight.dtype is torch.uint8
 
 
 def test_lazy_gguf_linear_applies_materialized_bias(monkeypatch):

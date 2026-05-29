@@ -39,6 +39,7 @@ export interface DiffusionStatus {
   text_encoder_gguf_filename: string | null;
   gguf_quantized_cpu_resident: boolean;
   gguf_pin_cpu_resident: boolean;
+  offload_policy: DiffusionOffloadPolicy | null;
   gguf_execution_backend: string | null;
   gguf_prepared_module_counts: Record<string, number>;
   device: string | null;
@@ -47,6 +48,13 @@ export interface DiffusionStatus {
   last_error: string | null;
   supported_families: DiffusionFamily[];
 }
+
+export type DiffusionOffloadPolicy =
+  | "aggressive"
+  | "balanced"
+  | "less_aggressive"
+  | "hybrid"
+  | "none";
 
 export interface DiffusionLoadRequest {
   repo_id: string;
@@ -58,6 +66,7 @@ export interface DiffusionLoadRequest {
   family?: string;
   hf_token?: string;
   enable_model_cpu_offload?: boolean;
+  offload_policy?: DiffusionOffloadPolicy | null;
   gguf_quantized_cpu_resident?: boolean | null;
   gguf_pin_cpu_resident?: boolean | null;
 }

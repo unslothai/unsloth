@@ -2530,6 +2530,7 @@ async def diffusion_load(
                     family_override = payload.family,
                     hf_token = payload.hf_token,
                     enable_model_cpu_offload = payload.enable_model_cpu_offload,
+                    offload_policy = payload.offload_policy,
                     gguf_quantized_cpu_resident = payload.gguf_quantized_cpu_resident,
                     gguf_pin_cpu_resident = payload.gguf_pin_cpu_resident,
                     # Round 38 P1: this route already published the

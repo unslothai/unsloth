@@ -93,6 +93,7 @@ class _FakeBackend:
             "text_encoder_gguf_filename": None,
             "gguf_quantized_cpu_resident": False,
             "gguf_pin_cpu_resident": False,
+            "offload_policy": None,
             "active_repo_id": self._repo,
             "active_base_repo": (
                 "black-forest-labs/FLUX.2-klein" if self._loaded else None
@@ -383,11 +384,32 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "text_encoder_gguf_component": None,
         "family_override": None,
         "hf_token": None,
-        "enable_model_cpu_offload": True,
-        "gguf_quantized_cpu_resident": True,
+            "enable_model_cpu_offload": True,
+            "offload_policy": None,
+            "gguf_quantized_cpu_resident": True,
         "gguf_pin_cpu_resident": True,
         "ignore_public_load_pending_workload": "diffusion",
     }
+
+
+def test_load_forwards_offload_policy(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/Qwen-Image-Edit-GGUF",
+            "gguf_filename": "qwen-image-edit-Q4_K_M.gguf",
+            "offload_policy": "balanced",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["offload_policy"] == "balanced"
+    assert stub.calls[-1]["enable_model_cpu_offload"] is True
+    assert stub.calls[-1]["gguf_quantized_cpu_resident"] is None
+    assert stub.calls[-1]["gguf_pin_cpu_resident"] is None
 
 
 def test_generate_rejects_off_grid_size(app_with_stub):

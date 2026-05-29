@@ -284,6 +284,7 @@ def test_status_shape_unloaded():
         "text_encoder_gguf_filename",
         "gguf_quantized_cpu_resident",
         "gguf_pin_cpu_resident",
+        "offload_policy",
         "gguf_execution_backend",
         "gguf_prepared_module_counts",
         "device",
@@ -408,6 +409,209 @@ def test_generate_image_calls_pipeline_with_kwargs(monkeypatch):
         seed = 42,
     )
     assert img.size == (256, 256)
+
+
+def test_generate_image_low_vram_gguf_drains_cuda_cache(monkeypatch):
+    import core.inference.diffusion as d
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._device = "cuda"
+    backend._gguf_quantized_cpu_resident = True
+    calls: list[str] = []
+    monkeypatch.setattr(d, "_drain_cuda_cache", lambda: calls.append("drain"))
+
+    backend.generate_image(prompt = "a red sphere", width = 256, height = 256)
+
+    assert calls == ["drain"]
+
+
+def test_generate_image_device_resident_gguf_keeps_cuda_cache(monkeypatch):
+    import core.inference.diffusion as d
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._device = "cuda"
+    backend._gguf_quantized_cpu_resident = False
+    calls: list[str] = []
+    monkeypatch.setattr(d, "_drain_cuda_cache", lambda: calls.append("drain"))
+
+    backend.generate_image(prompt = "a red sphere", width = 256, height = 256)
+
+    assert calls == []
+
+
+def test_generate_image_reuses_prompt_embedding_cache(monkeypatch):
+    import torch
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    fam = next(f for f in d._FAMILIES if f.name == "z-image")
+
+    class _PromptCachePipe:
+        _execution_device = "cpu"
+
+        def __init__(self):
+            self.encode_calls = 0
+            self.calls: list[dict[str, Any]] = []
+
+        def encode_prompt(
+            self,
+            *,
+            prompt,
+            negative_prompt = None,
+            do_classifier_free_guidance = True,
+            device = None,
+            max_sequence_length = 512,
+        ):
+            self.encode_calls += 1
+            assert prompt == "same prompt"
+            assert negative_prompt is None
+            assert do_classifier_free_guidance is True
+            assert max_sequence_length == 512
+            return [torch.ones(1, 2, device = device)], [
+                torch.zeros(1, 2, device = device)
+            ]
+
+        def __call__(
+            self,
+            *,
+            prompt = None,
+            prompt_embeds = None,
+            negative_prompt_embeds = None,
+            num_inference_steps,
+            width,
+            height,
+            guidance_scale = None,
+            generator = None,
+        ):
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "prompt_embeds": prompt_embeds,
+                    "negative_prompt_embeds": negative_prompt_embeds,
+                    "generator": generator,
+                    "guidance_scale": guidance_scale,
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 255, 0))]
+            return out
+
+    pipe = _PromptCachePipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = fam
+    backend._repo_id = "stub/z-image"
+
+    backend.generate_image(
+        prompt = "same prompt",
+        width = 256,
+        height = 256,
+        guidance_scale = 4,
+        seed = 1,
+    )
+    backend.generate_image(
+        prompt = "same prompt",
+        width = 256,
+        height = 256,
+        guidance_scale = 4,
+        seed = 2,
+    )
+
+    assert pipe.encode_calls == 1
+    assert len(pipe.calls) == 2
+    assert all(call["prompt"] is None for call in pipe.calls)
+    assert all(call["prompt_embeds"][0].device.type == "cpu" for call in pipe.calls)
+    assert all(
+        call["negative_prompt_embeds"][0].device.type == "cpu"
+        for call in pipe.calls
+    )
+    assert backend._prompt_embedding_cache_value is not None
+    assert backend._prompt_embedding_cache_value[0][0].device.type == "cpu"
+
+
+def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance():
+    import torch
+    from core.inference import diffusion as d
+
+    fam = next(f for f in d._FAMILIES if f.name == "flux.2-klein")
+    captured: dict[str, torch.Tensor | None] = {}
+
+    class _Transformer:
+        def forward(self, *, hidden_states, guidance = None, **_kwargs):
+            captured["guidance"] = guidance
+            return ("ok",)
+
+    class _Pipe:
+        def __init__(self):
+            self.transformer = _Transformer()
+            self._guidance_scale = 4.0
+            self.config = SimpleNamespace(is_distilled = False)
+
+        def register_to_config(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self.config, key, value)
+
+        def check_inputs(self):
+            assert self.config.is_distilled is False
+
+    pipe = _Pipe()
+
+    assert d._enable_flux2_klein_embedded_guidance(pipe, fam) is True
+    assert pipe.config.is_distilled is False
+    pipe.check_inputs()
+    assert pipe.config.is_distilled is True
+
+    hidden_states = torch.zeros((2, 4, 8))
+    assert pipe.transformer.forward(hidden_states = hidden_states) == ("ok",)
+
+    guidance = captured["guidance"]
+    assert guidance is not None
+    assert guidance.device == hidden_states.device
+    assert guidance.dtype is torch.float32
+    assert guidance.tolist() == [4.0, 4.0]
+
+
+def test_aggressive_memory_policy_enables_vae_slicing_and_tiling():
+    from core.inference import diffusion as d
+
+    calls: list[str] = []
+
+    class _VAE:
+        def enable_slicing(self):
+            calls.append("slicing")
+
+        def enable_tiling(self):
+            calls.append("tiling")
+
+    pipe = SimpleNamespace(vae = _VAE())
+
+    d._apply_diffusion_memory_policy(pipe, d.DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE)
+
+    assert calls == ["slicing", "tiling"]
+
+
+def test_balanced_memory_policy_leaves_vae_decode_untouched():
+    from core.inference import diffusion as d
+
+    calls: list[str] = []
+
+    class _VAE:
+        def enable_slicing(self):
+            calls.append("slicing")
+
+        def enable_tiling(self):
+            calls.append("tiling")
+
+    pipe = SimpleNamespace(vae = _VAE())
+
+    d._apply_diffusion_memory_policy(pipe, d.DIFFUSION_OFFLOAD_POLICY_BALANCED)
+
+    assert calls == []
 
 
 def test_generate_image_forwards_family_default_call_kwargs(monkeypatch):
@@ -958,6 +1162,153 @@ def test_load_model_diffusion_gguf_cpu_resident_without_full_cpu_offload(monkeyp
     assert calls == [(transformer, "cpu", True)]
 
 
+def test_resolve_diffusion_offload_policy_modes(monkeypatch):
+    import core.inference.diffusion as d
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", raising = False)
+
+    assert d._resolve_diffusion_offload_policy(
+        offload_policy = "aggressive",
+        enable_model_cpu_offload = False,
+        gguf_quantized_cpu_resident = False,
+        gguf_pin_cpu_resident = False,
+    ) == ("aggressive", True, True, True)
+    assert d._resolve_diffusion_offload_policy(
+        offload_policy = "less-aggressive",
+        enable_model_cpu_offload = True,
+        gguf_quantized_cpu_resident = False,
+        gguf_pin_cpu_resident = False,
+    ) == ("less_aggressive", False, False, True)
+    assert d._resolve_diffusion_offload_policy(
+        offload_policy = "none",
+        enable_model_cpu_offload = True,
+        gguf_quantized_cpu_resident = True,
+        gguf_pin_cpu_resident = True,
+    ) == ("none", False, False, False)
+    assert d._resolve_diffusion_offload_policy(
+        offload_policy = None,
+        enable_model_cpu_offload = True,
+        gguf_quantized_cpu_resident = None,
+        gguf_pin_cpu_resident = None,
+    ) == (None, True, True, False)
+
+
+def test_load_model_offload_policy_aggressive(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        enable_model_cpu_offload = False,
+        gguf_quantized_cpu_resident = False,
+        gguf_pin_cpu_resident = False,
+        offload_policy = "aggressive",
+    )
+
+    assert status["offload_policy"] == "aggressive"
+    assert status["gguf_quantized_cpu_resident"] is True
+    assert status["gguf_pin_cpu_resident"] is True
+    assert backend._cpu_offload_enabled is True
+    assert getattr(backend._pipe, "cpu_offload", False) is True
+    assert not hasattr(backend._pipe, "device")
+    transformer = backend._pipe.kwargs["transformer"]
+    assert calls == [(transformer, "cpu", True)]
+
+
+def test_load_model_offload_policy_balanced(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        enable_model_cpu_offload = True,
+        gguf_quantized_cpu_resident = False,
+        gguf_pin_cpu_resident = False,
+        offload_policy = "balanced",
+    )
+
+    assert status["offload_policy"] == "balanced"
+    assert status["gguf_quantized_cpu_resident"] is True
+    assert status["gguf_pin_cpu_resident"] is True
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    transformer = backend._pipe.kwargs["transformer"]
+    assert calls == [(transformer, "cpu", True)]
+
+
+def test_load_model_offload_policy_none(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        enable_model_cpu_offload = True,
+        gguf_quantized_cpu_resident = True,
+        gguf_pin_cpu_resident = True,
+        offload_policy = "none",
+    )
+
+    assert status["offload_policy"] == "none"
+    assert status["gguf_quantized_cpu_resident"] is False
+    assert status["gguf_pin_cpu_resident"] is False
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    assert calls == []
+
+
 def test_patch_gguf_modules_for_resident_device_keeps_weight_resident():
     import torch
 
@@ -1023,6 +1374,7 @@ def test_patch_gguf_modules_for_resident_device_uses_shared_helper(monkeypatch):
 
 def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
     import torch
+    pytest.importorskip("diffusers")
     from diffusers.quantizers.gguf.utils import GGUFLinear
 
     import core.inference.diffusion as d
@@ -1054,6 +1406,7 @@ def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
 
 def test_replace_diffusers_gguf_linear_keeps_fused_diffusers_module(monkeypatch):
     import torch
+    pytest.importorskip("diffusers")
     from diffusers.quantizers.gguf.utils import GGUFLinear
 
     import core.inference.diffusion as d
@@ -1842,7 +2195,7 @@ def test_load_model_sd3_text_encoder_gguf_uses_t5_loader_as_text_encoder_3(
         ("gemma3", "LazyGemma3TextEncoder", "gemma3-text-Q4_K_M.gguf"),
     ],
 )
-def test_load_model_explicit_text_encoder_component_routes_comfy_text_architectures(
+def test_load_model_explicit_text_encoder_component_routes_generic_architectures(
     monkeypatch,
     tmp_path,
     architecture,
@@ -1857,7 +2210,7 @@ def test_load_model_explicit_text_encoder_component_routes_comfy_text_architectu
     text_path = text_repo / filename
     text_path.touch()
 
-    class _FakeComfyTextEncoder:
+    class _FakeGenericTextEncoder:
         calls: list[dict[str, Any]] = []
 
         @classmethod
@@ -1887,7 +2240,7 @@ def test_load_model_explicit_text_encoder_component_routes_comfy_text_architectu
             )
             return inst
 
-    setattr(fake_text_mod, loader_name, _FakeComfyTextEncoder)
+    setattr(fake_text_mod, loader_name, _FakeGenericTextEncoder)
     fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
         architecture = architecture,
         mmproj_path = None,
@@ -1913,11 +2266,90 @@ def test_load_model_explicit_text_encoder_component_routes_comfy_text_architectu
     )
 
     assert status["is_loaded"] is True
-    assert _FakeComfyTextEncoder.calls == [
+    assert _FakeGenericTextEncoder.calls == [
         {
             "path": str(text_path),
             "base_repo_or_path": "black-forest-labs/FLUX.1-dev",
             "subfolder": "text_encoder",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert backend._pipe.kwargs["text_encoder"].path == str(text_path)
+
+
+def test_load_model_flux2_mistral_text_encoder_overrides_generic_llama_architecture(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    text_path.touch()
+
+    class _FakeFlux2TextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyFlux2MistralTextEncoder = _FakeFlux2TextEncoder
+    fake_text_mod.LazyLlamaTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "llama",
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-dev-GGUF",
+        gguf_filename = "flux2-dev-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = text_path.name,
+        text_encoder_gguf_component = "text_encoder",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert _FakeFlux2TextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "black-forest-labs/FLUX.2-dev",
             "compute_dtype": "fake_dtype",
             "resident_device": None,
             "token": None,
