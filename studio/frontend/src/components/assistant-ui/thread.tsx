@@ -1315,7 +1315,12 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     const store = useChatRuntimeStore.getState();
     store.setActiveThreadId(null);
     store.setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+    // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
+    const compareId =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    navigate({ to: "/chat", search: { compare: compareId } });
   }, [navigate]);
 
   return (

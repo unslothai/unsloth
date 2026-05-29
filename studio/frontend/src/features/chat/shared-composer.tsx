@@ -1038,6 +1038,8 @@ export function SharedComposer({
                           onSelect={() => {
                             setReasoningEnabled(false);
                             applyQwenThinkingParams(false);
+                            // Preserve thinking needs thinking on, so turn it off too.
+                            setPreserveThinking(false);
                           }}
                         >
                           <CheckIcon
@@ -1093,6 +1095,8 @@ export function SharedComposer({
                           const next = !reasoningEnabled;
                           setReasoningEnabled(next);
                           applyQwenThinkingParams(next);
+                          // Preserve thinking cannot run without thinking.
+                          if (!next) setPreserveThinking(false);
                           if (isKimiExternal && next && toolsEnabled) {
                             setToolsEnabled(false, { persist: false });
                           }
@@ -1113,7 +1117,13 @@ export function SharedComposer({
                       disabled={!modelLoaded}
                       onSelect={(e) => {
                         e.preventDefault();
-                        setPreserveThinking(!preserveThinking);
+                        const next = !preserveThinking;
+                        setPreserveThinking(next);
+                        // Preserve thinking requires thinking on.
+                        if (next) {
+                          setReasoningEnabled(true);
+                          applyQwenThinkingParams(true);
+                        }
                       }}
                     >
                       <CheckIcon
