@@ -44,7 +44,12 @@ const CURATED_MODELS: Array<{
   repo_id: string;
   default_gguf: string;
   base_repo: string;
+  text_encoder_gguf_repo?: string;
+  text_encoder_gguf_filename?: string;
+  text_encoder_gguf_component?: "text_encoder" | "text_encoder_2" | "text_encoder_3";
   family: string;
+  default_steps: number;
+  default_guidance: number;
   notes: string;
 }> = [
   {
@@ -53,6 +58,8 @@ const CURATED_MODELS: Array<{
     default_gguf: "flux-2-klein-base-4b-Q4_K_S.gguf",
     base_repo: "black-forest-labs/FLUX.2-klein-base-4B",
     family: "flux.2-klein",
+    default_steps: 24,
+    default_guidance: 3.5,
     notes: "13 GB VRAM, fastest. Apache 2.0, ungated.",
   },
   {
@@ -64,6 +71,8 @@ const CURATED_MODELS: Array<{
     // base_model: black-forest-labs/FLUX.2-klein-4B.
     base_repo: "black-forest-labs/FLUX.2-klein-4B",
     family: "flux.2-klein",
+    default_steps: 24,
+    default_guidance: 3.5,
     notes: "13 GB VRAM. Distilled klein 4B. Requires HF access to FLUX.2 klein 4B.",
   },
   {
@@ -72,15 +81,21 @@ const CURATED_MODELS: Array<{
     default_gguf: "flux-2-klein-9b-Q4_K_S.gguf",
     base_repo: "black-forest-labs/FLUX.2-klein-9B",
     family: "flux.2-klein",
+    default_steps: 24,
+    default_guidance: 3.5,
     notes: "17 GB VRAM. Higher quality distilled. Requires HF access to FLUX.2 klein 9B.",
   },
   {
-    label: "FLUX.2 dev (Q4_K_S, gated)",
+    label: "FLUX.2 dev (Q4_K_M + text UD-Q4, gated)",
     repo_id: "unsloth/FLUX.2-dev-GGUF",
-    default_gguf: "flux2-dev-Q4_K_S.gguf",
+    default_gguf: "flux2-dev-Q4_K_M.gguf",
     base_repo: "black-forest-labs/FLUX.2-dev",
+    text_encoder_gguf_repo: "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+    text_encoder_gguf_filename: "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
     family: "flux.2",
-    notes: "24+ GB VRAM. Requires HF access to FLUX.2 dev.",
+    default_steps: 50,
+    default_guidance: 3.5,
+    notes: "34 GB VRAM. Uses GGUF transformer + GGUF Mistral text encoder. Requires HF access to FLUX.2 dev.",
   },
   {
     label: "FLUX.1 dev (Q4_K_S, city96, gated)",
@@ -88,7 +103,39 @@ const CURATED_MODELS: Array<{
     default_gguf: "flux1-dev-Q4_K_S.gguf",
     base_repo: "black-forest-labs/FLUX.1-dev",
     family: "flux.1",
+    default_steps: 24,
+    default_guidance: 3.5,
     notes: "12 GB VRAM. Older but widely tested. Requires HF access to FLUX.1 dev.",
+  },
+  {
+    label: "Qwen-Image 2512 (Q4_K_M)",
+    repo_id: "unsloth/Qwen-Image-2512-GGUF",
+    default_gguf: "qwen-image-2512-Q4_K_M.gguf",
+    base_repo: "Qwen/Qwen-Image-2512",
+    family: "qwen-image-2512",
+    default_steps: 50,
+    default_guidance: 4.0,
+    notes: "Text-to-image. Uses true CFG internally; leave negative prompt blank for the backend's Qwen default.",
+  },
+  {
+    label: "Z-Image Turbo (Q4_K_M)",
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    default_gguf: "z-image-turbo-Q4_K_M.gguf",
+    base_repo: "Tongyi-MAI/Z-Image-Turbo",
+    family: "z-image-turbo",
+    default_steps: 9,
+    default_guidance: 0,
+    notes: "Fast text-to-image Z-Image Turbo GGUF.",
+  },
+  {
+    label: "Z-Image (Q4_K_M)",
+    repo_id: "unsloth/Z-Image-GGUF",
+    default_gguf: "z-image-Q4_K_M.gguf",
+    base_repo: "Tongyi-MAI/Z-Image",
+    family: "z-image",
+    default_steps: 50,
+    default_guidance: 4,
+    notes: "Text-to-image Z-Image base GGUF.",
   },
 ];
 
@@ -111,6 +158,8 @@ export function ImagesPage() {
   const [customRepoId, setCustomRepoId] = useState("");
   const [customGguf, setCustomGguf] = useState("");
   const [customBaseRepo, setCustomBaseRepo] = useState("");
+  const [customTextEncoderRepo, setCustomTextEncoderRepo] = useState("");
+  const [customTextEncoderGguf, setCustomTextEncoderGguf] = useState("");
   const [customFamily, setCustomFamily] = useState<string>("auto");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
@@ -199,6 +248,15 @@ export function ImagesPage() {
       const baseRepo = useCustom
         ? customBaseRepo.trim() || undefined
         : preset.base_repo;
+      const textEncoderRepo = useCustom
+        ? customTextEncoderRepo.trim() || undefined
+        : preset.text_encoder_gguf_repo;
+      const textEncoderGguf = useCustom
+        ? customTextEncoderGguf.trim() || undefined
+        : preset.text_encoder_gguf_filename;
+      const textEncoderComponent = useCustom
+        ? undefined
+        : preset.text_encoder_gguf_component;
       if (!repo) {
         toast.error("Pick a model first");
         return;
@@ -207,6 +265,9 @@ export function ImagesPage() {
         repo_id: repo,
         gguf_filename: gguf,
         base_repo: baseRepo,
+        text_encoder_gguf_repo: textEncoderRepo,
+        text_encoder_gguf_filename: textEncoderGguf,
+        text_encoder_gguf_component: textEncoderComponent,
         family,
         hf_token: hfToken.trim() || undefined,
       });
@@ -224,7 +285,18 @@ export function ImagesPage() {
     } finally {
       setBusy("idle");
     }
-  }, [useCustom, customRepoId, customGguf, customBaseRepo, customFamily, preset, hfToken, refreshStatus]);
+  }, [
+    useCustom,
+    customRepoId,
+    customGguf,
+    customBaseRepo,
+    customTextEncoderRepo,
+    customTextEncoderGguf,
+    customFamily,
+    preset,
+    hfToken,
+    refreshStatus,
+  ]);
 
   const handleUnload = useCallback(async () => {
     setBusy("unloading");
@@ -362,7 +434,12 @@ export function ImagesPage() {
                   setUseCustom(true);
                 } else {
                   setUseCustom(false);
-                  setPresetIndex(Number(v));
+                  const idx = Number(v);
+                  const nextPreset = CURATED_MODELS[idx] ?? DEFAULT_PRESET;
+                  setPresetIndex(idx);
+                  setSteps(nextPreset.default_steps);
+                  setGuidance(nextPreset.default_guidance);
+                  setResolutionIdx(0);
                 }
               }}
             >
@@ -408,6 +485,22 @@ export function ImagesPage() {
                 {"your GGUF expects a non-default base (for example a 9B "}
                 {"transformer that would otherwise fall back to a 4B base)."}
               </p>
+              <Label>Text encoder GGUF repo (FLUX.2 optional)</Label>
+              <Input
+                value={customTextEncoderRepo}
+                onChange={(e) => setCustomTextEncoderRepo(e.target.value)}
+                placeholder="unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+              />
+              <Label>Text encoder GGUF filename (FLUX.2 optional)</Label>
+              <Input
+                value={customTextEncoderGguf}
+                onChange={(e) => setCustomTextEncoderGguf(e.target.value)}
+                placeholder="Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+              />
+              <p className="text-xs text-muted-foreground">
+                {"Only needed when loading FLUX.2 dev with a GGUF text encoder. "}
+                {"Leave blank for non-FLUX.2 models or standard diffusers text encoders."}
+              </p>
               <Label>Pipeline family (override)</Label>
               <Select
                 value={customFamily}
@@ -422,6 +515,15 @@ export function ImagesPage() {
                   <SelectItem value="flux.2">FLUX.2</SelectItem>
                   <SelectItem value="flux.1">FLUX.1</SelectItem>
                   <SelectItem value="qwen-image">Qwen-Image</SelectItem>
+                  <SelectItem value="qwen-image-2512">Qwen-Image 2512</SelectItem>
+                  <SelectItem value="qwen-image-edit">Qwen-Image Edit</SelectItem>
+                  <SelectItem value="qwen-image-edit-2509">Qwen-Image Edit 2509</SelectItem>
+                  <SelectItem value="qwen-image-edit-2511">Qwen-Image Edit 2511</SelectItem>
+                  <SelectItem value="qwen-image-layered">Qwen-Image Layered</SelectItem>
+                  <SelectItem value="z-image">Z-Image</SelectItem>
+                  <SelectItem value="z-image-turbo">Z-Image Turbo</SelectItem>
+                  <SelectItem value="ernie-image">ERNIE-Image</SelectItem>
+                  <SelectItem value="ernie-image-turbo">ERNIE-Image Turbo</SelectItem>
                   <SelectItem value="stable-diffusion-3">Stable Diffusion 3</SelectItem>
                   <SelectItem value="stable-diffusion-xl">Stable Diffusion XL</SelectItem>
                 </SelectContent>

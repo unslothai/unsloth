@@ -1603,10 +1603,44 @@ class DiffusionLoadRequest(BaseModel):
         None,
         description = "Frontend-visible signed native path grant for a local base_repo",
     )
+    text_encoder_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a FLUX.2 "
+            "Mistral text-encoder GGUF. Defaults to the Unsloth Mistral "
+            "Small 3.2 GGUF repo when text_encoder_gguf_filename is set."
+        ),
+    )
+    text_encoder_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for a supported lazy text encoder",
+    )
+    text_encoder_gguf_component: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Optional Diffusers pipeline component slot for a text-encoder GGUF "
+            "(text_encoder, text_encoder_2, or text_encoder_3). Required for "
+            "generic ComfyUI-GGUF text architectures outside the built-in "
+            "Qwen/Z/FLUX/SD3 mappings."
+        ),
+    )
+    text_encoder_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local text_encoder_gguf_repo",
+    )
     family: Optional[str] = Field(
         None,
         max_length = 64,
-        description = "Force pipeline family: flux.2-klein | flux.2 | flux.1 | qwen-image | stable-diffusion-3 | stable-diffusion-xl",
+        description = (
+            "Force pipeline family: flux.2-klein | flux.2 | flux.1 | "
+            "qwen-image | qwen-image-2512 | qwen-image-edit | "
+            "qwen-image-edit-2509 | qwen-image-edit-2511 | "
+            "qwen-image-layered | z-image | z-image-turbo | "
+            "stable-diffusion-3 | stable-diffusion-xl"
+        ),
     )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
@@ -1615,13 +1649,42 @@ class DiffusionLoadRequest(BaseModel):
         True,
         description = "Offload submodules to CPU between forwards. Trades a small speed hit for ~6 GB less VRAM on FLUX-class models.",
     )
+    gguf_quantized_cpu_resident: Optional[bool] = Field(
+        None,
+        description = (
+            "Keep packed GGUF tensors CPU-resident and copy/dequantize them on demand. "
+            "Defaults to enable_model_cpu_offload for backwards compatibility; set true "
+            "with enable_model_cpu_offload=false to benchmark the hybrid low-VRAM path."
+        ),
+    )
+    gguf_pin_cpu_resident: Optional[bool] = Field(
+        None,
+        description = (
+            "Pin CPU-resident packed GGUF tensors so on-demand host-to-device copies can "
+            "use non-blocking transfer. Defaults to UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT."
+        ),
+    )
 
-    @field_validator("repo_id", "gguf_filename", "base_repo", "family")
+    @field_validator(
+        "repo_id",
+        "gguf_filename",
+        "base_repo",
+        "text_encoder_gguf_repo",
+        "text_encoder_gguf_filename",
+        "text_encoder_gguf_component",
+        "family",
+    )
     @classmethod
     def _no_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
 
-    @field_validator("repo_id", "gguf_filename", "base_repo")
+    @field_validator(
+        "repo_id",
+        "gguf_filename",
+        "base_repo",
+        "text_encoder_gguf_repo",
+        "text_encoder_gguf_filename",
+    )
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):
         # Round 17 P2 #12: ``gguf_filename`` is forwarded to the
@@ -1647,10 +1710,27 @@ class DiffusionGenerateRequest(BaseModel):
 
     prompt: str = Field(..., min_length = 1, max_length = 4000)
     negative_prompt: Optional[str] = Field(None, max_length = 4000)
-    num_inference_steps: int = Field(24, ge = 1, le = 200)
-    guidance_scale: float = Field(3.5, ge = 0.0, le = 20.0)
-    width: int = Field(1024, ge = 64, le = 2048)
-    height: int = Field(1024, ge = 64, le = 2048)
+    image_b64: Optional[str] = Field(
+        None,
+        max_length = 50_000_000,
+        description = (
+            "Optional base64-encoded input image for image-to-image/edit "
+            "diffusion models. Data URLs are accepted."
+        ),
+    )
+    images_b64: Optional[List[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 8,
+        description = (
+            "Optional base64-encoded input images for multi-reference edit "
+            "pipelines such as QwenImageEditPlusPipeline. Data URLs are accepted."
+        ),
+    )
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
     seed: Optional[int] = Field(
         None,
         ge = _SEED_MIN,
@@ -1660,14 +1740,29 @@ class DiffusionGenerateRequest(BaseModel):
 
     @field_validator("width", "height")
     @classmethod
-    def _multiple_of_eight(cls, v: int) -> int:
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
         if v % 8:
             raise ValueError("width and height must be multiples of 8")
         return v
 
+    @model_validator(mode = "after")
+    def _no_duplicate_image_inputs(self):
+        if self.image_b64 is not None and self.images_b64 is not None:
+            raise ValueError("Pass either image_b64 or images_b64, not both")
+        return self
+
 
 class DiffusionGenerateResponse(BaseModel):
     image_b64: str = Field(..., description = "Base64-encoded PNG")
+    images_b64: Optional[List[str]] = Field(
+        None,
+        description = (
+            "All generated PNGs when a pipeline returns multiple images/layers. "
+            "The first entry is also copied to image_b64 for backwards compatibility."
+        ),
+    )
     image_mime: str = "image/png"
     width: int
     height: int
@@ -1680,6 +1775,53 @@ class DiffusionGenerateResponse(BaseModel):
     # backend actually used. ``seed_str`` is the exact decimal
     # representation; the frontend reads it for reproducibility and
     # falls back to ``seed`` when not supplied.
+    seed: Optional[int] = None
+    seed_str: Optional[str] = None
+    duration_ms: int
+    model: Optional[str] = None
+    family: Optional[str] = None
+    output_count: int = 1
+
+
+class DiffusionVideoGenerateRequest(BaseModel):
+    """Generate a video from the currently-loaded diffusion video model."""
+
+    prompt: str = Field(..., min_length = 1, max_length = 4000)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    guidance_scale_2: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_frames: Optional[int] = Field(None, ge = 1, le = 513)
+    frame_rate: Optional[float] = Field(None, gt = 0.0, le = 240.0)
+    seed: Optional[int] = Field(
+        None,
+        ge = _SEED_MIN,
+        le = _SEED_MAX,
+        description = "Deterministic seed for reproducible outputs",
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionVideoGenerateResponse(BaseModel):
+    video_b64: str = Field(..., description = "Base64-encoded MP4")
+    video_mime: str = "video/mp4"
+    width: int
+    height: int
+    num_frames: int
+    frame_rate: float
+    num_inference_steps: int
+    guidance_scale: float
+    guidance_scale_2: Optional[float] = None
     seed: Optional[int] = None
     seed_str: Optional[str] = None
     duration_ms: int

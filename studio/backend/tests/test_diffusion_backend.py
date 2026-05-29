@@ -22,12 +22,22 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import sys
 import types
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+if "structlog" not in sys.modules:
+    sys.modules["structlog"] = types.SimpleNamespace(
+        get_logger = lambda *a, **k: logging.getLogger("structlog.stub"),
+    )
+if "loggers" not in sys.modules:
+    sys.modules["loggers"] = types.SimpleNamespace(
+        get_logger = lambda *a, **k: logging.getLogger("loggers.stub"),
+    )
 
 
 # ── module under test ────────────────────────────────────────────
@@ -55,10 +65,11 @@ def test_detect_family_flux2_klein():
     assert fam.pipeline_class == "Flux2KleinPipeline"
     assert fam.transformer_class == "Flux2Transformer2DModel"
     # Family default base must point to a real Hub repo (not the bare
-    # "FLUX.2-klein" slug that does not exist). The frontend curated
-    # picker still passes base_repo explicitly per size so this default
-    # only fires for the "custom HF repo" mode.
-    assert fam.base_repo == "black-forest-labs/FLUX.2-klein-base-4B"
+    # "FLUX.2-klein" slug that does not exist). The common Unsloth 4B
+    # GGUF path is distilled, so the default companion repo and default
+    # steps should match the official 4-step distilled settings.
+    assert fam.base_repo == "black-forest-labs/FLUX.2-klein-4B"
+    assert fam.default_steps == 4
 
 
 def test_detect_family_flux2_dev_is_not_klein():
@@ -122,16 +133,42 @@ def test_detect_family_sd35_is_not_sd3():
 
 
 def test_detect_family_qwen_image_edit_is_not_qwen_image():
-    """Qwen-Image-Edit must NOT be matched as Qwen-Image. The Edit
-    variant uses a different pipeline (image-to-image)."""
+    """Qwen-Image-Edit must map to its own image-to-image family,
+    not the base Qwen-Image text-to-image family."""
     from core.inference.diffusion import detect_family
 
-    assert detect_family("unsloth/Qwen-Image-Edit-GGUF") is None
-    assert detect_family("unsloth/Qwen-Image-Edit-2509-GGUF") is None
+    fam = detect_family("unsloth/Qwen-Image-Edit-GGUF")
+    assert fam is not None
+    assert fam.name == "qwen-image-edit"
+    fam = detect_family("unsloth/Qwen-Image-Edit-2509-GGUF")
+    assert fam is not None
+    assert fam.name == "qwen-image-edit-2509"
     # Underscore spellings on the Hub must also be excluded; otherwise
     # qwen_image_edit-GGUF silently matches the base Qwen-Image family.
-    assert detect_family("unsloth/qwen_image_edit-GGUF") is None
-    assert detect_family("unsloth/QwenImageEdit-GGUF") is None
+    fam = detect_family("unsloth/qwen_image_edit-GGUF")
+    assert fam is not None
+    assert fam.name == "qwen-image-edit"
+    fam = detect_family("unsloth/QwenImageEdit-GGUF")
+    assert fam is not None
+    assert fam.name == "qwen-image-edit"
+
+
+def test_detect_family_finds_new_image_families():
+    from core.inference.diffusion import detect_family
+
+    cases = {
+        "unsloth/Qwen-Image-2512-GGUF": "qwen-image-2512",
+        "unsloth/Qwen-Image-Edit-2511-GGUF": "qwen-image-edit-2511",
+        "unsloth/Qwen-Image-Layered-GGUF": "qwen-image-layered",
+        "unsloth/Z-Image-GGUF": "z-image",
+        "unsloth/Z-Image-Turbo-GGUF": "z-image-turbo",
+        "unsloth/ERNIE-Image-GGUF": "ernie-image",
+        "unsloth/ERNIE-Image-Turbo-GGUF": "ernie-image-turbo",
+    }
+    for repo, expected in cases.items():
+        fam = detect_family(repo)
+        assert fam is not None, repo
+        assert fam.name == expected
 
 
 def test_detect_family_finds_full_repo_sdxl():
@@ -149,14 +186,68 @@ def test_detect_family_finds_full_repo_sdxl():
     assert fam2.name == "stable-diffusion-xl"
 
 
+def test_detect_family_finds_video_full_repo_families():
+    from core.inference.diffusion import detect_family
+
+    fam = detect_family("diffusers/LTX-2.3-Distilled-Diffusers")
+    assert fam is not None
+    assert fam.name == "ltx2-3-distilled"
+    assert fam.media_kind == "video"
+    assert fam.pipeline_class == "LTX2Pipeline"
+    assert fam.default_width == 768
+    assert fam.default_height == 512
+    assert fam.default_num_frames == 121
+    assert fam.default_frame_rate == 24.0
+
+    wan = detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert wan is not None
+    assert wan.name == "wan2-2-t2v"
+    assert wan.media_kind == "video"
+    assert wan.pipeline_class == "WanPipeline"
+    assert wan.default_width == 1280
+    assert wan.default_height == 720
+    assert wan.default_num_frames == 81
+
+
 def test_supported_families_payload_shape():
     from core.inference.diffusion import supported_families
 
     payload = supported_families()
     assert isinstance(payload, list)
     assert len(payload) >= 4
+    by_name = {entry["name"]: entry for entry in payload}
+    assert by_name["ltx2-3-distilled"]["media_kind"] == "video"
+    assert by_name["wan2-2-t2v"]["media_kind"] == "video"
+    assert by_name["flux.2"]["media_kind"] == "image"
     for entry in payload:
-        assert set(entry.keys()) == {"name", "pipeline_class", "base_repo"}
+        assert set(entry.keys()) == {
+            "name",
+            "pipeline_class",
+            "base_repo",
+            "media_kind",
+            "guidance_kwarg",
+            "default_steps",
+            "default_guidance_scale",
+            "default_width",
+            "default_height",
+            "default_num_frames",
+            "default_frame_rate",
+            "requires_image_input",
+            "supports_gguf_single_file",
+        }
+        assert entry["media_kind"] in {"image", "video"}
+        assert isinstance(entry["default_steps"], int)
+        assert isinstance(entry["default_guidance_scale"], float)
+        assert isinstance(entry["default_width"], int)
+        assert isinstance(entry["default_height"], int)
+        assert entry["default_num_frames"] is None or isinstance(
+            entry["default_num_frames"], int
+        )
+        assert entry["default_frame_rate"] is None or isinstance(
+            entry["default_frame_rate"], float
+        )
+        assert isinstance(entry["requires_image_input"], bool)
+        assert isinstance(entry["supports_gguf_single_file"], bool)
 
 
 # ── singleton ───────────────────────────────────────────────────
@@ -186,8 +277,15 @@ def test_status_shape_unloaded():
         "repo_id",
         "family",
         "pipeline_class",
+        "media_kind",
         "base_repo",
         "gguf_filename",
+        "text_encoder_gguf_repo",
+        "text_encoder_gguf_filename",
+        "gguf_quantized_cpu_resident",
+        "gguf_pin_cpu_resident",
+        "gguf_execution_backend",
+        "gguf_prepared_module_counts",
         "device",
         "dtype",
         "loaded_at",
@@ -200,18 +298,25 @@ def test_status_shape_unloaded():
         "active_repo_id",
         "active_base_repo",
         "active_gguf_filename",
+        "active_text_encoder_gguf_repo",
+        "active_text_encoder_gguf_filename",
         "pending_repo_id",
         "pending_base_repo",
         "pending_gguf_filename",
+        "pending_text_encoder_gguf_repo",
+        "pending_text_encoder_gguf_filename",
     ):
         assert guard_key not in s, f"public status() must not expose {guard_key}"
     assert s["is_loaded"] is False
     assert s["repo_id"] is None
+    assert s["media_kind"] is None
 
     # Internal status() exposes the guard fields for delete/route use.
     s_internal = get_diffusion_backend().status(include_internal = True)
     assert s_internal["active_gguf_filename"] is None
     assert s_internal["pending_gguf_filename"] is None
+    assert s_internal["active_text_encoder_gguf_filename"] is None
+    assert s_internal["pending_text_encoder_gguf_filename"] is None
 
 
 # ── encode_png_base64 ───────────────────────────────────────────
@@ -305,6 +410,56 @@ def test_generate_image_calls_pipeline_with_kwargs(monkeypatch):
     assert img.size == (256, 256)
 
 
+def test_generate_image_forwards_family_default_call_kwargs(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    seen: dict[str, Any] = {}
+
+    class _ErnieStubPipe:
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            width,
+            height,
+            guidance_scale,
+            use_pe = False,
+            **_kwargs,
+        ):
+            seen.update(
+                {
+                    "prompt": prompt,
+                    "num_inference_steps": num_inference_steps,
+                    "width": width,
+                    "height": height,
+                    "guidance_scale": guidance_scale,
+                    "use_pe": use_pe,
+                }
+            )
+
+            class _Out:
+                pass
+
+            o = _Out()
+            o.images = [Image.new("RGB", (width, height), color = (0, 255, 0))]
+            return o
+
+    backend._pipe = _ErnieStubPipe()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/ERNIE-Image-Turbo-GGUF")
+    backend._repo_id = "stub/ernie"
+
+    img = backend.generate_image(prompt = "poster")
+
+    assert img.size == (1024, 1024)
+    assert seen["num_inference_steps"] == 8
+    assert seen["guidance_scale"] == 1.0
+    assert seen["use_pe"] is True
+
+
 def test_generate_image_unloaded_raises(monkeypatch):
     import core.inference.diffusion as d
 
@@ -351,6 +506,14 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst.token = kw.get("token")
             return inst
 
+    class _FakeWanVAE:
+        @classmethod
+        def from_pretrained(cls, base_repo, **kwargs):
+            inst = cls()
+            inst.base_repo = base_repo
+            inst.kwargs = kwargs
+            return inst
+
     class _FakePipeline:
         @classmethod
         def from_pretrained(cls, base_repo, **kwargs):
@@ -386,6 +549,18 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     fake.FluxTransformer2DModel = _FakeTransformer
     fake.QwenImagePipeline = _FakePipeline
     fake.QwenImageTransformer2DModel = _FakeTransformer
+    fake.QwenImageEditPipeline = _FakePipeline
+    fake.QwenImageEditPlusPipeline = _FakePipeline
+    fake.QwenImageLayeredPipeline = _FakePipeline
+    fake.ZImagePipeline = _FakePipeline
+    fake.ZImageTransformer2DModel = _FakeTransformer
+    fake.ErnieImagePipeline = _FakePipeline
+    fake.ErnieImageTransformer2DModel = _FakeTransformer
+    fake.LTX2Pipeline = _FakePipeline
+    fake.LTX2VideoTransformer3DModel = _FakeTransformer
+    fake.WanPipeline = _FakePipeline
+    fake.WanTransformer3DModel = _FakeTransformer
+    fake.AutoencoderKLWan = _FakeWanVAE
     fake.SD3Transformer2DModel = _FakeTransformer
     fake.StableDiffusion3Pipeline = _FakePipeline
     fake.StableDiffusionXLPipeline = _FakePipeline
@@ -437,6 +612,20 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     return fake
 
 
+def test_load_model_rejects_family_without_gguf_single_file_support(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "cannot load GGUF single-file"):
+        backend.load_model(
+            "unsloth/ERNIE-Image-Turbo-GGUF",
+            gguf_filename = "ernie-image-turbo-UD-Q4_K_M.gguf",
+            base_repo = "baidu/ERNIE-Image-Turbo",
+            family_override = "ernie-image-turbo",
+        )
+
+
 def test_load_model_unknown_family(monkeypatch):
     _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
@@ -463,6 +652,1292 @@ def test_load_model_gguf_path_happy(monkeypatch):
     # when "base" is part of the repo id.
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
     assert status["gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
+
+
+def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
+    """FLUX.2 dev can pair a transformer GGUF with a lazy GGUF
+    Mistral text encoder so diffusers does not materialize the 24B
+    text model in bf16 resident VRAM."""
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    patch_calls: list[tuple[Any, str, bool | None]] = []
+
+    class _FakeLazyTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.base_repo_or_path = base_repo_or_path
+            inst.compute_dtype = compute_dtype
+            inst.resident_device = resident_device
+            inst.token = token
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-dev-GGUF",
+        gguf_filename = "flux2-dev-Q4_K_M.gguf",
+        text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "flux.2"
+    assert status["text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        status["text_encoder_gguf_filename"]
+        == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    )
+    assert _FakeLazyTextEncoder.calls == [
+        {
+            "path": "/fake/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF/Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+            "base_repo_or_path": "black-forest-labs/FLUX.2-dev",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert backend._pipe.kwargs["text_encoder"].path == _FakeLazyTextEncoder.calls[0]["path"]
+
+    internal = backend.status(include_internal = True)
+    assert internal["active_text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        internal["active_text_encoder_gguf_filename"]
+        == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    )
+
+
+def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(monkeypatch):
+    """When model CPU offload is enabled on CUDA, lazy text-encoder
+    GGUF weights should stay CPU-resident and copy only the active
+    quantized tensor/chunk during forward."""
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    patch_calls: list[tuple[Any, str, bool | None]] = []
+
+    class _FakeLazyTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.resident_device = resident_device
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-dev-GGUF",
+        gguf_filename = "flux2-dev-Q4_K_M.gguf",
+        text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+        enable_model_cpu_offload = True,
+    )
+
+    assert status["is_loaded"] is True
+    assert _FakeLazyTextEncoder.calls[-1]["resident_device"] == "cpu"
+    assert backend._pipe.kwargs["text_encoder"].resident_device == "cpu"
+    assert patch_calls == [
+        (backend._pipe.kwargs["transformer"], "cpu", False),
+        (backend._pipe.kwargs["text_encoder"], "cpu", False),
+    ]
+
+
+def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    patch_calls: list[tuple[Any, str, bool | None]] = []
+
+    class _FakeLazyTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.resident_device = resident_device
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-dev-GGUF",
+        gguf_filename = "flux2-dev-Q4_K_M.gguf",
+        text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+        enable_model_cpu_offload = False,
+        gguf_quantized_cpu_resident = True,
+        gguf_pin_cpu_resident = True,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["gguf_quantized_cpu_resident"] is True
+    assert status["gguf_pin_cpu_resident"] is True
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    assert _FakeLazyTextEncoder.calls[-1]["resident_device"] == "cpu"
+    assert backend._pipe.kwargs["text_encoder"].resident_device == "cpu"
+    assert patch_calls == [
+        (backend._pipe.kwargs["transformer"], "cpu", True),
+        (backend._pipe.kwargs["text_encoder"], "cpu", True),
+    ]
+
+
+def test_load_model_diffusion_gguf_cpu_resident_when_offloading(monkeypatch):
+    """Diffusion GGUF weights should follow the same CPU-resident
+    quantized-weight contract as the lazy text encoder when model CPU
+    offload is active on CUDA."""
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        enable_model_cpu_offload = True,
+    )
+
+    assert status["is_loaded"] is True
+    transformer = backend._pipe.kwargs["transformer"]
+    assert calls == [(transformer, "cpu", False)]
+
+
+def test_load_model_diffusion_gguf_cpu_resident_without_full_cpu_offload(monkeypatch):
+    """Hybrid mode keeps packed GGUF weights CPU-resident without
+    installing Diffusers' full model CPU offload hooks."""
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        enable_model_cpu_offload = False,
+        gguf_quantized_cpu_resident = True,
+        gguf_pin_cpu_resident = True,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["gguf_quantized_cpu_resident"] is True
+    assert status["gguf_pin_cpu_resident"] is True
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    transformer = backend._pipe.kwargs["transformer"]
+    assert calls == [(transformer, "cpu", True)]
+
+
+def test_patch_gguf_modules_for_resident_device_keeps_weight_resident():
+    import torch
+
+    from core.inference.diffusion import _patch_gguf_modules_for_resident_device
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            return self
+
+    class _FakeGGUFLinear(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = _FakeGGUFParameter(
+                torch.ones(2, 2, dtype = torch.float32),
+                quant_type = "Q4_K_M",
+            )
+            self.forward_devices: list[torch.device] = []
+
+        def forward_native(self, inputs):
+            self.forward_devices.append(self.weight.device)
+            return torch.nn.functional.linear(inputs, self.weight)
+
+        def forward(self, inputs):
+            return self.forward_native(inputs)
+
+    root = torch.nn.Sequential(_FakeGGUFLinear())
+    layer = root[0]
+
+    assert _patch_gguf_modules_for_resident_device(root, "cpu") == 1
+    assert layer.weight.device.type == "cpu"
+    assert layer.weight.dtype == torch.float32
+    assert layer.weight.quant_type == "Q4_K_M"
+
+    root.to(dtype = torch.float64)
+
+    assert layer.weight.device.type == "cpu"
+    assert layer.weight.dtype == torch.float32
+    assert layer.weight.quant_type == "Q4_K_M"
+    out = root(torch.ones(1, 2, dtype = torch.float32))
+    assert out.shape == (1, 2)
+    assert layer.forward_devices == [torch.device("cpu")]
+
+
+def test_patch_gguf_modules_for_resident_device_uses_shared_helper(monkeypatch):
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_shared_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 42
+
+    monkeypatch.setattr(g, "patch_gguf_text_encoder_for_resident_device", _fake_shared_patch)
+    root = object()
+
+    assert d._patch_gguf_modules_for_resident_device(root, "cpu", pin_memory = True) == 42
+    assert calls == [(root, "cpu", True)]
+
+
+def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
+    import torch
+    from diffusers.quantizers.gguf.utils import GGUFLinear
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0, dtype = torch.uint8) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            self.quant_shape = tuple(data.shape)
+            return self
+
+    root = torch.nn.Sequential(GGUFLinear(2, 3, bias = True, compute_dtype = torch.float32))
+    root[0].weight = _FakeGGUFParameter(
+        torch.arange(6, dtype = torch.uint8).reshape(3, 2),
+        quant_type = "fake",
+    )
+    root[0].bias = torch.nn.Parameter(torch.ones(3), requires_grad = False)
+
+    monkeypatch.setattr(d, "_diffusers_gguf_fused_cuda_available", lambda: False)
+
+    assert d._replace_diffusers_gguf_linear_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert isinstance(root[0], g.LazyGGUFLinear)
+    assert root[0]._resident_device == torch.device("cpu")
+    assert root[0].qweight.device.type == "cpu"
+    assert root[0].bias is not None
+
+
+def test_replace_diffusers_gguf_linear_keeps_fused_diffusers_module(monkeypatch):
+    import torch
+    from diffusers.quantizers.gguf.utils import GGUFLinear
+
+    import core.inference.diffusion as d
+
+    root = torch.nn.Sequential(GGUFLinear(2, 3, bias = False, compute_dtype = torch.float32))
+    root[0].weight.quant_type = "fake"
+
+    monkeypatch.setattr(d, "_diffusers_gguf_fused_cuda_available", lambda: True)
+
+    assert d._replace_diffusers_gguf_linear_parameters(root, torch.float32, resident_device = "cpu") == 0
+    assert isinstance(root[0], GGUFLinear)
+
+
+def test_materialize_gguf_embedding_parameters_dequantizes_logical_shape(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    calls: list[Any] = []
+
+    def _fake_dequantize_gguf_tensor(weight):
+        calls.append(weight)
+        return torch.arange(6, dtype = torch.float32).reshape(2, 3)
+
+    fake_utils.dequantize_gguf_tensor = _fake_dequantize_gguf_tensor
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+
+    root = torch.nn.Sequential(torch.nn.Embedding(2, 6))
+    raw_weight = torch.nn.Parameter(torch.zeros(2, 6, dtype = torch.uint8), requires_grad = False)
+    raw_weight.quant_type = "BF16"
+    root[0].weight = raw_weight
+
+    assert d._materialize_gguf_embedding_parameters(root, torch.bfloat16) == 1
+    assert calls == [raw_weight]
+    assert root[0].weight.shape == (2, 3)
+    assert root[0].weight.dtype == torch.bfloat16
+    assert root[0].weight.requires_grad is False
+    assert not hasattr(root[0].weight, "quant_type")
+    out = root(torch.tensor([0, 1]))
+    assert out.shape == (2, 3)
+
+
+def test_replace_gguf_conv2d_parameters_wraps_lazy_module(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
+        assert quant_type == "Q4"
+        assert logical_shape == (1, 1, 1, 1)
+        return torch.ones(logical_shape, dtype = dtype)
+
+    monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
+    conv = torch.nn.Conv2d(1, 1, kernel_size = 1, bias = True)
+    conv.bias.data.zero_()
+    raw_weight = torch.nn.Parameter(
+        torch.ones(1, 1, 1, 2, dtype = torch.uint8),
+        requires_grad = False,
+    )
+    raw_weight.quant_type = "Q4"
+    raw_weight.quant_shape = (1, 1, 1, 1)
+    conv.weight = raw_weight
+    root = torch.nn.Sequential(conv)
+
+    assert d._replace_gguf_conv2d_parameters(
+        root,
+        torch.float32,
+        resident_device = "cpu",
+    ) == 1
+
+    assert isinstance(root[0], g.LazyGGUFConv2d)
+    assert root[0].qweight.device == torch.device("cpu")
+    out = root(torch.full((1, 1, 2, 2), 4.0))
+    torch.testing.assert_close(out, torch.full((1, 1, 2, 2), 4.0))
+
+
+def test_replace_gguf_conv2d_parameters_keeps_quantized_bias_lazy(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    def fake_dequant(qbuffer, quant_type, *, dtype = None, logical_shape = None):
+        return qbuffer.to(dtype = dtype).reshape(logical_shape)
+
+    monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
+    conv = torch.nn.Conv2d(1, 1, kernel_size = 1, bias = True)
+    raw_weight = torch.nn.Parameter(
+        torch.ones(1, 1, 1, 1, dtype = torch.uint8),
+        requires_grad = False,
+    )
+    raw_weight.quant_type = "Q4"
+    raw_weight.quant_shape = (1, 1, 1, 1)
+    raw_bias = torch.nn.Parameter(torch.tensor([2], dtype = torch.uint8), requires_grad = False)
+    raw_bias.quant_type = "Q4"
+    raw_bias.quant_shape = (1,)
+    conv.weight = raw_weight
+    conv.bias = raw_bias
+    root = torch.nn.Sequential(conv)
+
+    assert d._replace_gguf_conv2d_parameters(root, torch.float32, resident_device = "cpu") == 1
+
+    assert isinstance(root[0], g.LazyGGUFConv2d)
+    assert root[0].qweight.device == torch.device("cpu")
+    assert root[0].qbias.device == torch.device("cpu")
+    out = root(torch.full((1, 1, 1, 1), 3.0))
+    torch.testing.assert_close(out, torch.tensor([[[[5.0]]]]))
+
+
+def test_replace_gguf_embedding_parameters_wraps_lazy_module(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    seen_rows: list[torch.Tensor] = []
+
+    def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
+        seen_rows.append(qweight.clone())
+        assert quant_type == "Q4"
+        assert logical_shape is None
+        return qweight.to(dtype = dtype)
+
+    monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
+    embedding = torch.nn.Embedding(4, 2)
+    raw_weight = torch.nn.Parameter(
+        torch.tensor(
+            [
+                [10, 11],
+                [20, 21],
+                [30, 31],
+                [40, 41],
+            ],
+            dtype = torch.uint8,
+        ),
+        requires_grad = False,
+    )
+    raw_weight.quant_type = "Q4"
+    raw_weight.quant_shape = (4, 2)
+    embedding.weight = raw_weight
+    root = torch.nn.Sequential(embedding)
+
+    assert d._replace_gguf_embedding_parameters(
+        root,
+        torch.float32,
+        resident_device = "cpu",
+    ) == 1
+
+    assert isinstance(root[0], g.LazyGGUFEmbedding)
+    assert root[0].qweight.device == torch.device("cpu")
+    out = root(torch.tensor([[3, 1, 3]]))
+    torch.testing.assert_close(
+        seen_rows[0],
+        torch.tensor([[20, 21], [40, 41]], dtype = torch.uint8),
+    )
+    torch.testing.assert_close(
+        out,
+        torch.tensor([[[40.0, 41.0], [20.0, 21.0], [40.0, 41.0]]]),
+    )
+
+
+def test_replace_gguf_norm_parameters_wraps_lazy_layer_norm(monkeypatch):
+    import torch
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    calls: list[torch.Tensor] = []
+
+    def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
+        calls.append(qweight.clone())
+        assert quant_type == "Q4"
+        return qweight.to(dtype = dtype).reshape(logical_shape)
+
+    monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
+
+    root = torch.nn.Sequential(torch.nn.LayerNorm(3))
+    raw_weight = torch.nn.Parameter(
+        torch.tensor([1, 1, 1], dtype = torch.uint8),
+        requires_grad = False,
+    )
+    raw_weight.quant_type = "Q4"
+    raw_weight.quant_shape = (3,)
+    root[0].weight = raw_weight
+
+    assert d._replace_gguf_norm_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert isinstance(root[0], g.LazyGGUFLayerNorm)
+    assert root[0].qweight.device == torch.device("cpu")
+    assert root(torch.ones(2, 3)).shape == (2, 3)
+    torch.testing.assert_close(calls[0], torch.tensor([1, 1, 1], dtype = torch.uint8))
+
+
+def test_patch_diffusers_gguf_checkpoint_loader_no_copy_is_scoped(monkeypatch):
+    import core.inference.diffusion as d
+
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_models = types.ModuleType("diffusers.models")
+    fake_model_loading_utils = types.ModuleType("diffusers.models.model_loading_utils")
+
+    def _original_loader(path):
+        return {"original": path}
+
+    fake_model_loading_utils.load_gguf_checkpoint = _original_loader
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.models", fake_models)
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.models.model_loading_utils",
+        fake_model_loading_utils,
+    )
+
+    with d._patch_diffusers_gguf_checkpoint_loader_no_copy():
+        assert (
+            fake_model_loading_utils.load_gguf_checkpoint
+            is d._load_gguf_checkpoint_no_copy
+        )
+
+    assert fake_model_loading_utils.load_gguf_checkpoint is _original_loader
+
+
+def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
+    import numpy as np
+    import torch
+
+    import core.inference.diffusion as d
+
+    class _QType:
+        F32 = object()
+        F16 = object()
+        BF16 = object()
+
+    tensor_data = np.arange(12, dtype = np.uint8).reshape(3, 4)
+    dense_data = np.arange(6, dtype = np.float32)
+
+    class _FakeField:
+        def __init__(self, values):
+            self.parts = [np.array([value], dtype = np.int32) for value in values]
+            self.data = list(range(len(values)))
+
+    class _FakeTensor:
+        def __init__(self, name, tensor_type, data, shape):
+            self.name = name
+            self.tensor_type = tensor_type
+            self.data = data
+            self.shape = shape
+
+    class _FakeReader:
+        def __init__(self, path):
+            self.path = path
+            self.tensors = [
+                _FakeTensor("embed.weight", _QType.BF16, tensor_data, (6, 2)),
+                _FakeTensor("dense.weight", _QType.F32, dense_data, (6,)),
+            ]
+
+        def get_field(self, name):
+            if name == "comfy.gguf.orig_shape.embed.weight":
+                return _FakeField([2, 6])
+            if name == "comfy.gguf.orig_shape.dense.weight":
+                return _FakeField([2, 3])
+            return None
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            return self
+
+    fake_gguf = types.ModuleType("gguf")
+    fake_gguf.GGUFReader = _FakeReader
+    fake_gguf.GGMLQuantizationType = _QType
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_utils.GGUFParameter = _FakeGGUFParameter
+    fake_utils.SUPPORTED_GGUF_QUANT_TYPES = {_QType.BF16}
+
+    monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+
+    parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
+    weight = parsed["embed.weight"]
+    dense = parsed["dense.weight"]
+
+    assert isinstance(weight, _FakeGGUFParameter)
+    assert weight.quant_type is _QType.BF16
+    assert weight.quant_shape == (2, 6)
+    assert weight.data_ptr() == torch.from_numpy(tensor_data).data_ptr()
+    assert getattr(weight, "_unsloth_gguf_reader").path == "/tmp/fake.gguf"
+    assert dense.shape == (2, 3)
+    assert dense.data_ptr() == torch.from_numpy(dense_data).data_ptr()
+
+
+def test_load_model_text_encoder_gguf_rejects_unsupported_family_without_component(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "text_encoder_gguf_component"):
+        backend.load_model(
+            "city96/FLUX.1-dev-gguf",
+            gguf_filename = "flux1-dev-Q4_K_S.gguf",
+            text_encoder_gguf_filename = "text.gguf",
+        )
+
+
+def test_load_model_text_encoder_gguf_rejects_wrong_builtin_family_with_detected_arch(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.gguf_text_encoder as g
+    from core.inference.diffusion import get_diffusion_backend
+
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    (text_repo / "text.gguf").touch()
+    monkeypatch.setattr(
+        g,
+        "inspect_text_encoder_gguf",
+        lambda path: SimpleNamespace(architecture = "qwen2vl"),
+    )
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "Detected text GGUF architecture: qwen2vl"):
+        backend.load_model(
+            "city96/FLUX.1-dev-gguf",
+            gguf_filename = "flux1-dev-Q4_K_S.gguf",
+            text_encoder_gguf_repo = str(text_repo),
+            text_encoder_gguf_filename = "text.gguf",
+        )
+
+
+def test_load_model_qwen_image_text_encoder_gguf_uses_qwen2vl_loader(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    mmproj_path = text_repo / "Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf"
+    text_path.touch()
+    mmproj_path.touch()
+
+    class _FakeQwenTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            mmproj_gguf_path = None,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.mmproj_gguf_path = mmproj_gguf_path
+            inst.resident_device = resident_device
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "mmproj_gguf_path": mmproj_gguf_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyQwen2VLTextEncoder = _FakeQwenTextEncoder
+    fake_text_mod.LazyFlux2MistralTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "qwen2vl",
+        mmproj_path = mmproj_path,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "qwen-image"
+    assert _FakeQwenTextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "Qwen/Qwen-Image",
+            "mmproj_gguf_path": mmproj_path,
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert backend._pipe.kwargs["text_encoder"].path == str(text_path)
+    assert backend._pipe.kwargs["text_encoder"].mmproj_gguf_path == mmproj_path
+
+
+def test_load_model_qwen_image_text_encoder_gguf_downloads_remote_mmproj(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    text_path = tmp_path / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    mmproj_path = tmp_path / "Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf"
+    text_path.touch()
+    mmproj_path.touch()
+    downloads: list[tuple[str, str]] = []
+
+    def fake_download(repo_id, filename, token = None, subfolder = None, **_kwargs):
+        path = f"{subfolder}/{filename}" if subfolder else filename
+        downloads.append((repo_id, path))
+        if repo_id == "unsloth/Qwen2.5-VL-7B-Instruct-GGUF":
+            if filename == "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf":
+                return str(text_path)
+            if filename == "Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf":
+                return str(mmproj_path)
+            raise FileNotFoundError(filename)
+        return f"/fake/{repo_id}/{path}"
+
+    fake_hub.hf_hub_download = fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+
+    class _FakeQwenTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            mmproj_gguf_path = None,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.mmproj_gguf_path = mmproj_gguf_path
+            cls.calls.append(
+                {
+                    "path": path,
+                    "mmproj_gguf_path": mmproj_gguf_path,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyQwen2VLTextEncoder = _FakeQwenTextEncoder
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "qwen2vl",
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
+        text_encoder_gguf_repo = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        text_encoder_gguf_filename = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert (
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        "Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf",
+    ) in downloads
+    assert _FakeQwenTextEncoder.calls[-1] == {
+        "path": str(text_path),
+        "mmproj_gguf_path": mmproj_path,
+    }
+
+
+def test_load_model_z_image_text_encoder_gguf_uses_qwen3_loader(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / "Qwen3-4B-UD-Q4_K_XL.gguf"
+    text_path.touch()
+
+    class _FakeQwen3TextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.resident_device = resident_device
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyQwen3TextEncoder = _FakeQwen3TextEncoder
+    fake_text_mod.LazyQwen2VLTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.LazyFlux2MistralTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "qwen3",
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = "Qwen3-4B-UD-Q4_K_XL.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "z-image-turbo"
+    assert _FakeQwen3TextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "Tongyi-MAI/Z-Image-Turbo",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert backend._pipe.kwargs["text_encoder"].path == str(text_path)
+    assert backend._pipe.kwargs["text_encoder"].resident_device is None
+
+
+def test_load_model_flux1_text_encoder_gguf_uses_t5_loader_as_text_encoder_2(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / "t5-v1_1-xxl-encoder-Q3_K_S.gguf"
+    text_path.touch()
+
+    class _FakeT5TextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            subfolder,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.subfolder = subfolder
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "subfolder": subfolder,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyT5TextEncoder = _FakeT5TextEncoder
+    fake_text_mod.LazyQwen3TextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.LazyQwen2VLTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.LazyFlux2MistralTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "t5encoder",
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = "t5-v1_1-xxl-encoder-Q3_K_S.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "flux.1"
+    assert _FakeT5TextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "black-forest-labs/FLUX.1-dev",
+            "subfolder": "text_encoder_2",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert "text_encoder" not in backend._pipe.kwargs
+    assert backend._pipe.kwargs["text_encoder_2"].path == str(text_path)
+
+
+def test_load_model_sd3_text_encoder_gguf_uses_t5_loader_as_text_encoder_3(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / "t5-v1_1-xxl-encoder-Q3_K_S.gguf"
+    text_path.touch()
+
+    class _FakeT5TextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            subfolder,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.subfolder = subfolder
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "subfolder": subfolder,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    fake_text_mod.LazyT5TextEncoder = _FakeT5TextEncoder
+    fake_text_mod.LazyQwen3TextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.LazyQwen2VLTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.LazyFlux2MistralTextEncoder = SimpleNamespace(
+        from_gguf = lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong loader"))
+    )
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = "t5encoder",
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/stable-diffusion-3-medium-GGUF",
+        gguf_filename = "sd3-medium-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = "t5-v1_1-xxl-encoder-Q3_K_S.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "stable-diffusion-3"
+    assert _FakeT5TextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "stabilityai/stable-diffusion-3-medium-diffusers",
+            "subfolder": "text_encoder_3",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert "text_encoder" not in backend._pipe.kwargs
+    assert backend._pipe.kwargs["text_encoder_3"].path == str(text_path)
+
+
+@pytest.mark.parametrize(
+    ("architecture", "loader_name", "filename"),
+    [
+        ("llama", "LazyLlamaTextEncoder", "llama-text-Q4_K_M.gguf"),
+        ("qwen3vl", "LazyQwen3VLTextEncoder", "qwen3vl-text-Q4_K_M.gguf"),
+        ("gemma3", "LazyGemma3TextEncoder", "gemma3-text-Q4_K_M.gguf"),
+    ],
+)
+def test_load_model_explicit_text_encoder_component_routes_comfy_text_architectures(
+    monkeypatch,
+    tmp_path,
+    architecture,
+    loader_name,
+    filename,
+):
+    _install_fake_diffusers(monkeypatch)
+
+    fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    text_path = text_repo / filename
+    text_path.touch()
+
+    class _FakeComfyTextEncoder:
+        calls: list[dict[str, Any]] = []
+
+        @classmethod
+        def from_gguf(
+            cls,
+            path,
+            *,
+            base_repo_or_path,
+            subfolder,
+            compute_dtype,
+            resident_device = None,
+            token = None,
+        ):
+            inst = cls()
+            inst.path = path
+            inst.subfolder = subfolder
+            inst.resident_device = resident_device
+            cls.calls.append(
+                {
+                    "path": path,
+                    "base_repo_or_path": base_repo_or_path,
+                    "subfolder": subfolder,
+                    "compute_dtype": compute_dtype,
+                    "resident_device": resident_device,
+                    "token": token,
+                }
+            )
+            return inst
+
+    setattr(fake_text_mod, loader_name, _FakeComfyTextEncoder)
+    fake_text_mod.inspect_text_encoder_gguf = lambda path: SimpleNamespace(
+        architecture = architecture,
+        mmproj_path = None,
+    )
+    fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
+        lambda root, resident_device, pin_memory = None: 0
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
+    import core.inference as inference_pkg
+
+    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "city96/FLUX.1-dev-gguf",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        text_encoder_gguf_repo = str(text_repo),
+        text_encoder_gguf_filename = filename,
+        text_encoder_gguf_component = "text_encoder",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert _FakeComfyTextEncoder.calls == [
+        {
+            "path": str(text_path),
+            "base_repo_or_path": "black-forest-labs/FLUX.1-dev",
+            "subfolder": "text_encoder",
+            "compute_dtype": "fake_dtype",
+            "resident_device": None,
+            "token": None,
+        }
+    ]
+    assert backend._pipe.kwargs["text_encoder"].path == str(text_path)
+
+
+def test_load_model_rejects_unknown_text_encoder_component(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(ValueError, match = "text_encoder_gguf_component"):
+        backend.load_model(
+            "city96/FLUX.1-dev-gguf",
+            gguf_filename = "flux1-dev-Q4_K_M.gguf",
+            text_encoder_gguf_filename = "llama-text-Q4_K_M.gguf",
+            text_encoder_gguf_component = "tokenizer",
+        )
 
 
 def test_load_model_recovers_after_failure(monkeypatch):
@@ -710,6 +2185,31 @@ def test_load_model_full_repo_does_not_substitute(monkeypatch):
     assert status["repo_id"] == "owner/FLUX.1-finetune-diffusers"
     # And the fake pipeline records what we called from_pretrained with.
     assert backend._pipe.base_repo == "owner/FLUX.1-finetune-diffusers"
+
+
+def test_load_model_wan_full_repo_uses_fp32_vae(monkeypatch):
+    """Wan follows the official Diffusers recipe: VAE in FP32, while
+    the rest of the pipeline uses the backend-selected dtype."""
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+    import torch
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        family_override = "wan2-2-t2v",
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "wan2-2-t2v"
+    assert status["media_kind"] == "video"
+    assert backend._pipe.base_repo == "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    assert backend._pipe.kwargs["torch_dtype"] == "fake_dtype"
+    assert backend._pipe.kwargs["use_safetensors"] is True
+    vae = backend._pipe.kwargs["vae"]
+    assert vae.base_repo == "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    assert vae.kwargs["subfolder"] == "vae"
+    assert vae.kwargs["torch_dtype"] is torch.float32
 
 
 def test_load_model_concurrent_serialises(monkeypatch):
@@ -1086,17 +2586,26 @@ def test_load_publishes_pending_target_during_loading():
         backend._pending_repo_id = "unsloth/FLUX.2-klein-4B-GGUF"
         backend._pending_base_repo = "black-forest-labs/FLUX.2-klein-4B"
         backend._pending_gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf"
+        backend._pending_text_encoder_gguf_repo = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+        backend._pending_text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
 
     public = backend.status()
     assert public["is_loading"] is True
     assert public["repo_id"] == "unsloth/FLUX.2-klein-4B-GGUF"
     assert public["base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert public["text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert public["text_encoder_gguf_filename"] == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
     # Guard-facing internal payload also reports the pending fields
     # under their dedicated keys.
     internal = backend.status(include_internal = True)
     assert internal["pending_repo_id"] == "unsloth/FLUX.2-klein-4B-GGUF"
     assert internal["pending_base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
     assert internal["pending_gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
+    assert internal["pending_text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        internal["pending_text_encoder_gguf_filename"]
+        == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    )
 
 
 def test_unload_waits_for_in_flight_generation(monkeypatch):
@@ -1387,7 +2896,9 @@ def test_detect_family_qwen_image_edit_mixed_separators(repo_id):
     match the base Qwen-Image text-to-image family."""
     from core.inference.diffusion import detect_family
 
-    assert detect_family(repo_id) is None
+    fam = detect_family(repo_id)
+    if fam is not None:
+        assert fam.name != "qwen-image"
 
 
 def test_redact_hf_tokens_removes_url_embedded_token():
@@ -1474,6 +2985,285 @@ def test_generator_uses_cpu_when_cpu_offload_enabled(monkeypatch):
 
     backend._generate_image_unlocked(prompt = "x", seed = 7, width = 8, height = 8)
     assert captured_devices == ["cpu"]
+
+
+def test_generate_image_uses_family_guidance_kwarg_and_default_negative_prompt():
+    """Qwen-Image uses true_cfg_scale for real CFG; guidance_scale is
+    reserved for guidance-distilled variants and is ineffective there."""
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakeQwenPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            true_cfg_scale,
+            negative_prompt,
+            width,
+            height,
+            generator = None,
+        ):
+            self.last_kwargs = {
+                "prompt": prompt,
+                "num_inference_steps": num_inference_steps,
+                "true_cfg_scale": true_cfg_scale,
+                "negative_prompt": negative_prompt,
+                "width": width,
+                "height": height,
+                "generator": generator,
+            }
+            from PIL import Image
+
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    pipe = _FakeQwenPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-2512-GGUF")
+
+    backend._generate_image_unlocked(
+        prompt = "x",
+        width = 16,
+        height = 16,
+        guidance_scale = 3.5,
+    )
+
+    assert pipe.last_kwargs["true_cfg_scale"] == 3.5
+    assert pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    assert "guidance_scale" not in pipe.last_kwargs
+
+
+def test_generate_image_uses_family_sampling_defaults_when_omitted():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakeZImageTurboPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+            generator = None,
+        ):
+            self.last_kwargs = {
+                "prompt": prompt,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "width": width,
+                "height": height,
+                "generator": generator,
+            }
+            from PIL import Image
+
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    pipe = _FakeZImageTurboPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Z-Image-Turbo-GGUF")
+
+    backend._generate_image_unlocked(prompt = "x")
+
+    assert pipe.last_kwargs["num_inference_steps"] == 9
+    assert pipe.last_kwargs["guidance_scale"] == 0.0
+    assert pipe.last_kwargs["width"] == 1024
+    assert pipe.last_kwargs["height"] == 1024
+
+
+def test_generate_image_rejects_image_required_family():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-Layered-GGUF")
+
+    with pytest.raises(RuntimeError, match = "requires image input"):
+        backend._generate_image_unlocked(prompt = "x", width = 16, height = 16)
+
+
+def test_generate_image_required_family_forwards_input_image():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeQwenEditPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            self.last_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "true_cfg_scale": true_cfg_scale,
+                "num_inference_steps": num_inference_steps,
+                "width": width,
+                "height": height,
+            }
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    source = Image.new("RGB", (32, 32))
+    pipe = _FakeQwenEditPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-Edit-2511-GGUF")
+
+    image = backend._generate_image_unlocked(
+        prompt = "change the background",
+        input_images = [source],
+        width = 64,
+        height = 64,
+    )
+
+    assert image.size == (64, 64)
+    assert pipe.last_kwargs["image"] is source
+    assert pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    assert pipe.last_kwargs["true_cfg_scale"] == 4.0
+    assert pipe.last_kwargs["num_inference_steps"] == 40
+
+
+def test_generate_image_rejects_video_family_on_image_route():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._device = "cpu"
+    backend._family = d.detect_family("diffusers/LTX-2.3-Distilled-Diffusers")
+
+    with pytest.raises(RuntimeError, match = "video generation family"):
+        backend._generate_image_unlocked(prompt = "x", width = 768, height = 512)
+
+
+def test_generate_video_with_metadata_uses_family_defaults():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakeWanPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(self, **kwargs):
+            self.last_kwargs = kwargs
+            return SimpleNamespace(frames = [["frame0", "frame1"]])
+
+    pipe = _FakeWanPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._repo_id = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    backend._family = d.detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+
+    video, meta = backend.generate_video_with_metadata(prompt = "a crane shot")
+
+    assert video == ["frame0", "frame1"]
+    assert pipe.last_kwargs["num_inference_steps"] == 40
+    assert pipe.last_kwargs["guidance_scale"] == 4.0
+    assert pipe.last_kwargs["guidance_scale_2"] == 3.0
+    assert pipe.last_kwargs["width"] == 1280
+    assert pipe.last_kwargs["height"] == 720
+    assert pipe.last_kwargs["num_frames"] == 81
+    assert pipe.last_kwargs["output_type"] == "np"
+    assert meta["family"] == "wan2-2-t2v"
+    assert meta["num_frames"] == 81
+    assert meta["frame_rate"] == 16.0
+
+
+def test_generate_video_rejects_image_family():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Z-Image-GGUF")
+
+    with pytest.raises(RuntimeError, match = "not a video generation family"):
+        backend.generate_video_with_metadata(prompt = "x")
+
+
+def test_generate_images_with_metadata_flattens_layered_outputs():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeLayeredPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            num_inference_steps,
+            resolution,
+            layers,
+            cfg_normalize,
+            use_en_prompt,
+        ):
+            self.last_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "true_cfg_scale": true_cfg_scale,
+                "num_inference_steps": num_inference_steps,
+                "resolution": resolution,
+                "layers": layers,
+                "cfg_normalize": cfg_normalize,
+                "use_en_prompt": use_en_prompt,
+            }
+            return SimpleNamespace(
+                images = [[Image.new("RGBA", (resolution, resolution)) for _ in range(3)]]
+            )
+
+    source = Image.new("RGB", (32, 32))
+    pipe = _FakeLayeredPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._repo_id = "unsloth/Qwen-Image-Layered-GGUF"
+    backend._family = d.detect_family("unsloth/Qwen-Image-Layered-GGUF")
+
+    images, meta = backend.generate_images_with_metadata(
+        prompt = "separate foreground",
+        input_images = [source],
+        width = 640,
+        height = 640,
+    )
+
+    assert len(images) == 3
+    assert meta["output_count"] == 3
+    assert pipe.last_kwargs["image"].mode == "RGBA"
+    assert pipe.last_kwargs["resolution"] == 640
+    assert pipe.last_kwargs["layers"] == 4
+    assert pipe.last_kwargs["cfg_normalize"] is True
+    assert pipe.last_kwargs["use_en_prompt"] is True
 
 
 def test_smart_base_repo_uses_windows_leaf_only_already_set_separator_round14():

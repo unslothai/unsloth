@@ -14,6 +14,16 @@ export interface DiffusionFamily {
   name: string;
   pipeline_class: string;
   base_repo: string;
+  media_kind: "image" | "video" | string;
+  guidance_kwarg: string;
+  default_steps: number;
+  default_guidance_scale: number;
+  default_width: number;
+  default_height: number;
+  default_num_frames: number | null;
+  default_frame_rate: number | null;
+  requires_image_input: boolean;
+  supports_gguf_single_file: boolean;
 }
 
 export interface DiffusionStatus {
@@ -22,8 +32,15 @@ export interface DiffusionStatus {
   repo_id: string | null;
   family: string | null;
   pipeline_class: string | null;
+  media_kind: "image" | "video" | string | null;
   base_repo: string | null;
   gguf_filename: string | null;
+  text_encoder_gguf_repo: string | null;
+  text_encoder_gguf_filename: string | null;
+  gguf_quantized_cpu_resident: boolean;
+  gguf_pin_cpu_resident: boolean;
+  gguf_execution_backend: string | null;
+  gguf_prepared_module_counts: Record<string, number>;
   device: string | null;
   dtype: string | null;
   loaded_at: number | null;
@@ -35,14 +52,21 @@ export interface DiffusionLoadRequest {
   repo_id: string;
   gguf_filename?: string;
   base_repo?: string;
+  text_encoder_gguf_repo?: string;
+  text_encoder_gguf_filename?: string;
+  text_encoder_gguf_component?: "text_encoder" | "text_encoder_2" | "text_encoder_3";
   family?: string;
   hf_token?: string;
   enable_model_cpu_offload?: boolean;
+  gguf_quantized_cpu_resident?: boolean | null;
+  gguf_pin_cpu_resident?: boolean | null;
 }
 
 export interface DiffusionGenerateRequest {
   prompt: string;
   negative_prompt?: string;
+  image_b64?: string;
+  images_b64?: string[];
   num_inference_steps?: number;
   guidance_scale?: number;
   width?: number;
@@ -55,6 +79,7 @@ export interface DiffusionGenerateRequest {
 
 export interface DiffusionGenerateResponse {
   image_b64: string;
+  images_b64?: string[] | null;
   image_mime: string;
   width: number;
   height: number;
@@ -67,6 +92,37 @@ export interface DiffusionGenerateResponse {
   seed: number | null;
   /** Decimal string with full uint64 precision. Use this for display
    *  and reproduction when the user pastes the seed back in. */
+  seed_str: string | null;
+  duration_ms: number;
+  model: string | null;
+  family: string | null;
+  output_count: number;
+}
+
+export interface DiffusionVideoGenerateRequest {
+  prompt: string;
+  negative_prompt?: string;
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  guidance_scale_2?: number;
+  width?: number;
+  height?: number;
+  num_frames?: number;
+  frame_rate?: number;
+  seed?: number | bigint;
+}
+
+export interface DiffusionVideoGenerateResponse {
+  video_b64: string;
+  video_mime: string;
+  width: number;
+  height: number;
+  num_frames: number;
+  frame_rate: number;
+  num_inference_steps: number;
+  guidance_scale: number;
+  guidance_scale_2: number | null;
+  seed: number | null;
   seed_str: string | null;
   duration_ms: number;
   model: string | null;
@@ -112,7 +168,9 @@ export async function unloadDiffusionModel(): Promise<{ is_loaded: boolean }> {
  * sentinel string. With this approach the only thing we touch is
  * the literal ``"seed":<number>`` substring we wrote ourselves.
  */
-function stringifyWithBigInt(value: DiffusionGenerateRequest): string {
+function stringifyWithBigInt(
+  value: DiffusionGenerateRequest | DiffusionVideoGenerateRequest,
+): string {
   const { seed, ...rest } = value;
   if (typeof seed !== "bigint") {
     return JSON.stringify(value);
@@ -130,6 +188,18 @@ export async function generateDiffusionImage(
 ): Promise<DiffusionGenerateResponse> {
   return parseJson<DiffusionGenerateResponse>(
     await authFetch("/api/inference/images/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stringifyWithBigInt(payload),
+    }),
+  );
+}
+
+export async function generateDiffusionVideo(
+  payload: DiffusionVideoGenerateRequest,
+): Promise<DiffusionVideoGenerateResponse> {
+  return parseJson<DiffusionVideoGenerateResponse>(
+    await authFetch("/api/inference/videos/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: stringifyWithBigInt(payload),

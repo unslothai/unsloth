@@ -216,6 +216,8 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    DiffusionVideoGenerateRequest,
+    DiffusionVideoGenerateResponse,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -2397,6 +2399,46 @@ def _resolve_diffusion_repo_for_request(
     return str(grant.canonical_path)
 
 
+def _decode_diffusion_input_images(payload: DiffusionGenerateRequest) -> Optional[list[Any]]:
+    """Decode route-level base64 image inputs into RGB/RGBA PIL images.
+
+    Accepts raw base64 or data URLs. The backend takes a structural list
+    so Qwen Edit gets one image while Qwen Edit Plus can receive multiple
+    references through the same path.
+    """
+    encoded_images: list[str] = []
+    if payload.image_b64 is not None:
+        encoded_images = [payload.image_b64]
+    elif payload.images_b64 is not None:
+        encoded_images = list(payload.images_b64)
+    if not encoded_images:
+        return None
+
+    from PIL import Image
+
+    decoded = []
+    for index, encoded in enumerate(encoded_images):
+        value = encoded.strip()
+        if "," in value and value[:64].lower().startswith("data:"):
+            value = value.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(value, validate = True)
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"image input {index + 1} is not a valid base64 image",
+            ) from exc
+        # Preserve alpha for layered/edit workflows; normalize all other
+        # modes to RGB so diffusers does not receive palette/luminance
+        # images with surprising channel counts.
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        decoded.append(image)
+    return decoded
+
+
 @studio_router.post("/images/load")
 async def diffusion_load(
     payload: DiffusionLoadRequest,
@@ -2455,6 +2497,11 @@ async def diffusion_load(
             payload.base_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
+        resolved_text_encoder_gguf_repo = _resolve_diffusion_repo_for_request(
+            payload.text_encoder_gguf_repo,
+            payload.text_encoder_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
         # Round 18 P1 #3 + P1 #7: the route used to drop chat and
         # idle export BEFORE ``backend.load_model`` ran its cheap
         # validation (family inference, GGUF filename checks,
@@ -2477,9 +2524,14 @@ async def diffusion_load(
                     repo_id = resolved_repo_id,
                     gguf_filename = payload.gguf_filename,
                     base_repo = resolved_base_repo,
+                    text_encoder_gguf_repo = resolved_text_encoder_gguf_repo,
+                    text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
+                    text_encoder_gguf_component = payload.text_encoder_gguf_component,
                     family_override = payload.family,
                     hf_token = payload.hf_token,
                     enable_model_cpu_offload = payload.enable_model_cpu_offload,
+                    gguf_quantized_cpu_resident = payload.gguf_quantized_cpu_resident,
+                    gguf_pin_cpu_resident = payload.gguf_pin_cpu_resident,
                     # Round 38 P1: this route already published the
                     # "diffusion" pending marker above; tell the
                     # backend to ignore it so the parity check it
@@ -2592,9 +2644,27 @@ async def diffusion_generate(
         )
 
     start = time.time()
+    defaults = backend.generation_defaults()
+    requested_steps = (
+        payload.num_inference_steps
+        if payload.num_inference_steps is not None
+        else int(defaults["num_inference_steps"])
+    )
+    requested_guidance = (
+        payload.guidance_scale
+        if payload.guidance_scale is not None
+        else float(defaults["guidance_scale"])
+    )
+    requested_width = (
+        payload.width if payload.width is not None else int(defaults["width"])
+    )
+    requested_height = (
+        payload.height if payload.height is not None else int(defaults["height"])
+    )
+    input_images = _decode_diffusion_input_images(payload)
     try:
         from core.inference.diffusion import (
-            async_generate_with_metadata,
+            async_generate_images_with_metadata,
             encode_png_base64,
         )
 
@@ -2602,16 +2672,18 @@ async def diffusion_generate(
         # ``family`` under the same ``_generate_lock`` that owns the
         # forward, so a queued unload/load cannot replace them between
         # generation end and response assembly (round 13 P2 #9).
-        image, meta = await async_generate_with_metadata(
+        images, meta = await async_generate_images_with_metadata(
             backend,
             prompt = payload.prompt,
             negative_prompt = payload.negative_prompt,
-            num_inference_steps = payload.num_inference_steps,
-            guidance_scale = payload.guidance_scale,
-            width = payload.width,
-            height = payload.height,
+            input_images = input_images,
+            num_inference_steps = requested_steps,
+            guidance_scale = requested_guidance,
+            width = requested_width,
+            height = requested_height,
             seed = payload.seed,
         )
+        image = images[0]
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
@@ -2626,21 +2698,107 @@ async def diffusion_generate(
     # differ from the requested dims. Report the real image size so
     # the metadata caption matches the bytes on the wire.
     actual_w, actual_h = (
-        image.size if hasattr(image, "size") else (payload.width, payload.height)
+        image.size if hasattr(image, "size") else (requested_width, requested_height)
     )
+    encoded_images = [encode_png_base64(item) for item in images]
     return DiffusionGenerateResponse(
-        image_b64 = encode_png_base64(image),
+        image_b64 = encoded_images[0],
+        images_b64 = encoded_images if len(encoded_images) > 1 else None,
         image_mime = "image/png",
         width = int(actual_w),
         height = int(actual_h),
-        num_inference_steps = payload.num_inference_steps,
-        guidance_scale = payload.guidance_scale,
+        num_inference_steps = requested_steps,
+        guidance_scale = requested_guidance,
         seed = payload.seed,
         # str() of a Python int has full precision; JavaScript can
         # display it via BigInt without rounding. The numeric ``seed``
         # field above is kept for backwards compatibility with older
         # clients but is unsafe to use for seeds above 2**53 on the
         # browser side.
+        seed_str = str(payload.seed) if payload.seed is not None else None,
+        duration_ms = duration_ms,
+        model = meta.get("model"),
+        family = meta.get("family"),
+        output_count = int(meta.get("output_count") or len(encoded_images)),
+    )
+
+
+@studio_router.post("/videos/generate", response_model = DiffusionVideoGenerateResponse)
+async def diffusion_video_generate(
+    payload: DiffusionVideoGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate an MP4 from a loaded diffusion video model.
+
+    The existing `/images/load` lifecycle is reused for now because the
+    Diffusers backend owns one pipeline slot regardless of media type.
+    """
+    backend = _get_diffusion_backend()
+    if not backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No diffusion model is loaded. POST /api/inference/images/load first.",
+        )
+
+    start = time.time()
+    defaults = backend.generation_defaults()
+    requested_steps = (
+        payload.num_inference_steps
+        if payload.num_inference_steps is not None
+        else int(defaults["num_inference_steps"])
+    )
+    requested_guidance = (
+        payload.guidance_scale
+        if payload.guidance_scale is not None
+        else float(defaults["guidance_scale"])
+    )
+    requested_width = (
+        payload.width if payload.width is not None else int(defaults["width"])
+    )
+    requested_height = (
+        payload.height if payload.height is not None else int(defaults["height"])
+    )
+    try:
+        from core.inference.diffusion import (
+            async_generate_video_with_metadata,
+            encode_mp4_base64,
+        )
+
+        video, meta = await async_generate_video_with_metadata(
+            backend,
+            prompt = payload.prompt,
+            negative_prompt = payload.negative_prompt,
+            num_inference_steps = requested_steps,
+            guidance_scale = requested_guidance,
+            guidance_scale_2 = payload.guidance_scale_2,
+            width = requested_width,
+            height = requested_height,
+            num_frames = payload.num_frames,
+            frame_rate = payload.frame_rate,
+            seed = payload.seed,
+        )
+        frame_rate = float(meta.get("frame_rate") or payload.frame_rate or 16.0)
+        video_b64 = encode_mp4_base64(video, fps = frame_rate)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:
+        logger.exception("Diffusion video generation failed")
+        raise HTTPException(status_code = 500, detail = str(exc))
+
+    duration_ms = int((time.time() - start) * 1000)
+    return DiffusionVideoGenerateResponse(
+        video_b64 = video_b64,
+        video_mime = "video/mp4",
+        width = int(meta.get("width") or requested_width),
+        height = int(meta.get("height") or requested_height),
+        num_frames = int(meta.get("num_frames") or payload.num_frames or 0),
+        frame_rate = frame_rate,
+        num_inference_steps = int(meta.get("num_inference_steps") or requested_steps),
+        guidance_scale = float(meta.get("guidance_scale") or requested_guidance),
+        guidance_scale_2 = meta.get("guidance_scale_2"),
+        seed = payload.seed,
         seed_str = str(payload.seed) if payload.seed is not None else None,
         duration_ms = duration_ms,
         model = meta.get("model"),

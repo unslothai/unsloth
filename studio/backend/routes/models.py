@@ -1747,7 +1747,9 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
 
     Base repos are paired with ``None`` for the GGUF: the base /
     component repo is loaded whole via ``from_pretrained`` and has no
-    per-variant delete to take advantage of.
+    per-variant delete to take advantage of. FLUX.2 text-encoder GGUF
+    repos are paired with their own GGUF filename because the lazy
+    text encoder keeps those GGUF tensors resident too.
     """
     return [
         (
@@ -1756,10 +1758,18 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
         ),
         (diff_status.get("active_base_repo") or "", None),
         (
+            diff_status.get("active_text_encoder_gguf_repo") or "",
+            diff_status.get("active_text_encoder_gguf_filename"),
+        ),
+        (
             diff_status.get("pending_repo_id") or "",
             diff_status.get("pending_gguf_filename"),
         ),
         (diff_status.get("pending_base_repo") or "", None),
+        (
+            diff_status.get("pending_text_encoder_gguf_repo") or "",
+            diff_status.get("pending_text_encoder_gguf_filename"),
+        ),
     ]
 
 
