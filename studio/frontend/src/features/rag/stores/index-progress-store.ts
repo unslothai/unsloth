@@ -18,6 +18,10 @@ export interface IndexEntry {
   progress: number;
   /** Chunks this file produced (from the job's complete event); 0 until done. */
   chunks: number;
+  /** Tear down this upload and remove its document from the index. Registered
+   *  by the upload surface so the aggregate toast can cancel the whole batch
+   *  without owning the per-file job/SSE/semaphore handles. */
+  cancel?: () => Promise<void> | void;
 }
 
 interface IndexProgressState {
@@ -27,6 +31,8 @@ interface IndexProgressState {
   setProgress: (id: string, progress: number) => void;
   setReady: (id: string, chunks?: number) => void;
   setError: (id: string) => void;
+  setCancel: (id: string, cancel: () => Promise<void> | void) => void;
+  cancelAll: () => Promise<void>;
   clear: () => void;
 }
 
@@ -42,7 +48,7 @@ function patch(
   });
 }
 
-export const useIndexProgressStore = create<IndexProgressState>((set) => ({
+export const useIndexProgressStore = create<IndexProgressState>((set, get) => ({
   entries: {},
   add: (id, filename) =>
     set((s) => ({
@@ -57,5 +63,15 @@ export const useIndexProgressStore = create<IndexProgressState>((set) => ({
   setReady: (id, chunks = 0) =>
     patch(set, id, { status: "ready", progress: 1, chunks }),
   setError: (id) => patch(set, id, { status: "error" }),
+  setCancel: (id, cancel) => patch(set, id, { cancel }),
+  // Cancel every file in the batch (running, queued, and already-finished) so
+  // the index returns to its pre-batch state, then drop all toast entries.
+  cancelAll: async () => {
+    const handles = Object.values(get().entries)
+      .map((e) => e.cancel)
+      .filter((c): c is NonNullable<typeof c> => Boolean(c));
+    await Promise.allSettled(handles.map((c) => c()));
+    set({ entries: {} });
+  },
   clear: () => set({ entries: {} }),
 }));

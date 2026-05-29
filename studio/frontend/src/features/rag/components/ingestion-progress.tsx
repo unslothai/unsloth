@@ -40,6 +40,14 @@ export function IngestionProgress({
     );
   }
 
+  if (event.type === "cancelled") {
+    return (
+      <div className={cn("text-xs text-muted-foreground", className)}>
+        Cancelled
+      </div>
+    );
+  }
+
   if (event.type === "complete") {
     const chunks = event.num_chunks;
     return (

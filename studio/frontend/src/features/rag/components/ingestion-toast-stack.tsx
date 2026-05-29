@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIndexProgressStore } from "../stores/index-progress-store";
 
 /** Single aggregate indexing toast (top-right). One entry per upload batch:
@@ -18,8 +18,19 @@ const DISMISS_DELAY_MS = 4000;
 export function IngestionToastStack() {
   const entries = useIndexProgressStore((s) => s.entries);
   const clear = useIndexProgressStore((s) => s.clear);
+  const cancelAll = useIndexProgressStore((s) => s.cancelAll);
   const reduced = useReducedMotion();
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  const onCancel = async () => {
+    setCancelling(true);
+    try {
+      await cancelAll();
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const items = Object.values(entries);
   const total = items.length;
@@ -111,15 +122,27 @@ export function IngestionToastStack() {
                 </div>
               )}
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Dismiss"
-              className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => clear()}
-            >
-              <HugeiconsIcon icon={Cancel01Icon} size={12} />
-            </Button>
+            {allDone ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Dismiss"
+                className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={() => clear()}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={12} />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={cancelling}
+                className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
+                onClick={onCancel}
+              >
+                {cancelling ? "Cancelling…" : "Cancel"}
+              </Button>
+            )}
           </div>
         </motion.div>
       </AnimatePresence>

@@ -144,6 +144,7 @@ export type JobEvent =
     }
   | { type: "progress"; stage: string; progress: number }
   | { type: "complete"; num_chunks: number }
+  | { type: "cancelled" }
   | { type: "error"; error: string };
 
 function parseErrorText(status: number, body: unknown): string {
@@ -457,6 +458,14 @@ export async function prefetchRag(
 
 // --- Ingestion SSE ---
 
+/** Cancel an in-flight ingestion job. Best-effort: a 404/already-terminal job
+ *  resolves without error so batch cancellation never throws on stale ids. */
+export async function cancelJob(jobId: string): Promise<void> {
+  await authFetch(`/api/rag/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  }).catch(() => {});
+}
+
 /** Subscribe to a job's SSE stream; returns an unsubscribe fn.
  *  Use the EventSource polyfill so the bearer token rides in an
  *  Authorization header instead of leaking through URL query params. */
@@ -485,7 +494,11 @@ export function subscribeToJobEvents(
     try {
       const parsed = JSON.parse(e.data) as JobEvent;
       handlers.onEvent?.(parsed);
-      if (parsed.type === "complete" || parsed.type === "error") {
+      if (
+        parsed.type === "complete" ||
+        parsed.type === "error" ||
+        parsed.type === "cancelled"
+      ) {
         source.close();
         handlers.onClose?.();
       }

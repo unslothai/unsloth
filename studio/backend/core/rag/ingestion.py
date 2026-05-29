@@ -428,6 +428,9 @@ class _JobState:
         self.stage: str | None = None
         self.progress: float = 0.0
         self.error: str | None = None
+        self.cancelled = False
+        self.proc: Any = None
+        self.out_queue: Any = None
         self.subscribers: list[queue_module.Queue[dict]] = []
         self.lock = threading.Lock()
 
@@ -664,6 +667,8 @@ def _pump(
 
     try:
         while True:
+            if state.cancelled:
+                break
             try:
                 msg = out_queue.get(timeout = _QUEUE_TIMEOUT_SECONDS)
             except queue_module.Empty:
@@ -672,6 +677,9 @@ def _pump(
                     break
                 continue
             mtype = msg.get("type")
+            if mtype == "__cancel__":
+                state.cancelled = True
+                break
             if mtype == "progress":
                 state.stage = msg.get("stage")
                 state.progress = float(msg.get("progress", 0.0))
@@ -733,6 +741,20 @@ def _pump(
             proc.join(timeout = 5)
 
     finished_at = int(time.time())
+    if state.cancelled:
+        # User cancelled mid-flight. The route-side deleteDocument removes the
+        # row, file, and chunk artifacts; here we just mark terminal and notify
+        # subscribers so the SSE stream closes cleanly.
+        _update_document_row(state.document_id, status = "cancelled")
+        _update_job_row(
+            state.job_id,
+            status = "cancelled",
+            stage = "cancelled",
+            finished_at = finished_at,
+        )
+        state.status = "cancelled"
+        state.push_event({"type": "cancelled"})
+        return
     if final_status == "completed":
         full_scope_chunks = _all_scope_chunks(state.scope)
         bm25.rebuild_index(state.scope, full_scope_chunks)
@@ -861,6 +883,7 @@ def enqueue_ingestion(
         _jobs[job_id] = state
 
     out_queue = _CTX.Queue()
+    state.out_queue = out_queue
     proc = _CTX.Process(
         target = _subprocess_worker,
         args = (
@@ -879,6 +902,7 @@ def enqueue_ingestion(
         daemon = True,
     )
     proc.start()
+    state.proc = proc
     pump_thread = threading.Thread(
         target = _pump,
         args = (state, proc, out_queue),
@@ -887,6 +911,28 @@ def enqueue_ingestion(
     )
     pump_thread.start()
     return job_id
+
+
+def cancel_ingestion(job_id: str) -> bool:
+    """Stop an in-flight ingestion: wake the pump via a sentinel and kill the
+    worker subprocess so it stops consuming GPU/CPU. Returns False if the job
+    is unknown or already terminal. Artifact/row cleanup is the caller's job
+    (the route deletes the document)."""
+    state = get_job_state(job_id)
+    if state is None:
+        return False
+    if state.status in ("completed", "failed", "cancelled"):
+        return False
+    state.cancelled = True
+    if state.out_queue is not None:
+        try:
+            state.out_queue.put_nowait({"type": "__cancel__"})
+        except Exception:
+            pass
+    proc = state.proc
+    if proc is not None and proc.is_alive():
+        proc.terminate()
+    return True
 
 
 def delete_document_artifacts(document_id: str, scope: str) -> None:

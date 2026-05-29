@@ -328,7 +328,11 @@ export const useRagStore = create<RagStoreState>((set, get) => ({
     const unsubscribe = subscribeToJobEvents(jobId, {
       onEvent: (event) => {
         set((state) => ({ jobs: { ...state.jobs, [jobId]: event } }));
-        if (event.type === "complete" || event.type === "error") {
+        if (
+          event.type === "complete" ||
+          event.type === "error" ||
+          event.type === "cancelled"
+        ) {
           onComplete?.();
         }
       },

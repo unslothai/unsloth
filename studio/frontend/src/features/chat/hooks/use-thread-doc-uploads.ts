@@ -5,7 +5,7 @@ import { useAui } from "@assistant-ui/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
+import { cancelJob, subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { useIndexProgressStore } from "@/features/rag/stores/index-progress-store";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -86,6 +86,44 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const addDoc = useCallback(
     (file: File) => {
       const localChipId = crypto.randomUUID();
+      // Lifecycle state shared between the upload flow and the cancel thunk.
+      // The cancel thunk closes over these `let`s by reference, so it always
+      // sees the latest job/document ids no matter when the user cancels.
+      const abort = new AbortController();
+      let jobId: string | undefined;
+      let documentId: string | undefined;
+      let scopeKey: string | null = null;
+      let unsubscribe: (() => void) | undefined;
+      let slotAcquired = false;
+      let slotReleased = false;
+      let cleaned = false;
+      const releaseSlot = () => {
+        if (slotAcquired && !slotReleased) {
+          slotReleased = true;
+          releaseIndexSlot();
+        }
+      };
+      const removeChip = () => {
+        setPendingDocs((prev) => prev.filter((d) => d.id !== localChipId));
+        setChipScopeKeys((m) => {
+          const { [localChipId]: _gone, ...rest } = m;
+          return rest;
+        });
+      };
+      // Stop the backend job (if started) and delete its document so the
+      // index resets. Idempotent: both a late in-flight abort and the toast
+      // cancel can reach here.
+      const cleanupBackend = async () => {
+        if (cleaned) return;
+        cleaned = true;
+        if (jobId) await cancelJob(jobId);
+        if (documentId && scopeKey) {
+          try {
+            await useRagStore.getState().deleteDocument(documentId, scopeKey);
+          } catch {}
+        }
+      };
+
       setPendingDocs((prev) => [
         ...prev,
         { id: localChipId, file, status: "uploading" },
@@ -94,32 +132,40 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       // whole batch) so the single toast counts queued files too.
       const indexProgress = useIndexProgressStore.getState();
       indexProgress.add(localChipId, file.name);
+      indexProgress.setCancel(localChipId, async () => {
+        abort.abort();
+        unsubscribe?.();
+        releaseSlot();
+        await cleanupBackend();
+        removeChip();
+      });
 
       void (async () => {
         // Hold an indexing slot for this document's whole lifecycle so bulk /
         // folder uploads drain at the configured concurrency instead of
         // spawning every ingestion at once. Released on every terminal path.
         await acquireIndexSlot();
+        slotAcquired = true;
+        if (abort.signal.aborted) {
+          releaseSlot();
+          return;
+        }
         indexProgress.setIndexing(localChipId);
-        let slotReleased = false;
-        const releaseSlot = () => {
-          if (!slotReleased) {
-            slotReleased = true;
-            releaseIndexSlot();
-          }
-        };
         const ragSource = useChatRuntimeStore.getState().ragSource;
         let scope:
           | { kind: "kb"; kbId: string }
           | { kind: "thread"; threadId: string }
           | null = null;
-        let scopeKey: string | null = null;
         if (ragSource.kind === "kb") {
           scope = { kind: "kb", kbId: ragSource.kbId };
           scopeKey = `kb:${ragSource.kbId}`;
         } else {
           // ragSource is "thread" or "off" — fall back to thread.
           const threadId = await ensureThreadId();
+          if (abort.signal.aborted) {
+            releaseSlot();
+            return;
+          }
           if (!threadId) {
             setPendingDocs((prev) =>
               prev.map((d) =>
@@ -143,10 +189,21 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
         setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey }));
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId, alreadyIndexed } = await uploadDocument(
-            scope,
-            file,
-          );
+          const {
+            documentId: did,
+            jobId: jid,
+            alreadyIndexed,
+          } = await uploadDocument(scope, file);
+          documentId = did;
+          jobId = jid;
+          if (abort.signal.aborted) {
+            // Cancelled while the upload was in flight: the document now
+            // exists on the backend, so tear it down here.
+            releaseSlot();
+            await cleanupBackend();
+            removeChip();
+            return;
+          }
           if (alreadyIndexed) {
             // Identical file already in this scope — no re-index. If a
             // chip for this document already exists, drop the one we just
@@ -154,14 +211,14 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
             // otherwise mark this chip ready.
             setPendingDocs((prev) => {
               const dupExists = prev.some(
-                (d) => d.id !== localChipId && d.documentId === documentId,
+                (d) => d.id !== localChipId && d.documentId === did,
               );
               if (dupExists) {
                 return prev.filter((d) => d.id !== localChipId);
               }
               return prev.map((d) =>
                 d.id === localChipId
-                  ? { ...d, status: "ready", documentId }
+                  ? { ...d, status: "ready", documentId: did }
                   : d,
               );
             });
@@ -179,11 +236,11 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId
-                ? { ...d, status: "ingesting", jobId, documentId }
+                ? { ...d, status: "ingesting", jobId: jid, documentId: did }
                 : d,
             ),
           );
-          subscribeToJobEvents(jobId, {
+          unsubscribe = subscribeToJobEvents(jid, {
             onEvent: (event) => {
               if (event.type === "progress") {
                 indexProgress.setProgress(localChipId, event.progress);
@@ -205,6 +262,8 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                     .setRagSource({ kind: "thread" });
                 }
                 indexProgress.setReady(localChipId, event.num_chunks);
+                releaseSlot();
+              } else if (event.type === "cancelled") {
                 releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>

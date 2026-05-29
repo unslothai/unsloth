@@ -1029,6 +1029,17 @@ def clear_thread_documents(
 # --- Ingestion job SSE ---
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """Stop an in-flight ingestion job. The caller deletes the document
+    afterwards to reset the index; this only halts the worker."""
+    cancelled = ingestion.cancel_ingestion(job_id)
+    return {"ok": True, "cancelled": cancelled}
+
+
 @router.get("/jobs/{job_id}/events")
 async def job_events(
     job_id: str,

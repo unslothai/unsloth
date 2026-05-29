@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { subscribeToJobEvents } from "@/features/rag/api/rag-api";
+import { cancelJob, subscribeToJobEvents } from "@/features/rag/api/rag-api";
 import { useIndexProgressStore } from "@/features/rag/stores/index-progress-store";
 import { useRagStore } from "@/features/rag/stores/rag-store";
 import { acquireIndexSlot, releaseIndexSlot } from "./utils/rag-index-queue";
@@ -587,6 +587,37 @@ export function SharedComposer({
   const addDoc = useCallback(
     (file: File) => {
       const localChipId = crypto.randomUUID();
+      // Lifecycle state shared between the upload flow and the cancel thunk;
+      // the thunk closes over these `let`s so it sees the latest ids whenever
+      // the user cancels.
+      const abort = new AbortController();
+      let jobId: string | undefined;
+      let documentId: string | undefined;
+      let scopeKey: string | null = null;
+      let unsubscribe: (() => void) | undefined;
+      let slotAcquired = false;
+      let slotReleased = false;
+      let cleaned = false;
+      const releaseSlot = () => {
+        if (slotAcquired && !slotReleased) {
+          slotReleased = true;
+          releaseIndexSlot();
+        }
+      };
+      const removeChip = () => {
+        setPendingDocs((prev) => prev.filter((d) => d.id !== localChipId));
+      };
+      const cleanupBackend = async () => {
+        if (cleaned) return;
+        cleaned = true;
+        if (jobId) await cancelJob(jobId);
+        if (documentId && scopeKey) {
+          try {
+            await useRagStore.getState().deleteDocument(documentId, scopeKey);
+          } catch {}
+        }
+      };
+
       setPendingDocs((prev) => [
         ...prev,
         { id: localChipId, file, status: "uploading" },
@@ -595,19 +626,24 @@ export function SharedComposer({
       // single toast counts queued files too.
       const indexProgress = useIndexProgressStore.getState();
       indexProgress.add(localChipId, file.name);
+      indexProgress.setCancel(localChipId, async () => {
+        abort.abort();
+        unsubscribe?.();
+        releaseSlot();
+        await cleanupBackend();
+        removeChip();
+      });
       void (async () => {
         // Hold an indexing slot for the document's whole lifecycle so bulk /
         // folder uploads drain at the configured concurrency. Released on
         // every terminal path below.
         await acquireIndexSlot();
+        slotAcquired = true;
+        if (abort.signal.aborted) {
+          releaseSlot();
+          return;
+        }
         indexProgress.setIndexing(localChipId);
-        let slotReleased = false;
-        const releaseSlot = () => {
-          if (!slotReleased) {
-            slotReleased = true;
-            releaseIndexSlot();
-          }
-        };
         const ragSource = useChatRuntimeStore.getState().ragSource;
         let scope:
           | { kind: "kb"; kbId: string }
@@ -615,8 +651,13 @@ export function SharedComposer({
           | null = null;
         if (ragSource.kind === "kb") {
           scope = { kind: "kb", kbId: ragSource.kbId };
+          scopeKey = `kb:${ragSource.kbId}`;
         } else {
           const threadId = await ensureThreadId();
+          if (abort.signal.aborted) {
+            releaseSlot();
+            return;
+          }
           if (!threadId) {
             setPendingDocs((prev) =>
               prev.map((d) =>
@@ -635,26 +676,38 @@ export function SharedComposer({
             return;
           }
           scope = { kind: "thread", threadId };
+          scopeKey = `thread:${threadId}`;
         }
         const uploadDocument = useRagStore.getState().uploadDocument;
         try {
-          const { documentId, jobId, alreadyIndexed } = await uploadDocument(
-            scope,
-            file,
-          );
+          const {
+            documentId: did,
+            jobId: jid,
+            alreadyIndexed,
+          } = await uploadDocument(scope, file);
+          documentId = did;
+          jobId = jid;
+          if (abort.signal.aborted) {
+            // Cancelled while uploading: the document now exists on the
+            // backend, so tear it down here.
+            releaseSlot();
+            await cleanupBackend();
+            removeChip();
+            return;
+          }
           if (alreadyIndexed) {
             // Drop the just-added chip if this doc is already represented
             // so the composer never shows the same document twice.
             setPendingDocs((prev) => {
               const dupExists = prev.some(
-                (d) => d.id !== localChipId && d.documentId === documentId,
+                (d) => d.id !== localChipId && d.documentId === did,
               );
               if (dupExists) {
                 return prev.filter((d) => d.id !== localChipId);
               }
               return prev.map((d) =>
                 d.id === localChipId
-                  ? { ...d, status: "ready", documentId }
+                  ? { ...d, status: "ready", documentId: did }
                   : d,
               );
             });
@@ -672,11 +725,11 @@ export function SharedComposer({
           setPendingDocs((prev) =>
             prev.map((d) =>
               d.id === localChipId
-                ? { ...d, status: "ingesting", jobId, documentId }
+                ? { ...d, status: "ingesting", jobId: jid, documentId: did }
                 : d,
             ),
           );
-          subscribeToJobEvents(jobId, {
+          unsubscribe = subscribeToJobEvents(jid, {
             onEvent: (event) => {
               if (event.type === "progress") {
                 indexProgress.setProgress(localChipId, event.progress);
@@ -695,6 +748,8 @@ export function SharedComposer({
                     .setRagSource({ kind: "thread" });
                 }
                 indexProgress.setReady(localChipId, event.num_chunks);
+                releaseSlot();
+              } else if (event.type === "cancelled") {
                 releaseSlot();
               } else if (event.type === "error") {
                 setPendingDocs((prev) =>
