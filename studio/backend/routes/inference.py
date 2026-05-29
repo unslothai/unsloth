@@ -2403,6 +2403,12 @@ async def openai_chat_completions(
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
 
+    # Map Anthropic-style ``thinking`` parameter to the internal
+    # ``enable_thinking`` boolean so downstream templates and backends
+    # continue to work unchanged.
+    if payload.thinking is not None and payload.enable_thinking is None:
+        payload.enable_thinking = payload.thinking.type == "enabled"
+
     # ── Determine which backend is active ─────────────────────
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model

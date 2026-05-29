@@ -613,6 +613,14 @@ class ChatMessage(BaseModel):
         return self
 
 
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
+
+
 class ChatCompletionRequest(BaseModel):
     """
     OpenAI-compatible chat completion request.
@@ -701,6 +709,11 @@ class ChatCompletionRequest(BaseModel):
     preserve_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
     )
     enable_tools: Optional[bool] = Field(
         None,

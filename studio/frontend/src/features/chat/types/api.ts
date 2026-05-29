@@ -275,6 +275,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  thinking?: {type: "disabled" | "enabled";} | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   auto_heal_tool_calls?: boolean;
