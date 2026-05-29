@@ -57,7 +57,18 @@ class TestDiffusionArchitectures:
 
     @pytest.mark.parametrize(
         "arch",
-        ["flux", "sd1", "sdxl", "sd3", "aura", "hidream", "cosmos", "ltxv", "hyvid", "wan"],
+        [
+            "flux",
+            "sd1",
+            "sdxl",
+            "sd3",
+            "aura",
+            "hidream",
+            "cosmos",
+            "ltxv",
+            "hyvid",
+            "wan",
+        ],
     )
     def test_every_diffusion_arch_is_recognised(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"

@@ -2609,9 +2609,7 @@ class LlamaCppBackend:
         # "unknown model architecture: '<arch>'" -> llama.cpp cannot run
         # this model type at all. Route known diffusion GGUFs to the Images
         # page and give every other arch a precise "unsupported" message.
-        arch_match = re.search(
-            r"unknown model architecture:\s*'([^']+)'", lowered
-        )
+        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
             if any(d in arch for d in LlamaCppBackend._DIFFUSION_ARCHES):
