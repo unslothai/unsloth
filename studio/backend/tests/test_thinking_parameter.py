@@ -27,23 +27,25 @@ def test_thinking_config_defaults_to_disabled():
 
 def test_thinking_config_explicit_disabled():
     """ThinkingConfig should accept type='disabled'."""
-    config = ThinkingConfig(type="disabled")
+    config = ThinkingConfig(type = "disabled")
     assert config.type == "disabled"
 
 
 def test_thinking_config_explicit_enabled():
     """ThinkingConfig should accept type='enabled'."""
-    config = ThinkingConfig(type="enabled")
+    config = ThinkingConfig(type = "enabled")
     assert config.type == "enabled"
 
 
 def test_chat_completion_request_with_thinking_disabled():
     """ChatCompletionRequest should accept thinking parameter."""
-    req = ChatCompletionRequest.model_validate({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hello"}],
-        "thinking": {"type": "disabled"},
-    })
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "disabled"},
+        }
+    )
     assert req.thinking is not None
     assert req.thinking.type == "disabled"
     assert req.enable_thinking is None
@@ -51,11 +53,13 @@ def test_chat_completion_request_with_thinking_disabled():
 
 def test_chat_completion_request_with_thinking_enabled():
     """ChatCompletionRequest should accept thinking.enabled."""
-    req = ChatCompletionRequest.model_validate({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hello"}],
-        "thinking": {"type": "enabled"},
-    })
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled"},
+        }
+    )
     assert req.thinking is not None
     assert req.thinking.type == "enabled"
     assert req.enable_thinking is None
@@ -63,21 +67,25 @@ def test_chat_completion_request_with_thinking_enabled():
 
 def test_chat_completion_request_without_thinking():
     """ChatCompletionRequest should work without thinking parameter."""
-    req = ChatCompletionRequest.model_validate({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hello"}],
-    })
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
     assert req.thinking is None
     assert req.enable_thinking is None
 
 
 def test_chat_completion_request_backward_compatible_enable_thinking():
     """ChatCompletionRequest should still support enable_thinking."""
-    req = ChatCompletionRequest.model_validate({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hello"}],
-        "enable_thinking": True,
-    })
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "enable_thinking": True,
+        }
+    )
     assert req.enable_thinking is True
     assert req.thinking is None
 
@@ -85,12 +93,14 @@ def test_chat_completion_request_backward_compatible_enable_thinking():
 def test_thinking_overrides_enable_thinking_when_both_provided():
     """When both thinking and enable_thinking are provided,
     enable_thinking takes precedence (no override)."""
-    req = ChatCompletionRequest.model_validate({
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hello"}],
-        "thinking": {"type": "enabled"},
-        "enable_thinking": False,
-    })
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled"},
+            "enable_thinking": False,
+        }
+    )
     # enable_thinking is explicitly set, so it takes precedence
     assert req.enable_thinking is False
     assert req.thinking.type == "enabled"
