@@ -34,6 +34,7 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1074,8 +1075,7 @@ async function autoLoadSmallestModel(): Promise<{
               supportsPreserveThinking:
                 loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: loadResp.supports_tools ?? false,
-              codeToolsEnabled: loadResp.supports_tools ?? false,
+              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
@@ -1138,8 +1138,7 @@ async function autoLoadSmallestModel(): Promise<{
               sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
             // Parity with the GGUF branch above.
-            toolsEnabled: sfLoadResp.supports_tools ?? false,
-            codeToolsEnabled: sfLoadResp.supports_tools ?? false,
+            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
@@ -1237,8 +1236,7 @@ async function autoLoadSmallestModel(): Promise<{
         reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: loadResp.supports_tools ?? false,
-        codeToolsEnabled: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
