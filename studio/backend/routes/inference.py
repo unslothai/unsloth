@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 class LoadModelRequest(BaseModel):
     model_path: str
+
 
 @router.post("/load")
 async def load_model(request: LoadModelRequest):
@@ -21,8 +23,8 @@ async def load_model(request: LoadModelRequest):
     try:
         model = load_model(model_path)
         if model is None:
-            raise HTTPException(status_code=500, detail="Failed to load model")
-        return JSONResponse(content={"success": True}, status_code=200)
+            raise HTTPException(status_code = 500, detail = "Failed to load model")
+        return JSONResponse(content = {"success": True}, status_code = 200)
     except Exception as e:
         logger.error(f"Error loading model: {e}")
-        raise HTTPException(status_code=500, detail="Failed to load model")
+        raise HTTPException(status_code = 500, detail = "Failed to load model")

@@ -8,6 +8,7 @@ from llama_cpp import LlamaCpp
 
 logger = logging.getLogger(__name__)
 
+
 class LlamaCppModel:
     def __init__(self, model_path: str, device: str = "cpu"):
         self.model_path = model_path
@@ -19,7 +20,9 @@ class LlamaCppModel:
             self.llama_cpp.load_model()
         except Exception as e:
             logger.error(f"Error loading model: {e}")
-            raise RuntimeError("llama-server failed to start. Check that the GGUF file is valid and you have enough memory.")
+            raise RuntimeError(
+                "llama-server failed to start. Check that the GGUF file is valid and you have enough memory."
+            )
 
     def unload_model(self):
         self.llama_cpp.unload_model()
@@ -35,6 +38,7 @@ class LlamaCppModel:
 
     def get_model_architecture(self):
         return self.llama_cpp.get_model_architecture()
+
 
 def load_model(model_path: str, device: str = "cpu") -> Optional[LlamaCppModel]:
     try:
