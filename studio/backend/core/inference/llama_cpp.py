@@ -604,6 +604,15 @@ def _vulkan_lib_filename() -> str:
     return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
 
 
+def _llama_lib_dir(binary: str) -> Path:
+    # The installer exposes llama-server as a top-level symlink
+    # (~/.unsloth/llama.cpp/llama-server) into build/bin/, where the ggml
+    # backend libs actually live. Resolve it so callers looking for sibling
+    # libs (Vulkan detection, LD_LIBRARY_PATH, the probe's bindir) hit the real
+    # directory instead of the symlink's parent.
+    return Path(binary).resolve().parent
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -1248,7 +1257,7 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
-        return (Path(binary).parent / _vulkan_lib_filename()).is_file()
+        return (_llama_lib_dir(binary) / _vulkan_lib_filename()).is_file()
 
     @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
@@ -1411,7 +1420,7 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return []
-        binary_dir = Path(binary).parent
+        binary_dir = _llama_lib_dir(binary)
         if not (binary_dir / _vulkan_lib_filename()).is_file():
             return []
 
@@ -3239,7 +3248,7 @@ class LlamaCppBackend:
                 import sys
 
                 env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                binary_dir = str(_llama_lib_dir(binary))
 
                 if sys.platform == "win32":
                     # See _build_windows_path_dirs for ordering. #5106.
