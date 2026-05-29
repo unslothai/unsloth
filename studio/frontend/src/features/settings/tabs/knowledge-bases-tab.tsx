@@ -78,7 +78,10 @@ export function KnowledgeBasesTab() {
             (selected || previewActive) && KB_WORKSPACE_HEIGHT,
           )}
         >
-          <div className="w-[220px] shrink-0">
+          {/* Full width when browsing (so the list / empty-state matches the
+              thread rows below); shrinks to a sidebar once a KB is selected
+              and the detail pane needs the room. */}
+          <div className={selected ? "w-[220px] shrink-0" : "min-w-0 flex-1"}>
             <KBList selectedId={selected?.id ?? null} onSelect={setSelected} />
           </div>
           {selected ? (
