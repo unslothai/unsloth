@@ -42,7 +42,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 
-torch._dynamo.config.recompile_limit = 64
+# recompile_limit was removed in some ROCm torch builds (e.g. pytorch.org/whl/rocm6.2).
+# Guard so training doesn't crash on RDNA2/RDNA3 with older ROCm torch wheels.
+if hasattr(torch._dynamo.config, "recompile_limit"):
+    torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 

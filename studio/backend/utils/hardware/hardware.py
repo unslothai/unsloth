@@ -522,6 +522,31 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     result, _get_parent_visible_gpu_spec()
                 )
             return result
+        # amd-smi / nvidia-smi unavailable or returned no usable data (common on
+        # HIP SDK-only Windows, Docker containers, and some amd-smi JSON versions).
+        # Fall back to torch.cuda.mem_get_info which gives system-wide VRAM
+        # occupancy rather than process-only memory_allocated, so the monitor
+        # shows real GPU usage even without an SMI tool present.
+        _visible_spec = _get_parent_visible_gpu_spec()
+        _numeric_ids = _visible_spec.get("numeric_ids") or [0]
+        _primary_idx = [_numeric_ids[0]] if _numeric_ids else [0]
+        _torch_devices = _torch_get_per_device_info(_primary_idx)
+        if _torch_devices:
+            _td = _torch_devices[0]
+            _total = _td["total_gb"]
+            _used = _td["used_gb"]
+            return {
+                "available": True,
+                "backend": _backend_label(device),
+                "gpu_utilization_pct": None,
+                "temperature_c": None,
+                "vram_used_gb": _used,
+                "vram_total_gb": _total,
+                "vram_utilization_pct": round((_used / _total) * 100, 1) if _total > 0 else None,
+                "power_draw_w": None,
+                "power_limit_w": None,
+                "power_utilization_pct": None,
+            }
 
     # MLX path: single _read_apple_gpu_stats() call carries both VRAM-used
     # bytes and GPU utilization %. psutil for unified-memory total is cheap.
