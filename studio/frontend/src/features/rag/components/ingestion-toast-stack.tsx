@@ -122,27 +122,31 @@ export function IngestionToastStack() {
                 </div>
               )}
             </div>
-            {allDone ? (
+            <div className="flex shrink-0 items-center gap-1">
+              {/* While indexing: "Cancel" stops the batch and resets the
+                  index; the "X" only dismisses the toast and lets indexing
+                  continue in the background. When done, just the dismiss X. */}
+              {!allDone && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={cancelling}
+                  className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={onCancel}
+                >
+                  {cancelling ? "Cancelling…" : "Cancel"}
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
                 aria-label="Dismiss"
-                className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
+                className="h-5 w-5 text-muted-foreground hover:text-foreground"
                 onClick={() => clear()}
               >
                 <HugeiconsIcon icon={Cancel01Icon} size={12} />
               </Button>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={cancelling}
-                className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
-                onClick={onCancel}
-              >
-                {cancelling ? "Cancelling…" : "Cancel"}
-              </Button>
-            )}
+            </div>
           </div>
         </motion.div>
       </AnimatePresence>
