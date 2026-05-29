@@ -1743,7 +1743,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             'LITERAL id attribute — e.g. `<chunk id="7">` is cited as ' +
             "`[7]`. IDs are unique across the whole turn; never renumber, " +
             "never reuse a different number. Do not make additional tool " +
-            "calls beyond the planned 3.",
+            "calls beyond the planned 3.\n" +
+            "4. Answer primarily from the knowledge base. Only use web " +
+            "search or web fetch if the returned chunks genuinely do not " +
+            "contain the answer — do not use them to double-check or expand " +
+            "an answer the documents already support.\n" +
+            "5. Once you have written your grounded answer, STOP. Do not " +
+            "make further tool calls and do not restate or re-answer.",
         );
       }
       if (systemPromptParts.length > 0) {
@@ -2511,8 +2517,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   mcp_enabled: mcpEnabledForChat,
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
-                  max_tool_calls_per_message:
-                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  // With RAG active the model only needs up to 3 retrieval
+                  // calls; cap low so it can't spiral into web search / fetch
+                  // after already answering from the documents. Off-RAG turns
+                  // keep the user's full budget.
+                  max_tool_calls_per_message: ragToolPathTaken
+                    ? Math.min(
+                        useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                        6,
+                      )
+                    : useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
