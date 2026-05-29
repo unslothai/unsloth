@@ -508,6 +508,30 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     }
 
 
+def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
+    """Query system-wide AMD GPU VRAM via Linux DRM sysfs.
+
+    Reads /sys/class/drm/card*/device/mem_info_vram_* which the kernel
+    updates in real-time across all processes. No tools required.
+    Returns (used_gb, total_gb) or (None, None) on failure.
+    """
+    import glob as _glob
+    if platform.system() != "Linux":
+        return None, None
+    try:
+        used_files = _glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")
+        total_files = _glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
+        if not used_files or not total_files:
+            return None, None
+        used_bytes = sum(int(open(f).read().strip()) for f in used_files)
+        total_bytes = sum(int(open(f).read().strip()) for f in total_files)
+        if total_bytes == 0:
+            return None, None
+        return round(used_bytes / (1024 ** 3), 2), round(total_bytes / (1024 ** 3), 2)
+    except Exception:
+        return None, None
+
+
 def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
 
@@ -579,7 +603,24 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }
-        # Linux/macOS fallback: torch.cuda.mem_get_info is system-wide on Linux ROCm.
+        # Linux: DRM sysfs gives system-wide VRAM across all processes, no tools needed.
+        if IS_ROCM and platform.system() == "Linux":
+            _linux_used, _linux_total = _rocm_linux_sysfs_vram_gb()
+            if _linux_used is not None and _linux_total is not None:
+                return {
+                    "available": True,
+                    "backend": _backend_label(device),
+                    "gpu_utilization_pct": None,
+                    "temperature_c": None,
+                    "vram_used_gb": _linux_used,
+                    "vram_total_gb": _linux_total,
+                    "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
+                    if _linux_total > 0 else None,
+                    "power_draw_w": None,
+                    "power_limit_w": None,
+                    "power_utilization_pct": None,
+                }
+        # Last resort: torch mem_get_info (process-local).
         _visible_spec = _get_parent_visible_gpu_spec()
         _numeric_ids = _visible_spec.get("numeric_ids") or [0]
         _primary_idx = [_numeric_ids[0]] if _numeric_ids else [0]
