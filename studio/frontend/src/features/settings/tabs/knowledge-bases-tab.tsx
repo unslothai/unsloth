@@ -28,6 +28,7 @@ export function KnowledgeBasesTab() {
   const [createOpen, setCreateOpen] = useState(false);
   const previewTarget = usePreviewStore((s) => s.target);
   const previewStatus = usePreviewStore((s) => s.status);
+  const closePreview = usePreviewStore((s) => s.close);
   const previewActive =
     previewTarget !== null ||
     previewStatus === "loading" ||
@@ -36,9 +37,13 @@ export function KnowledgeBasesTab() {
   const closePanel = () => {
     setActiveKb(null);
     setActivePanel(null);
+    closePreview();
   };
 
   const handlePanel = (kb: KnowledgeBase, panel: KBPanel) => {
+    // A stale preview from a previous selection would otherwise linger and
+    // force the workspace wider; clear it whenever the panel changes.
+    closePreview();
     // Re-clicking the active KB's active button collapses back to full width.
     if (activeKb?.id === kb.id && activePanel === panel) {
       closePanel();
@@ -66,7 +71,10 @@ export function KnowledgeBasesTab() {
   });
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    // pr-2.5 insets right-aligned counts (e.g. "3 total", "60 threads") from
+    // the scroll container's scrollbar, which overlays the content edge in
+    // webviews that don't honor scrollbar-gutter.
+    <div className="flex min-w-0 flex-col gap-4 pr-2.5">
       <div>
         <h2 className="text-lg font-semibold">Knowledge bases</h2>
         <p className="text-sm text-muted-foreground">
@@ -158,7 +166,10 @@ export function KnowledgeBasesTab() {
               </button>
               <div
                 className={cn(
-                  "w-0 shrink-0 overflow-hidden max-lg:hidden lg:w-[var(--preview-w)]",
+                  // shrink + min-w-0 + a width cap so the preview can never
+                  // push the workspace wider than the dialog (which clipped
+                  // the close button and right-aligned content).
+                  "w-0 min-w-0 shrink overflow-hidden max-lg:hidden lg:w-[var(--preview-w)] lg:max-w-[60%]",
                   !previewResizing && "transition-[width] duration-200 ease-out",
                 )}
                 style={
