@@ -1480,7 +1480,7 @@ export function ChatSettingsPanel({
                     </span>
                     <span className="text-[11px] text-muted-foreground">
                       Use a vision model to describe figures during indexing so
-                      they're searchable. Off = faster.
+                      they're searchable by text. Off = faster.
                     </span>
                   </div>
                   <Switch
