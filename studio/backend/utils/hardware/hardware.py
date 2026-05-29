@@ -508,7 +508,7 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     }
 
 
-def _windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
+def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
 
     Uses the same data source as Task Manager so it reflects cross-process
@@ -562,8 +562,8 @@ def get_gpu_utilization() -> Dict[str, Any]:
         # the Performance Counter API (same source as Task Manager) for
         # system-wide dedicated VRAM — covers cross-process usage that
         # torch.cuda.mem_get_info cannot see from the Studio server process.
-        if platform.system() == "Windows":
-            _win_used, _win_total = _windows_perf_counter_vram_gb()
+        if IS_ROCM and platform.system() == "Windows":
+            _win_used, _win_total = _rocm_windows_perf_counter_vram_gb()
             if _win_used is not None and _win_total is not None:
                 return {
                     "available": True,
