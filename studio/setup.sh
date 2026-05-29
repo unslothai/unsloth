@@ -635,6 +635,81 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
 fi
 fi
 
+# ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
+_setup_amd_detected=false
+_setup_gfx_all=""
+_setup_mkt=""
+if command -v rocminfo >/dev/null 2>&1 && \
+   rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    _setup_amd_detected=true
+    _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
+        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+elif command -v amd-smi >/dev/null 2>&1 && \
+     amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+    _setup_amd_detected=true
+    _setup_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    [ -z "$_setup_gfx_all" ] && \
+        _setup_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    _setup_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+        '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+fi
+
+if command -v nvidia-smi >/dev/null 2>&1 && \
+   nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+    step "gpu" "NVIDIA GPU detected"
+elif [ "$_setup_amd_detected" = true ]; then
+    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    _setup_vis_idx=0
+    if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
+        _setup_first="${_setup_vis%%,*}"
+        case "$_setup_first" in ''|*[!0-9]*) ;; *) _setup_vis_idx=$_setup_first ;; esac
+    fi
+    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
+        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
+    if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+        substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
+    # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
+    elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        case "$_setup_mkt" in
+            *"9070 XT"*|*9080*)                                                     _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                          _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
+            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)        _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
+            *"RX 7600"*)                                                           _setup_gfx="gfx1102" ;;  # RDNA 3
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                               _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+        esac
+        if [ -n "$_setup_gfx" ]; then
+            substep "gfx arch inferred from GPU name: $_setup_gfx"
+            substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
+        fi
+    fi
+    # ROCm version via hipconfig, then amd-smi
+    _setup_rocm_ver=""
+    if command -v hipconfig >/dev/null 2>&1; then
+        _setup_rocm_ver=$(hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]/{print; exit}' || true)
+    fi
+    if [ -z "$_setup_rocm_ver" ] && command -v amd-smi >/dev/null 2>&1; then
+        _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+            'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
+    fi
+    if [ -n "$_setup_gfx" ]; then
+        step "gpu" "AMD ROCm ($_setup_gfx)"
+    else
+        step "gpu" "AMD ROCm"
+    fi
+    _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
+    substep "ROCm: $_setup_rocm_root"
+    [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
+    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+else
+    step "gpu" "none (chat-only / GGUF)" "$C_WARN"
+    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
+fi
+
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.

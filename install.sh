@@ -1944,27 +1944,93 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
-# ── Print CPU-only hint when no GPU detected ──
+# ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
+if _has_usable_nvidia_gpu; then
+    step "gpu" "NVIDIA GPU detected"
+elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
+    # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
+    _gpu_disp_gfx_all=""
+    _gpu_disp_mkt=""
+    if command -v rocminfo >/dev/null 2>&1; then
+        _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _gpu_disp_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
+            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    fi
+    if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_gpu_disp_gfx_all" ] && \
+            _gpu_disp_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    fi
+    if [ -z "$_gpu_disp_mkt" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    fi
+    _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    _gpu_vis_idx=0
+    if [ -n "$_gpu_vis" ] && [ "$_gpu_vis" != "-1" ]; then
+        _gpu_first="${_gpu_vis%%,*}"
+        case "$_gpu_first" in ''|*[!0-9]*) ;; *) _gpu_vis_idx=$_gpu_first ;; esac
+    fi
+    _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
+        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
+    if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _gpu_disp_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+        substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_gpu_disp_gfx"
+    # Name-based arch inference when tools don't report gfx (mirrors install.ps1 nameArchTable)
+    elif [ -z "$_gpu_disp_gfx" ] && [ -n "$_gpu_disp_mkt" ]; then
+        case "$_gpu_disp_mkt" in
+            *"9070 XT"*|*9080*)                                                     _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                          _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
+            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)        _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop
+            *"RX 7600"*)                                                           _gpu_disp_gfx="gfx1102" ;;  # RDNA 3
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                               _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU
+        esac
+        if [ -n "$_gpu_disp_gfx" ]; then
+            substep "gfx arch inferred from GPU name: $_gpu_disp_gfx"
+            substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_gpu_disp_gfx to skip inference next time"
+        fi
+    fi
+    # ROCm version via hipconfig, then amd-smi
+    _gpu_rocm_ver=""
+    if command -v hipconfig >/dev/null 2>&1; then
+        _gpu_rocm_ver=$(hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]/{print; exit}' || true)
+    fi
+    if [ -z "$_gpu_rocm_ver" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+            'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
+    fi
+    if [ -n "$_gpu_disp_gfx" ]; then
+        step "gpu" "AMD ROCm ($_gpu_disp_gfx)"
+    else
+        step "gpu" "AMD ROCm"
+    fi
+    _rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
+    substep "ROCm: $_rocm_root"
+    [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
+    [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
+else
+    step "gpu" "none (CPU-only)" "$C_WARN"
+fi
+
+# ── PyTorch wheel index note ──
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
-            echo ""
-            echo "  NOTE: No GPU detected (nvidia-smi and ROCm not found)."
-            echo "  Installing CPU-only PyTorch. If you only need GGUF chat/inference,"
-            echo "  re-run with --no-torch for a faster, lighter install:"
-            echo "    curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
-            echo "  AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
-            echo ""
+            substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
+            substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+            substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
+            substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
         fi
         ;;
-    */rocm*)
-        echo ""
+    */rocm*|*/gfx*)
         if [ "$_amd_gpu_radeon" = true ]; then
-            echo "  AMD Radeon + ROCm detected -- installing PyTorch wheels from repo.radeon.com"
+            substep "wheels: repo.radeon.com (Radeon)"
         else
-            echo "  AMD ROCm detected -- installing ROCm-enabled PyTorch ($TORCH_INDEX_URL)"
+            substep "wheels: $TORCH_INDEX_URL"
         fi
-        echo ""
         ;;
 esac
 
