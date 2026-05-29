@@ -771,6 +771,37 @@ class TestSourceCodePatterns:
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
 
+    def test_setup_ps1_exports_allow_unsupported_compiler(self):
+        """Windows parity for the PR #5826 headline fix: a fresh CUDA toolkit's
+        host-compiler whitelist also lags MSVC, so nvcc can reject the host
+        compiler with "#error -- unsupported Microsoft Visual Studio version!"
+        before any real compile runs. setup.ps1 sets
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA build branch
+        (-allow-unsupported-compiler disables the gcc *and* MSVC host checks)
+        so the CUDA configure + build proceed. Delivered via the environment so
+        it also covers cmake's configure-time CUDA compiler-id probe, kept out
+        of the $CmakeArgs array, and scoped to the GPU branch."""
+        content = SETUP_PS1.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via the process environment, not the $CmakeArgs array, so it
+        # reaches both the configure-time compiler probe and `cmake --build`.
+        assert "$env:NVCC_PREPEND_FLAGS" in content
+        cmake_args_lines = [
+            line for line in content.splitlines() if "$CmakeArgs +=" in line
+        ]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must not be pushed into the $CmakeArgs array"
+        # Must be scoped to the CUDA branch (guarded by the GPU/nvcc check),
+        # not set unconditionally for CPU-only builds.
+        flag_idx = content.index("-allow-unsupported-compiler")
+        cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
+        cuda_disable_idx = content.index("'-DGGML_CUDA=OFF'")
+        assert cuda_guard_idx < flag_idx < cuda_disable_idx, (
+            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, "
+            "before the GGML_CUDA=OFF (CPU) branch"
+        )
+
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
         """CPU fallback args must NOT contain Metal-only RPATH flags at runtime."""
         script = (
