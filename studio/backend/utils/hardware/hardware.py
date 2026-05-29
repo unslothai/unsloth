@@ -516,6 +516,7 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
     Returns (used_gb, total_gb) or (None, None) on failure.
     """
     import glob as _glob
+
     if platform.system() != "Linux":
         return None, None
     try:
@@ -527,7 +528,7 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         total_bytes = sum(int(open(f).read().strip()) for f in total_files)
         if total_bytes == 0:
             return None, None
-        return round(used_bytes / (1024 ** 3), 2), round(total_bytes / (1024 ** 3), 2)
+        return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
     except Exception:
         return None, None
 
@@ -615,7 +616,8 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     "vram_used_gb": _linux_used,
                     "vram_total_gb": _linux_total,
                     "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
-                    if _linux_total > 0 else None,
+                    if _linux_total > 0
+                    else None,
                     "power_draw_w": None,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
