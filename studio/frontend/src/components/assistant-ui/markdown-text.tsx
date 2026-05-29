@@ -439,12 +439,14 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
     }
   }, [text, isStreaming]);
 
-  // Cancel only on unmount. Folding this into the scheduling effect would
-  // cancel the in-flight frame on every token and defeat the throttle.
+  // Unmount cleanup. Cancel the in-flight rAF and null the handle so a
+  // StrictMode remount isn't gated out by a stale id. Kept separate from the
+  // scheduling effect so it doesn't cancel mid-stream and defeat the throttle.
   useEffect(() => {
     return () => {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     };
   }, []);
