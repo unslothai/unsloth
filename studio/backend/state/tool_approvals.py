@@ -7,10 +7,12 @@ When a chat request sets ``confirm_tool_calls``, the agentic loop pauses
 before executing each tool and waits here for the user's decision, which
 arrives via ``POST /api/inference/tool-confirm`` on a separate connection.
 
-The agentic loop is strictly sequential, so at most one tool awaits a
-decision per session at any moment -- the gate keys on ``session_id``
-alone and never needs to match individual tool-call ids (which some
-models omit).
+The agentic loop is sequential, so a session normally has a single tool
+awaiting a decision -- the gate keys on ``session_id`` alone and never
+needs to match individual tool-call ids (which some models omit). If a
+second waiter ever registers for the same key (e.g. two id-less chats
+both mapping to ""), the older one is unblocked as denied so it can't
+hang.
 """
 
 import threading
@@ -40,25 +42,30 @@ def request_tool_decision(session_id, cancel_event = None, timeout = _DECISION_T
     times out or generation is cancelled before the user decides.
     """
     key = _key(session_id)
-    event = threading.Event()
+    slot = {"event": threading.Event(), "decision": None}
     with _lock:
-        _pending[key] = {"event": event, "decision": None}
+        # If a waiter already holds this key (same session, or two id-less
+        # chats both mapping to ""), unblock it as denied so it can't hang
+        # once we orphan its event below.
+        old = _pending.get(key)
+        if old is not None:
+            old["decision"] = "deny"
+            old["event"].set()
+        _pending[key] = slot
     try:
         waited = 0.0
-        while not event.wait(timeout = 0.5):
+        while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return "deny"
             waited += 0.5
             if waited >= timeout:
                 return "deny"
-        with _lock:
-            slot = _pending.get(key)
-            return (slot or {}).get("decision") or "deny"
+        # Read our own slot, not _pending[key], which a newer waiter may
+        # have replaced.
+        return slot["decision"] or "deny"
     finally:
         with _lock:
-            # Only remove our own entry — never a newer waiter's, in case the
-            # same session somehow re-registered while we were waiting.
-            if _pending.get(key, {}).get("event") is event:
+            if _pending.get(key) is slot:
                 _pending.pop(key, None)
 
 
