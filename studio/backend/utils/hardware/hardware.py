@@ -771,8 +771,11 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # Use explicit None checks (not `or`) so empty string "" is honoured
     # as "no visible GPUs" rather than falling through to CUDA_VISIBLE_DEVICES.
     cuda_visible = None
+    # Prefer ROCm masks only on a ROCm host, or when no CUDA mask is set, so a
+    # stale HIP_VISIBLE_DEVICES on an NVIDIA host can't override CUDA_VISIBLE_DEVICES.
     _is_rocm_spec = IS_ROCM or (
-        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+        "CUDA_VISIBLE_DEVICES" not in os.environ
+        and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")

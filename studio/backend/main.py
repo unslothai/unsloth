@@ -70,35 +70,22 @@ if sys.platform == "win32":
     # this the server process crashes with "Configured ROCm binary not found".
     # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
     # before any import that pulls in bitsandbytes (mirrors worker.py logic).
-    # Gate on the active torch runtime only. AMD SDK / Radeon Windows wheels
-    # may not set HIP_PATH / ROCM_PATH, but they do populate torch.version.hip
-    # or encode "rocm" in torch.__version__. A previous version of this gate
-    # required HIP_PATH / ROCM_PATH and silently skipped BNB_ROCM_VERSION for
-    # those wheels.
-    _is_rocm_host = False
-    try:
-        import torch as _torch_probe
-
-        _is_rocm_host = bool(
-            getattr(getattr(_torch_probe, "version", None), "hip", None)
-            or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-        )
-        del _torch_probe
-    except Exception:
-        pass
-    if _is_rocm_host and "BNB_ROCM_VERSION" not in os.environ:
+    # Gate on the rocm bnb DLL (the exact file this configures) or HIP_PATH/
+    # ROCM_PATH, not on torch.version.hip: that needed importing torch on every
+    # Windows host (NVIDIA/CPU included), adding seconds to startup. Radeon
+    # wheels without HIP_PATH still ship the rocm bnb DLL, so they are covered.
+    if "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
         import logging as _logging
 
+        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
         _bnb_rocm_ver = None
+        _found_rocm_bnb = False
         try:
             import importlib.util as _ilu
 
             _bnb_spec = _ilu.find_spec("bitsandbytes")
-            # Use submodule_search_locations (same as install_python_stack.py and
-            # worker.py) rather than spec.origin so that editable installs of
-            # bitsandbytes, where __init__.py may live outside the package root,
-            # are handled consistently across all three probe sites.
+            # submodule_search_locations (not spec.origin) handles editable installs.
             if _bnb_spec and _bnb_spec.submodule_search_locations:
                 import re as _re_bnb
 
@@ -107,6 +94,7 @@ if sys.platform == "win32":
                     for _dll in _glob.glob(
                         os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
                     ):
+                        _found_rocm_bnb = True
                         _km = _re_bnb.search(
                             r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
                         )
@@ -119,13 +107,14 @@ if sys.platform == "win32":
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
                 _e,
             )
-        _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
-        os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
-        _logging.getLogger(__name__).info(
-            "Windows ROCm: set BNB_ROCM_VERSION=%s "
-            "(detected from installed BNB wheel; overrides torch.version.hip auto-detection)",
-            _bnb_rocm_ver_final,
-        )
+        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72").
+        if _found_rocm_bnb or _hip_env:
+            _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+            os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+            _logging.getLogger(__name__).info(
+                "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
+                _bnb_rocm_ver_final,
+            )
 
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).
