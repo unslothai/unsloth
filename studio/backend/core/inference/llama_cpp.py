@@ -2995,14 +2995,15 @@ class LlamaCppBackend:
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
+                    mmproj_note = (
+                        f"mmproj: {mmproj_size / (1024**3):.1f} GB, "
+                        if mmproj_size
+                        else ""
+                    )
                     logger.info(
                         f"GGUF size: {gguf_size / (1024**3):.1f} GB, "
-                        + (
-                            f"mmproj: {mmproj_size / (1024**3):.1f} GB, "
-                            if mmproj_size
-                            else ""
-                        )
-                        + f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                        f"{mmproj_note}"
+                        f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
