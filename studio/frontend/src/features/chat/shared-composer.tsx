@@ -21,7 +21,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { applyQwenThinkingParams } from "@/features/chat";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
@@ -55,7 +55,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
-import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
+import {
+  parseExternalModelId,
+  providerTypeSupportsVision,
+} from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
@@ -78,6 +81,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -166,7 +170,10 @@ function fileToBase64DataURL(file: File): Promise<string> {
   });
 }
 
-function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): string {
+function formatReasoningEffortLabel(
+  level: ReasoningEffort,
+  modelId?: string,
+): string {
   if (level === "max") return "Max";
   if (level === "xhigh") {
     const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -202,7 +209,12 @@ function useDictation(
   const start = useCallback(() => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
-      (window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition);
+      (window.SpeechRecognition ??
+        (
+          window as unknown as {
+            webkitSpeechRecognition?: typeof SpeechRecognition;
+          }
+        ).webkitSpeechRecognition);
     if (!SpeechRecognitionAPI) {
       return;
     }
@@ -248,7 +260,11 @@ function useDictation(
 
   const supported =
     typeof window !== "undefined" &&
-    !!(window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition);
+    !!(
+      window.SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: unknown })
+        .webkitSpeechRecognition
+    );
 
   return { isDictating, start, stop, supported };
 }
@@ -287,9 +303,16 @@ export function RegisterCompareHandle({
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+        aui
+          .thread()
+          .append({ role: "user", content, createdAt: new Date() } as never),
       appendMessage: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
+        aui.thread().append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -327,13 +350,10 @@ function PendingImageThumb({
   file: File;
   onRemove: () => void;
 }): ReactElement {
-  const [src, setSrc] = useState<string | null>(null);
+  const src = useMemo(() => URL.createObjectURL(file), [file]);
   useEffect(() => {
-    const url = URL.createObjectURL(file);
-    setSrc(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-  if (!src) return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+    return () => URL.revokeObjectURL(src);
+  }, [src]);
   return (
     <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
@@ -383,7 +403,10 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<{
+    name: string;
+    base64: string;
+  } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -412,10 +435,16 @@ export function SharedComposer({
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
+  const reasoningEffortLevels = useChatRuntimeStore(
+    (s) => s.reasoningEffortLevels,
+  );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
@@ -510,7 +539,8 @@ export function SharedComposer({
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
   const isEffort = effectiveReasoningStyle === "reasoning_effort";
   const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+    ? reasoningLockedOn ||
+      (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating: Search pill lights up when the runtime has either
   // a local tool runtime (supportsTools, gives us our Code/python + local
@@ -540,7 +570,7 @@ export function SharedComposer({
   // allowance, so we only disable Code unconditionally in Gemini
   // image mode.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  const imageDisabled = modelLoaded && !supportsBuiltinImageGeneration;
   const imageModeDisablesCode =
     isExternalGemini && imageToolsEnabled && !imageDisabled;
   // Image-tier Gemini models always reject codeExecution and reject
@@ -549,8 +579,7 @@ export function SharedComposer({
   // runtime flag re-enable a pill the Gemini backend will silently
   // drop. Detect "external provider is Gemini AND model is image-tier"
   // and gate strictly on the provider builtin support.
-  const isGeminiImageTier =
-    isExternalGemini && supportsBuiltinImageGeneration;
+  const isGeminiImageTier = isExternalGemini && supportsBuiltinImageGeneration;
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected and reflected, matching the + menu.
   const searchDisabled =
@@ -564,21 +593,23 @@ export function SharedComposer({
         ? true
         : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
-  // Images pill is only ever lit on OpenAI cloud's Responses-API models
-  // and Gemini Nano Banana family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill is only visible when selected. Its menu item appears when the
+  // provider supports it or when a persisted selected state needs to be shown/toggled.
+  const showImageMenuItem = supportsBuiltinImageGeneration || imageToolsEnabled;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
-  const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
-  const showWebFetchPill = supportsBuiltinWebFetch;
-  // Backwards-compatible alias for any other call site that may still
-  // reference `toolsDisabled` (rare; both pills used it before).
-  const toolsDisabled = codeDisabled;
+  const webFetchDisabled = modelLoaded && !supportsBuiltinWebFetch;
+  const showFetchMenuItem = supportsBuiltinWebFetch || webFetchToolsEnabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
-  const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
-
-  const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
-    setText,
+  const clearPendingAudioStore = useChatRuntimeStore(
+    (s) => s.clearPendingAudio,
   );
+
+  const {
+    isDictating,
+    start: startDictation,
+    stop: stopDictation,
+    supported: dictationSupported,
+  } = useDictation(setText);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -596,15 +627,17 @@ export function SharedComposer({
     ta.style.height = "auto";
     const styles = window.getComputedStyle(ta);
     const lineHeight = parseFloat(styles.lineHeight) || 20;
-    const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const borderY = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+    const paddingY =
+      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const borderY =
+      parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
     const maxHeight = lineHeight * 6 + paddingY + borderY;
     const next = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${next}px`;
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback((files: FileList | null) => {
+  function addFiles(files: FileList | null) {
     if (!files?.length) return;
     const next: PendingImage[] = [];
     let droppedImageForUnavailable = false;
@@ -632,7 +665,7 @@ export function SharedComposer({
       toast.error(attachUnavailableReason);
     }
     setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore, attachUnavailableReason]);
+  }
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -690,12 +723,17 @@ export function SharedComposer({
     // LoraCompare and single-pane chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
-        description: "Use the model dropdown above each pane, then send your prompt.",
+        description:
+          "Use the model dropdown above each pane, then send your prompt.",
       });
       return;
     }
 
-    if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
+    if (
+      pendingImages.length > 0 &&
+      !isGeneralizedCompare &&
+      imageUnavailableReason
+    ) {
       // Single mode: the loaded model's runtime capability is known
       // here. Compare mode defers — each ensureModelLoaded below sets
       // loadedIsMultimodal for its side, and the chat-adapter's
@@ -733,8 +771,9 @@ export function SharedComposer({
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride =
-        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
+        ? chatTemplateOverride
+        : null;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -742,11 +781,14 @@ export function SharedComposer({
       }
 
       // Helper: load a model and update store checkpoint
-      async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+      async function ensureModelLoaded(
+        sel: CompareModelSelection,
+      ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+          (currentStore.activeGgufVariant ?? null) ===
+            (sel.ggufVariant ?? null);
         if (!isAlreadyActive) {
           const validation = await validateModel({
             model_path: sel.id,
@@ -836,9 +878,17 @@ export function SharedComposer({
       try {
         // Side 1: load → generate → wait
         if (handle1 && model1?.id) {
-          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
+          toast("Loading Model 1…", {
+            id: toastId,
+            description: name1,
+            duration: Infinity,
+          });
           const status1 = await ensureModelLoaded(model1);
-          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
+          toast("Generating with Model 1…", {
+            id: toastId,
+            description: `${name1} (${status1})`,
+            duration: Infinity,
+          });
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
@@ -846,13 +896,22 @@ export function SharedComposer({
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
-          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
-            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          const needsLoad =
+            model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
+            (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
           if (needsLoad) {
-            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+            toast("Loading Model 2…", {
+              id: toastId,
+              description: name2,
+              duration: Infinity,
+            });
           }
           const status2 = await ensureModelLoaded(model2);
-          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
+          toast("Generating with Model 2…", {
+            id: toastId,
+            description: `${name2} (${status2})`,
+            duration: Infinity,
+          });
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
@@ -906,7 +965,9 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
+  const hasComposerContent =
+    text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null;
+  const canSend = hasComposerContent && !busy && !isComposing;
 
   return (
     <div
@@ -941,7 +1002,10 @@ export function SharedComposer({
               <span className="max-w-48 truncate">{pendingAudio.name}</span>
               <button
                 type="button"
-                onClick={() => { setPendingAudio(null); clearPendingAudioStore(); }}
+                onClick={() => {
+                  setPendingAudio(null);
+                  clearPendingAudioStore();
+                }}
                 className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
                 aria-label="Remove audio"
               >
@@ -1014,7 +1078,7 @@ export function SharedComposer({
                 aria-label="Tools and attachments"
                 className="unsloth-composer-plus"
               >
-                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+                <PlusIcon className="size-6 stroke-[1.75px]" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -1057,7 +1121,9 @@ export function SharedComposer({
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                className={toolsEnabled ? "text-primary font-medium" : undefined}
+                className={
+                  toolsEnabled ? "text-primary font-medium" : undefined
+                }
                 onSelect={() => setToolsEnabled(!toolsEnabled)}
               >
                 <GlobeIcon />
@@ -1074,6 +1140,38 @@ export function SharedComposer({
                 Code
                 {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
+              {showImageMenuItem ? (
+                <DropdownMenuItem
+                  disabled={imageDisabled}
+                  className={
+                    imageToolsEnabled ? "text-primary font-medium" : undefined
+                  }
+                  onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+                >
+                  <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                  Images
+                  {imageToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                </DropdownMenuItem>
+              ) : null}
+              {showFetchMenuItem ? (
+                <DropdownMenuItem
+                  disabled={webFetchDisabled}
+                  className={
+                    webFetchToolsEnabled
+                      ? "text-primary font-medium"
+                      : undefined
+                  }
+                  onSelect={() =>
+                    setWebFetchToolsEnabled(!webFetchToolsEnabled)
+                  }
+                >
+                  <DownloadIcon />
+                  Fetch
+                  {webFetchToolsEnabled ? (
+                    <CheckIcon className="ml-auto" />
+                  ) : null}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
                 <PlugIcon />
                 MCP
@@ -1123,38 +1221,50 @@ export function SharedComposer({
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <button
-            type="button"
-            disabled={searchDisabled}
-            onClick={() => {
-              const next = !toolsEnabled;
-              setToolsEnabled(next);
-              // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
-              // the Think pill off when Search is on, mirroring the backend.
-              if (isKimiExternal) {
-                setReasoningEnabled(!next, { persist: false });
-                applyQwenThinkingParams(!next);
+          {toolsEnabled ? (
+            <button
+              type="button"
+              disabled={searchDisabled}
+              onClick={() => {
+                const next = !toolsEnabled;
+                setToolsEnabled(next);
+                // Kimi's $web_search builtin requires thinking=disabled
+                // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+                // the Think pill off when Search is on, mirroring the backend.
+                if (isKimiExternal) {
+                  setReasoningEnabled(!next, { persist: false });
+                  applyQwenThinkingParams(!next);
+                }
+              }}
+              className="composer-pill-btn"
+              data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
+              aria-label={
+                toolsEnabled ? "Disable web search" : "Enable web search"
               }
-            }}
-            className="composer-pill-btn"
-            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
-          >
-            <GlobeIcon className="size-3.5" />
-            <span>Search</span>
-          </button>
-          <button
-            type="button"
-            disabled={codeDisabled}
-            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className="composer-pill-btn"
-            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
-          >
-            <CodeToggleIcon className="size-3.5" />
-            <span>Code</span>
-          </button>
+            >
+              <GlobeIcon className="size-3.5" />
+              <span>Search</span>
+              <XIcon className="composer-pill-close" aria-hidden={true} />
+            </button>
+          ) : null}
+          {codeToolsEnabled ? (
+            <button
+              type="button"
+              disabled={codeDisabled}
+              onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+              aria-label={
+                codeToolsEnabled
+                  ? "Disable code execution"
+                  : "Enable code execution"
+              }
+            >
+              <CodeToggleIcon className="size-3.5" />
+              <span>Code</span>
+              <XIcon className="composer-pill-close" aria-hidden={true} />
+            </button>
+          ) : null}
           {/* Active in compare mode; click to exit back to single chat. */}
           <button
             type="button"
@@ -1165,16 +1275,21 @@ export function SharedComposer({
           >
             <Columns2Icon className="size-3.5" />
             <span>Compare</span>
+            <XIcon className="composer-pill-close" aria-hidden={true} />
           </button>
-          {showImagePill && (
+          {imageToolsEnabled ? (
             <button
               type="button"
               disabled={imageDisabled}
               onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
               className="composer-pill-btn"
-              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
+              data-active={
+                imageToolsEnabled && !imageDisabled ? "true" : "false"
+              }
               aria-label={
-                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+                imageToolsEnabled
+                  ? "Disable image generation"
+                  : "Enable image generation"
               }
             >
               <HugeiconsIcon
@@ -1183,9 +1298,10 @@ export function SharedComposer({
                 strokeWidth={2}
               />
               <span>Images</span>
+              <XIcon className="composer-pill-close" aria-hidden={true} />
             </button>
-          )}
-          {showWebFetchPill && (
+          ) : null}
+          {webFetchToolsEnabled ? (
             <button
               type="button"
               disabled={webFetchDisabled}
@@ -1200,8 +1316,9 @@ export function SharedComposer({
             >
               <DownloadIcon className="size-3.5" />
               <span>Fetch</span>
+              <XIcon className="composer-pill-close" aria-hidden={true} />
             </button>
-          )}
+          ) : null}
         </div>
         <div className="ml-auto flex items-center gap-1">
           {showReasoningControl ? (
@@ -1392,7 +1509,7 @@ export function SharedComposer({
                   onClick={startDictation}
                   aria-label="Dictate"
                 >
-                  <MicIcon className="size-4" />
+                  <MicIcon className="size-5" />
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
@@ -1419,20 +1536,20 @@ export function SharedComposer({
             >
               <SquareIcon className="size-3 fill-current" />
             </Button>
-          ) : (
+          ) : hasComposerContent ? (
             <TooltipIconButton
               tooltip="Send message"
               side="bottom"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-4" />
+              <ArrowUpIcon className="size-6 stroke-[1.75px]" />
             </TooltipIconButton>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

@@ -314,7 +314,7 @@ function CompareShell({
           {children}
         </div>
         <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+          <div className="mx-auto w-full max-w-[660px]">{composer}</div>
           <p className="composer-footer-note">
             LLMs can make mistakes. Double-check responses.
           </p>
@@ -335,15 +335,17 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listStoredChatThreads({ pairId }).then((threads) => {
-      if (!isActive) return;
-      setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-      setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
-    }).catch((error) => {
-      if (!isExpectedBackgroundChatStorageError(error)) {
-        throw error;
-      }
-    });
+    listStoredChatThreads({ pairId })
+      .then((threads) => {
+        if (!isActive) return;
+        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
     return () => {
       isActive = false;
     };
@@ -353,10 +355,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     <CompareShell
       handlesRef={handlesRef}
       composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          onExitCompare={onExitCompare}
-        />
+        <SharedComposer handlesRef={handlesRef} onExitCompare={onExitCompare} />
       }
     >
       <>
@@ -491,21 +490,25 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listStoredChatThreads({ pairId }).then((threads) => {
-      if (!isActive) return;
-      setModel1ThreadId(
-        threads.find((t) => t.modelType === "model1" || t.modelType === "base")
-          ?.id,
-      );
-      setModel2ThreadId(
-        threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
-          ?.id,
-      );
-    }).catch((error) => {
-      if (!isExpectedBackgroundChatStorageError(error)) {
-        throw error;
-      }
-    });
+    listStoredChatThreads({ pairId })
+      .then((threads) => {
+        if (!isActive) return;
+        setModel1ThreadId(
+          threads.find(
+            (t) => t.modelType === "model1" || t.modelType === "base",
+          )?.id,
+        );
+        setModel2ThreadId(
+          threads.find(
+            (t) => t.modelType === "model2" || t.modelType === "lora",
+          )?.id,
+        );
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
     return () => {
       isActive = false;
     };
@@ -659,8 +662,7 @@ export function ChatPage(): ReactElement {
   } = useChatModelRuntime();
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
-    const turnedOff =
-      prevConnectionsEnabledRef.current && !connectionsEnabled;
+    const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
       clearCheckpoint();
       if (turnedOff) {
@@ -670,11 +672,7 @@ export function ChatPage(): ReactElement {
       }
     }
     prevConnectionsEnabledRef.current = connectionsEnabled;
-  }, [
-    clearCheckpoint,
-    connectionsEnabled,
-    inferenceParams.checkpoint,
-  ]);
+  }, [clearCheckpoint, connectionsEnabled, inferenceParams.checkpoint]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
   );
@@ -693,17 +691,19 @@ export function ChatPage(): ReactElement {
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
   const activeExternalProvider = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
     return (
-      externalProvidersForChat.find(
-        (p) => p.id === selection.providerId,
-      ) ?? null
+      externalProvidersForChat.find((p) => p.id === selection.providerId) ??
+      null
     );
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
-  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
+  const activeExternalProviderType =
+    activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
@@ -819,7 +819,9 @@ export function ChatPage(): ReactElement {
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
-    const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled = loadOptionalBool(
+      CHAT_CODE_TOOLS_ENABLED_KEY,
+    );
     const storedImageToolsEnabled = loadOptionalBool(
       CHAT_IMAGE_TOOLS_ENABLED_KEY,
     );
@@ -983,8 +985,7 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           {
-            isReasoningProvider:
-              selectedProvider?.isReasoningModel === true,
+            isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
@@ -1030,11 +1031,12 @@ export function ChatPage(): ReactElement {
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
-        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
-          selectedProvider?.providerType,
-          selectedExternal?.modelId,
-          selectedProvider?.baseUrl,
-        );
+        const supportsBuiltinCodeExecution =
+          providerSupportsBuiltinCodeExecution(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+            selectedProvider?.baseUrl,
+          );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
@@ -1231,8 +1233,7 @@ export function ChatPage(): ReactElement {
           if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
-          const usageModelId =
-            (usage as { modelId?: unknown }).modelId;
+          const usageModelId = (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
           // (model-scoped usage cannot be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
