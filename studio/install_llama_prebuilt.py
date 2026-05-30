@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclasses_replace
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -1336,6 +1336,20 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+        elif host.has_rocm:
+            hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
+            hip_url = assets.get(hip_asset)
+            if hip_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = hip_asset,
+                        url = hip_url,
+                        source_label = "upstream",
+                        install_kind = "windows-hip",
+                    )
+                )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
@@ -2731,12 +2745,30 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     break
     elif is_windows:
-        # Windows: prefer active probes that validate GPU presence
+        # Windows: prefer active probes that validate GPU presence.
+        # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
+        # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
+        # the system PATH.  Mirror setup.ps1's fallback: check the env-var
+        # bin dirs before giving up so that `has_rocm` is not silently False
+        # on machines where the PATH is not yet updated.
+        def _resolve_exe(name: str) -> str | None:
+            """Return full path to `name`, checking PATH then HIP_PATH/ROCM_PATH bin."""
+            found = shutil.which(name)
+            if found:
+                return found
+            for _env in ("HIP_PATH", "ROCM_PATH"):
+                _root = os.environ.get(_env)
+                if _root:
+                    _candidate = os.path.join(_root, "bin", f"{name}.exe")
+                    if os.path.isfile(_candidate):
+                        return _candidate
+            return None
+
         for _cmd, _check in (
             (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
-            _exe = shutil.which(_cmd[0])
+            _exe = _resolve_exe(_cmd[0])
             if not _exe:
                 continue
             try:
@@ -5565,8 +5597,11 @@ def install_prebuilt(
     published_release_tag: str,
     *,
     simple_policy: bool = False,
+    override_has_rocm: bool = False,
 ) -> None:
     host = detect_host()
+    if override_has_rocm and not host.has_rocm:
+        host = dataclasses_replace(host, has_rocm = True)
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -5700,6 +5735,17 @@ def parse_args() -> argparse.Namespace:
         action = "store_true",
         help = "Use the simplified platform-specific prebuilt selection policy.",
     )
+    parser.add_argument(
+        "--has-rocm",
+        action = "store_true",
+        default = False,
+        help = (
+            "Assert that an AMD ROCm GPU is present. When set, skips the internal "
+            "hipinfo/amd-smi probe and forces has_rocm=True in the host profile. "
+            "Used by setup.ps1/setup.sh to forward their own ROCm detection result "
+            "so the HIP llama.cpp prebuilt is selected even when hipinfo is not on PATH."
+        ),
+    )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
@@ -5820,6 +5866,7 @@ def main() -> int:
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
+        override_has_rocm = args.has_rocm,
     )
     return EXIT_SUCCESS
 

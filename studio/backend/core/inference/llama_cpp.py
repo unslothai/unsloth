@@ -1239,6 +1239,33 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _amd_apu_wants_unified_memory() -> bool:
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
+        False for discrete AMD, NVIDIA, CPU and macOS (the env hurts discrete
+        GPUs). ROCm reuses torch.cuda.*; the gcnArchName suffix is stripped."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is None:
+                return False
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            for _i in range(torch.cuda.device_count()):
+                try:
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "")
+                        or ""
+                    )
+                except Exception:
+                    continue
+                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
@@ -3158,6 +3185,14 @@ class LlamaCppBackend:
                 env = child_env_without_native_path_secret()
                 binary_dir = str(Path(binary).parent)
 
+                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
+                # shared system RAM. setdefault so a user value wins.
+                if self._amd_apu_wants_unified_memory():
+                    env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+                    logger.info(
+                        "AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
+
                 if sys.platform == "win32":
                     # See _build_windows_path_dirs for ordering. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3167,6 +3202,24 @@ class LlamaCppBackend:
                     )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
+                    # but NOT the Tensile kernel library files it needs
+                    # (rocblas/library/TensileLibrary*.dat + *.hsaco).  The
+                    # bundled DLL searches relative to its own location by
+                    # default (i.e. <binary_dir>/rocblas/library/) which does
+                    # not exist, causing a silent crash on the first GEMM.
+                    # ROCBLAS_TENSILE_LIBPATH overrides that search to point at
+                    # the ROCm installation where the kernel files actually are.
+                    _hip_path = os.environ.get(
+                        "HIP_PATH", os.environ.get("ROCM_PATH", "")
+                    )
+                    if _hip_path:
+                        _rocblas_lib = os.path.join(
+                            _hip_path, "bin", "rocblas", "library"
+                        )
+                        if os.path.isdir(_rocblas_lib):
+                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)

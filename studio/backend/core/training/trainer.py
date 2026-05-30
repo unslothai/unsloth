@@ -42,7 +42,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 
-torch._dynamo.config.recompile_limit = 64
+# recompile_limit was removed in some ROCm torch builds (e.g. pytorch.org/whl/rocm6.2).
+# Guard so training doesn't crash on RDNA2/RDNA3 with older ROCm torch wheels.
+if hasattr(torch._dynamo.config, "recompile_limit"):
+    torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
@@ -657,6 +660,15 @@ class UnslothTrainer:
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
 
+            # On hardware without native bfloat16 support (e.g. RDNA2 / gfx103x),
+            # passing dtype=None lets unsloth auto-detect and incorrectly choose
+            # bf16, triggering an LLVM error at the first bf16 kernel dispatch.
+            # Explicitly pass float16 as the fallback so unsloth never reaches
+            # that path. Modern NVIDIA (Ampere+) and RDNA3+ return True here so
+            # they are unaffected — dtype stays None and unsloth picks bf16 as
+            # before.
+            _auto_dtype = None if is_bfloat16_supported() else torch.float16
+
             # Branch based on model type
             if self._audio_type == "csm":
                 # CSM: FastModel + auto_model=CsmForConditionalGeneration + load_in_4bit=False
@@ -666,7 +678,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
                     device_map = device_map,
@@ -683,7 +695,7 @@ class UnslothTrainer:
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -705,7 +717,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -777,7 +789,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -791,7 +803,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,  # Auto-detect
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -824,7 +836,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,  # Auto-detect
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
