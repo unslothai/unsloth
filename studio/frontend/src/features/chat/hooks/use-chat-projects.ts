@@ -14,13 +14,20 @@ import {
 } from "../utils/chat-history-storage";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 
-export function useChatProjects(): { projects: ProjectRecord[] } {
+export function useChatProjects(): {
+  projects: ProjectRecord[];
+  isLoading: boolean;
+  hasLoaded: boolean;
+} {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      if (!cancelled) setIsLoading(true);
       try {
         const next = await listStoredChatProjects({ includeArchived: false });
         if (!cancelled) setProjects(next);
@@ -29,6 +36,11 @@ export function useChatProjects(): { projects: ProjectRecord[] } {
           return;
         }
         if (!cancelled) throw error;
+      } finally {
+        if (!cancelled) {
+          setHasLoaded(true);
+          setIsLoading(false);
+        }
       }
     }
 
@@ -44,7 +56,7 @@ export function useChatProjects(): { projects: ProjectRecord[] } {
     };
   }, []);
 
-  return { projects };
+  return { projects, isLoading, hasLoaded };
 }
 
 export async function createChatProject(name: string): Promise<ProjectRecord> {

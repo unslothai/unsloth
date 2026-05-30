@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -64,7 +65,7 @@ function formatUpdatedAgo(ts: number): string {
 
 export function ProjectsPage() {
   const navigate = useNavigate();
-  const { projects } = useChatProjects();
+  const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
@@ -186,7 +187,21 @@ export function ProjectsPage() {
         />
       </div>
 
-      {visibleProjects.length === 0 ? (
+      {!hasLoaded ? (
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div
+              key={index}
+              className="min-h-[160px] rounded-[14px] border border-border/70 bg-card p-5"
+            >
+              <Skeleton className="h-5 w-2/3 rounded-[6px]" />
+              <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded-[6px]" />
+              <Skeleton className="mt-12 h-3 w-24 rounded-[6px]" />
+            </div>
+          ))}
+        </div>
+      ) : visibleProjects.length === 0 ? (
         <div className="mt-16 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
           <p className="text-sm">
             {projects.length === 0
