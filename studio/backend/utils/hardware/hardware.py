@@ -508,6 +508,154 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     }
 
 
+def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
+    """Query AMD GPU compute utilization via Linux DRM sysfs gpu_busy_percent."""
+    import glob as _glob
+
+    if platform.system() != "Linux":
+        return None
+    try:
+        files = _glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
+        if not files:
+            return None
+        values = [int(open(f).read().strip()) for f in files]
+        return round(sum(values) / len(values), 1)
+    except Exception:
+        return None
+
+
+def _rocm_linux_sysfs_temp_c() -> Optional[float]:
+    """Query AMD GPU edge temperature via Linux DRM hwmon sysfs (temp1_input, millidegrees C)."""
+    import glob as _glob
+
+    if platform.system() != "Linux":
+        return None
+    try:
+        files = _glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
+        if not files:
+            return None
+        temps = [int(open(f).read().strip()) / 1000.0 for f in files]
+        return round(max(temps), 1)
+    except Exception:
+        return None
+
+
+def _rocm_linux_sysfs_power_w() -> Optional[float]:
+    """Query AMD GPU average power draw via Linux DRM hwmon sysfs (microwatts)."""
+    import glob as _glob
+
+    if platform.system() != "Linux":
+        return None
+    try:
+        for pattern in (
+            "/sys/class/drm/card*/device/hwmon/hwmon*/power1_average",
+            "/sys/class/drm/card*/device/hwmon/hwmon*/power1_input",
+        ):
+            files = _glob.glob(pattern)
+            if files:
+                watts = sum(int(open(f).read().strip()) / 1_000_000.0 for f in files)
+                return round(watts, 1)
+        return None
+    except Exception:
+        return None
+
+
+def _rocm_windows_adl_temp_and_power() -> tuple[Optional[float], Optional[float]]:
+    """Query AMD GPU temperature and power via ADL (atiadlxx.dll).
+
+    atiadlxx.dll ships with Adrenalin drivers. ctypes is stdlib — no new packages.
+    Uses ADL2_New_QueryPMLogData_Get which returns all PM sensors in one call.
+    Returns (temp_c, power_w) or (None, None) on failure.
+    """
+    if platform.system() != "Windows":
+        return None, None
+    import ctypes
+
+    ADL_OK = 0
+    ADL_PMLOG_TEMPERATURE_EDGE = 7
+    ADL_PMLOG_ASIC_POWER = 17
+    ADL_PMLOG_MAX_SENSORS = 256
+    ADL_SENSOR_UNAVAILABLE = 0xFFFFFFFF
+
+    class _ADLPMLogSample(ctypes.Structure):
+        _fields_ = [("ulSensorInd", ctypes.c_uint), ("ulValue", ctypes.c_uint)]
+
+    class _ADLPMLogData(ctypes.Structure):
+        _fields_ = [
+            ("ulVersion", ctypes.c_uint),
+            ("ulActiveSampleRate", ctypes.c_uint),
+            ("ulLastUpdated", ctypes.c_longlong),
+            ("ulValues", _ADLPMLogSample * ADL_PMLOG_MAX_SENSORS),
+            ("ulReserved", ctypes.c_uint * 256),
+        ]
+
+    class _ADLPMLogDataOutput(ctypes.Structure):
+        _fields_ = [("iSize", ctypes.c_int), ("log", _ADLPMLogData)]
+
+    try:
+        try:
+            _adl = ctypes.cdll.LoadLibrary("atiadlxx.dll")
+        except OSError:
+            return None, None
+
+        _ADL_MALLOC_CB = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
+        _bufs: list = []
+
+        @_ADL_MALLOC_CB
+        def _malloc_cb(size: int) -> int:
+            buf = (ctypes.c_char * size)()
+            _bufs.append(buf)
+            return ctypes.cast(buf, ctypes.c_void_p).value
+
+        ctx = ctypes.c_void_p(None)
+        if _adl.ADL2_Main_Control_Create(_malloc_cb, 1, ctypes.byref(ctx)) != ADL_OK:
+            return None, None
+
+        try:
+            pm = _ADLPMLogDataOutput()
+            pm.iSize = ctypes.sizeof(_ADLPMLogDataOutput)
+            if _adl.ADL2_New_QueryPMLogData_Get(ctx, 0, ctypes.byref(pm)) != ADL_OK:
+                return None, None
+
+            temp_raw = pm.log.ulValues[ADL_PMLOG_TEMPERATURE_EDGE].ulValue
+            power_raw = pm.log.ulValues[ADL_PMLOG_ASIC_POWER].ulValue
+
+            temp = round(float(temp_raw), 1) if temp_raw not in (0, ADL_SENSOR_UNAVAILABLE) else None
+            power = round(float(power_raw), 1) if power_raw not in (0, ADL_SENSOR_UNAVAILABLE) else None
+            return temp, power
+        finally:
+            _adl.ADL2_Main_Control_Destroy(ctx)
+    except Exception:
+        return None, None
+
+
+def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
+    """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes)."""
+    import subprocess as _sp
+
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
+            " -ErrorAction SilentlyContinue).CounterSamples;"
+            "if($s){[math]::Min(($s|Measure-Object CookedValue -Sum).Sum,100)}else{-1}"
+        )
+        r = _sp.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        val = float(r.stdout.strip())
+        return round(val, 1) if val >= 0 else None
+    except Exception:
+        return None
+
+
+
 def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """Query system-wide AMD GPU VRAM via Linux DRM sysfs.
 
@@ -590,17 +738,19 @@ def get_gpu_utilization() -> Dict[str, Any]:
         if IS_ROCM and platform.system() == "Windows":
             _win_used, _win_total = _rocm_windows_perf_counter_vram_gb()
             if _win_used is not None and _win_total is not None:
+                _win_util = _rocm_windows_perf_counter_gpu_util_pct()
+                _win_temp, _win_power = _rocm_windows_adl_temp_and_power()
                 return {
                     "available": True,
                     "backend": _backend_label(device),
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": _win_util,
+                    "temperature_c": _win_temp,
                     "vram_used_gb": _win_used,
                     "vram_total_gb": _win_total,
                     "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
                     if _win_total > 0
                     else None,
-                    "power_draw_w": None,
+                    "power_draw_w": _win_power,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }
@@ -608,17 +758,20 @@ def get_gpu_utilization() -> Dict[str, Any]:
         if IS_ROCM and platform.system() == "Linux":
             _linux_used, _linux_total = _rocm_linux_sysfs_vram_gb()
             if _linux_used is not None and _linux_total is not None:
+                _linux_util = _rocm_linux_sysfs_gpu_busy_pct()
+                _linux_temp = _rocm_linux_sysfs_temp_c()
+                _linux_power = _rocm_linux_sysfs_power_w()
                 return {
                     "available": True,
                     "backend": _backend_label(device),
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": _linux_util,
+                    "temperature_c": _linux_temp,
                     "vram_used_gb": _linux_used,
                     "vram_total_gb": _linux_total,
                     "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
                     if _linux_total > 0
                     else None,
-                    "power_draw_w": None,
+                    "power_draw_w": _linux_power,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }
