@@ -160,26 +160,6 @@ class SearchResponse(BaseModel):
     hits: list[SearchHit]
 
 
-class PrefetchRequest(BaseModel):
-    """Prefetch RAG for an external-provider turn: studio decomposes the
-    question (via the pre-cached helper) and retrieves, so the frontend can
-    inject the chunks before calling the provider."""
-
-    query: str = Field(min_length = 1, max_length = 4000)
-    kb_id: str | None = None
-    thread_id: str | None = None
-    top_k: int = Field(default = 10, ge = 1, le = 100)
-    mode: Literal["bm25", "dense", "hybrid"] = "hybrid"
-    enable_rerank: bool = False
-    reranker_model: str | None = None
-    min_score: float = Field(default = 0.0, ge = 0.0, le = 1.0)
-
-
-class PrefetchResponse(BaseModel):
-    queries: list[str]
-    hits: list[SearchHit]
-
-
 # --- Helpers ---
 
 
@@ -1650,43 +1630,72 @@ def get_document_file(
     )
 
 
-def _execute_search(
-    scope: str,
-    *,
-    scope_embedder: str | None,
-    query: str,
-    mode: str,
-    top_k: int,
-    document_ids: list[str] | None,
-    enable_rerank: bool,
-    reranker_model: str | None,
-    min_score: float,
-) -> list[SearchHit]:
-    """Run one retrieval against an already-resolved scope. Shared by the
-    /search and /prefetch endpoints."""
-    candidate_k = max(top_k, RAG_RERANK_CANDIDATE_K) if enable_rerank else top_k
+@router.post("/search", response_model = SearchResponse)
+def search(
+    payload: SearchRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> SearchResponse:
+    if bool(payload.kb_id) == bool(payload.thread_id):
+        raise HTTPException(
+            status_code = 400,
+            detail = "exactly one of kb_id or thread_id must be supplied",
+        )
+    if payload.kb_id:
+        _kb_or_404(payload.kb_id)
+        scope = kb_scope(payload.kb_id)
+    else:
+        scope = thread_scope(payload.thread_id)
 
-    if mode == "bm25":
-        hits = retrieval.retrieve_bm25(scope, query, candidate_k)
-    elif mode == "dense":
+    # Query must use the same embedder as the scope (dim must match).
+    scope_embedder = _resolve_scope_embedder(scope)
+    logger.info(
+        "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        scope,
+        scope_embedder or "<default>",
+        payload.mode,
+        payload.top_k,
+        payload.min_score,
+        payload.enable_rerank,
+        payload.query[:120],
+    )
+
+    # Reranker needs a wider candidate pool than top_k.
+    candidate_k = (
+        max(payload.top_k, RAG_RERANK_CANDIDATE_K)
+        if payload.enable_rerank
+        else payload.top_k
+    )
+
+    if payload.mode == "bm25":
+        hits = retrieval.retrieve_bm25(scope, payload.query, candidate_k)
+    elif payload.mode == "dense":
         hits = retrieval.retrieve_dense(
             scope,
-            query,
+            payload.query,
             candidate_k,
-            document_ids = document_ids,
+            document_ids = payload.document_ids,
             embedder_model = scope_embedder,
         )
     else:
         hits = retrieval.retrieve_hybrid(
             scope,
-            query,
+            payload.query,
             k = candidate_k,
-            document_ids = document_ids,
+            document_ids = payload.document_ids,
             embedder_model = scope_embedder,
         )
 
-    if min_score > 0.0:
-        hits = retrieval.filter_by_min_score(hits, min_score)
+    retrieved_count = len(hits)
+    if payload.min_score > 0.0:
+        hits = retrieval.filter_by_min_score(hits, payload.min_score)
+        logger.info(
+            "RAG search: retrieved=%d met_threshold=%d (min_score=%.3f)",
+            retrieved_count,
+            len(hits),
+            payload.min_score,
+        )
+    else:
+        logger.info("RAG search: retrieved=%d (no threshold)", retrieved_count)
 
     chunk_ids = [h.chunk_id for h in hits]
     chunk_lookup: dict[str, dict] = {}
@@ -1709,20 +1718,20 @@ def _execute_search(
         for r in rows:
             chunk_lookup[r["chunk_id"]] = dict(r)
 
-    if enable_rerank:
+    if payload.enable_rerank:
         pairs = [
             (hit, chunk_lookup[hit.chunk_id]["text"])
             for hit in hits
             if hit.chunk_id in chunk_lookup
         ]
         hits = reranker.rerank(
-            query,
+            payload.query,
             pairs,
-            model_name = reranker_model,
-            top_k = top_k,
+            model_name = payload.reranker_model,
+            top_k = payload.top_k,
         )
     else:
-        hits = hits[:top_k]
+        hits = hits[: payload.top_k]
 
     out: list[SearchHit] = []
     for hit in hits:
@@ -1753,110 +1762,5 @@ def _execute_search(
                 line_end = meta.get("line_end"),
             )
         )
-    return out
-
-
-@router.post("/search", response_model = SearchResponse)
-def search(
-    payload: SearchRequest,
-    current_subject: str = Depends(get_current_subject),
-) -> SearchResponse:
-    if bool(payload.kb_id) == bool(payload.thread_id):
-        raise HTTPException(
-            status_code = 400,
-            detail = "exactly one of kb_id or thread_id must be supplied",
-        )
-    if payload.kb_id:
-        _kb_or_404(payload.kb_id)
-        scope = kb_scope(payload.kb_id)
-    else:
-        scope = thread_scope(payload.thread_id)
-
-    # Query must use the same embedder as the scope (dim must match).
-    scope_embedder = _resolve_scope_embedder(scope)
-    logger.info(
-        "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
-        scope,
-        scope_embedder or "<default>",
-        payload.mode,
-        payload.top_k,
-        payload.min_score,
-        payload.enable_rerank,
-        payload.query[:120],
-    )
-
-    out = _execute_search(
-        scope,
-        scope_embedder = scope_embedder,
-        query = payload.query,
-        mode = payload.mode,
-        top_k = payload.top_k,
-        document_ids = payload.document_ids,
-        enable_rerank = payload.enable_rerank,
-        reranker_model = payload.reranker_model,
-        min_score = payload.min_score,
-    )
     logger.info("RAG search: returning %d hits", len(out))
     return SearchResponse(hits = out)
-
-
-@router.post("/prefetch", response_model = PrefetchResponse)
-def prefetch(
-    payload: PrefetchRequest,
-    current_subject: str = Depends(get_current_subject),
-) -> PrefetchResponse:
-    """External-provider RAG prefetch: decompose the question via the helper,
-    retrieve per sub-query, merge+dedup, return chunks for the frontend to
-    inject before calling the provider. The local tool path is unaffected."""
-    if bool(payload.kb_id) == bool(payload.thread_id):
-        raise HTTPException(
-            status_code = 400,
-            detail = "exactly one of kb_id or thread_id must be supplied",
-        )
-    if payload.kb_id:
-        _kb_or_404(payload.kb_id)
-        scope = kb_scope(payload.kb_id)
-    else:
-        scope = thread_scope(payload.thread_id)
-
-    scope_embedder = _resolve_scope_embedder(scope)
-
-    # Momentarily load the pre-cached helper to split the question into up to
-    # 3 focused queries; falls back to [query] on any failure.
-    from core.rag.query_decompose import decompose_query
-
-    queries = decompose_query(payload.query)
-    logger.info(
-        "RAG prefetch: scope=%s embedder=%s mode=%s n_queries=%d rerank=%s",
-        scope,
-        scope_embedder or "<default>",
-        payload.mode,
-        len(queries),
-        payload.enable_rerank,
-    )
-
-    # Retrieve per query, merge, dedup by chunk_id (keep first/highest-ranked
-    # occurrence), then cap at top_k.
-    merged: list[SearchHit] = []
-    seen: set[str] = set()
-    for q in queries:
-        hits = _execute_search(
-            scope,
-            scope_embedder = scope_embedder,
-            query = q,
-            mode = payload.mode,
-            top_k = payload.top_k,
-            document_ids = None,
-            enable_rerank = payload.enable_rerank,
-            reranker_model = payload.reranker_model,
-            min_score = payload.min_score,
-        )
-        for h in hits:
-            if h.chunk_id in seen:
-                continue
-            seen.add(h.chunk_id)
-            merged.append(h)
-
-    merged = merged[: payload.top_k]
-    logger.info("RAG prefetch: returning %d merged hits", len(merged))
-    return PrefetchResponse(queries = queries, hits = merged)

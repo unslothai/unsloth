@@ -11,7 +11,7 @@ import {
   type SearchRequest,
   listKBDocuments,
   listThreadDocuments,
-  prefetchRag,
+  search as ragSearch,
 } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -129,26 +129,13 @@ function buildRagRequest(
   return null;
 }
 
-function _xmlAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
-
-/** Format prefetched hits as `<chunk id="N" …>` blocks — the same shape the
- *  search_knowledge_base tool result uses, so `parseChunks` renders chunk
- *  cards and `extractCitedIds`/`buildDocumentSourceParts` map `[N]` citations
- *  back to them. ids are stable 1..N so the model's `[N]` lines resolve. */
-function formatRagChunksXml(hits: SearchHit[]): string {
-  return hits
-    .map((h, i) => {
-      const id = i + 1;
-      const source = _xmlAttr(h.filename ?? `chunk ${h.chunk_index}`);
-      const pageAttr =
-        h.page_number != null ? ` page="${h.page_number}"` : "";
-      const idxAttr =
-        h.chunk_index != null ? ` chunk_index="${h.chunk_index}"` : "";
-      return `<chunk id="${id}" source="${source}"${pageAttr}${idxAttr}>\n${h.text}\n</chunk>`;
-    })
-    .join("\n\n");
+function formatRagContext(hits: SearchHit[]): string {
+  const parts = hits.map((h) => {
+    const name = h.filename ?? `chunk ${h.chunk_index}`;
+    const pageAttr = h.page_number != null ? ` page="${h.page_number}"` : "";
+    return `<source filename="${name}"${pageAttr}>\n${h.text}\n</source>`;
+  });
+  return `<context>\nThe following documents may help answer the user's question:\n${parts.join("\n")}\n</context>`;
 }
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
@@ -1678,6 +1665,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
       }
 
+      // Temporary debug toggle: when false, the pre-fetch path is skipped
+      // entirely so retrieval only happens via the LLM-invoked
+      // search_knowledge_base tool. Flip back to true to restore the
+      // always-on grounding for external providers / non-tool models.
+      const ragPrefetchEnabled = false;
+
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
       // Even when RAG is toggled on, the tool + system-prompt nudge are
@@ -1756,72 +1749,42 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
 
-      // External-provider RAG prefetch. External providers can't run the
-      // local search_knowledge_base tool loop, so studio retrieves up front
-      // (the backend decomposes the question via the helper model), injects
-      // the chunks into the user prompt, and surfaces it as a synthetic tool
-      // call. Local models keep the tool path above. Gated on the same
-      // scope-has-docs check, so no docs → no prefetch (model answers plainly,
-      // preserving prior external behavior).
-      let ragPrefetchedThisTurn = false;
-      let ragPrefetchSynthetic: {
-        toolCallId: string;
-        query: string;
-        chunkXml: string;
-      } | null = null;
-      if (
-        isExternalRequest &&
-        ragToolEnabled &&
-        ragSource.kind !== "off" &&
-        ragScopeHasDocs
-      ) {
+      if (ragPrefetchEnabled && ragToolEnabled && ragSource.kind !== "off") {
         const lastUser = [...outboundMessages]
           .reverse()
           .find((m) => m.role === "user");
-        const queryText = lastUser
-          ? extractMessageText(lastUser.content)
-          : "";
-        const ragReq =
-          lastUser && queryText.trim()
-            ? buildRagRequest(
-                ragSource,
-                queryText,
-                resolvedThreadId,
-                runtime.enableRerank,
-                runtime.ragTopK,
-                runtime.ragMinScore,
-                runtime.ragMode,
-              )
-            : null;
-        if (lastUser && ragReq) {
-          try {
-            const result = await prefetchRag(ragReq);
-            if (result.hits.length > 0) {
-              const chunkXml = formatRagChunksXml(result.hits);
-              const injected =
-                "Use the document excerpts below to answer the question, and " +
-                "cite each excerpt you use as `[N]` using its `id`. If they " +
-                "are not relevant, answer normally.\n\n" +
-                chunkXml;
-              // Send-only mutation: the displayed user bubble comes from the
-              // runtime message store, not outboundMessages, so the injected
-              // chunks are invisible to the user.
-              if (typeof lastUser.content === "string") {
-                lastUser.content = `${lastUser.content}\n\n${injected}`;
-              } else if (Array.isArray(lastUser.content)) {
-                (
-                  lastUser.content as Array<{ type: string; text?: string }>
-                ).push({ type: "text", text: `\n\n${injected}` });
+        const queryText = lastUser ? extractMessageText(lastUser.content) : "";
+        if (queryText.trim()) {
+          const ragReq = buildRagRequest(
+            ragSource,
+            queryText,
+            resolvedThreadId,
+            runtime.enableRerank,
+            runtime.ragTopK,
+            runtime.ragMinScore,
+            runtime.ragMode,
+          );
+          if (ragReq) {
+            try {
+              const hits = await ragSearch(ragReq);
+              if (hits.length > 0) {
+                const nudge =
+                  "The following context was retrieved from the user's " +
+                  "attached documents. Use it to answer; cite sources as " +
+                  "[1], [2], etc. by source filename.";
+                const block = `${nudge}\n\n${formatRagContext(hits)}`;
+                if (
+                  outboundMessages[0]?.role === "system" &&
+                  typeof outboundMessages[0].content === "string"
+                ) {
+                  outboundMessages[0].content = `${block}\n\n${outboundMessages[0].content}`;
+                } else {
+                  outboundMessages.unshift({ role: "system", content: block });
+                }
               }
-              ragPrefetchedThisTurn = true;
-              ragPrefetchSynthetic = {
-                toolCallId: `prefetch_rag_${Date.now()}`,
-                query: result.queries.join(" / ") || queryText,
-                chunkXml,
-              };
+            } catch (err) {
+              console.warn("RAG retrieval failed:", err);
             }
-          } catch (err) {
-            console.warn("RAG prefetch failed:", err);
           }
         }
       }
@@ -1883,25 +1846,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             "If a request genuinely requires running code or code execution tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        }
-        // RAG capability axis (extends PR #5674's disabled-tool guard).
-        // When RAG context was prefetched this turn, point the model at the
-        // injected excerpts so it doesn't claim it lacks document access;
-        // otherwise reinforce that it has no document-search capability.
-        if (ragPrefetchedThisTurn) {
-          if (disabledToolGuard) {
-            disabledToolGuard +=
-              " However, relevant document excerpts have been included in the " +
-              "user's message — use them to answer and cite each as [N] by its id.";
-          }
-        } else {
-          const noRag =
-            "You do not have document search or knowledge base (RAG) " +
-            "capabilities in this conversation. Do not claim to have searched " +
-            "or accessed the user's documents.";
-          disabledToolGuard = disabledToolGuard
-            ? `${disabledToolGuard} ${noRag}`
-            : noRag;
         }
       }
       if (disabledToolGuard) {
@@ -2073,21 +2017,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningContentOpen = false;
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: ToolCallMessagePart[] = [];
-      // External-provider RAG prefetch (above) ran studio-side retrieval and
-      // produced chunks. Seed a synthetic search_knowledge_base tool-call part
-      // so the existing tool UI renders chunk cards and the end-of-stream
-      // source-badge logic (which reads search_knowledge_base results from
-      // toolCallParts) emits [N] citation badges — no model tool call needed.
-      if (ragPrefetchSynthetic) {
-        toolCallParts.push({
-          type: "tool-call" as const,
-          toolCallId: ragPrefetchSynthetic.toolCallId,
-          toolName: "search_knowledge_base",
-          argsText: JSON.stringify({ query: ragPrefetchSynthetic.query }),
-          args: { query: ragPrefetchSynthetic.query },
-          result: ragPrefetchSynthetic.chunkXml,
-        });
-      }
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;

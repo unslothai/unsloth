@@ -520,12 +520,11 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
-  // Local models run RAG through the search_knowledge_base tool loop, so
-  // they need tool-calling. External providers use the prefetch path
-  // (studio retrieves + injects, no tool loop), so RAG is allowed for them
-  // regardless of the local supportsTools flag.
-  const ragDisabled =
-    !modelLoaded || (!supportsTools && !isExternalModel);
+  // RAG retrieval runs entirely through the local search_knowledge_base
+  // tool, so it needs the tool-calling loop. No external-builtin RAG
+  // equivalent — gate purely on supportsTools (mirrors web/code when not
+  // backed by a provider builtin).
+  const ragDisabled = !modelLoaded || !supportsTools;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
