@@ -49,9 +49,10 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
                 no_decay_names.add(f"{mod_prefix}{param_name}")
 
     # Catch PEFT-wrapped copies (modules_to_save) in a second pass.
+    # Match any adapter name (not just "default" — PEFT uses the convention
+    # modules_to_save.<adapter_name>.weight|bias).
     for name, _ in model.named_parameters():
-        if not name.endswith("modules_to_save.default.weight") and \
-           not name.endswith("modules_to_save.default.bias"):
+        if "modules_to_save." not in name:
             continue
         parent_name = name.rsplit(".modules_to_save", 1)[0]
         try:

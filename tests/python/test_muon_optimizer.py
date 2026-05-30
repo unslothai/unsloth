@@ -1068,3 +1068,115 @@ def test_empty_muon_group_step():
     chained.step()
     assert not torch.isnan(p).any(), "Muon step should not produce NaN"
     assert not torch.isnan(q).any(), "AdamW step should not produce NaN"
+
+
+# -- Tests: 6th-pass additions (MUON_REVIEW_5.md) ----------------------------
+
+
+def test_resume_with_lr_scheduler():
+    """After load_state_dict + step, LR must match saved LR, not construction LR."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    chained = _MuonAdamWChained(muon, adamw)
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        chained, start_factor=1.0, end_factor=0.1, total_iters=5
+    )
+
+    for step in range(5):
+        p.grad = torch.randn_like(p)
+        q.grad = torch.randn_like(q)
+        chained.step()
+        scheduler.step()
+
+    saved_lr = muon.param_groups[0]["lr"]
+    assert saved_lr < 1e-3, "LR should have decayed"
+
+    state = chained.state_dict()
+
+    # Recreate optimizer from scratch
+    muon2 = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw2 = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    chained2 = _MuonAdamWChained(muon2, adamw2)
+
+    chained2.load_state_dict(state)
+    # After load_state_dict, chained groups must reflect loaded LR (C2 fix)
+    assert chained2.param_groups[0]["lr"] == saved_lr, \
+        f"chained LR ({chained2.param_groups[0]['lr']}) must match saved LR ({saved_lr})"
+    assert muon2.param_groups[0]["lr"] == saved_lr, \
+        f"muon LR ({muon2.param_groups[0]['lr']}) must match saved LR ({saved_lr})"
+
+    # Step must NOT overwrite the loaded LR
+    p2 = muon2.param_groups[0]["params"][0]
+    q2 = adamw2.param_groups[0]["params"][0]
+    p2.grad = torch.randn_like(p2)
+    q2.grad = torch.randn_like(q2)
+    chained2.step()
+    assert muon2.param_groups[0]["lr"] == saved_lr, \
+        "step() must not overwrite loaded LR (C2 regression)"
+
+
+def test_peft_non_default_adapter_name():
+    """Non-default adapter name must still route embedding to AdamW."""
+    from unsloth.optimizers.muon import make_muon_param_groups, _classify_param_names
+
+    model = torch.nn.Module()
+    model.emb = torch.nn.Embedding(10, 8)
+    model.lin = torch.nn.Linear(8, 4)
+    # Simulate PEFT modules_to_save with non-default adapter name "custom_name"
+    peft_param = torch.nn.Parameter(torch.randn(10, 8))
+    model._parameters["emb.modules_to_save.custom_name.weight"] = peft_param
+    peft_bias = torch.nn.Parameter(torch.randn(8))
+    model._parameters["emb.modules_to_save.custom_name.bias"] = peft_bias
+
+    embedding_names, _ = _classify_param_names(model)
+    assert "emb.modules_to_save.custom_name.weight" in embedding_names, \
+        "Custom adapter embedding must be classified as embedding"
+    assert "emb.modules_to_save.custom_name.bias" in embedding_names, \
+        "Custom adapter embedding bias must be classified as embedding"
+
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_params = [p for g in muon_g for p in g["params"]]
+    adamw_params = [p for g in adamw_g for p in g["params"]]
+
+    assert any(p is peft_param for p in adamw_params), \
+        "Custom adapter embedding weight should go to AdamW, not Muon"
+    assert not any(p is peft_param for p in muon_params), \
+        "Custom adapter embedding weight should NOT go to Muon"
+
+
+def test_load_state_dict_updates_chained_groups():
+    """After load_state_dict, chained.param_groups must match sub-optimizer groups."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    chained = _MuonAdamWChained(muon, adamw)
+    state = chained.state_dict()
+
+    # Modify LR in saved state
+    state["muon"]["param_groups"][0]["lr"] = 5e-4
+    state["adamw"]["param_groups"][0]["lr"] = 5e-4
+    state["muon"]["param_groups"][0]["weight_decay"] = 0.5
+
+    # Recreate and load
+    muon2 = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw2 = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    chained2 = _MuonAdamWChained(muon2, adamw2)
+
+    chained2.load_state_dict(state)
+
+    assert chained2.param_groups[0]["lr"] == 5e-4, "Chained LR should reflect loaded state"
+    assert chained2.param_groups[0]["weight_decay"] == 0.5, "Chained weight_decay should reflect loaded state"
+    assert chained2.param_groups[1]["lr"] == 5e-4, "Chained AdamW group LR should reflect loaded state"

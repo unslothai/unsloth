@@ -339,14 +339,22 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     sub-optimizers directly.
     """
 
-    def __init__(self, muon, adamw):
+    def __init__(self, muon, adamw, needs_deterministic=False):
         self.muon = muon
         self.adamw = adamw
-        merged = muon.param_groups + adamw.param_groups
-        defaults = dict(muon.defaults)
-        defaults.update(adamw.defaults)
+        self._needs_deterministic = needs_deterministic
+        all_groups = []
+        if muon is not None:
+            all_groups.extend(muon.param_groups)
+        if adamw is not None:
+            all_groups.extend(adamw.param_groups)
+        defaults = {}
+        if muon is not None:
+            defaults.update(muon.defaults)
+        if adamw is not None:
+            defaults.update(adamw.defaults)
         self._init_done = False
-        super().__init__(merged, defaults)
+        super().__init__(all_groups, defaults)
         self._init_done = True
 
     def add_param_group(self, param_group):
@@ -360,49 +368,71 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     KNOWN_HYPERPARAM_KEYS = frozenset({"lr", "weight_decay", "momentum", "betas", "eps", "nesterov"})
 
     def _sync_lr(self):
-        total_sub = len(self.muon.param_groups) + len(self.adamw.param_groups)
-        if total_sub != len(self.param_groups):
+        idx = 0
+        if self.muon is not None:
+            n_muon = len(self.muon.param_groups)
+        else:
+            n_muon = 0
+        n_adamw = len(self.adamw.param_groups) if self.adamw is not None else 0
+        if n_muon + n_adamw != len(self.param_groups):
             raise RuntimeError(
                 f"_MuonAdamWChained group count mismatch: "
-                f"muon={len(self.muon.param_groups)}, adamw={len(self.adamw.param_groups)}, "
+                f"muon={n_muon}, adamw={n_adamw}, "
                 f"chained={len(self.param_groups)}. "
                 "This can happen if add_param_group was called on a sub-optimizer."
             )
-        # Sync chained → sub-optimizers (forward direction).
-        idx = 0
-        for group in self.muon.param_groups:
-            for k in self.KNOWN_HYPERPARAM_KEYS:
-                if k in self.param_groups[idx] and k in group:
-                    group[k] = self.param_groups[idx][k]
-            idx += 1
-        for group in self.adamw.param_groups:
-            for k in self.KNOWN_HYPERPARAM_KEYS:
-                if k in self.param_groups[idx] and k in group:
-                    group[k] = self.param_groups[idx][k]
-            idx += 1
+        if self.muon is not None:
+            for group in self.muon.param_groups:
+                for k in self.KNOWN_HYPERPARAM_KEYS:
+                    if k in self.param_groups[idx] and k in group:
+                        group[k] = self.param_groups[idx][k]
+                idx += 1
+        if self.adamw is not None:
+            for group in self.adamw.param_groups:
+                for k in self.KNOWN_HYPERPARAM_KEYS:
+                    if k in self.param_groups[idx] and k in group:
+                        group[k] = self.param_groups[idx][k]
+                idx += 1
+
+    def _muon_step_deterministic(self):
+        if not self._needs_deterministic:
+            self.muon.step()
+            return
+        was_enabled = torch.are_deterministic_algorithms_enabled()
+        if not was_enabled:
+            torch.use_deterministic_algorithms(True)
+        try:
+            self.muon.step()
+        finally:
+            if not was_enabled:
+                torch.use_deterministic_algorithms(False)
 
     def step(self, closure=None):
         self._sync_lr()
         if closure is not None:
             loss = closure()
-            self.muon.step()
+        if self.muon is not None:
+            self._muon_step_deterministic()
+        if self.adamw is not None:
             self.adamw.step()
+        if closure is not None:
             return loss
-        self.muon.step()
-        self.adamw.step()
 
     def zero_grad(self, set_to_none=True):
-        self.muon.zero_grad(set_to_none=set_to_none)
-        self.adamw.zero_grad(set_to_none=set_to_none)
+        if self.muon is not None:
+            self.muon.zero_grad(set_to_none=set_to_none)
+        if self.adamw is not None:
+            self.adamw.zero_grad(set_to_none=set_to_none)
 
     MUON_STATE_DICT_VERSION = 1
 
     def state_dict(self):
-        return {
-            "_muon_version": self.MUON_STATE_DICT_VERSION,
-            "muon": self.muon.state_dict(),
-            "adamw": self.adamw.state_dict(),
-        }
+        sd: dict = {"_muon_version": self.MUON_STATE_DICT_VERSION}
+        if self.muon is not None:
+            sd["muon"] = self.muon.state_dict()
+        if self.adamw is not None:
+            sd["adamw"] = self.adamw.state_dict()
+        return sd
 
     def load_state_dict(self, state_dict):
         if state_dict.get("_muon_version") != self.MUON_STATE_DICT_VERSION:
@@ -412,8 +442,17 @@ class _MuonAdamWChained(torch.optim.Optimizer):
                 f"got {state_dict.get('_muon_version', 'missing')}. "
                 "This checkpoint is not compatible with the current Muon optimizer format."
             )
-        self.muon.load_state_dict(state_dict["muon"])
-        self.adamw.load_state_dict(state_dict["adamw"])
+        if self.muon is not None:
+            self.muon.load_state_dict(state_dict["muon"])
+        if self.adamw is not None:
+            self.adamw.load_state_dict(state_dict["adamw"])
+        # C2 fix: re-sync chained groups to match freshly loaded sub-optimizer groups.
+        refreshed = []
+        if self.muon is not None:
+            refreshed.extend(self.muon.param_groups)
+        if self.adamw is not None:
+            refreshed.extend(self.adamw.param_groups)
+        self.param_groups = refreshed
 
     def __getstate__(self):
         return self.state_dict()
@@ -426,8 +465,8 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         )
 
     def __repr__(self):
-        muon_str = f"Muon({len(self.muon.param_groups)} groups)"
-        adamw_str = f"AdamW({len(self.adamw.param_groups)} groups)"
+        muon_str = f"Muon({len(self.muon.param_groups) if self.muon is not None else 0} groups)"
+        adamw_str = f"AdamW({len(self.adamw.param_groups) if self.adamw is not None else 0} groups)"
         return f"{type(self).__name__}({muon_str}, {adamw_str})"
 
 
@@ -477,6 +516,7 @@ class UnslothTrainer(SFTTrainer):
 
         import os as _os
         import torch.distributed as dist
+        needs_deterministic = False
         if dist.is_available() and dist.is_initialized():
             if _os.environ.get("UNSLOTH_MUON_DISTRIBUTED", "0") != "1":
                 raise RuntimeError(
@@ -487,16 +527,14 @@ class UnslothTrainer(SFTTrainer):
                     "parameter divergence across ranks — this is a CORRECTNESS issue, "
                     "not just a reproducibility issue;\n"
                     "  3) DeepSpeed ZeRO may not handle Muon's orthogonalization correctly.\n"
-                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1, which "
-                    "also forces torch.use_deterministic_algorithms(True)."
+                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1."
                 )
             else:
                 logger.warning(
-                    "Unsloth: UNSLOTH_MUON_DISTRIBUTED=1 detected — enforcing "
-                    "deterministic algorithms for training correctness. "
-                    "This may reduce performance."
+                    "Unsloth: UNSLOTH_MUON_DISTRIBUTED=1 detected — Muon step will "
+                    "enforce deterministic algorithms. This may reduce performance."
                 )
-                torch.use_deterministic_algorithms(True)
+                needs_deterministic = True
 
         from unsloth.optimizers.muon import make_muon_param_groups
 
@@ -545,19 +583,21 @@ class UnslothTrainer(SFTTrainer):
             ns_steps=config.ns_steps,
             eps=config.muon_eps,
             weight_decay=muon_weight_decay,
+            ns_coefficients=config.ns_coefficients,
+            adjust_lr_fn=config.adjust_lr_fn,
         )
-        if config.ns_coefficients is not None:
-            muon_kwargs["ns_coefficients"] = config.ns_coefficients
-        muon_kwargs["adjust_lr_fn"] = config.adjust_lr_fn
 
-        try:
-            muon_optimizer = torch.optim.Muon(muon_groups, **muon_kwargs)
-        except TypeError as e:
-            raise TypeError(
-                f"Unsloth: Failed to construct torch.optim.Muon (PyTorch {torch.__version__}). "
-                f"Supported kwargs: momentum, nesterov, ns_steps, ns_coefficients, eps, "
-                f"weight_decay, adjust_lr_fn. Got error: {e}"
-            ) from e
+        has_muon_params = sum(len(g["params"]) for g in muon_groups) > 0
+        if has_muon_params:
+            try:
+                muon_optimizer = torch.optim.Muon(muon_groups, **muon_kwargs)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Unsloth: Failed to construct torch.optim.Muon (PyTorch {torch.__version__}). "
+                    f"Got error: {e}"
+                ) from e
+        else:
+            muon_optimizer = None
 
         adamw_betas = (
             getattr(self.args, "adam_beta1", config.adamw_betas[0]),
@@ -569,14 +609,11 @@ class UnslothTrainer(SFTTrainer):
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
         else:
-            # Empty AdamW fallback — create a no-op dummy with at least one group
-            dummy = torch.nn.Parameter(torch.empty(0))
-            adamw_optimizer = torch.optim.AdamW(
-                [{"params": [dummy], "lr": 0.0, "weight_decay": 0.0}],
-                **adamw_kwargs,
-            )
+            adamw_optimizer = None
 
-        self.optimizer = _MuonAdamWChained(muon_optimizer, adamw_optimizer)
+        self.optimizer = _MuonAdamWChained(
+            muon_optimizer, adamw_optimizer, needs_deterministic=needs_deterministic,
+        )
         return self.optimizer
 
     def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
