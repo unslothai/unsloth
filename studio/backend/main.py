@@ -12,6 +12,110 @@ from pathlib import Path as _Path
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
+# Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
+# os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
+if sys.platform == "win32":
+    # Retained at module scope -- os.add_dll_directory returns a handle that
+    # removes the search-path entry when garbage collected.
+    _ROCM_DLL_HANDLES: list = []
+
+    def _add_rocm_dll_dirs() -> None:
+        candidates = []
+        # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
+        for _var in ("HIP_PATH", "ROCM_PATH"):
+            _val = os.environ.get(_var)
+            if _val:
+                candidates.append(os.path.join(_val, "bin"))
+        # 2. Standard AMD installer location: C:\Program Files\AMD\ROCm\<ver>\bin
+        #    Scan all installed versions, newest first.
+        _default_root = os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+        )
+
+        def _ver_key(name: str) -> tuple:
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            parts = []
+            for chunk in name.split("."):
+                try:
+                    parts.append((0, int(chunk)))
+                except ValueError:
+                    parts.append((1, chunk))
+            return tuple(parts)
+
+        try:
+            if os.path.isdir(_default_root):
+                for _ver in sorted(
+                    os.listdir(_default_root), key = _ver_key, reverse = True
+                ):
+                    _bin = os.path.join(_default_root, _ver, "bin")
+                    if os.path.isdir(_bin):
+                        candidates.append(_bin)
+        except OSError:
+            pass
+        for _d in candidates:
+            if os.path.isdir(_d):
+                try:
+                    _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
+                except (OSError, AttributeError):
+                    pass
+
+    _add_rocm_dll_dirs()
+    del _add_rocm_dll_dirs
+
+    # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
+    # bitsandbytes on Windows ROCm tries to load libbitsandbytes_rocm<ver>.dll
+    # where <ver> comes from torch.version.hip (e.g. "7.13..." → "713").
+    # The installed BNB wheel ships rocm72.dll (not rocm713.dll), so without
+    # this the server process crashes with "Configured ROCm binary not found".
+    # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
+    # before any import that pulls in bitsandbytes (mirrors worker.py logic).
+    # Gate on the rocm bnb DLL (the exact file this configures) or HIP_PATH/
+    # ROCM_PATH, not on torch.version.hip: that needed importing torch on every
+    # Windows host (NVIDIA/CPU included), adding seconds to startup. Radeon
+    # wheels without HIP_PATH still ship the rocm bnb DLL, so they are covered.
+    if "BNB_ROCM_VERSION" not in os.environ:
+        import glob as _glob
+        import logging as _logging
+
+        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
+        _bnb_rocm_ver = None
+        _found_rocm_bnb = False
+        try:
+            import importlib.util as _ilu
+
+            _bnb_spec = _ilu.find_spec("bitsandbytes")
+            # submodule_search_locations (not spec.origin) handles editable installs.
+            if _bnb_spec and _bnb_spec.submodule_search_locations:
+                import re as _re_bnb
+
+                _all_vers_main: list[str] = []
+                for _pkg_dir in _bnb_spec.submodule_search_locations:
+                    for _dll in _glob.glob(
+                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                    ):
+                        _found_rocm_bnb = True
+                        _km = _re_bnb.search(
+                            r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
+                        )
+                        if _km:
+                            _all_vers_main.append(_km.group(1))
+                if _all_vers_main:
+                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
+        except Exception as _e:
+            _logging.getLogger(__name__).warning(
+                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                _e,
+            )
+        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72").
+        if _found_rocm_bnb or _hip_env:
+            _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+            os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+            _logging.getLogger(__name__).info(
+                "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
+                _bnb_rocm_ver_final,
+            )
+
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)
@@ -762,8 +866,6 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     @font-face downloads to fail silently.  Stripping the attribute
     makes them regular same-origin fetches that work on any protocol.
     """
-    import re as _re
-
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
     return html.encode("utf-8")

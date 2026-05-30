@@ -727,16 +727,13 @@ class TestSourceCodePatterns:
         assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in content
 
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
-        """If Metal configure or build fails, setup should retry with CPU fallback."""
+        """If Metal/CUDA/ROCm configure or build fails, setup retries a CPU
+        build. PR #5826 generalised the Metal-only wording via $_FB_LABEL; this
+        check stays label-agnostic so new GPU backends don't require edits."""
         content = SETUP_SH.read_text()
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
-        assert (
-            'substep "Metal configure failed; retrying CPU build..." "$C_WARN"'
-            in content
-        )
-        assert (
-            'substep "Metal build failed; retrying CPU build..." "$C_WARN"' in content
-        )
+        assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
+        assert 'build failed; retrying CPU build..." "$C_WARN"' in content
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
         # _TRY_METAL_CPU_FALLBACK must be reset to false in both fallback branches
@@ -744,6 +741,55 @@ class TestSourceCodePatterns:
         assert content.count("_TRY_METAL_CPU_FALLBACK=false") >= 3, (
             "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
             "(init + configure fallback + build fallback)"
+        )
+        # The fallback helper must exist and Metal must reach it via the
+        # _TRY_METAL_CPU_FALLBACK shortcut so the macOS path stays covered.
+        assert "_gpu_fallback_label()" in content
+        assert 'echo "Metal"' in content
+
+    def test_setup_sh_exports_allow_unsupported_compiler(self):
+        """Headline fix for PR #5826: a fresh CUDA toolkit's host-compiler
+        whitelist lags the distro gcc/clang, so nvcc rejects the host with
+        "#error -- unsupported GNU version". setup.sh exports
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler (via env, not CMAKE_ARGS,
+        for word-splitting safety) so the build and compiler-id probe proceed."""
+        content = SETUP_SH.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via NVCC_PREPEND_FLAGS (covers the configure-time compiler
+        # probe too), not embedded in the word-split CMAKE_ARGS string.
+        assert "export NVCC_PREPEND_FLAGS=" in content
+        cmake_args_lines = [
+            line for line in content.splitlines() if "CMAKE_ARGS=" in line
+        ]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
+
+    def test_setup_ps1_exports_allow_unsupported_compiler(self):
+        """Windows parity for the PR #5826 fix: a fresh CUDA toolkit's whitelist
+        also lags MSVC, so nvcc can reject the host with "#error -- unsupported
+        Microsoft Visual Studio version!". setup.ps1 sets
+        NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA branch (via
+        env, out of $CmakeArgs) so the configure probe + build proceed."""
+        content = SETUP_PS1.read_text()
+        assert "-allow-unsupported-compiler" in content
+        # Delivered via the process environment, not the $CmakeArgs array, so it
+        # reaches both the configure-time compiler probe and `cmake --build`.
+        assert "$env:NVCC_PREPEND_FLAGS" in content
+        cmake_args_lines = [
+            line for line in content.splitlines() if "$CmakeArgs +=" in line
+        ]
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must not be pushed into the $CmakeArgs array"
+        # Must be scoped to the CUDA branch (guarded by the GPU/nvcc check),
+        # not set unconditionally for CPU-only builds.
+        flag_idx = content.index("-allow-unsupported-compiler")
+        cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
+        cuda_disable_idx = content.index("'-DGGML_CUDA=OFF'")
+        assert cuda_guard_idx < flag_idx < cuda_disable_idx, (
+            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, "
+            "before the GGML_CUDA=OFF (CPU) branch"
         )
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):
