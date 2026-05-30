@@ -50,6 +50,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout01Icon,
+  MoreVerticalIcon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
@@ -555,7 +556,7 @@ export function AppSidebar() {
                       data-thread-type={item.type}
                       data-thread-id={item.id}
                       isActive={activeThreadId === item.id}
-                      className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
+                      className="sidebar-nav-btn h-[32px] cursor-pointer rounded-[10px] pl-2.5 pr-4 group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 text-[14.5px] leading-[19px] tracking-nav font-medium"
                       onClick={() => {
                         navigate({
                           to: "/chat",
@@ -578,7 +579,7 @@ export function AppSidebar() {
                           className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                         >
                           <span className="sidebar-row-action-glyph">
-                            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                            <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                           </span>
                         </button>
                       </DropdownMenuTrigger>

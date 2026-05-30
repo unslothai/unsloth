@@ -111,7 +111,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        "aui-tool-group-trigger group/trigger flex w-full items-center gap-2 text-sm transition-colors",
+        "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
         "group-data-[variant=ghost]/tool-group-root:px-0",

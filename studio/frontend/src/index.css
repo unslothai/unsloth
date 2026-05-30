@@ -503,7 +503,7 @@
 	}
 
 	.sidebar-row-action {
-		@apply absolute top-0 bottom-0 right-0 inline-flex items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;

@@ -135,7 +135,7 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 py-1.5 text-sm transition-colors",
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 py-1.5 text-sm transition-colors",
         className,
       )}
       {...props}
