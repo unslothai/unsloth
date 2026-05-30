@@ -40,7 +40,7 @@ def _get_embedding_param_names(model: torch.nn.Module) -> Set[str]:
                 names.add(full)
     # Catch PEFT-wrapped embedding copies.
     for name, param in model.named_parameters():
-        if "modules_to_save.default.weight" in name:
+        if name.endswith("modules_to_save.default.weight"):
             names.add(name)
     return names
 
@@ -64,11 +64,7 @@ def _is_muon_eligible(name: str, param: torch.Tensor, embedding_param_names: Set
     """
     if param.ndim != 2 or not param.requires_grad:
         return False
-    if name in embedding_param_names:
-        return False
-    if "modules_to_save.default.weight" in name:
-        return False
-    return True
+    return name not in embedding_param_names
 
 
 def make_muon_param_groups(
@@ -141,7 +137,7 @@ def make_muon_param_groups(
         if not param.requires_grad:
             continue
 
-        is_embedding = name in embedding_names or "modules_to_save.default.weight" in name
+        is_embedding = name in embedding_names or name.endswith("modules_to_save.default.weight")
         is_no_decay = name in no_decay_names or "bias" in name.lower()
 
         if target_modules is not None:

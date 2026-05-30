@@ -216,6 +216,8 @@ def test_create_muon_optimizer_smoke(monkeypatch):
     args = MagicMock()
     args.learning_rate = 1e-3
     args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
 
     trainer = UnslothTrainer.__new__(UnslothTrainer)
     trainer.model = model
@@ -276,38 +278,33 @@ def test_chained_state_dict_serialization(tmp_path):
             f"weight_decay mismatch in group {i}"
 
 
-def test_chained_pickle_roundtrip(tmp_path):
-    """torch.save / torch.load of the optimizer object via pickle."""
+def test_chained_pickle_not_supported():
+    """torch.save(optimizer) / pickle must raise NotImplementedError."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
-    q = torch.nn.Parameter(torch.randn(4))
-
     muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
-    adamw = torch.optim.AdamW([q], lr=1e-3)
+    adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
 
     from unsloth.trainer import _MuonAdamWChained
     chained = _MuonAdamWChained(muon, adamw)
 
-    p.grad = torch.randn_like(p)
-    q.grad = torch.randn_like(q)
-    chained.step()
+    with pytest.raises(NotImplementedError, match="torch.save"):
+        chained.__getstate__()
 
-    path = tmp_path / "optim_full.pt"
-    torch.save(chained, path)
 
-    loaded = torch.load(path, weights_only=False)
-    assert isinstance(loaded, _MuonAdamWChained)
-    assert hasattr(loaded, "muon")
-    assert hasattr(loaded, "adamw")
+def test_chained_add_param_group_raises():
+    """add_param_group must raise NotImplementedError."""
+    from unsloth.trainer import _MuonAdamWChained
 
-    sd_orig = chained.state_dict()
-    sd_loaded = loaded.state_dict()
-    for key in ["muon", "adamw"]:
-        for k in sd_orig[key]:
-            if isinstance(sd_orig[key][k], torch.Tensor):
-                assert torch.equal(sd_orig[key][k], sd_loaded[key][k]), \
-                    f"{key}.{k} mismatch after pickle roundtrip"
+    muon = MagicMock()
+    muon.param_groups = [{"params": [], "lr": 1e-3}]
+    adamw = MagicMock()
+    adamw.param_groups = [{"params": [], "lr": 1e-4}]
+
+    chained = _MuonAdamWChained(muon, adamw)
+    with pytest.raises(NotImplementedError, match="add_param_group"):
+        chained.add_param_group({"params": []})
 
 
 def test_chained_state_dict_real_params():
@@ -550,6 +547,201 @@ def test_peft_modules_to_save_excluded_from_muon():
     assert any(p is peft_param for p in adamw_params), "PEFT param should go to AdamW"
     assert not any(p is peft_param for p in muon_params), "PEFT param should NOT go to Muon"
     assert any(p is model.lin.weight for p in muon_params), "Linear weight should go to Muon"
+
+
+# -- Tests: MT1 — Full lifecycle integration ---------------------------------
+
+
+def test_full_lifecycle_step_changes_params():
+    """step() must modify model parameters; loaded optimizer must too."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    before = p.data.clone()
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+    assert not torch.equal(p.data, before), "step() must change params"
+
+    # Save state_dict, re-create, load, step again
+    sd = chained.state_dict()
+    fresh_muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    fresh_adamw = torch.optim.AdamW([q], lr=1e-3)
+    fresh_chained = _MuonAdamWChained(fresh_muon, fresh_adamw)
+    fresh_chained.load_state_dict(sd)
+
+    before2 = p.data.clone()
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    fresh_chained.step()
+    assert not torch.equal(p.data, before2), "loaded optimizer must change params"
+
+
+# -- Tests: MT2 — Empty Muon group -------------------------------------------
+
+
+def test_empty_muon_group_params():
+    """No 2D params → empty Muon group must not crash."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+    _skip_if_no_muon()
+
+    model = torch.nn.Module()
+    model.register_parameter("bias", torch.nn.Parameter(torch.randn(4)))
+
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    assert len(muon_g) == 1
+    assert len(muon_g[0]["params"]) == 0
+
+    # Should not raise
+    torch.optim.Muon(muon_g, lr=1e-3, momentum=0.95, ns_steps=5)
+
+
+# -- Tests: MT3 — Empty AdamW group ------------------------------------------
+
+
+def test_empty_adamw_group_params():
+    """All 2D no-bias params → empty AdamW groups returned."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+    _skip_if_no_muon()
+
+    model = torch.nn.Linear(4, 4, bias=False)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    assert len(adamw_g) == 0
+    # All 2D params go to Muon
+    assert len(muon_g[0]["params"]) > 0
+
+
+# -- Tests: MT4 — Weight-decay isolation with equal values -------------------
+
+
+def test_weight_decay_isolation_equal_values():
+    """Isolation must hold when muon_weight_decay == adamw_weight_decay."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Linear(4, 4)
+    muon_g, adamw_g = make_muon_param_groups(
+        model, lr=1e-3, weight_decay=0.1, adamw_weight_decay=0.1
+    )
+
+    assert muon_g[0]["weight_decay"] == 0.1
+    decay_groups = [g for g in adamw_g if g.get("weight_decay", 0.0) > 0.0]
+    no_decay_groups = [g for g in adamw_g if g.get("weight_decay", 0.0) == 0.0]
+    assert len(decay_groups) == 0  # weight went to Muon, no adamw decay params
+    assert any(p is model.bias for g in no_decay_groups for p in g["params"])
+
+
+# -- Tests: MT5 — target_modules with non-existent module names ---------------
+
+
+def test_target_modules_nonexistent():
+    """Non-existent target_modules → all params fall back to AdamW."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Linear(4, 4)
+    muon_g, adamw_g = make_muon_param_groups(
+        model, lr=1e-3, weight_decay=0.0, target_modules=["nonexistent"]
+    )
+
+    assert len(muon_g[0]["params"]) == 0
+    all_adamw = [p for g in adamw_g for p in g["params"]]
+    assert any(p is model.bias for p in all_adamw)
+    assert any(p is model.weight for p in all_adamw)
+
+
+# -- Tests: MT6 — _sync_lr with mismatched param group lengths ---------------
+
+
+def test_sync_lr_with_extra_chained_group():
+    """Extra group in chained.param_groups must not crash _sync_lr."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    # Add an extra group to chained.param_groups (simulates add_param_group
+    # being called despite being unsupported — defensive check)
+    chained.param_groups.append({"params": [], "lr": 1e-5, "weight_decay": 0.0})
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    # Should not crash
+    chained.step()
+
+    # Muon LR should still be correct (group 0, before the extra group)
+    assert muon.param_groups[0]["lr"] == 1e-3
+
+
+# -- Tests: MT7 — Distributed training warning --------------------------------
+
+
+@patch("torch.distributed.is_available", return_value=True)
+@patch("torch.distributed.is_initialized", return_value=True)
+def test_distributed_warning_emitted(mock_init, mock_avail):
+    """Distributed guard should emit a warning."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer
+    import warnings
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig()
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = trainer._create_muon_optimizer(config)
+        distributed_warnings = [x for x in w if "distributed" in str(x.message).lower()]
+        assert len(distributed_warnings) >= 1, "Expected at least 1 distributed warning"
+
+
+# -- Tests: _sync_lr all hyperparams (H1) ------------------------------------
+
+
+def test_sync_lr_all_hyperparams():
+    """_sync_lr must propagate all hyperparams, not just lr."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    # Modify weight_decay on chained groups
+    chained.param_groups[0]["weight_decay"] = 0.5
+    chained.param_groups[1]["weight_decay"] = 0.0
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    assert muon.param_groups[0]["weight_decay"] == 0.5, "Muon weight_decay not synced"
+    assert adamw.param_groups[0]["weight_decay"] == 0.0, "AdamW weight_decay not synced"
 
 
 # -- Tests: surface API -------------------------------------------------------
