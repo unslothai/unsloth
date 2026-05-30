@@ -164,8 +164,8 @@ class MuonConfig:
     """Configuration for the Muon optimizer integration.
 
     Muon (Momentum + Newton-Schulz orthogonalization) only applies to 2D
-    parameters (matrices). All other parameters (embeddings, layernorms,
-    biases, 1D) fall back to AdamW.
+    hidden-layer weight matrices. Embedding matrices, biases, layernorm
+    params, and all 1D/0D parameters fall back to AdamW.
 
     Requires PyTorch >= 2.9.0.
 
@@ -194,10 +194,15 @@ class MuonConfig:
     momentum: float = 0.95
     nesterov: bool = True
     ns_steps: int = 5
+    ns_coefficients: Optional[tuple[float, float, float]] = None
     muon_lr_scale: float = 1.0
+    adjust_lr_fn: Optional[str] = None
+    muon_eps: float = 1e-7
+    muon_weight_decay: Optional[float] = None
     adamw_lr: Optional[float] = None
     adamw_betas: tuple = (0.9, 0.999)
     adamw_eps: float = 1e-8
+    adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
 
 
@@ -283,13 +288,19 @@ class _MuonAdamWChained(torch.optim.Optimizer):
                 group["lr"] = self.param_groups[i]["lr"]
         offset = len(self.muon.param_groups)
         for i, group in enumerate(self.adamw.param_groups):
-            if "lr" in group and "lr" in self.param_groups[offset + i]:
-                group["lr"] = self.param_groups[offset + i]["lr"]
+            idx = offset + i
+            if idx < len(self.param_groups) and "lr" in group and "lr" in self.param_groups[idx]:
+                group["lr"] = self.param_groups[idx]["lr"]
 
     def step(self, closure=None):
         self._sync_lr()
-        self.muon.step(closure)
-        self.adamw.step(closure)
+        if closure is not None:
+            loss = closure()
+            self.muon.step()
+            self.adamw.step()
+            return loss
+        self.muon.step()
+        self.adamw.step()
 
     def zero_grad(self, set_to_none=True):
         self.muon.zero_grad(set_to_none=set_to_none)
@@ -301,6 +312,15 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     def load_state_dict(self, state_dict):
         self.muon.load_state_dict(state_dict["muon"])
         self.adamw.load_state_dict(state_dict["adamw"])
+
+    def __getstate__(self):
+        return self.state_dict()
+
+    def __setstate__(self, state):
+        raise RuntimeError(
+            "torch.save(optimizer) is not supported for _MuonAdamWChained. "
+            "Use optimizer.state_dict() / optimizer.load_state_dict() instead."
+        )
 
 
 class UnslothTrainer(SFTTrainer):
@@ -342,15 +362,25 @@ class UnslothTrainer(SFTTrainer):
                 "Update with: pip install --upgrade torch"
             )
 
-        import torch.distributed as dist
-        if dist.is_available() and dist.is_initialized():
-            raise RuntimeError(
-                "Unsloth Muon: torch.optim.Muon does not yet support distributed training "
-                "in PyTorch 2.9+. Use AdamW or wait for PyTorch 2.10+."
-            )
-
         from unsloth.optimizers.muon import make_muon_param_groups
         from peft import PeftModel
+
+        lr = self.args.learning_rate
+        weight_decay = self.args.weight_decay
+        embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+
+        muon_groups, adamw_groups = make_muon_param_groups(
+            self.model,
+            lr=lr,
+            weight_decay=config.muon_weight_decay if config.muon_weight_decay is not None else weight_decay,
+            muon_lr_scale=config.muon_lr_scale,
+            adamw_lr=config.adamw_lr,
+            adamw_betas=config.adamw_betas,
+            adamw_eps=config.adamw_eps,
+            adamw_weight_decay=config.adamw_weight_decay,
+            target_modules=config.target_modules,
+        )
+
         if isinstance(self.model, PeftModel):
             print(
                 "Unsloth Muon: PEFT/LoRA model detected. "
@@ -358,19 +388,12 @@ class UnslothTrainer(SFTTrainer):
                 "Results not guaranteed — use full_finetuning=True for expected behaviour."
             )
 
-        lr = self.args.learning_rate
-        weight_decay = self.args.weight_decay
-
-        muon_groups, adamw_groups = make_muon_param_groups(
-            self.model,
-            lr=lr,
-            weight_decay=weight_decay,
-            muon_lr_scale=config.muon_lr_scale,
-            adamw_lr=config.adamw_lr,
-            adamw_betas=config.adamw_betas,
-            adamw_eps=config.adamw_eps,
-            target_modules=config.target_modules,
-        )
+        # Override embedding group LR if requested (the group is always the last
+        # AdamW no-decay group when embeddings exist).
+        if embedding_lr is not None:
+            for group in adamw_groups:
+                if group.get("weight_decay", 0.0) == 0.0:
+                    group["lr"] = embedding_lr
 
         n_muon = sum(p.numel() for g in muon_groups for p in g["params"])
         n_adamw = sum(p.numel() for g in adamw_groups for p in g["params"])
@@ -378,30 +401,29 @@ class UnslothTrainer(SFTTrainer):
 
         print(
             f"Unsloth: Muon enabled — "
-            f"{n_muon:,} params via Muon ({100*n_muon/total:.1f}%), "
-            f"{n_adamw:,} params via AdamW fallback ({100*n_adamw/total:.1f}%)"
+            f"{n_muon:,} elements via Muon ({100*n_muon/total:.1f}%), "
+            f"{n_adamw:,} elements via AdamW fallback ({100*n_adamw/total:.1f}%)"
         )
         print(
             "Unsloth Muon: checkpoint format is incompatible with AdamW. "
             "Do not use resume_from_checkpoint with an AdamW checkpoint."
         )
 
-        muon_optimizer = torch.optim.Muon(
-            muon_groups,
-            lr=lr * config.muon_lr_scale,
+        muon_kwargs = dict(
             momentum=config.momentum,
             nesterov=config.nesterov,
             ns_steps=config.ns_steps,
-            weight_decay=weight_decay,
+            eps=config.muon_eps,
         )
+        if config.ns_coefficients is not None:
+            muon_kwargs["ns_coefficients"] = config.ns_coefficients
+        if config.adjust_lr_fn is not None:
+            muon_kwargs["adjust_lr_fn"] = config.adjust_lr_fn
 
-        adamw_optimizer = torch.optim.AdamW(
-            adamw_groups,
-            lr=config.adamw_lr or lr,
-            betas=config.adamw_betas,
-            eps=config.adamw_eps,
-            weight_decay=weight_decay,
-        )
+        muon_optimizer = torch.optim.Muon(muon_groups, **muon_kwargs)
+
+        adamw_kwargs = dict(betas=config.adamw_betas, eps=config.adamw_eps)
+        adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
 
         self.optimizer = _MuonAdamWChained(muon_optimizer, adamw_optimizer)
         return self.optimizer

@@ -14,18 +14,39 @@
 
 from __future__ import annotations
 import torch
-from typing import Optional, List
+from typing import Optional, List, Set
 
 __all__ = ["make_muon_param_groups"]
 
 
-def _is_muon_eligible(param: torch.Tensor) -> bool:
+def _get_embedding_param_names(model: torch.nn.Module) -> Set[str]:
+    """Return the set of parameter names that belong to ``nn.Embedding`` modules."""
+    names: Set[str] = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Embedding):
+            for param_name, _ in module.named_parameters():
+                full = f"{module_name}.{param_name}" if module_name else param_name
+                names.add(full)
+    return names
+
+
+def _is_no_decay(name: str) -> bool:
+    """Heuristic: bias / norm / layernorm params should have zero weight decay."""
+    lower = name.lower()
+    return "bias" in lower or "norm" in lower or "layernorm" in lower
+
+
+def _is_muon_eligible(name: str, param: torch.Tensor, embedding_param_names: Set[str]) -> bool:
     """Check if a parameter is eligible for Muon optimization.
 
-    Muon only applies to 2D matrices (ndim == 2). All other shapes
-    (biases, layernorm weights, embeddings) fall back to AdamW.
+    Muon only applies to 2D hidden-layer weight matrices. Embedding
+    matrices (``nn.Embedding``) are excluded per upstream guidance.
     """
-    return param.ndim == 2 and param.requires_grad
+    if param.ndim != 2 or not param.requires_grad:
+        return False
+    if name in embedding_param_names:
+        return False
+    return True
 
 
 def make_muon_param_groups(
@@ -41,12 +62,12 @@ def make_muon_param_groups(
 ) -> tuple[list, list]:
     """Split model parameters into Muon-eligible (2D) and AdamW (1D) groups.
 
-    Muon (Newton-Schulz orthogonalization) only applies to 2D matrices.
-    All other parameters (embeddings, layernorms, biases, 1D) fall back
-    to AdamW.
+    Muon (Newton-Schulz orthogonalization) only applies to 2D hidden-layer
+    weight matrices. Embeddings (``nn.Embedding``), biases, layernorm params,
+    and all 1D/0D parameters fall back to AdamW.
 
-    The two lists are guaranteed to be disjoint — no parameter appears
-    in both.
+    The AdamW fallback is further split into decay (weights) and no-decay
+    (biases, norms) groups to match HF Trainer's default behaviour.
 
     Parameters
     ----------
@@ -65,7 +86,7 @@ def make_muon_param_groups(
     adamw_eps : float, optional
         Epsilon for AdamW fallback.
     adamw_weight_decay : float, optional
-        Weight decay for AdamW fallback. Defaults to ``weight_decay``.
+        Weight decay for AdamW fallback (decay group). Defaults to ``weight_decay``.
     target_modules : list of str, optional
         If set, only parameters whose name contains any of these substrings
         are eligible for Muon; all others go to AdamW.
@@ -80,22 +101,39 @@ def make_muon_param_groups(
     adamw_lr = adamw_lr or lr
     adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else weight_decay
 
-    muon_params = []
-    adamw_params = []
+    embedding_names = _get_embedding_param_names(model)
+
+    muon_params: list[torch.Tensor] = []
+    adamw_decay_params: list[torch.Tensor] = []
+    adamw_no_decay_params: list[torch.Tensor] = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         if target_modules is not None:
             if not any(mod in name for mod in target_modules):
-                adamw_params.append(param)
+                if _is_no_decay(name):
+                    adamw_no_decay_params.append(param)
+                else:
+                    adamw_decay_params.append(param)
                 continue
-        if _is_muon_eligible(param):
+        if _is_muon_eligible(name, param, embedding_names):
             muon_params.append(param)
         else:
-            adamw_params.append(param)
+            if _is_no_decay(name):
+                adamw_no_decay_params.append(param)
+            else:
+                adamw_decay_params.append(param)
 
     muon_groups = [{"params": muon_params, "lr": lr * muon_lr_scale, "weight_decay": weight_decay}]
-    adamw_groups = [{"params": adamw_params, "lr": adamw_lr, "weight_decay": adamw_weight_decay}]
+    adamw_groups: list[dict] = []
+    if adamw_decay_params:
+        adamw_groups.append(
+            {"params": adamw_decay_params, "lr": adamw_lr, "weight_decay": adamw_weight_decay}
+        )
+    if adamw_no_decay_params:
+        adamw_groups.append(
+            {"params": adamw_no_decay_params, "lr": adamw_lr, "weight_decay": 0.0}
+        )
 
     return muon_groups, adamw_groups

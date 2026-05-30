@@ -40,13 +40,55 @@ def test_make_muon_param_groups_splits_correctly():
 def test_is_muon_eligible_rejects_1d():
     from unsloth.optimizers.muon import _is_muon_eligible
     p = torch.nn.Parameter(torch.randn(4))
-    assert not _is_muon_eligible(p)
+    assert not _is_muon_eligible("w", p, set())
 
 
 def test_is_muon_eligible_accepts_2d():
     from unsloth.optimizers.muon import _is_muon_eligible
     p = torch.nn.Parameter(torch.randn(4, 4))
-    assert _is_muon_eligible(p)
+    assert _is_muon_eligible("w", p, set())
+
+
+def test_is_muon_eligible_rejects_embedding():
+    from unsloth.optimizers.muon import _is_muon_eligible, _get_embedding_param_names
+    model = torch.nn.Module()
+    model.emb = torch.nn.Embedding(10, 4)
+    names = _get_embedding_param_names(model)
+    p = model.emb.weight
+    assert not _is_muon_eligible("emb.weight", p, names)
+
+
+def test_make_muon_param_groups_excludes_embedding_module():
+    from unsloth.optimizers.muon import make_muon_param_groups
+    model = torch.nn.Module()
+    model.emb = torch.nn.Embedding(10, 4)
+    model.lin = torch.nn.Linear(4, 4)
+
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_params = [p for g in muon_groups for p in g["params"]]
+    adamw_params = [p for g in adamw_groups for p in g["params"]]
+
+    assert model.lin.weight in muon_params, "Linear weight should be Muon-eligible"
+    assert model.emb.weight in adamw_params, "Embedding weight should fall back to AdamW"
+
+
+def test_make_muon_param_groups_splits_weight_decay():
+    from unsloth.optimizers.muon import make_muon_param_groups
+    model = torch.nn.Linear(4, 4)
+
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+
+    no_decay_groups = [g for g in adamw_groups if g.get("weight_decay", 0.0) == 0.0]
+    decay_groups = [g for g in adamw_groups if g.get("weight_decay", 0.0) > 0.0]
+    all_adamw_params = [p for g in adamw_groups for p in g["params"]]
+
+    assert any(p is model.bias for p in no_decay_groups[0]["params"]), \
+        "bias should have 0 weight decay"
+    assert any(p is model.bias for p in all_adamw_params)
+    assert not any(p is model.weight for p in all_adamw_params), \
+        "weight should go to Muon, not AdamW"
+    if decay_groups:
+        assert not any(p is model.weight for p in decay_groups[0]["params"])
 
 
 def test_no_requires_grad_excluded():
@@ -188,6 +230,76 @@ def test_create_muon_optimizer_smoke(monkeypatch):
     assert hasattr(result, "zero_grad")
     assert hasattr(result, "state_dict")
     assert hasattr(result, "load_state_dict")
+
+
+# -- Tests: __getstate__ / __setstate__ serialization -------------------------
+
+
+def test_chained_state_dict_serialization(tmp_path):
+    """state_dict serialized via torch.save must roundtrip through load_state_dict."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    sd_before = chained.state_dict()
+    path = tmp_path / "optim_state.pt"
+    torch.save(sd_before, path)
+
+    sd_loaded = torch.load(path, weights_only=False)
+
+    fresh_muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))], lr=1e-3)
+    fresh_adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    fresh_chained = _MuonAdamWChained(fresh_muon, fresh_adamw)
+    fresh_chained.load_state_dict(sd_loaded)
+
+    sd_after = fresh_chained.state_dict()
+    for key in ["muon", "adamw"]:
+        for k in sd_before[key]:
+            if isinstance(sd_before[key][k], torch.Tensor):
+                assert torch.equal(sd_before[key][k], sd_after[key][k]), \
+                    f"{key}.{k} mismatch after state_dict serialization roundtrip"
+
+
+def test_chained_state_dict_real_params():
+    """state_dict / load_state_dict roundtrip with real PyTorch parameters."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    sd = chained.state_dict()
+
+    fresh_muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))], lr=1e-3)
+    fresh_adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    fresh_chained = _MuonAdamWChained(fresh_muon, fresh_adamw)
+    fresh_chained.load_state_dict(sd)
+
+    restored_sd = fresh_chained.state_dict()
+    for key in ["muon", "adamw"]:
+        for k in sd[key]:
+            if isinstance(sd[key][k], torch.Tensor):
+                assert torch.equal(sd[key][k], restored_sd[key][k]), \
+                    f"{key}.{k} mismatch after load_state_dict"
 
 
 # -- Tests: surface API -------------------------------------------------------
