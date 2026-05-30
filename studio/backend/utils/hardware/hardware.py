@@ -620,8 +620,16 @@ def _rocm_windows_adl_temp_and_power() -> tuple[Optional[float], Optional[float]
             temp_raw = pm.log.ulValues[ADL_PMLOG_TEMPERATURE_EDGE].ulValue
             power_raw = pm.log.ulValues[ADL_PMLOG_ASIC_POWER].ulValue
 
-            temp = round(float(temp_raw), 1) if temp_raw not in (0, ADL_SENSOR_UNAVAILABLE) else None
-            power = round(float(power_raw), 1) if power_raw not in (0, ADL_SENSOR_UNAVAILABLE) else None
+            temp = (
+                round(float(temp_raw), 1)
+                if temp_raw not in (0, ADL_SENSOR_UNAVAILABLE)
+                else None
+            )
+            power = (
+                round(float(power_raw), 1)
+                if power_raw not in (0, ADL_SENSOR_UNAVAILABLE)
+                else None
+            )
             return temp, power
         finally:
             _adl.ADL2_Main_Control_Destroy(ctx)
@@ -643,9 +651,9 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         )
         r = _sp.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None
@@ -653,7 +661,6 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         return round(val, 1) if val >= 0 else None
     except Exception:
         return None
-
 
 
 def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
