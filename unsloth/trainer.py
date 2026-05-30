@@ -214,6 +214,9 @@ class MuonConfig:
     muon_weight_decay: Optional[float] = None
     adamw_lr: Optional[float] = None
     adamw_betas: tuple = (0.9, 0.999)
+    # Note: if TrainingArguments.adam_beta1/adam_beta2 are set, they override
+    # adamw_betas. This matches Q-GaLore's convention and allows users to
+    # set betas once in TrainingArguments for all optimizers.
     adamw_eps: float = 1e-8
     adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
@@ -223,6 +226,28 @@ class MuonConfig:
             raise ValueError(
                 f"MuonConfig.ns_steps must be < 100, got {self.ns_steps}. "
                 "PyTorch's Newton-Schulz iteration raises an error for ns_steps >= 100."
+            )
+        if self.ns_steps < 1:
+            raise ValueError(f"MuonConfig.ns_steps must be >= 1, got {self.ns_steps}.")
+        if self.momentum < 0.0:
+            raise ValueError(
+                f"MuonConfig.momentum must be >= 0.0, got {self.momentum}."
+            )
+        if self.muon_eps <= 0.0:
+            raise ValueError(
+                f"MuonConfig.muon_eps must be > 0.0, got {self.muon_eps}."
+            )
+        if self.muon_lr_scale <= 0.0:
+            raise ValueError(
+                f"MuonConfig.muon_lr_scale must be > 0.0, got {self.muon_lr_scale}."
+            )
+        if self.muon_weight_decay is not None and self.muon_weight_decay < 0.0:
+            raise ValueError(
+                f"MuonConfig.muon_weight_decay must be >= 0.0, got {self.muon_weight_decay}."
+            )
+        if self.adamw_weight_decay is not None and self.adamw_weight_decay < 0.0:
+            raise ValueError(
+                f"MuonConfig.adamw_weight_decay must be >= 0.0, got {self.adamw_weight_decay}."
             )
         if self.adjust_lr_fn is not None:
             norm = self.adjust_lr_fn.lower()
@@ -334,18 +359,29 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             "Add param groups to the sub-optimizers directly."
         )
 
+    KNOWN_HYPERPARAM_KEYS = frozenset({"lr", "weight_decay", "momentum", "betas", "eps"})
+
     def _sync_lr(self):
-        for i, group in enumerate(self.muon.param_groups):
-            for k in self.param_groups[i]:
-                if k != "params" and k in group:
-                    group[k] = self.param_groups[i][k]
-        offset = len(self.muon.param_groups)
-        for i, group in enumerate(self.adamw.param_groups):
-            idx = offset + i
-            if idx < len(self.param_groups):
-                for k in self.param_groups[idx]:
-                    if k != "params" and k in group:
-                        group[k] = self.param_groups[idx][k]
+        total_sub = len(self.muon.param_groups) + len(self.adamw.param_groups)
+        if total_sub != len(self.param_groups):
+            raise RuntimeError(
+                f"_MuonAdamWChained group count mismatch: "
+                f"muon={len(self.muon.param_groups)}, adamw={len(self.adamw.param_groups)}, "
+                f"chained={len(self.param_groups)}. "
+                "This can happen if add_param_group was called on a sub-optimizer."
+            )
+        # Sync chained → sub-optimizers (forward direction).
+        idx = 0
+        for group in self.muon.param_groups:
+            for k in self.KNOWN_HYPERPARAM_KEYS:
+                if k in self.param_groups[idx] and k in group:
+                    group[k] = self.param_groups[idx][k]
+            idx += 1
+        for group in self.adamw.param_groups:
+            for k in self.KNOWN_HYPERPARAM_KEYS:
+                if k in self.param_groups[idx] and k in group:
+                    group[k] = self.param_groups[idx][k]
+            idx += 1
 
     def step(self, closure=None):
         self._sync_lr()
@@ -369,9 +405,13 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         self.adamw.load_state_dict(state_dict["adamw"])
 
     def __getstate__(self):
+        return self.state_dict()
+
+    def __setstate__(self, state):
         raise NotImplementedError(
-            "torch.save(optimizer) / pickle is not supported for _MuonAdamWChained. "
-            "Use optimizer.state_dict() / optimizer.load_state_dict() for checkpoints."
+            "_MuonAdamWChained does not support unpickling directly. "
+            "Use state_dict()/load_state_dict() for checkpoint save/load. "
+            "The sub-optimizers must be reconstructed from the model first."
         )
 
     def __repr__(self):
@@ -412,6 +452,11 @@ class UnslothTrainer(SFTTrainer):
 
     def _create_muon_optimizer(self, config: "MuonConfig"):
         """Build a mixed Muon + AdamW optimizer from a MuonConfig."""
+        if self.optimizer is not None:
+            raise RuntimeError(
+                "Unsloth: _create_muon_optimizer called when self.optimizer is already set. "
+                "This indicates a double-call (possibly from a training callback)."
+            )
         if not hasattr(torch.optim, "Muon"):
             raise ImportError(
                 "Unsloth: torch.optim.Muon requires PyTorch >= 2.9.0.\n"
@@ -419,16 +464,18 @@ class UnslothTrainer(SFTTrainer):
                 "Update with: pip install --upgrade torch"
             )
 
+        import os as _os
         import torch.distributed as dist
         if dist.is_available() and dist.is_initialized():
-            warnings.warn(
-                "Unsloth: Muon optimizer with distributed training is experimental. "
-                "The Muon state dict format is incompatible with FSDP's flat state "
-                "dict (use DDP only). CuBLAS non-determinism in the Newton-Schulz "
-                "iteration may cause silent parameter divergence across ranks. "
-                "Set torch.use_deterministic_algorithms(True) for reproducibility.",
-                stacklevel=2,
-            )
+            if _os.environ.get("UNSLOTH_MUON_DISTRIBUTED", "0") != "1":
+                raise RuntimeError(
+                    "Unsloth: Muon optimizer with distributed training is blocked "
+                    "due to known issues:\n"
+                    "  1) FSDP state_dict format incompatible with Muon's nested format;\n"
+                    "  2) CuBLAS non-determinism in the Newton-Schulz iteration;\n"
+                    "  3) DeepSpeed ZeRO may not handle Muon's orthogonalization correctly.\n"
+                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1."
+                )
 
         from unsloth.optimizers.muon import make_muon_param_groups
 
@@ -453,7 +500,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if isinstance(self.model, PeftModel):
-            print(
+            logger.warning(
                 "Unsloth Muon: PEFT/LoRA model detected. "
                 "Muon will be applied to 2D adapters. "
                 "Results not guaranteed — use full_finetuning=True for expected behaviour."
@@ -463,12 +510,12 @@ class UnslothTrainer(SFTTrainer):
         n_adamw = sum(p.numel() for g in adamw_groups for p in g["params"])
         total = n_muon + n_adamw
 
-        print(
+        logger.info(
             f"Unsloth: Muon enabled — "
             f"{n_muon:,} elements via Muon ({100*n_muon/total:.1f}%), "
             f"{n_adamw:,} elements via AdamW fallback ({100*n_adamw/total:.1f}%)"
         )
-        print(
+        logger.warning(
             "Unsloth Muon: checkpoint format is incompatible with AdamW. "
             "Do not use resume_from_checkpoint with an AdamW checkpoint."
         )
@@ -478,6 +525,7 @@ class UnslothTrainer(SFTTrainer):
             nesterov=config.nesterov,
             ns_steps=config.ns_steps,
             eps=config.muon_eps,
+            weight_decay=muon_weight_decay,
         )
         if config.ns_coefficients is not None:
             muon_kwargs["ns_coefficients"] = config.ns_coefficients
@@ -497,7 +545,8 @@ class UnslothTrainer(SFTTrainer):
             getattr(self.args, "adam_beta1", config.adamw_betas[0]),
             getattr(self.args, "adam_beta2", config.adamw_betas[1]),
         )
-        adamw_kwargs = dict(betas=adamw_betas, eps=config.adamw_eps)
+        adamw_lr = config.adamw_lr or lr
+        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=config.adamw_eps)
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
         else:

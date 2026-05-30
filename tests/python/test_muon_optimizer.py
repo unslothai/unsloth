@@ -50,10 +50,10 @@ def test_is_muon_eligible_accepts_2d():
 
 
 def test_is_muon_eligible_rejects_embedding():
-    from unsloth.optimizers.muon import _is_muon_eligible, _get_embedding_param_names
+    from unsloth.optimizers.muon import _is_muon_eligible, _classify_param_names
     model = torch.nn.Module()
     model.emb = torch.nn.Embedding(10, 4)
-    names = _get_embedding_param_names(model)
+    names, _ = _classify_param_names(model)
     p = model.emb.weight
     assert not _is_muon_eligible("emb.weight", p, names)
 
@@ -279,18 +279,23 @@ def test_chained_state_dict_serialization(tmp_path):
 
 
 def test_chained_pickle_not_supported():
-    """torch.save(optimizer) / pickle must raise NotImplementedError."""
+    """torch.save(optimizer) via pickle should work (dump), but load must raise."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
     muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
-    adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
 
     from unsloth.trainer import _MuonAdamWChained
     chained = _MuonAdamWChained(muon, adamw)
 
-    with pytest.raises(NotImplementedError, match="torch.save"):
-        chained.__getstate__()
+    state = chained.__getstate__()
+    assert "muon" in state
+    assert "adamw" in state
+
+    with pytest.raises(NotImplementedError, match="unpickling"):
+        chained.__setstate__(state)
 
 
 def test_chained_add_param_group_raises():
@@ -526,27 +531,45 @@ def test_muon_config_valid_adjust_lr_fn():
 # -- Tests: PEFT modules_to_save ---------------------------------------------
 
 
-def test_peft_modules_to_save_excluded_from_muon():
-    """PEFT-wrapped embedding copies must go to AdamW, not Muon."""
+def test_peft_modules_to_save_embedding_goes_to_adamw():
+    """PEFT-wrapped embedding copies must go to AdamW embedding group."""
     from unsloth.optimizers.muon import make_muon_param_groups
 
     model = torch.nn.Module()
-    model.lin = torch.nn.Linear(4, 4)
-    # Simulate PEFT-wrapped param by injecting into _parameters directly
-    # (named_parameters iterates _parameters which can contain dots)
-    peft_param = torch.nn.Parameter(torch.randn(10, 4))
-    model._parameters["sub.modules_to_save.default.weight"] = peft_param
+    model.emb = torch.nn.Embedding(10, 8)
+    model.lin = torch.nn.Linear(8, 4)
+    # Simulate PEFT-wrapped embedding param
+    peft_param = torch.nn.Parameter(torch.randn(10, 8))
+    model._parameters["emb.modules_to_save.default.weight"] = peft_param
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0
+        model, lr=1e-3, weight_decay=0.0, embedding_lr=1e-4
     )
 
     muon_params = [p for g in muon_groups for p in g["params"]]
     adamw_params = [p for g in adamw_groups for p in g["params"]]
 
-    assert any(p is peft_param for p in adamw_params), "PEFT param should go to AdamW"
-    assert not any(p is peft_param for p in muon_params), "PEFT param should NOT go to Muon"
+    assert any(p is peft_param for p in adamw_params), "Embedding modules_to_save should go to AdamW"
+    assert not any(p is peft_param for p in muon_params), "Embedding modules_to_save should NOT go to Muon"
     assert any(p is model.lin.weight for p in muon_params), "Linear weight should go to Muon"
+
+
+def test_peft_modules_to_save_non_embedding_goes_to_muon():
+    """Non-embedding PEFT modules_to_save (e.g. classifier head) go to Muon if 2D."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Module()
+    model.score = torch.nn.Linear(10, 2)
+    # Simulate PEFT-wrapped classifier head param
+    peft_param = torch.nn.Parameter(torch.randn(2, 10))
+    model._parameters["score.modules_to_save.default.weight"] = peft_param
+
+    muon_groups, adamw_groups = make_muon_param_groups(
+        model, lr=1e-3, weight_decay=0.5, adamw_weight_decay=0.1
+    )
+
+    muon_params = [p for g in muon_groups for p in g["params"]]
+    assert any(p is peft_param for p in muon_params), "Non-embedding 2D modules_to_save should go to Muon"
 
 
 # -- Tests: MT1 — Full lifecycle integration ---------------------------------
@@ -659,8 +682,8 @@ def test_target_modules_nonexistent():
 # -- Tests: MT6 — _sync_lr with mismatched param group lengths ---------------
 
 
-def test_sync_lr_with_extra_chained_group():
-    """Extra group in chained.param_groups must not crash _sync_lr."""
+def test_sync_lr_with_extra_chained_group_detected():
+    """Extra group in chained.param_groups must be detected and raise RuntimeError."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
@@ -671,17 +694,14 @@ def test_sync_lr_with_extra_chained_group():
     from unsloth.trainer import _MuonAdamWChained
     chained = _MuonAdamWChained(muon, adamw)
 
-    # Add an extra group to chained.param_groups (simulates add_param_group
-    # being called despite being unsupported — defensive check)
+    # Tamper with the chained wrapper's groups to simulate group drift
     chained.param_groups.append({"params": [], "lr": 1e-5, "weight_decay": 0.0})
 
     p.grad = torch.randn_like(p)
     q.grad = torch.randn_like(q)
-    # Should not crash
-    chained.step()
 
-    # Muon LR should still be correct (group 0, before the extra group)
-    assert muon.param_groups[0]["lr"] == 1e-3
+    with pytest.raises(RuntimeError, match="group count mismatch"):
+        chained.step()
 
 
 # -- Tests: MT7 — Distributed training warning --------------------------------
@@ -689,12 +709,11 @@ def test_sync_lr_with_extra_chained_group():
 
 @patch("torch.distributed.is_available", return_value=True)
 @patch("torch.distributed.is_initialized", return_value=True)
-def test_distributed_warning_emitted(mock_init, mock_avail):
-    """Distributed guard should emit a warning."""
+def test_distributed_blocked_by_default(mock_init, mock_avail):
+    """Distributed training must be blocked without opt-in env var."""
     _skip_if_no_muon()
 
     from unsloth.trainer import MuonConfig, UnslothTrainer
-    import warnings
 
     model = torch.nn.Linear(4, 4)
     args = MagicMock()
@@ -709,11 +728,38 @@ def test_distributed_warning_emitted(mock_init, mock_avail):
     trainer.optimizer = None
 
     config = MuonConfig()
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = trainer._create_muon_optimizer(config)
-        distributed_warnings = [x for x in w if "distributed" in str(x.message).lower()]
-        assert len(distributed_warnings) >= 1, "Expected at least 1 distributed warning"
+    with pytest.raises(RuntimeError, match="UNSLOTH_MUON_DISTRIBUTED"):
+        trainer._create_muon_optimizer(config)
+
+
+@patch("torch.distributed.is_available", return_value=True)
+@patch("torch.distributed.is_initialized", return_value=True)
+def test_distributed_allowed_with_env_var(mock_init, mock_avail):
+    """Setting UNSLOTH_MUON_DISTRIBUTED=1 should allow distributed training."""
+    import os
+    os.environ["UNSLOTH_MUON_DISTRIBUTED"] = "1"
+
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig()
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+
+    del os.environ["UNSLOTH_MUON_DISTRIBUTED"]
 
 
 # -- Tests: _sync_lr all hyperparams (H1) ------------------------------------
@@ -775,3 +821,117 @@ def test_muon_config_in_unsloth_training_arguments():
         output_dir="/tmp/unsloth_muon_test",
     )
     assert args.muon_config is cfg
+
+
+# -- Tests: 4th-pass additions (MUON_REVIEW_3.md) ----------------------------
+
+
+def test_sync_lr_asymmetric_keys():
+    """_sync_lr must handle keys present in sub-optimizer but not in chained."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    # Add a key to the Muon sub-optimizer that doesn't exist in the chained wrapper
+    original_lr = muon.param_groups[0]["lr"]
+    # Ensure known keys are synced forward
+    chained.param_groups[0]["lr"] = 2e-4
+    chained.param_groups[1]["lr"] = 2e-4
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    assert muon.param_groups[0]["lr"] == 2e-4, "Muon LR should be synced from chained"
+    assert adamw.param_groups[0]["lr"] == 2e-4, "AdamW LR should be synced from chained"
+
+
+def test_muon_config_value_validation():
+    """MuonConfig must reject invalid numeric hyperparameters."""
+    from unsloth.trainer import MuonConfig
+
+    with pytest.raises(ValueError, match="momentum"):
+        MuonConfig(momentum=-0.1)
+    with pytest.raises(ValueError, match="muon_eps"):
+        MuonConfig(muon_eps=0.0)
+    with pytest.raises(ValueError, match="ns_steps"):
+        MuonConfig(ns_steps=0)
+    with pytest.raises(ValueError, match="muon_lr_scale"):
+        MuonConfig(muon_lr_scale=-1.0)
+    with pytest.raises(ValueError, match="muon_weight_decay"):
+        MuonConfig(muon_weight_decay=-0.1)
+    with pytest.raises(ValueError, match="ns_steps"):
+        MuonConfig(ns_steps=100)
+
+
+def test_muon_config_accepted_numeric_values():
+    """MuonConfig must accept valid numeric hyperparameters."""
+    from unsloth.trainer import MuonConfig
+
+    cfg = MuonConfig(
+        momentum=0.0,
+        muon_eps=1e-7,
+        ns_steps=5,
+        muon_lr_scale=0.5,
+        muon_weight_decay=0.0,
+        adamw_weight_decay=0.1,
+    )
+    assert cfg.momentum == 0.0
+    assert cfg.muon_eps == 1e-7
+    assert cfg.ns_steps == 5
+    assert cfg.muon_lr_scale == 0.5
+    assert cfg.muon_weight_decay == 0.0
+    assert cfg.adamw_weight_decay == 0.1
+
+
+def test_lr_scheduler_with_muon():
+    """LR scheduler applied to chained wrapper must decay LRs in both sub-optimizers."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        chained, start_factor=1.0, end_factor=0.1, total_iters=5
+    )
+
+    for step in range(5):
+        p.grad = torch.randn_like(p)
+        q.grad = torch.randn_like(q)
+        chained.step()
+        scheduler.step()
+
+    assert muon.param_groups[0]["lr"] < 1e-3, "Muon LR should have decayed"
+    assert adamw.param_groups[0]["lr"] < 1e-3, "AdamW LR should have decayed"
+
+
+def test_muon_autocast_smoke():
+    """Muon chained optimizer must not crash with autocast."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    with torch.amp.autocast(device_type="cpu"):
+        p.grad = torch.randn_like(p)
+        q.grad = torch.randn_like(q)
+        chained.step()
+
+    assert not torch.isnan(p).any(), "Muon step should not produce NaN"
+    assert not torch.isnan(q).any(), "AdamW step should not produce NaN"

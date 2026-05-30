@@ -139,6 +139,9 @@ if _IS_MLX:
                 "Use the MLX trainer/data path instead."
             )
 
+    # Re-export for API consistency (config-only; Muon requires GPU).
+    from .trainer import MuonConfig, _MuonAdamWChained
+
 else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *

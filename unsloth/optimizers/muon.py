@@ -28,32 +28,40 @@ if hasattr(torch.nn, "RMSNorm"):
     NORM_CLASSES = NORM_CLASSES + (torch.nn.RMSNorm,)
 
 
-def _get_embedding_param_names(model: torch.nn.Module) -> Set[str]:
-    """Return the set of parameter names that belong to ``nn.Embedding`` modules,
-    including PEFT-wrapped embedding copies (``modules_to_save``).
+def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
+    """Return ``(embedding_names, no_decay_names)`` in a single module scan.
+
+    Norm parameter names (zero weight decay) and embedding parameter names
+    (no weight decay, Muon-ineligible) are identified in one pass, including
+    PEFT-wrapped copies (``modules_to_save``).
     """
-    names: Set[str] = set()
+    embedding_names: Set[str] = set()
+    no_decay_names: Set[str] = set()
+
     for module_name, module in model.named_modules():
+        mod_prefix = f"{module_name}." if module_name else ""
         if isinstance(module, torch.nn.Embedding):
             for param_name, _ in module.named_parameters():
-                full = f"{module_name}.{param_name}" if module_name else param_name
-                names.add(full)
-    # Catch PEFT-wrapped embedding copies.
-    for name, param in model.named_parameters():
-        if name.endswith("modules_to_save.default.weight"):
-            names.add(name)
-    return names
-
-
-def _get_no_decay_param_names(model: torch.nn.Module) -> Set[str]:
-    """Return parameter names belonging to norm modules (zero weight decay)."""
-    names: Set[str] = set()
-    for module_name, module in model.named_modules():
-        if isinstance(module, NORM_CLASSES):
+                embedding_names.add(f"{mod_prefix}{param_name}")
+        elif isinstance(module, NORM_CLASSES):
             for param_name, _ in module.named_parameters():
-                full = f"{module_name}.{param_name}" if module_name else param_name
-                names.add(full)
-    return names
+                no_decay_names.add(f"{mod_prefix}{param_name}")
+
+    # Catch PEFT-wrapped copies (modules_to_save) in a second pass.
+    for name, _ in model.named_parameters():
+        if not name.endswith("modules_to_save.default.weight"):
+            continue
+        parent_name = name.rsplit(".modules_to_save", 1)[0]
+        try:
+            parent = model.get_submodule(parent_name)
+        except (AttributeError, KeyError):
+            continue
+        if isinstance(parent, torch.nn.Embedding):
+            embedding_names.add(name)
+        elif isinstance(parent, NORM_CLASSES):
+            no_decay_names.add(name)
+
+    return embedding_names, no_decay_names
 
 
 def _is_muon_eligible(name: str, param: torch.Tensor, embedding_param_names: Set[str]) -> bool:
@@ -112,8 +120,9 @@ def make_muon_param_groups(
         are eligible for Muon; all others go to AdamW.
     embedding_lr : float, optional
         Separate LR for embedding params. If set, creates a dedicated
-        no-decay AdamW group for embeddings. Otherwise embeddings fall
-        into the decay group at the default ``adamw_lr``.
+        no-decay AdamW group for embeddings (always ``weight_decay=0.0``).
+        Otherwise embeddings fall into the decay group at the default
+        ``adamw_lr`` (still ``weight_decay=0.0``).
 
     Returns
     -------
@@ -125,8 +134,7 @@ def make_muon_param_groups(
     adamw_lr = adamw_lr or lr
     adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else weight_decay
 
-    embedding_names = _get_embedding_param_names(model)
-    no_decay_names = _get_no_decay_param_names(model)
+    embedding_names, no_decay_names = _classify_param_names(model)
 
     muon_params: list[torch.Tensor] = []
     adamw_decay_params: list[torch.Tensor] = []
@@ -137,7 +145,7 @@ def make_muon_param_groups(
         if not param.requires_grad:
             continue
 
-        is_embedding = name in embedding_names or name.endswith("modules_to_save.default.weight")
+        is_embedding = name in embedding_names
         is_no_decay = name in no_decay_names or "bias" in name.lower()
 
         if target_modules is not None:
