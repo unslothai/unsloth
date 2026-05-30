@@ -592,6 +592,18 @@
     );
   }
 
+  /* Firefox can box/clip native scrollbars when the scroll container is
+     masked. Keep the sidebar chrome clean there; the header/footer fade
+     overlays still provide the edge cue. */
+  @supports (-moz-appearance: none) {
+    .app-sidebar-scroll-region,
+    .app-sidebar-scroll-region.is-scrolled,
+    .app-sidebar-scroll-region.can-scroll-down,
+    .app-sidebar-scroll-region.is-scrolled.can-scroll-down {
+      mask-image: none;
+    }
+  }
+
   .app-sidebar-footer {
     position: relative;
     z-index: 25;
@@ -785,6 +797,9 @@
   .dark .app-user-menu [data-slot="dropdown-menu-item"] {
     letter-spacing: 0.03em;
   }
+  .app-user-menu [data-slot="dropdown-menu-item"]:not([data-disabled]) {
+    cursor: pointer;
+  }
   .app-user-menu [data-slot="dropdown-menu-item"] svg {
     width: 19px !important;
     height: 19px !important;
@@ -866,6 +881,10 @@
   .dark .app-user-menu.menu-soft-surface,
   .dark .app-user-menu.menu-soft-surface-up {
     box-shadow: 0 3px 12px -6px rgba(0, 0, 0, 0.46);
+  }
+
+  .model-selector-menu button:not(:disabled) {
+    cursor: pointer;
   }
 
   .chat-composer-surface {
@@ -1005,7 +1024,7 @@
   }
 
   .unsloth-composer-left {
-    @apply flex shrink-0 items-center gap-0.5;
+    @apply flex shrink-0 items-center gap-1;
     order: 1;
     /* Pull the plus button closer to the composer edge. */
     margin-left: -0.25rem;
@@ -1087,7 +1106,19 @@
 
   /* Right-side Thinking pill (toggle or dropdown). */
   .unsloth-thinking-pill {
-    @apply inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full px-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full pl-1 pr-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground/75 transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .unsloth-thinking-pill > span {
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
+  }
+
+  .unsloth-thinking-pill svg {
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0;
   }
 
   .unsloth-thinking-pill[data-active="true"],
@@ -1555,15 +1586,15 @@
 }
 
 [data-sidebar="content"] {
-  scrollbar-color: oklch(0.5 0 0 / 0.22) var(--sidebar);
+  scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
 }
 
 .dark [data-sidebar="content"] {
-  scrollbar-color: oklch(0.72 0 0 / 0.25) var(--sidebar);
+  scrollbar-color: oklch(0.72 0 0 / 0.25) transparent;
 }
 
 [data-sidebar="content"]::-webkit-scrollbar-track {
-  background: var(--sidebar);
+  background: transparent;
 }
 
 [data-sidebar="content"]::-webkit-scrollbar-thumb {

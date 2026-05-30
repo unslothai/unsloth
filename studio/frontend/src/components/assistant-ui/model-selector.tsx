@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
-import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -31,6 +30,22 @@ import type {
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import { Input } from "../ui/input";
+
+const CUSTOM_PROVIDER_TYPES_WITH_FALLBACK_LOGO = new Set([
+  "custom",
+  "llama_cpp",
+  "vllm",
+  "ollama",
+]);
+
+function isCustomProviderTypeWithFallbackLogo(
+  providerType: string | undefined,
+): boolean {
+  return (
+    providerType !== undefined &&
+    CUSTOM_PROVIDER_TYPES_WITH_FALLBACK_LOGO.has(providerType)
+  );
+}
 
 const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   openai: "svg",
@@ -64,7 +79,7 @@ function ExternalProviderLogo({
   title?: string;
 }) {
   const src = providerLogoSrc(providerType);
-  if (!src && isCustomProviderType(providerType)) {
+  if (!src && isCustomProviderTypeWithFallbackLogo(providerType)) {
     return (
       <span title={title} aria-hidden={true} className="inline-flex shrink-0">
         <HugeiconsIcon
@@ -146,10 +161,11 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "flex min-w-0 items-center gap-2 transition-colors",
+          "flex min-w-0 cursor-pointer items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+            "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "ghost" &&
+            "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-[10px] bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
           size === "default" && "h-9 px-3.5 text-sm",
@@ -161,7 +177,9 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         {currentModel?.icon ? (
-          <span className="flex shrink-0 items-center">{currentModel.icon}</span>
+          <span className="flex shrink-0 items-center">
+            {currentModel.icon}
+          </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
@@ -228,7 +246,10 @@ function ModelSelectorContent({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
   const chatOnlyTabsDefault = useMemo(
-    () => (value && externalModels.some((model) => model.id === value) ? "external" : "hub"),
+    () =>
+      value && externalModels.some((model) => model.id === value)
+        ? "external"
+        : "hub",
     [externalModels, value],
   );
   const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
@@ -246,7 +267,7 @@ function ModelSelectorContent({
       align="start"
       data-tour={dataTour}
       className={cn(
-        "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        "model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
         className,
       )}
     >
@@ -258,7 +279,12 @@ function ModelSelectorContent({
               <TabsTrigger value="external">Connected</TabsTrigger>
             </TabsList>
             <TabsContent value="hub" className="m-0">
-              <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+              <HubModelPicker
+                models={models}
+                value={value}
+                onSelect={onSelect}
+                onFoldersChange={onFoldersChange}
+              />
             </TabsContent>
             <TabsContent value="external" className="m-0">
               <ExternalModelPicker
@@ -269,18 +295,30 @@ function ModelSelectorContent({
             </TabsContent>
           </Tabs>
         ) : (
-          <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+          <HubModelPicker
+            models={models}
+            value={value}
+            onSelect={onSelect}
+            onFoldersChange={onFoldersChange}
+          />
         )
       ) : (
         <Tabs defaultValue={studioTabsDefault} className="w-full">
           <TabsList className="mb-2 w-full">
             <TabsTrigger value="hub">Hub models</TabsTrigger>
             <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-            {hasExternal ? <TabsTrigger value="external">Connected</TabsTrigger> : null}
+            {hasExternal ? (
+              <TabsTrigger value="external">Connected</TabsTrigger>
+            ) : null}
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+            <HubModelPicker
+              models={models}
+              value={value}
+              onSelect={onSelect}
+              onFoldersChange={onFoldersChange}
+            />
           </TabsContent>
 
           <TabsContent value="lora" className="m-0">
@@ -420,7 +458,9 @@ export function ModelSelector({
     const found = optionById.get(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
-      return found ? { ...found, description: desc } : { id: selected, name: selected, description: desc };
+      return found
+        ? { ...found, description: desc }
+        : { id: selected, name: selected, description: desc };
     }
     return found ?? { id: selected, name: selected };
   }, [selected, optionById, activeGgufVariant]);

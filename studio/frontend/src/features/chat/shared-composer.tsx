@@ -1130,7 +1130,7 @@ export function SharedComposer({
         dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"
