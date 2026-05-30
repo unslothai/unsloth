@@ -41,8 +41,9 @@ MODEL_SEARCH_DIRS = ("outputs", "lora_model", "merged_model", "model")
 DEFAULT_PROVIDER = "runpod"
 
 POD_UPLOADS_DIR = "/workspace/uploads"
-# Network volumes are datacenter-pinned
-DEFAULT_DATACENTER = "US-KS-2"
+# Network volumes are datacenter-pinned and the pod can only schedule in the
+# volume's datacenter, so we don't hardcode one -- a fixed datacenter's stock
+# comes and goes. We place the volume where the chosen GPU has live capacity.
 VOLUME_HEADROOM_FACTOR = 1.3
 VOLUME_MIN_GB = 20
 
@@ -94,9 +95,10 @@ def run(
         None, "--hf-token", envvar = "HF_TOKEN",
         help = "Hugging Face token for gated repos. Only used with --model.",
     ),
-    datacenter: str = typer.Option(
-        DEFAULT_DATACENTER, "--datacenter", envvar = "RUNPOD_DATACENTER",
-        help = "Datacenter for the network volume a local --model is uploaded to.",
+    datacenter: Optional[str] = typer.Option(
+        None, "--datacenter", envvar = "RUNPOD_DATACENTER",
+        help = "Datacenter for the network volume a local --model is uploaded to. "
+               "Default: auto-pick one with live capacity for the chosen GPU.",
     ),
     s3_access_key: Optional[str] = typer.Option(
         None, "--s3-access-key", envvar = "RUNPOD_S3_ACCESS_KEY_ID",
@@ -133,6 +135,12 @@ def run(
         )
 
     chosen = _pick_gpu(provider, override = gpu, min_vram_gb = min_vram, yes = yes)
+
+    # A local model rides a datacenter-pinned network volume, and the pod can
+    # only start in that volume's datacenter -- so place it where the GPU has
+    # live capacity rather than a fixed default that may be sold out.
+    if _is_local_model(model):
+        datacenter = _resolve_datacenter(provider, chosen, datacenter)
 
     typer.echo("")
     typer.echo(f"  Provider: {provider.name}")
@@ -356,6 +364,40 @@ def _pick_gpu(
     return shown[idx]
 
 
+def _resolve_datacenter(provider, gpu: Gpu, requested: Optional[str]) -> str:
+    """Pick the datacenter the network volume (and therefore the pod) lands in.
+    Honor an explicit --datacenter; otherwise choose one that currently has
+    capacity for `gpu`, so the pod can actually schedule."""
+    if requested:
+        return requested
+    if not hasattr(provider, "datacenters_for_gpu"):
+        _fail(
+            f"{provider.name} can't auto-pick a datacenter; pass --datacenter.",
+            code = 2,
+        )
+
+    typer.echo(f"Finding a datacenter with capacity for {gpu.name}...")
+    try:
+        ranked = provider.datacenters_for_gpu(gpu.id)
+    except DeployError as e:
+        _fail(str(e))
+
+    if not ranked:
+        _fail(
+            f"No datacenter currently has secure-cloud capacity for {gpu.name}.\n"
+            "Pick a different GPU, or retry shortly -- RunPod stock changes minute "
+            "to minute. Live availability: https://www.runpod.io/console/deploy"
+        )
+
+    datacenter, stock = ranked[0]
+    alts = ", ".join(f"{dc} ({s})" for dc, s in ranked[1:4])
+    typer.echo(
+        f"  -> {datacenter} ({stock} stock)"
+        + (f"; also available: {alts}" if alts else "")
+    )
+    return datacenter
+
+
 def _deploy(
     provider,
     gpu: Gpu,
@@ -364,7 +406,7 @@ def _deploy(
     model: Optional[str],
     gguf_variant: Optional[str],
     hf_token: Optional[str],
-    datacenter: str,
+    datacenter: Optional[str],
     s3_access_key: Optional[str],
     s3_secret_key: Optional[str],
 ) -> None:
@@ -406,7 +448,9 @@ def _deploy(
             data_center_id = datacenter if network_volume_id else None,
         )
     except DeployError as e:
-        _fail(_with_volume_note(str(e), network_volume_id))
+        # Capacity in the chosen datacenter can vanish between the availability
+        # check and this call; don't leave the volume behind billing for it.
+        _fail(_cleanup_volume_after_failure(provider, network_volume_id, str(e)))
     typer.echo(f"  pod id: {pod_id}")
 
     try:
@@ -549,6 +593,22 @@ def _volume_billing_note(volume_id: Optional[str]) -> str:
         f"\nNetwork volume {volume_id} also persists (storage billed). Delete it with:"
         f"\n    unsloth deploy delete-volume {volume_id}"
     )
+
+
+def _cleanup_volume_after_failure(
+    provider, volume_id: Optional[str], msg: str,
+) -> str:
+    """Delete the just-created volume after a failed pod create so it stops
+    billing. If the delete itself fails, fall back to telling the user how."""
+    if not volume_id:
+        return msg
+    try:
+        runpod_storage.delete_network_volume(provider, volume_id)
+    except DeployError as e:
+        return _with_volume_note(
+            f"{msg}\n(Could not auto-delete the network volume: {e})", volume_id,
+        )
+    return f"{msg}\nThe network volume {volume_id} was deleted, so it is not billing."
 
 
 def _with_volume_note(msg: str, volume_id: Optional[str]) -> str:

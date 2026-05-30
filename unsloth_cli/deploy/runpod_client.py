@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from unsloth_cli.deploy import DeployError, Gpu, SshTarget
@@ -15,6 +16,10 @@ from unsloth_cli.deploy import DeployError, Gpu, SshTarget
 VOLUME_MOUNT_PATH = "/workspace"
 TERMINAL_STATUSES = ("EXITED", "FAILED", "TERMINATED", "DEAD")
 POLL_INTERVAL_S = 3
+
+# RunPod reports availability as a coarse band; higher is more likely to schedule.
+STOCK_RANK = {"High": 3, "Medium": 2, "Low": 1}
+AVAILABILITY_WORKERS = 16
 
 
 class RunPod:
@@ -77,6 +82,50 @@ class RunPod:
             ))
         out.sort(key = lambda o: (o.cost_per_hour_usd, o.vram_gb))
         return out
+
+    def datacenters_for_gpu(self, gpu_id: str) -> list[tuple[str, str]]:
+        """`(datacenter_id, stock_status)` for datacenters that currently have
+        secure-cloud capacity for `gpu_id`, best availability first. Empty if the
+        GPU is unschedulable everywhere right now. Used to place a network-volume
+        deploy where the pod can actually start, instead of a fixed datacenter
+        whose stock comes and goes.
+
+        Network volumes only exist in secure cloud, so we ask per datacenter with
+        `secureCloud: true`. The catalog (`get_gpus`) is global and says nothing
+        about per-datacenter stock, hence the sweep."""
+        self._sdk()  # ensure authenticated
+        try:
+            from runpod.api.graphql import run_graphql_query
+        except Exception as e:
+            raise DeployError(f"RunPod availability lookup is unavailable: {e}") from e
+
+        try:
+            data = run_graphql_query("{ dataCenters { id } }")["data"]["dataCenters"]
+        except Exception as e:
+            raise DeployError(f"RunPod datacenter listing failed: {e}") from e
+        dc_ids = [d["id"] for d in data if d.get("id")]
+
+        def stock(dc: str) -> Optional[str]:
+            query = (
+                '{ gpuTypes(input: {id: "%s"}) { lowestPrice('
+                'input: {gpuCount: 1, secureCloud: true, dataCenterId: "%s"}'
+                ') { stockStatus } } }' % (gpu_id, dc)
+            )
+            try:
+                rows = run_graphql_query(query)["data"]["gpuTypes"]
+            except Exception:
+                return None  # a single datacenter erroring shouldn't sink the sweep
+            price = (rows[0].get("lowestPrice") or {}) if rows else {}
+            return price.get("stockStatus")
+
+        with ThreadPoolExecutor(max_workers = AVAILABILITY_WORKERS) as pool:
+            ranked = [
+                (dc, status)
+                for dc, status in zip(dc_ids, pool.map(stock, dc_ids))
+                if status in STOCK_RANK
+            ]
+        ranked.sort(key = lambda pair: (-STOCK_RANK[pair[1]], pair[0]))
+        return ranked
 
     def create_pod(
         self,

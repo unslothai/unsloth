@@ -1,0 +1,10 @@
+{"instruction": "What is the capital of France?", "input": "", "output": "The capital of France is Paris."}
+{"instruction": "Translate the following English sentence to Spanish.", "input": "Good morning, how are you?", "output": "Buenos días, ¿cómo estás?"}
+{"instruction": "Summarize the following text in one sentence.", "input": "The mitochondria is the powerhouse of the cell. It generates most of the cell's supply of ATP, which is used as a source of chemical energy.", "output": "Mitochondria produce most of a cell's ATP, serving as its main energy source."}
+{"instruction": "Write a Python function that returns the square of a number.", "input": "", "output": "def square(n):\n    return n * n"}
+{"instruction": "Classify the sentiment of this review as positive or negative.", "input": "The food was cold and the service was terrible.", "output": "Negative"}
+{"instruction": "What is 17 multiplied by 23?", "input": "", "output": "17 multiplied by 23 is 391."}
+{"instruction": "List three primary colors.", "input": "", "output": "The three primary colors are red, blue, and yellow."}
+{"instruction": "Correct the grammar in the following sentence.", "input": "She don't like apples.", "output": "She doesn't like apples."}
+{"instruction": "Explain what photosynthesis is in simple terms.", "input": "", "output": "Photosynthesis is the process plants use to turn sunlight, water, and carbon dioxide into food (sugar) and oxygen."}
+{"instruction": "Convert 100 degrees Fahrenheit to Celsius.", "input": "", "output": "100 degrees Fahrenheit is approximately 37.8 degrees Celsius."}
