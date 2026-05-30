@@ -1729,25 +1729,33 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           "RAG retrieval is enabled for this conversation. Before answering " +
             "ANY user question (including follow-ups, clarifications, or " +
             "questions you think you already know), you MUST:\n" +
-            "1. Decompose the user's question into UP TO 3 focused search " +
-            "queries that cover different facets of what was asked. Prefer " +
-            "fewer queries when the question is narrow — one query is fine " +
-            "for a simple lookup. Do NOT exceed 3.\n" +
-            "2. Call `search_knowledge_base` once per query (so at most 3 " +
-            "tool calls). Phrase each query as a focused question, not a " +
-            "keyword bag.\n" +
+            "1. Plan UP TO 3 focused search queries up front that together " +
+            "cover the user's question. Prefer fewer when the question is " +
+            "narrow — one query is fine for a simple lookup. Do NOT exceed 3.\n" +
+            "2. Issue ALL planned `search_knowledge_base` calls before " +
+            "writing any prose. Phrase each query as a focused question, " +
+            "not a keyword bag.\n" +
             "3. After the tool calls return, ground your reply in the " +
             "returned <chunk> blocks. CITE each chunk you use with its " +
             'LITERAL id attribute — e.g. `<chunk id="7">` is cited as ' +
             "`[7]`. IDs are unique across the whole turn; never renumber, " +
-            "never reuse a different number. Do not make additional tool " +
-            "calls beyond the planned 3.\n" +
+            "never reuse a different number.\n" +
             "4. Answer primarily from the knowledge base. Only use web " +
             "search or web fetch if the returned chunks genuinely do not " +
             "contain the answer — do not use them to double-check or expand " +
-            "an answer the documents already support.\n" +
-            "5. Once you have written your grounded answer, STOP. Do not " +
-            "make further tool calls and do not restate or re-answer.",
+            "an answer the documents already support.\n\n" +
+            "HARD STOP RULES — these override anything else:\n" +
+            "• Answer ONLY the question the user literally asked. Do NOT " +
+            "invent follow-up questions for yourself, do NOT proactively " +
+            "explain related topics the user did not ask about, and do NOT " +
+            "branch into new searches after you start writing prose.\n" +
+            "• You get ONE answer block per user turn. After you write it, " +
+            "STOP. No second answer, no restatement, no \"and additionally\" " +
+            "section, no further tool calls.\n" +
+            "• If the first search returned usable chunks, do NOT call " +
+            "`search_knowledge_base` again in this turn. The only reason to " +
+            "call it more than once is if your initial batch of up-to-3 " +
+            "queries from step 1 has not yet been issued.",
         );
       }
       if (systemPromptParts.length > 0) {
