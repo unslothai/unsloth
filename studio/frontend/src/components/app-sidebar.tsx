@@ -644,7 +644,7 @@ export function AppSidebar() {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent
                               side="bottom"
-                              align="end"
+                              align="start"
                               sideOffset={4}
                               className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                             >
@@ -754,7 +754,7 @@ export function AppSidebar() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent
                                 side="bottom"
-                                align="end"
+                                align="start"
                                 sideOffset={4}
                                 className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                               >
@@ -835,7 +835,7 @@ export function AppSidebar() {
                 <DropdownMenuContent
                   side="top"
                   align="start"
-                  className="app-user-menu menu-soft-surface-up ring-0 w-[15rem] py-2.5 font-heading rounded-[14px] border-0"
+                  className="app-user-menu menu-soft-surface-up ring-0 py-2.5 font-heading rounded-[14px] border-0"
                 >
                   <DropdownMenuGroup>
                     <DropdownMenuItem

@@ -159,7 +159,12 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
-}: { threadId?: string; newThreadNonce?: string }): ReactElement {
+  onEnterCompare,
+}: {
+  threadId?: string;
+  newThreadNonce?: string;
+  onEnterCompare?: () => void;
+}): ReactElement {
   return (
     <ChatRuntimeProvider
       modelType="base"
@@ -167,7 +172,11 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+        <Thread
+          hideWelcome={Boolean(threadId)}
+          targetThreadId={threadId}
+          onEnterCompare={onEnterCompare}
+        />
       </div>
     </ChatRuntimeProvider>
   );
@@ -1204,7 +1213,14 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
-    setViewBeforeCompare({ ...search });
+    const saved: ChatSearch = { ...search };
+    const active = useChatRuntimeStore.getState().activeThreadId;
+    if (!(saved.thread || saved.new) && active) {
+      if (!active.startsWith("__LOCALID_")) {
+        saved.thread = active;
+      }
+    }
+    setViewBeforeCompare(saved);
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     navigate({ to: "/chat", search: { compare: createCompareId() } });
@@ -1618,6 +1634,7 @@ export function ChatPage(): ReactElement {
             key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            onEnterCompare={enterCompare}
           />
         ) : (
           <CompareContent

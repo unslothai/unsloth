@@ -859,6 +859,15 @@
     --menu-soft-shadow: rgba(0, 0, 0, 0.28);
   }
 
+  .app-user-menu.menu-soft-surface,
+  .app-user-menu.menu-soft-surface-up {
+    box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+  }
+  .dark .app-user-menu.menu-soft-surface,
+  .dark .app-user-menu.menu-soft-surface-up {
+    box-shadow: 0 3px 12px -6px rgba(0, 0, 0, 0.46);
+  }
+
   .chat-composer-surface {
     @apply relative flex w-full flex-col rounded-[32px] bg-white dark:bg-card px-3 py-3 outline-none transition-shadow;
     font-family: var(--font-sans);

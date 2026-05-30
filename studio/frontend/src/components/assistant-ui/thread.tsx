@@ -125,7 +125,8 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
+  onEnterCompare?: () => void;
+}> = ({ hideComposer, hideWelcome, targetThreadId, onEnterCompare }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
@@ -171,6 +172,7 @@ export const Thread: FC<{
                 <ThreadWelcome
                   hideComposer={hideComposer}
                   threadId={threadId}
+                  onEnterCompare={onEnterCompare}
                 />
               </AuiIf>
             )}
@@ -214,6 +216,7 @@ export const Thread: FC<{
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
+                onEnterCompare={onEnterCompare}
               />
             </AuiIf>
           )}
@@ -318,7 +321,8 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+  onEnterCompare?: () => void;
+}> = ({ disabled, threadId, onEnterCompare }) => {
   const { overlay } = useGeneratedImageOverlay();
 
   return (
@@ -338,6 +342,7 @@ const ThreadComposerDock: FC<{
             disabled={disabled}
             threadId={threadId}
             menuSide="top"
+            onEnterCompare={onEnterCompare}
           />
         </div>
         <p className="composer-footer-note">
@@ -383,7 +388,8 @@ function getWelcomeEmoji(): string {
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
-}> = ({ hideComposer, threadId }) => {
+  onEnterCompare?: () => void;
+}> = ({ hideComposer, threadId, onEnterCompare }) => {
   const [currentEmoji] = useState(getWelcomeEmoji);
 
   const currentEmojiSrc =
@@ -401,7 +407,12 @@ const ThreadWelcome: FC<{
               What&rsquo;s on your mind today?
             </h1>
           </div>
-          {!hideComposer && <ComposerAnimated threadId={threadId} />}
+          {!hideComposer && (
+            <ComposerAnimated
+              threadId={threadId}
+              onEnterCompare={onEnterCompare}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -412,11 +423,17 @@ const ComposerAnimated: FC<{
   disabled?: boolean;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  onEnterCompare?: () => void;
+}> = ({ disabled, threadId, menuSide, onEnterCompare }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[660px]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
+        <Composer
+          disabled={disabled}
+          threadId={threadId}
+          menuSide={menuSide}
+          onEnterCompare={onEnterCompare}
+        />
       </div>
     </div>
   );
@@ -450,7 +467,8 @@ const Composer: FC<{
   disabled?: boolean;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  onEnterCompare?: () => void;
+}> = ({ disabled, threadId, menuSide, onEnterCompare }) => {
   const aui = useAui();
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -634,7 +652,10 @@ const Composer: FC<{
         data-expanded={composerExpanded ? "true" : "false"}
       >
         <div className="unsloth-composer-left">
-          <ComposerToolsMenu side={effectiveMenuSide} />
+          <ComposerToolsMenu
+            side={effectiveMenuSide}
+            onEnterCompare={onEnterCompare}
+          />
           {composerExpanded ? (
             <>
               {toolsEnabled ? <WebSearchToggle /> : null}
@@ -969,6 +990,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
       : null;
@@ -1453,9 +1475,10 @@ const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
 
 // Plus menu: attachment and workflow actions. Opens downward in the centered
 // welcome composer; the docked composer passes side="top" to open upward.
-const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
-  side = "bottom",
-}) => {
+const ComposerToolsMenu: FC<{
+  side?: "top" | "bottom";
+  onEnterCompare?: () => void;
+}> = ({ side = "bottom", onEnterCompare }) => {
   const navigate = useNavigate();
   const setSettingsPanelOpen = useChatRuntimeStore(
     (s) => s.setSettingsPanelOpen,
@@ -1536,11 +1559,15 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [codeMenuDisabled, codeToolsEnabled, setCodeToolsEnabled]);
 
   const startCompare = useCallback(() => {
+    if (onEnterCompare) {
+      onEnterCompare();
+      return;
+    }
     const store = useChatRuntimeStore.getState();
     store.setActiveThreadId(null);
     store.setContextUsage(null);
     navigate({ to: "/chat", search: { compare: createCompareId() } });
-  }, [navigate]);
+  }, [navigate, onEnterCompare]);
 
   return (
     <DropdownMenu>
@@ -1641,17 +1668,17 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem>
+            <DropdownMenuItem disabled={true}>
               <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-              Canvas
+              Canvas (coming soon)
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => startCompare()}>
               <Columns2Icon />
               Compare chat
             </DropdownMenuItem>
-            <DropdownMenuItem>
+            <DropdownMenuItem disabled={true}>
               <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-              RAG
+              RAG (coming soon)
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>

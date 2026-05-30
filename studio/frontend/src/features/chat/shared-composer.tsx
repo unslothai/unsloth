@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { openLink } from "@/lib/open-link";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,11 +20,23 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { isMultimodalResponse } from "./types/api";
-import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import { openLink } from "@/lib/open-link";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useAui } from "@assistant-ui/react";
+import {
+  AttachmentIcon,
+  CodeIcon,
+  DatabaseIcon,
+  File02Icon,
+  Folder01Icon,
+  Image03Icon,
+  PencilRulerIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowUpIcon,
   CheckIcon,
@@ -43,34 +53,6 @@ import {
   XIcon,
 } from "lucide-react";
 import {
-  AttachmentIcon,
-  CodeIcon,
-  DatabaseIcon,
-  File02Icon,
-  Folder01Icon,
-  Image03Icon,
-  PencilRulerIcon,
-} from "@hugeicons/core-free-icons";
-import { useNavigate } from "@tanstack/react-router";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { toast } from "@/lib/toast";
-import { loadModel, validateModel } from "./api/chat-api";
-import {
-  parseExternalModelId,
-  providerTypeSupportsVision,
-} from "./external-providers";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
-import {
-  type ReasoningEffort,
-  useChatRuntimeStore,
-} from "./stores/chat-runtime-store";
-import {
-  getExternalReasoningCapabilities,
-  providerSupportsBuiltinCodeExecution,
-  providerSupportsBuiltinImageGeneration,
-  providerSupportsBuiltinWebFetch,
-} from "./provider-capabilities";
-import {
   type CompositionEvent,
   type FC,
   type KeyboardEvent,
@@ -85,6 +67,25 @@ import {
   useRef,
   useState,
 } from "react";
+import { loadModel, validateModel } from "./api/chat-api";
+import {
+  parseExternalModelId,
+  providerTypeSupportsVision,
+} from "./external-providers";
+import {
+  getExternalReasoningCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
+} from "./provider-capabilities";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { isMultimodalResponse } from "./types/api";
+import { createSafeId } from "./utils/compare-id";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 // Projects is still in development; its menu entries link to the tracking PR.
 const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
@@ -342,6 +343,12 @@ export function RegisterCompareHandle({
 }
 
 type PendingImage = { id: string; file: File };
+type PendingAudio = { name: string; base64: string };
+type ComposerDraft = {
+  text: string;
+  pendingImages: PendingImage[];
+  pendingAudio: PendingAudio | null;
+};
 
 function PendingImageThumb({
   file,
@@ -403,10 +410,7 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingAudio, setPendingAudio] = useState<{
-    name: string;
-    base64: string;
-  } | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<PendingAudio | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -414,6 +418,15 @@ export function SharedComposer({
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const composerDraftRef = useRef<ComposerDraft>({
+    text: "",
+    pendingImages: [],
+    pendingAudio: null,
+  });
+
+  useEffect(() => {
+    composerDraftRef.current = { text, pendingImages, pendingAudio };
+  }, [text, pendingImages, pendingAudio]);
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -702,7 +715,7 @@ export function SharedComposer({
         droppedImageForUnavailable = true;
         continue;
       }
-      next.push({ id: crypto.randomUUID(), file });
+      next.push({ id: createSafeId(), file });
     }
     if (droppedImageForUnavailable && attachUnavailableReason) {
       toast.error(attachUnavailableReason);
@@ -785,6 +798,38 @@ export function SharedComposer({
       return;
     }
 
+    const draft: ComposerDraft = { text, pendingImages, pendingAudio };
+    const clearComposerDraft = () => {
+      composerDraftRef.current = {
+        text: "",
+        pendingImages: [],
+        pendingAudio: null,
+      };
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+    };
+    const restoreComposerDraft = () => {
+      const current = composerDraftRef.current;
+      const hasNewContent =
+        current.text.trim().length > 0 ||
+        current.pendingImages.length > 0 ||
+        current.pendingAudio !== null;
+      if (hasNewContent) return;
+      composerDraftRef.current = draft;
+      setText(draft.text);
+      setPendingImages(draft.pendingImages);
+      setPendingAudio(draft.pendingAudio);
+      if (draft.pendingAudio) {
+        setPendingAudioStore(
+          draft.pendingAudio.base64,
+          draft.pendingAudio.name,
+        );
+      }
+    };
+
     const content: CompareMessagePart[] = [];
     for (const { file } of pendingImages) {
       try {
@@ -802,11 +847,7 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
-    setText("");
-    setPendingImages([]);
-    setPendingAudio(null);
-    clearPendingAudioStore();
-    textareaRef.current?.focus();
+    clearComposerDraft();
 
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
@@ -960,6 +1001,7 @@ export function SharedComposer({
 
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
+        restoreComposerDraft();
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -1225,9 +1267,9 @@ export function SharedComposer({
                   More
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem>
+                  <DropdownMenuItem disabled={true}>
                     <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                    Canvas
+                    Canvas (coming soon)
                   </DropdownMenuItem>
                   {/* Always active: this menu only renders in compare mode.
                       Ticked like Web search/Code; click toggles it off. */}
@@ -1239,9 +1281,9 @@ export function SharedComposer({
                     Compare chat
                     <CheckIcon className="ml-auto" />
                   </DropdownMenuItem>
-                  <DropdownMenuItem>
+                  <DropdownMenuItem disabled={true}>
                     <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-                    RAG
+                    RAG (coming soon)
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
