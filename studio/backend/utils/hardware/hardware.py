@@ -16,8 +16,16 @@ Usage:
         ...
 """
 
+import copy
+import gc
+import glob
 import os
 import platform
+import re
+import subprocess
+import sys
+import types
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
 from enum import Enum
@@ -178,8 +186,6 @@ def clear_gpu_cache():
     Clear GPU memory cache for the current device.
     Safe to call on any platform — no-ops gracefully.
     """
-    import gc
-
     gc.collect()
 
     device = get_device()
@@ -361,8 +367,6 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     Returns dict with keys: unsloth, torch, transformers, cuda.
     Missing packages yield None.
     """
-    from importlib.metadata import version as pkg_version, PackageNotFoundError
-
     packages = ("unsloth", "torch", "transformers")
     versions: Dict[str, Optional[str]] = {}
 
@@ -481,9 +485,6 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     Returns dict with utilization_pct, vram_used_bytes (system-wide GPU memory).
     Returns empty dict on failure.
     """
-    import subprocess
-    import re
-
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -510,12 +511,10 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
 
 def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
     """Query AMD GPU compute utilization via Linux DRM sysfs gpu_busy_percent."""
-    import glob as _glob
-
     if platform.system() != "Linux":
         return None
     try:
-        files = _glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
+        files = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
         if not files:
             return None
         values = [int(open(f).read().strip()) for f in files]
@@ -526,12 +525,10 @@ def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
 
 def _rocm_linux_sysfs_temp_c() -> Optional[float]:
     """Query AMD GPU edge temperature via Linux DRM hwmon sysfs (temp1_input, millidegrees C)."""
-    import glob as _glob
-
     if platform.system() != "Linux":
         return None
     try:
-        files = _glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
+        files = glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
         if not files:
             return None
         temps = [int(open(f).read().strip()) / 1000.0 for f in files]
@@ -542,8 +539,6 @@ def _rocm_linux_sysfs_temp_c() -> Optional[float]:
 
 def _rocm_linux_sysfs_power_w() -> Optional[float]:
     """Query AMD GPU average power draw via Linux DRM hwmon sysfs (microwatts)."""
-    import glob as _glob
-
     if platform.system() != "Linux":
         return None
     try:
@@ -551,7 +546,7 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
             "/sys/class/drm/card*/device/hwmon/hwmon*/power1_average",
             "/sys/class/drm/card*/device/hwmon/hwmon*/power1_input",
         ):
-            files = _glob.glob(pattern)
+            files = glob.glob(pattern)
             if files:
                 watts = sum(int(open(f).read().strip()) / 1_000_000.0 for f in files)
                 return round(watts, 1)
@@ -562,8 +557,6 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
 
 def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes)."""
-    import subprocess as _sp
-
     if platform.system() != "Windows":
         return None
     try:
@@ -572,7 +565,7 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){[math]::Min(($s|Measure-Object CookedValue -Sum).Sum,100)}else{-1}"
         )
-        r = _sp.run(
+        r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
@@ -593,13 +586,11 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
     updates in real-time across all processes. No tools required.
     Returns (used_gb, total_gb) or (None, None) on failure.
     """
-    import glob as _glob
-
     if platform.system() != "Linux":
         return None, None
     try:
-        used_files = _glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")
-        total_files = _glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
+        used_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")
+        total_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
         if not used_files or not total_files:
             return None, None
         used_bytes = sum(int(open(f).read().strip()) for f in used_files)
@@ -618,8 +609,6 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
     usage accurately. Works for any GPU vendor without amd-smi or nvidia-smi.
     Returns (used_gb, total_gb) or (None, None) on failure.
     """
-    import subprocess as _sp
-
     if platform.system() != "Windows":
         return None, None
     try:
@@ -628,7 +617,7 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){($s|Measure-Object CookedValue -Sum).Sum}else{-1}"
         )
-        r = _sp.run(
+        r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
@@ -1160,17 +1149,12 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
 
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
-    import copy as _copy
-
     # torch.distributed is incomplete on Windows ROCm — torch._C is a C
     # extension (not a package), so Python cannot import the submodule
     # torch._C._distributed_c10d that torch.distributed depends on.
     # Inject an empty stub into sys.modules BEFORE importing torch.distributed
     # so the import succeeds, then patch the missing process-group helpers.
-    import sys as _sys
-    import types as _types
-
-    if _sys.platform == "win32" and IS_ROCM:
+    if sys.platform == "win32" and IS_ROCM:
         # Dummy class for any name torch.distributed tries to import from these stubs
         class _Dummy:
             pass
@@ -1180,8 +1164,8 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
             "torch._C._distributed_autograd",
             "torch._C._distributed_rpc",
         ):
-            if _c10d_name not in _sys.modules:
-                _stub = _types.ModuleType(_c10d_name)
+            if _c10d_name not in sys.modules:
+                _stub = types.ModuleType(_c10d_name)
                 # torch.distributed imports these names from _distributed_c10d;
                 # provide no-op dummies so the import doesn't raise AttributeError.
                 for _sym in (
@@ -1200,7 +1184,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
                     "BuiltinCommHookType",
                 ):
                     setattr(_stub, _sym, _Dummy)
-                _sys.modules[_c10d_name] = _stub
+                sys.modules[_c10d_name] = _stub
 
     try:
         import torch.distributed as _td
@@ -1225,7 +1209,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
     # `sub_configs` and propagates to nested text_config / sub-configs, so a
     # shallow copy still mutates those shared inner objects on the cached
     # config returned by _load_config_for_gpu_estimate. Deepcopy isolates them.
-    config_copy = _copy.deepcopy(config)
+    config_copy = copy.deepcopy(config)
 
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
@@ -2026,8 +2010,6 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     Returns:
         A safe integer ≥ 1.
     """
-    import sys
-
     # Windows and macOS use 'spawn' for multiprocessing -- the overhead of
     # re-importing torch/transformers/unsloth per worker is typically slower
     # than single-process.
@@ -2078,8 +2060,6 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     ``datasets`` treats ``num_proc=1`` as multiprocessing (creates ``Pool(1)``).
     Only ``num_proc=None`` guarantees in-process execution.
     """
-    import sys
-
     if sys.platform in ("win32", "darwin"):
         return None
     return safe_num_proc(desired)

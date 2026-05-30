@@ -17,6 +17,7 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -965,9 +966,6 @@ class LlamaCppBackend:
         7.  llama-server on PATH                     (system install)
         8.  ./bin/llama-server                       (legacy: extracted binary)
         """
-        import os
-        import sys
-
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         # 1. Env var — direct path to binary
@@ -1282,8 +1280,6 @@ class LlamaCppBackend:
         Returns list of (gpu_index, free_mib) sorted by index. Empty
         list if no supported GPU is reachable.
         """
-        import os
-
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -3928,10 +3924,6 @@ class LlamaCppBackend:
         Falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         not installed.
         """
-        import os
-        import signal
-        import sys
-
         try:
             # -- Build the ownership allowlist --------------------------------
             # Two kinds of matches:
