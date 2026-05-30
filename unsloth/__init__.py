@@ -143,3 +143,6 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+    # Re-export for direct access
+    from .trainer import MuonConfig, _MuonAdamWChained

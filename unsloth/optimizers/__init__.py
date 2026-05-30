@@ -14,8 +14,10 @@
 
 from .q_galore_projector import GaLoreProjector
 from .q_galore_adamw import QGaLoreAdamW8bit
+from .muon import make_muon_param_groups
 
 __all__ = [
     "GaLoreProjector",
     "QGaLoreAdamW8bit",
+    "make_muon_param_groups",
 ]

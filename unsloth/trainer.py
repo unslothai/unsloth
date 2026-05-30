@@ -19,6 +19,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Optional, List
 from functools import wraps
+import torch
 
 import trl
 import inspect
@@ -49,6 +50,8 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "MuonConfig",
+    "_MuonAdamWChained",
 ]
 
 logger = logging.getLogger(__name__)
@@ -156,15 +159,59 @@ class QGaloreConfig:
     target_modules: Optional[List[str]] = None
 
 
+@dataclass
+class MuonConfig:
+    """Configuration for the Muon optimizer integration.
+
+    Muon (Momentum + Newton-Schulz orthogonalization) only applies to 2D
+    parameters (matrices). All other parameters (embeddings, layernorms,
+    biases, 1D) fall back to AdamW.
+
+    Requires PyTorch >= 2.9.0.
+
+    Example:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            "unsloth/Qwen3-8B",
+            full_finetuning=True,
+        )
+
+        trainer = UnslothTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            args=UnslothTrainingArguments(
+                muon_config=MuonConfig(
+                    momentum=0.95,
+                    ns_steps=5,
+                    muon_lr_scale=1.0,
+                ),
+                learning_rate=1e-4,
+                output_dir="./output",
+            ),
+            train_dataset=dataset,
+        )
+    """
+
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    muon_lr_scale: float = 1.0
+    adamw_lr: Optional[float] = None
+    adamw_betas: tuple = (0.9, 0.999)
+    adamw_eps: float = 1e-8
+    target_modules: Optional[List[str]] = None
+
+
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(
         self,
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
+        muon_config: Optional[MuonConfig] = None,
         *args,
         **kwargs,
     ):
         self.q_galore_config = q_galore_config
+        self.muon_config = muon_config
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
@@ -213,8 +260,56 @@ def _create_unsloth_optimizer(
     return optimizer
 
 
+class _MuonAdamWChained(torch.optim.Optimizer):
+    """Chains Muon (2D params) + AdamW (1D params) into a single Optimizer.
+
+    Inherits from ``torch.optim.Optimizer`` so that HF Trainer's LR scheduler
+    (which calls ``isinstance(optimizer, Optimizer)``) accepts it.
+
+    The scheduler updates LRs on the merged ``param_groups`` list; those LR
+    values are copied into the sub-optimizers' own groups at each ``step()``
+    call via ``_sync_lr()``.
+    """
+
+    def __init__(self, muon: "torch.optim.Muon", adamw: "torch.optim.AdamW"):
+        self.muon = muon
+        self.adamw = adamw
+        merged = muon.param_groups + adamw.param_groups
+        super().__init__(merged, {})
+
+    def _sync_lr(self):
+        for i, group in enumerate(self.muon.param_groups):
+            if "lr" in group and "lr" in self.param_groups[i]:
+                group["lr"] = self.param_groups[i]["lr"]
+        offset = len(self.muon.param_groups)
+        for i, group in enumerate(self.adamw.param_groups):
+            if "lr" in group and "lr" in self.param_groups[offset + i]:
+                group["lr"] = self.param_groups[offset + i]["lr"]
+
+    def step(self, closure=None):
+        self._sync_lr()
+        self.muon.step(closure)
+        self.adamw.step(closure)
+
+    def zero_grad(self, set_to_none=True):
+        self.muon.zero_grad(set_to_none=set_to_none)
+        self.adamw.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {"muon": self.muon.state_dict(), "adamw": self.adamw.state_dict()}
+
+    def load_state_dict(self, state_dict):
+        self.muon.load_state_dict(state_dict["muon"])
+        self.adamw.load_state_dict(state_dict["adamw"])
+
+
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self):
+        # --- Muon optimizer (checked first, before Q-GaLore) ---
+        muon_config = getattr(self.args, "muon_config", None)
+        if muon_config is not None and self.optimizer is None:
+            return self._create_muon_optimizer(muon_config)
+
         # --- Q-GaLore optimizer ---
         q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
@@ -236,6 +331,79 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
             )
+        return self.optimizer
+
+    def _create_muon_optimizer(self, config: "MuonConfig"):
+        """Build a mixed Muon + AdamW optimizer from a MuonConfig."""
+        if not hasattr(torch.optim, "Muon"):
+            raise ImportError(
+                "Unsloth: torch.optim.Muon requires PyTorch >= 2.9.0.\n"
+                f"Current version: {torch.__version__}\n"
+                "Update with: pip install --upgrade torch"
+            )
+
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            raise RuntimeError(
+                "Unsloth Muon: torch.optim.Muon does not yet support distributed training "
+                "in PyTorch 2.9+. Use AdamW or wait for PyTorch 2.10+."
+            )
+
+        from unsloth.optimizers.muon import make_muon_param_groups
+        from peft import PeftModel
+        if isinstance(self.model, PeftModel):
+            print(
+                "Unsloth Muon: PEFT/LoRA model detected. "
+                "Muon will be applied to 2D adapters. "
+                "Results not guaranteed — use full_finetuning=True for expected behaviour."
+            )
+
+        lr = self.args.learning_rate
+        weight_decay = self.args.weight_decay
+
+        muon_groups, adamw_groups = make_muon_param_groups(
+            self.model,
+            lr=lr,
+            weight_decay=weight_decay,
+            muon_lr_scale=config.muon_lr_scale,
+            adamw_lr=config.adamw_lr,
+            adamw_betas=config.adamw_betas,
+            adamw_eps=config.adamw_eps,
+            target_modules=config.target_modules,
+        )
+
+        n_muon = sum(p.numel() for g in muon_groups for p in g["params"])
+        n_adamw = sum(p.numel() for g in adamw_groups for p in g["params"])
+        total = n_muon + n_adamw
+
+        print(
+            f"Unsloth: Muon enabled — "
+            f"{n_muon:,} params via Muon ({100*n_muon/total:.1f}%), "
+            f"{n_adamw:,} params via AdamW fallback ({100*n_adamw/total:.1f}%)"
+        )
+        print(
+            "Unsloth Muon: checkpoint format is incompatible with AdamW. "
+            "Do not use resume_from_checkpoint with an AdamW checkpoint."
+        )
+
+        muon_optimizer = torch.optim.Muon(
+            muon_groups,
+            lr=lr * config.muon_lr_scale,
+            momentum=config.momentum,
+            nesterov=config.nesterov,
+            ns_steps=config.ns_steps,
+            weight_decay=weight_decay,
+        )
+
+        adamw_optimizer = torch.optim.AdamW(
+            adamw_groups,
+            lr=config.adamw_lr or lr,
+            betas=config.adamw_betas,
+            eps=config.adamw_eps,
+            weight_decay=weight_decay,
+        )
+
+        self.optimizer = _MuonAdamWChained(muon_optimizer, adamw_optimizer)
         return self.optimizer
 
     def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
