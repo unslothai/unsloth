@@ -7,6 +7,7 @@ export { parseExternalModelId } from "./external-providers";
 export { getExternalReasoningCapabilities } from "./provider-capabilities";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { deleteThreadMessage } from "./utils/delete-thread-message";
+export { createCompareId } from "./utils/compare-id";
 export { applyQwenThinkingParams } from "./utils/qwen-params";
 export {
   getInferenceStatus,

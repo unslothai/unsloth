@@ -610,6 +610,30 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = modelLoaded && !supportsBuiltinWebFetch;
   const showFetchMenuItem = supportsBuiltinWebFetch || webFetchToolsEnabled;
+  const searchToolsActive = toolsEnabled && !searchDisabled;
+  const codeToolsActive = codeToolsEnabled && !codeDisabled;
+  const toggleSearchTools = useCallback(() => {
+    if (searchDisabled) return;
+    const next = !toolsEnabled;
+    setToolsEnabled(next);
+    // Kimi's $web_search builtin requires thinking=disabled
+    // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+    // the Think pill off when Search is on, mirroring the backend.
+    if (isKimiExternal) {
+      setReasoningEnabled(!next, { persist: false });
+      applyQwenThinkingParams(!next);
+    }
+  }, [
+    isKimiExternal,
+    searchDisabled,
+    setReasoningEnabled,
+    setToolsEnabled,
+    toolsEnabled,
+  ]);
+  const toggleCodeTools = useCallback(() => {
+    if (codeDisabled) return;
+    setCodeToolsEnabled(!codeToolsEnabled);
+  }, [codeDisabled, codeToolsEnabled, setCodeToolsEnabled]);
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore(
     (s) => s.clearPendingAudio,
@@ -657,10 +681,18 @@ export function SharedComposer({
       if (!file) continue;
       // Handle audio files
       if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
-        fileToBase64(file).then((base64) => {
-          setPendingAudio({ name: file.name, base64 });
-          setPendingAudioStore(base64, file.name);
-        });
+        void fileToBase64(file)
+          .then((base64) => {
+            setPendingAudio({ name: file.name, base64 });
+            setPendingAudioStore(base64, file.name);
+          })
+          .catch(() => {
+            setPendingAudio(null);
+            clearPendingAudioStore();
+            toast.error("Failed to read audio file", {
+              description: "Try a different audio file or add it again.",
+            });
+          });
         continue;
       }
       // Handle image files
@@ -877,10 +909,6 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
-
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
@@ -900,6 +928,7 @@ export function SharedComposer({
             description: `${name1} (${status1})`,
             duration: Infinity,
           });
+          handle1.appendMessage(content);
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
@@ -923,6 +952,7 @@ export function SharedComposer({
             description: `${name2} (${status2})`,
             duration: Infinity,
           });
+          handle2.appendMessage(content);
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
@@ -1132,24 +1162,26 @@ export function SharedComposer({
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                disabled={searchDisabled}
                 className={
-                  toolsEnabled ? "text-primary font-medium" : undefined
+                  searchToolsActive ? "text-primary font-medium" : undefined
                 }
-                onSelect={() => setToolsEnabled(!toolsEnabled)}
+                onSelect={toggleSearchTools}
               >
                 <GlobeIcon />
                 Web search
-                {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                {searchToolsActive ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               <DropdownMenuItem
+                disabled={codeDisabled}
                 className={
-                  codeToolsEnabled ? "text-primary font-medium" : undefined
+                  codeToolsActive ? "text-primary font-medium" : undefined
                 }
-                onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+                onSelect={toggleCodeTools}
               >
                 <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
                 Code
-                {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                {codeToolsActive ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               {showImageMenuItem ? (
                 <DropdownMenuItem
@@ -1236,19 +1268,9 @@ export function SharedComposer({
             <button
               type="button"
               disabled={searchDisabled}
-              onClick={() => {
-                const next = !toolsEnabled;
-                setToolsEnabled(next);
-                // Kimi's $web_search builtin requires thinking=disabled
-                // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
-                // the Think pill off when Search is on, mirroring the backend.
-                if (isKimiExternal) {
-                  setReasoningEnabled(!next, { persist: false });
-                  applyQwenThinkingParams(!next);
-                }
-              }}
+              onClick={toggleSearchTools}
               className="composer-pill-btn"
-              data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
+              data-active={searchToolsActive ? "true" : "false"}
               aria-label={
                 toolsEnabled ? "Disable web search" : "Enable web search"
               }
@@ -1262,9 +1284,9 @@ export function SharedComposer({
             <button
               type="button"
               disabled={codeDisabled}
-              onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              onClick={toggleCodeTools}
               className="composer-pill-btn"
-              data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+              data-active={codeToolsActive ? "true" : "false"}
               aria-label={
                 codeToolsEnabled
                   ? "Disable code execution"

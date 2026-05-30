@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   applyQwenThinkingParams,
+  createCompareId,
   deleteThreadMessage,
   getExternalReasoningCapabilities,
   parseExternalModelId,
@@ -1463,9 +1464,29 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -1486,17 +1507,39 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const showFetchMenuItem = supportsBuiltinWebFetch || webFetchToolsEnabled;
   const imageMenuDisabled = modelLoaded && !supportsBuiltinImageGeneration;
   const fetchMenuDisabled = modelLoaded && !supportsBuiltinWebFetch;
+  const searchMenuDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
+  const codeMenuDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const searchMenuActive = toolsEnabled && !searchMenuDisabled;
+  const codeMenuActive = codeToolsEnabled && !codeMenuDisabled;
+
+  const toggleSearchTools = useCallback(() => {
+    if (searchMenuDisabled) return;
+    const next = !toolsEnabled;
+    setToolsEnabled(next);
+    if (isKimiExternal) {
+      setReasoningEnabled(!next);
+      applyQwenThinkingParams(!next);
+    }
+  }, [
+    isKimiExternal,
+    searchMenuDisabled,
+    setReasoningEnabled,
+    setToolsEnabled,
+    toolsEnabled,
+  ]);
+
+  const toggleCodeTools = useCallback(() => {
+    if (codeMenuDisabled) return;
+    setCodeToolsEnabled(!codeToolsEnabled);
+  }, [codeMenuDisabled, codeToolsEnabled, setCodeToolsEnabled]);
 
   const startCompare = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     store.setActiveThreadId(null);
     store.setContextUsage(null);
-    // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
-    const compareId =
-      typeof globalThis.crypto?.randomUUID === "function"
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    navigate({ to: "/chat", search: { compare: compareId } });
+    navigate({ to: "/chat", search: { compare: createCompareId() } });
   }, [navigate]);
 
   return (
@@ -1545,20 +1588,22 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         <ComposerAudioMenuItem />
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className={toolsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setToolsEnabled(!toolsEnabled)}
+          disabled={searchMenuDisabled}
+          className={searchMenuActive ? "text-primary font-medium" : undefined}
+          onSelect={toggleSearchTools}
         >
           <GlobeIcon />
           Web search
-          {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          {searchMenuActive ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem
-          className={codeToolsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+          disabled={codeMenuDisabled}
+          className={codeMenuActive ? "text-primary font-medium" : undefined}
+          onSelect={toggleCodeTools}
         >
           <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
           Code
-          {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          {codeMenuActive ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         {showImageMenuItem ? (
           <DropdownMenuItem

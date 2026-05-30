@@ -12,13 +12,15 @@ import {
 import { Thread } from "@/components/assistant-ui/thread";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
-import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
-import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
-import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
-import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import {
+  NativeModelChip,
+  NativeModelDropOverlay,
+  type NativeIntent,
+  useChooseNativeModel,
+  useNativeIntentStore,
+  useNativeModelDrop,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
@@ -85,6 +87,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { createCompareId } from "./utils/compare-id";
 
 type LoraCandidate = {
   id: string;
@@ -632,7 +635,9 @@ export function ChatPage(): ReactElement {
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
-  const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatSearch | null>(
+    null,
+  );
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -1199,20 +1204,20 @@ export function ChatPage(): ReactElement {
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
-    viewBeforeCompareRef.current = { ...search };
+    setViewBeforeCompare({ ...search });
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+    navigate({ to: "/chat", search: { compare: createCompareId() } });
   }, [navigate, search]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
+    const saved = viewBeforeCompare;
     // No saved view (compare opened by direct URL); fall back to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
     }
-    viewBeforeCompareRef.current = null;
+    setViewBeforeCompare(null);
     navigate({ to: "/chat", search: saved });
     // Restore usage from the last assistant message, but only if it
     // matches the currently active checkpoint. Without this guard the
@@ -1259,7 +1264,7 @@ export function ChatPage(): ReactElement {
           }
         });
     }
-  }, [navigate]);
+  }, [navigate, viewBeforeCompare]);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -1415,7 +1420,7 @@ export function ChatPage(): ReactElement {
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
-          navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+          navigate({ to: "/chat", search: { compare: createCompareId() } });
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
           return;
