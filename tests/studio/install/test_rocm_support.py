@@ -1096,6 +1096,9 @@ class TestLiveRegression:
 
 # Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+_EXPORT_WORKER_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
+)
 # The torchao Windows-ROCm stub was de-duplicated out of the export/training
 # workers into a shared module; both workers now call into it.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
@@ -1905,6 +1908,11 @@ class TestWorkerWindowsRocmPatches:
     def test_worker_calls_shared_torchao_stub(self):
         """worker.py must invoke the shared torchao stub entrypoint."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
+    def test_export_worker_calls_shared_torchao_stub(self):
+        """export/worker.py must invoke the same shared torchao stub entrypoint."""
+        source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_torchao_stub_uses_stub_type_meta(self):

@@ -666,6 +666,8 @@ class UnslothTrainer:
             # bf16/fp16/float32 auto-detection (including FORCE_FLOAT32 models) is
             # honored -- older NVIDIA without bf16 (T4/V100) must NOT be coerced to
             # float16 here, which the previous unconditional branch did wrongly.
+            # Derive ROCm inline (not hardware.IS_ROCM) because that flag is unset
+            # until detect_hardware() runs, which isn't guaranteed in this subprocess.
             _is_rocm = (
                 bool(getattr(torch.version, "hip", None))
                 or "rocm" in torch.__version__.lower()
