@@ -1494,31 +1494,35 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
-          {/* Master RAG toggle; sidebar Retrieval section configures the rest. */}
-          <button
-            type="button"
-            disabled={ragDisabled}
-            onClick={() => {
-              const next = !ragToolEnabled;
-              setRagToolEnabled(next);
-              if (next && ragSource.kind === "off") {
-                setRagSource({ kind: "thread" });
+          {/* Master RAG toggle; sidebar Retrieval section configures the rest.
+              Hidden for external providers — RAG runs through the local
+              search_knowledge_base tool, which only fires on local runtimes. */}
+          {!isExternalModel && (
+            <button
+              type="button"
+              disabled={ragDisabled}
+              onClick={() => {
+                const next = !ragToolEnabled;
+                setRagToolEnabled(next);
+                if (next && ragSource.kind === "off") {
+                  setRagSource({ kind: "thread" });
+                }
+              }}
+              className="composer-pill-btn"
+              data-active={ragToolEnabled && !ragDisabled ? "true" : "false"}
+              aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
+              title={
+                ragDisabled
+                  ? "RAG needs a model that supports tool calling"
+                  : ragToolEnabled
+                    ? "RAG on — the model can search your attached documents"
+                    : "Enable RAG — let the model search your documents"
               }
-            }}
-            className="composer-pill-btn"
-            data-active={ragToolEnabled && !ragDisabled ? "true" : "false"}
-            aria-label={ragToolEnabled ? "Disable RAG" : "Enable RAG"}
-            title={
-              ragDisabled
-                ? "RAG needs a model that supports tool calling"
-                : ragToolEnabled
-                  ? "RAG on — the model can search your attached documents"
-                  : "Enable RAG — let the model search your documents"
-            }
-          >
-            <BookOpenIcon className="size-3.5" />
-            <span>RAG</span>
-          </button>
+            >
+              <BookOpenIcon className="size-3.5" />
+              <span>RAG</span>
+            </button>
+          )}
           {showWebFetchPill && (
             <button
               type="button"

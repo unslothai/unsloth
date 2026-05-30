@@ -1143,6 +1143,7 @@ const ImagesToggle: FC = () => {
 
 // Master RAG switch (mirrors shared-composer); sidebar configures the rest.
 const RagToggle: FC = () => {
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -1151,8 +1152,10 @@ const RagToggle: FC = () => {
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  // RAG runs through the local search_knowledge_base tool, so it needs
-  // tool-calling support (mirrors shared-composer's ragDisabled).
+  // RAG runs through the local search_knowledge_base tool, so it's hidden
+  // entirely for external providers (whose request path doesn't execute
+  // local tools) and gated on tool-calling support otherwise.
+  if (parseExternalModelId(checkpoint) !== null) return null;
   const disabled = !modelLoaded || !supportsTools;
   return (
     <button

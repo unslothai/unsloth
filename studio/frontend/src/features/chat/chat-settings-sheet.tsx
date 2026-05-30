@@ -1364,7 +1364,7 @@ export function ChatSettingsPanel({
             </CollapsibleSection>
           ) : null}
 
-          {ragToolEnabled ? (
+          {ragToolEnabled && externalSelection == null ? (
             <CollapsibleSection label="Retrieval" defaultOpen={true}>
               <div className="flex flex-col gap-3 pt-1">
                 <div className="flex flex-col gap-1.5">
