@@ -1979,7 +1979,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     _attempts=0
                     while [ "$_attempts" -lt 5 ] && [ "$_target_minor" -ge 0 ]; do
                         _expected_tv_minor=$((_target_minor + 15))
-                        
+
                         _curr_torch=$(_pick_radeon_wheel "torch"       "2.${_target_minor}." 2>/dev/null) || _curr_torch=""
                         _curr_tv=$(_pick_radeon_wheel    "torchvision" "0.${_expected_tv_minor}." 2>/dev/null) || _curr_tv=""
                         _curr_ta=$(_pick_radeon_wheel    "torchaudio"  "2.${_target_minor}." 2>/dev/null) || _curr_ta=""
@@ -2004,7 +2004,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                                [ "$_c_torch_minor" = "$_c_ta_minor" ] && \
                                [ "$_c_tv_major" = "0" ] && \
                                [ "$_c_tv_minor" = "$((_c_torch_minor + 15))" ]; then
-                                
+
                                 _torch_whl=$_curr_torch
                                 _tv_whl=$_curr_tv
                                 _ta_whl=$_curr_ta
