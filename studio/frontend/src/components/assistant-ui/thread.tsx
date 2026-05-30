@@ -1013,6 +1013,17 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   const activeLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
+  const canDismissReasoning =
+    activeLook &&
+    !disabled &&
+    !reasoningLockedOn &&
+    effectiveSupportsReasoningOff;
+  const dismissReasoning = () => {
+    if (!canDismissReasoning) return;
+    setReasoningEnabled(false);
+    applyQwenThinkingParams(false);
+    setPreserveThinking(false);
+  };
 
   if (useDropdown) {
     return (
@@ -1023,6 +1034,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             disabled={disabled}
             className="unsloth-thinking-pill"
             data-active={activeLook ? "true" : "false"}
+            data-dismissible={canDismissReasoning ? "true" : undefined}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
@@ -1033,7 +1045,22 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             {activeLook ? (
               <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
             ) : null}
-            <ArrowDownStandardIcon className="size-[15px]" />
+            <ArrowDownStandardIcon className="unsloth-thinking-chevron size-[15px]" />
+            {canDismissReasoning ? (
+              <XIcon
+                className="composer-pill-close unsloth-thinking-close"
+                aria-hidden={true}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  dismissReasoning();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              />
+            ) : null}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -1166,6 +1193,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       }}
       className="unsloth-thinking-pill"
       data-active={activeLook ? "true" : "false"}
+      data-dismissible={canDismissReasoning ? "true" : undefined}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
         modelLoaded,
@@ -1175,6 +1203,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     >
       <ThinkIcon />
       {activeLook ? <span>Thinking</span> : null}
+      {canDismissReasoning ? (
+        <XIcon className="composer-pill-close" aria-hidden={true} />
+      ) : null}
     </button>
   );
 };

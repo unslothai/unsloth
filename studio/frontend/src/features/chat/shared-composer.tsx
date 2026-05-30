@@ -542,6 +542,17 @@ export function SharedComposer({
     ? reasoningLockedOn ||
       (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  const canDismissReasoning =
+    thinkingActiveLook &&
+    !reasoningDisabled &&
+    !reasoningLockedOn &&
+    effectiveSupportsReasoningOff;
+  const dismissReasoning = () => {
+    if (!canDismissReasoning) return;
+    setReasoningEnabled(false);
+    applyQwenThinkingParams(false);
+    setPreserveThinking(false);
+  };
   // Two-pill gating: Search pill lights up when the runtime has either
   // a local tool runtime (supportsTools, gives us our Code/python + local
   // web_search) OR a server-side web_search the provider runs for us
@@ -1330,6 +1341,7 @@ export function SharedComposer({
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
                     data-active={thinkingActiveLook ? "true" : "false"}
+                    data-dismissible={canDismissReasoning ? "true" : undefined}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
                       reasoningDisabled,
@@ -1347,7 +1359,22 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="size-[15px]" />
+                    <ArrowDownStandardIcon className="unsloth-thinking-chevron size-[15px]" />
+                    {canDismissReasoning ? (
+                      <XIcon
+                        className="composer-pill-close unsloth-thinking-close"
+                        aria-hidden={true}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          dismissReasoning();
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                      />
+                    ) : null}
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1485,6 +1512,7 @@ export function SharedComposer({
                 }}
                 className="unsloth-thinking-pill"
                 data-active={thinkingActiveLook ? "true" : "false"}
+                data-dismissible={canDismissReasoning ? "true" : undefined}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
                   modelLoaded,
@@ -1494,6 +1522,9 @@ export function SharedComposer({
               >
                 <BulbIcon className="size-[15px]" />
                 {thinkingActiveLook ? <span>Thinking</span> : null}
+                {canDismissReasoning ? (
+                  <XIcon className="composer-pill-close" aria-hidden={true} />
+                ) : null}
               </button>
             )
           ) : null}

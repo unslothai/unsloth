@@ -887,6 +887,12 @@
     color: var(--foreground);
   }
 
+  .composer-pill-btn > span {
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
+  }
+
   .composer-pill-btn svg {
     width: 16px !important;
     height: 16px !important;
@@ -901,7 +907,16 @@
       :hover,
       :focus-visible
     ) {
+    background-color: rgba(0, 0, 0, 0.14);
     padding-right: 0.25rem;
+  }
+
+  .dark
+    .composer-pill-btn[data-active="true"]:not(:disabled):is(
+      :hover,
+      :focus-visible
+    ) {
+    background-color: rgba(255, 255, 255, 0.14);
   }
 
   .composer-pill-btn[data-active="true"]:not(:disabled):is(
@@ -1036,10 +1051,19 @@
 		   trigger so the cursor and click-to-close work. */
     pointer-events: auto;
     cursor: pointer;
+    background-color: rgba(0, 0, 0, 0.08);
+  }
+
+  .dark .unsloth-composer-plus[data-state="open"] {
+    background-color: rgba(255, 255, 255, 0.08);
   }
 
   .unsloth-composer-plus[data-state="open"]:hover {
-    background-color: transparent;
+    background-color: rgba(0, 0, 0, 0.08);
+  }
+
+  .dark .unsloth-composer-plus[data-state="open"]:hover {
+    background-color: rgba(255, 255, 255, 0.08);
   }
 
   .unsloth-composer-plus[data-state="open"] svg {
@@ -1070,6 +1094,41 @@
   .dark .unsloth-thinking-pill[data-state="open"] {
     background-color: rgba(255, 255, 255, 0.08);
     color: var(--foreground);
+  }
+
+  .unsloth-thinking-pill .composer-pill-close {
+    display: none;
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0;
+  }
+
+  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
+      :disabled
+    ):is(:hover, :focus-visible) {
+    background-color: rgba(0, 0, 0, 0.14);
+    padding-right: 0.25rem;
+  }
+
+  .dark
+    .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
+      :disabled
+    ):is(:hover, :focus-visible) {
+    background-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
+      :disabled
+    ):is(:hover, :focus-visible)
+    .composer-pill-close {
+    display: inline-flex;
+  }
+
+  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
+      :disabled
+    ):is(:hover, :focus-visible)
+    .unsloth-thinking-chevron {
+    display: none;
   }
 
   /* Smaller tick for selected Thinking options. */
