@@ -42,28 +42,28 @@ def test_detects_gguf_file_normally(tmp_path):
     assert result.endswith("gpt-oss-20b-MXFP4.gguf")
 
 
-def test_detects_gguf_when_is_file_transiently_false(tmp_path):
+def test_detects_gguf_when_stat_raises_oserror(tmp_path):
     """
-    Regression: on Windows, is_file() can briefly return False after
-    llama-server is killed while it still holds the file open.
-    detect_gguf_model must still route to llama-server in this case.
+    Regression: on Windows, both is_file() and exists() call stat() internally.
+    During the brief lock window after llama-server is killed, stat() raises
+    OSError, causing both to return False. detect_gguf_model must still route
+    to llama-server based on the file extension alone.
     """
     gguf = tmp_path / "gpt-oss-20b-MXFP4.gguf"
     gguf.write_bytes(b"")
 
-    # Simulate is_file() returning False transiently (Windows file lock window)
-    original_is_file = Path.is_file
+    original_stat = Path.stat
 
-    def flaky_is_file(self):
+    def flaky_stat(self, **kwargs):
         if self.suffix.lower() == ".gguf":
-            return False  # transient failure
-        return original_is_file(self)
+            raise OSError("file temporarily inaccessible (Windows lock window)")
+        return original_stat(self, **kwargs)
 
-    with patch.object(Path, "is_file", flaky_is_file):
+    with patch.object(Path, "stat", flaky_stat):
         result = detect_gguf_model(str(gguf))
 
     assert result is not None, (
-        "detect_gguf_model returned None when is_file() was transiently False. "
+        "detect_gguf_model returned None when stat() raised OSError. "
         "This causes the model to fall through to the transformers backend."
     )
 
