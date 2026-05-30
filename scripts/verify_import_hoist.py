@@ -41,6 +41,7 @@ Usage:
   verify_import_hoist.py --self-test                              # prove it catches bugs
 Exit code 1 if any non-informational finding.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,30 +53,53 @@ import sys
 from dataclasses import dataclass, field
 
 _BUILTINS = set(dir(builtins)) | {
-    "__file__", "__name__", "__doc__", "__package__", "__spec__", "__loader__",
-    "__builtins__", "__class__", "__annotations__", "__dict__", "__qualname__",
-    "__module__", "__path__", "__debug__", "__import__", "NotImplemented",
-    "Ellipsis", "copyright", "credits", "license", "help", "exit", "quit",
-    "__build_class__", "__cached__", "reveal_type", "reveal_locals",
+    "__file__",
+    "__name__",
+    "__doc__",
+    "__package__",
+    "__spec__",
+    "__loader__",
+    "__builtins__",
+    "__class__",
+    "__annotations__",
+    "__dict__",
+    "__qualname__",
+    "__module__",
+    "__path__",
+    "__debug__",
+    "__import__",
+    "NotImplemented",
+    "Ellipsis",
+    "copyright",
+    "credits",
+    "license",
+    "help",
+    "exit",
+    "quit",
+    "__build_class__",
+    "__cached__",
+    "reveal_type",
+    "reveal_locals",
 }
 
 
 # ---------------------------------------------------------------- scope model
 
+
 @dataclass
 class Binding:
-    kind: str               # 'import' | 'importfrom' | 'def' | 'class' | 'other'
+    kind: str  # 'import' | 'importfrom' | 'def' | 'class' | 'other'
     target: str | None = None  # canonical import target id, else None
 
 
 @dataclass
 class Scope:
-    kind: str               # 'module' | 'function' | 'class' | 'lambda' | 'comp'
+    kind: str  # 'module' | 'function' | 'class' | 'lambda' | 'comp'
     qualname: str
     parent: "Scope | None"
-    bindings: dict[str, list[Binding]] = field(default_factory=dict)
-    globals: set[str] = field(default_factory=set)
-    nonlocals: set[str] = field(default_factory=set)
+    bindings: dict[str, list[Binding]] = field(default_factory = dict)
+    globals: set[str] = field(default_factory = set)
+    nonlocals: set[str] = field(default_factory = set)
     star_import: bool = False
 
     def add(self, name: str, b: Binding) -> None:
@@ -99,7 +123,9 @@ class _Builder(ast.NodeVisitor):
     def __init__(self):
         self.module = Scope("module", "<module>", None)
         self.uses: list[tuple[Scope, str, int]] = []  # (scope, name, lineno) hard loads
-        self.soft_uses: list[tuple[Scope, str, int]] = []  # annotations: count as "used"
+        self.soft_uses: list[
+            tuple[Scope, str, int]
+        ] = []  # annotations: count as "used"
         #                                                     but never as "unresolved"
         #                                                     (forward refs / string annos)
 
@@ -140,7 +166,9 @@ class _Builder(ast.NodeVisitor):
 
     def _visit_stmt(self, node: ast.AST, scope: Scope) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            star = isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
+            star = isinstance(node, ast.ImportFrom) and any(
+                a.name == "*" for a in node.names
+            )
             if star:
                 scope.star_import = True
             for alias in node.names:
@@ -328,7 +356,9 @@ class _Builder(ast.NodeVisitor):
             self._bind_args(node.args, child)
             self._visit_expr(node.body, child)
             return
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+        if isinstance(
+            node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+        ):
             child = Scope("comp", f"{scope.qualname}.<comp>", scope)
             for i, gen in enumerate(node.generators):
                 # first iterable is evaluated in the enclosing scope
@@ -358,6 +388,7 @@ class _Builder(ast.NodeVisitor):
 
 
 # ---------------------------------------------------------------- resolution
+
 
 def _any_star(scope: Scope) -> bool:
     c = scope
@@ -416,7 +447,9 @@ def _legb_chain(scope: Scope) -> list[Scope]:
     chain = [scope]
     p = scope.parent
     while p is not None:
-        if p.kind != "class" or p.parent is None:  # module-level class never happens; keep module
+        if (
+            p.kind != "class" or p.parent is None
+        ):  # module-level class never happens; keep module
             if p.kind != "class":
                 chain.append(p)
         p = p.parent
@@ -424,6 +457,7 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 
 
 # ---------------------------------------------------------------- analysis
+
 
 def _analyze(src: str):
     tree = ast.parse(src)
@@ -449,10 +483,14 @@ def _analyze(src: str):
             targets_by_scope.setdefault(scope.qualname, set()).update(tids)
     # module-level binding info for clash checks
     module = b.module
-    module_imports = {n: bs for n, bs in module.bindings.items()
-                      if any(x.kind in ("import", "importfrom") for x in bs)}
+    module_imports = {
+        n: bs
+        for n, bs in module.bindings.items()
+        if any(x.kind in ("import", "importfrom") for x in bs)
+    }
     module_dup = {
-        n for n, bs in module.bindings.items()
+        n
+        for n, bs in module.bindings.items()
         if any(x.kind in ("import", "importfrom") for x in bs)
         and any(x.kind not in ("import", "importfrom") for x in bs)
     }
@@ -461,8 +499,9 @@ def _analyze(src: str):
 
     def walk_scopes(scope: Scope):
         for n, bs in scope.bindings.items():
-            if any(x.kind in ("import", "importfrom") for x in bs) and \
-               any(x.kind not in ("import", "importfrom") for x in bs):
+            if any(x.kind in ("import", "importfrom") for x in bs) and any(
+                x.kind not in ("import", "importfrom") for x in bs
+            ):
                 ambiguous.setdefault(scope.qualname, set()).add(n)
         # scope tree isn't stored; rebuild via uses is hard. We approximate with module only.
 
@@ -471,7 +510,9 @@ def _analyze(src: str):
         "unresolved": unresolved,
         "targets_by_scope": targets_by_scope,
         "target_by_use": target_by_use,
-        "module_import_targets": {n: {x.target for x in bs if x.target} for n, bs in module_imports.items()},
+        "module_import_targets": {
+            n: {x.target for x in bs if x.target} for n, bs in module_imports.items()
+        },
         "module_dup": module_dup,
         "ambiguous": ambiguous,
     }
@@ -479,8 +520,9 @@ def _analyze(src: str):
 
 def _git_show(ref: str, path: str) -> str | None:
     try:
-        return subprocess.run(["git", "show", f"{ref}:{path}"], capture_output=True,
-                              text=True, check=True).stdout
+        return subprocess.run(
+            ["git", "show", f"{ref}:{path}"], capture_output = True, text = True, check = True
+        ).stdout
     except subprocess.CalledProcessError:
         return None
 
@@ -524,8 +566,13 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for scope, names in b["unresolved"].items():
         new = names - a["unresolved"].get(scope, set())
         for n in sorted(new):
-            findings.append(("BLOCKER", f"{path}: UNRESOLVED-NEW '{n}' in scope {scope} "
-                                        f"(undefined after change -> dangling alias / removed import)"))
+            findings.append(
+                (
+                    "BLOCKER",
+                    f"{path}: UNRESOLVED-NEW '{n}' in scope {scope} "
+                    f"(undefined after change -> dangling alias / removed import)",
+                )
+            )
 
     # 2. HOISTED-IMPORT-UNUSED  (the core botched-hoist / wrong-rename signal)
     #    A module-level import in AFTER that NO load resolves to, and which was
@@ -538,27 +585,48 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:
-            why = "added but unused" if newly_added else "was used before, now unused (references re-pointed)"
-            findings.append(("BLOCKER", f"{path}: HOISTED-IMPORT-UNUSED '{n}' ({sorted(tids)}) "
-                                        f"{why} -> un-normalized alias or wrong rename target?"))
+            why = (
+                "added but unused"
+                if newly_added
+                else "was used before, now unused (references re-pointed)"
+            )
+            findings.append(
+                (
+                    "BLOCKER",
+                    f"{path}: HOISTED-IMPORT-UNUSED '{n}' ({sorted(tids)}) "
+                    f"{why} -> un-normalized alias or wrong rename target?",
+                )
+            )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
         if tbefore and tbefore != tafter:
-            findings.append(("BLOCKER", f"{path}: TARGET-CHANGED name '{key[1]}' in {key[0]} "
-                                        f"{sorted(tbefore)} -> {sorted(tafter)} (rename re-points module)"))
+            findings.append(
+                (
+                    "BLOCKER",
+                    f"{path}: TARGET-CHANGED name '{key[1]}' in {key[0]} "
+                    f"{sorted(tbefore)} -> {sorted(tafter)} (rename re-points module)",
+                )
+            )
 
     # 4. MODULE-DUP-IMPORT introduced
     for n in sorted(b["module_dup"] - a["module_dup"]):
-        findings.append(("WARN", f"{path}: MODULE-DUP-IMPORT '{n}' bound by import AND non-import "
-                                 f"at module level (possible clash)"))
+        findings.append(
+            (
+                "WARN",
+                f"{path}: MODULE-DUP-IMPORT '{n}' bound by import AND non-import "
+                f"at module level (possible clash)",
+            )
+        )
 
     # 5. AMBIGUOUS-BIND introduced (module scope)
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
-            findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
+            findings.append(
+                ("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}")
+            )
 
     # 6. TARGET-MISSING (informational): a scope stopped resolving to an import
     #    target. Real bugs are already covered above; remaining cases are code
@@ -566,8 +634,14 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for scope, tbefore in a["targets_by_scope"].items():
         tafter = b["targets_by_scope"].get(scope, set())
         for t in sorted(tbefore - tafter):
-            relocated = "" if t in added_module_targets else "  [target not re-added here -> likely relocated/deleted]"
-            findings.append(("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}"))
+            relocated = (
+                ""
+                if t in added_module_targets
+                else "  [target not re-added here -> likely relocated/deleted]"
+            )
+            findings.append(
+                ("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}")
+            )
     return findings
 
 
@@ -581,42 +655,24 @@ _SELF_TESTS = {
         "    import glob as _b\n"
         "    return _b.glob('*')\n",
         # after: hoisted to canonical, but reference NOT normalized -> _b dangles
-        "import os\n"
-        "import glob\n"
-        "def f():\n"
-        "    return _b.glob('*')\n",
+        "import os\n" "import glob\n" "def f():\n" "    return _b.glob('*')\n",
         "BLOCKER",
     ),
     "rename_clash": (
         # before: _b is a deliberate alias; `b` already means something else
-        "import re as _b\n"
-        "b = 123\n"
-        "def f():\n"
-        "    return _b.compile('x'), b\n",
+        "import re as _b\n" "b = 123\n" "def f():\n" "    return _b.compile('x'), b\n",
         # after: someone normalized _b -> b ; now f().b is the int, re is lost
-        "import re\n"
-        "b = 123\n"
-        "def f():\n"
-        "    return b.compile('x'), b\n",
+        "import re\n" "b = 123\n" "def f():\n" "    return b.compile('x'), b\n",
         "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
     ),
     "clean_rename": (
-        "def f():\n"
-        "    import glob as _g\n"
-        "    return _g.glob('*')\n",
-        "import glob\n"
-        "def f():\n"
-        "    return glob.glob('*')\n",
+        "def f():\n" "    import glob as _g\n" "    return _g.glob('*')\n",
+        "import glob\n" "def f():\n" "    return glob.glob('*')\n",
         None,  # expect NO blocker
     ),
     "clean_dedup_redundant": (
-        "import sys\n"
-        "def f():\n"
-        "    import sys\n"
-        "    return sys.argv\n",
-        "import sys\n"
-        "def f():\n"
-        "    return sys.argv\n",
+        "import sys\n" "def f():\n" "    import sys\n" "    return sys.argv\n",
+        "import sys\n" "def f():\n" "    return sys.argv\n",
         None,
     ),
     "from_import_dangling": (
@@ -624,19 +680,15 @@ _SELF_TESTS = {
         "def f():\n"
         "    from importlib.metadata import version as _v\n"
         "    return _v('x')\n",
-        "from importlib.metadata import version\n"
-        "def f():\n"
-        "    return _v('x')\n",
+        "from importlib.metadata import version\n" "def f():\n" "    return _v('x')\n",
         "BLOCKER",
     ),
     "local_var_clash": (
         # _b renamed to b, but b is a LOCAL variable in f -> import silently unused
-        "def f(b):\n"
-        "    import re as _b\n"
-        "    return _b.compile(b)\n",
+        "def f(b):\n" "    import re as _b\n" "    return _b.compile(b)\n",
         "import re\n"
         "def f(b):\n"
-        "    return b.compile(b)\n",   # 'b' is the param, not the module
+        "    return b.compile(b)\n",  # 'b' is the param, not the module
         "BLOCKER",
     ),
     "substring_safe": (
@@ -657,10 +709,7 @@ _SELF_TESTS = {
         "def f(x):\n"
         "    import sys as _b\n"
         "    return x._b + _b.argv[0]\n",
-        "import os\n"
-        "import sys\n"
-        "def f(x):\n"
-        "    return x._b + sys.argv[0]\n",
+        "import os\n" "import sys\n" "def f(x):\n" "    return x._b + sys.argv[0]\n",
         None,
     ),
 }
@@ -672,7 +721,7 @@ def _self_test() -> int:
         findings = compare(before, after, f"<{name}>")
         blockers = [m for sev, m in findings if sev == "BLOCKER"]
         got = "BLOCKER" if blockers else None
-        passed = (got == expect)
+        passed = got == expect
         ok = ok and passed
         print(f"[{'PASS' if passed else 'FAIL'}] {name}: expect={expect} got={got}")
         for sev, m in findings:
@@ -685,8 +734,9 @@ def _pyflakes_undefined(path: str) -> set[str] | None:
     """Return the set of names pyflakes reports as 'undefined name' for `path`,
     or None if pyflakes failed to run/parse the file."""
     try:
-        proc = subprocess.run([sys.executable, "-m", "pyflakes", path],
-                              capture_output=True, text=True)
+        proc = subprocess.run(
+            [sys.executable, "-m", "pyflakes", path], capture_output = True, text = True
+        )
     except Exception:
         return None
     if "syntax error" in (proc.stdout + proc.stderr).lower():
@@ -710,7 +760,7 @@ def audit_files(paths: list[str]) -> int:
     for path in paths:
         n_files += 1
         try:
-            src = open(path, encoding="utf-8").read()
+            src = open(path, encoding = "utf-8").read()
         except Exception as e:  # unreadable
             n_err += 1
             err_detail[path] = f"read: {e}"
@@ -744,20 +794,27 @@ def audit_files(paths: list[str]) -> int:
     print(f"false-positive files: {n_fp}  (resolver flagged a name pyflakes accepts)")
     for p, names in sorted(fp_detail.items()):
         print(f"    FP {p}: {sorted(names)}")
-    ok = (n_err == 0 and n_fp == 0)
-    print("\nAUDIT:", "ROBUST (no crashes, no false positives vs pyflakes)" if ok
-          else "NEEDS WORK (see above)")
+    ok = n_err == 0 and n_fp == 0
+    print(
+        "\nAUDIT:",
+        "ROBUST (no crashes, no false positives vs pyflakes)"
+        if ok
+        else "NEEDS WORK (see above)",
+    )
     return 0 if ok else 1
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--before", default="origin/main")
-    ap.add_argument("--after", default="HEAD")
-    ap.add_argument("--self-test", action="store_true")
-    ap.add_argument("--audit", action="store_true",
-                    help="single-version robustness audit on filesystem paths")
-    ap.add_argument("files", nargs="*")
+    ap.add_argument("--before", default = "origin/main")
+    ap.add_argument("--after", default = "HEAD")
+    ap.add_argument("--self-test", action = "store_true")
+    ap.add_argument(
+        "--audit",
+        action = "store_true",
+        help = "single-version robustness audit on filesystem paths",
+    )
+    ap.add_argument("files", nargs = "*")
     args = ap.parse_args()
 
     if args.self_test:
@@ -778,12 +835,18 @@ def main() -> int:
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]
         infos = [f for f in findings if f[0] == "INFO"]
-        status = "CLEAN" if not blockers and not warns else ("BLOCKERS" if blockers else "WARNINGS")
+        status = (
+            "CLEAN"
+            if not blockers and not warns
+            else ("BLOCKERS" if blockers else "WARNINGS")
+        )
         print(f"\n=== {path}: {status} ===")
         for sev, m in blockers + warns + infos:
             print(f"  [{sev}] {m}")
         any_blocker = any_blocker or bool(blockers)
-    print("\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)")
+    print(
+        "\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)"
+    )
     return 1 if any_blocker else 0
 
 
