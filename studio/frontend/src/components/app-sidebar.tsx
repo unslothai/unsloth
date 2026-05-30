@@ -525,53 +525,6 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup
-          data-tour="navbar"
-          className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px] shrink-0"
-        >
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <NavItem
-                icon={TestTubeOutlineIcon}
-                label={t("shell.navigation.train")}
-                active={
-                  pathname === "/studio" || pathname.startsWith("/studio/")
-                }
-                disabled={chatOnly}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/studio" });
-                  closeMobileIfOpen();
-                }}
-              />
-
-              <NavItem
-                icon={ChefHatIcon}
-                label={t("shell.navigation.recipes")}
-                active={isRecipesRoute}
-                onClick={() => {
-                  navigate({ to: "/data-recipes" });
-                  closeMobileIfOpen();
-                }}
-              />
-
-              <NavItem
-                icon={DownloadSquare01Icon}
-                label={t("shell.navigation.export")}
-                active={
-                  pathname === "/export" || pathname.startsWith("/export/")
-                }
-                disabled={chatOnly}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/export" });
-                  closeMobileIfOpen();
-                }}
-              />
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
         <SidebarContent
           ref={scrollRef}
           className={cn(
@@ -580,6 +533,53 @@ export function AppSidebar() {
             canScrollDown && "can-scroll-down",
           )}
         >
+          <SidebarGroup
+            data-tour="navbar"
+            className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px]"
+          >
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <NavItem
+                  icon={TestTubeOutlineIcon}
+                  label={t("shell.navigation.train")}
+                  active={
+                    pathname === "/studio" || pathname.startsWith("/studio/")
+                  }
+                  disabled={chatOnly}
+                  onClick={() => {
+                    if (chatOnly) return;
+                    navigate({ to: "/studio" });
+                    closeMobileIfOpen();
+                  }}
+                />
+
+                <NavItem
+                  icon={ChefHatIcon}
+                  label={t("shell.navigation.recipes")}
+                  active={isRecipesRoute}
+                  onClick={() => {
+                    navigate({ to: "/data-recipes" });
+                    closeMobileIfOpen();
+                  }}
+                />
+
+                <NavItem
+                  icon={DownloadSquare01Icon}
+                  label={t("shell.navigation.export")}
+                  active={
+                    pathname === "/export" || pathname.startsWith("/export/")
+                  }
+                  disabled={chatOnly}
+                  onClick={() => {
+                    if (chatOnly) return;
+                    navigate({ to: "/export" });
+                    closeMobileIfOpen();
+                  }}
+                />
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
           {!isStudioRoute && chatItems.length > 0 && (
             <Collapsible
               key={isChatRoute ? "chat-route" : "non-chat-route"}
@@ -795,7 +795,12 @@ export function AppSidebar() {
           )}
         </SidebarContent>
 
-        <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-transparent group-data-[collapsible=icon]:px-0">
+        <SidebarFooter
+          className={cn(
+            "app-sidebar-footer group-data-[collapsible=icon]:px-0",
+            canScrollDown && "can-scroll-down",
+          )}
+        >
           <SidebarMenu>
             <SidebarMenuItem>
               <DropdownMenu>

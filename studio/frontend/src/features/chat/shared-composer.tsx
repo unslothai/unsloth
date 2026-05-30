@@ -1078,7 +1078,7 @@ export function SharedComposer({
                 aria-label="Tools and attachments"
                 className="unsloth-composer-plus"
               >
-                <PlusIcon className="size-6 stroke-[1.75px]" />
+                <PlusIcon className="size-[22px] stroke-2" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -1542,12 +1542,12 @@ export function SharedComposer({
               side="bottom"
               variant="default"
               size="icon"
-              className="size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
+              className="composer-send-enter size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-6 stroke-[1.75px]" />
+              <ArrowUpIcon className="size-[22px] stroke-2" />
             </TooltipIconButton>
           ) : null}
         </div>

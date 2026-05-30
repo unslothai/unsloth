@@ -1476,7 +1476,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           aria-label="Tools and attachments"
           className="unsloth-composer-plus"
         >
-          <PlusIcon className="size-6 stroke-[1.75px]" />
+          <PlusIcon className="size-[22px] stroke-2" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -1649,10 +1649,10 @@ const ComposerRightControls: FC<{
                   event.preventDefault();
                 }
               }}
-              className="aui-composer-send size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
+              className="aui-composer-send composer-send-enter size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
               aria-label="Send message"
             >
-              <ArrowUpIcon className="aui-composer-send-icon size-6 stroke-[1.75px]" />
+              <ArrowUpIcon className="aui-composer-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>
           </ComposerPrimitive.Send>
         </AuiIf>

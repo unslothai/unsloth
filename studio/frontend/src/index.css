@@ -537,26 +537,30 @@
   }
 
   .sidebar-sticky-label {
-    @apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
-  }
-  .sidebar-sticky-label.is-scrolled {
-    @apply shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)];
+    @apply rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none;
   }
 
   .app-sidebar-top-actions {
     position: relative;
     z-index: 25;
-    transition: box-shadow var(--duration-fast) ease-out;
+    background: var(--sidebar);
   }
 
-  .app-sidebar-top-actions.is-scrolled {
-    box-shadow: 0 0.5px 0 0 var(--sidebar-border), 0 10px 18px -18px
-      rgba(0, 0, 0, 0.42);
+  .app-sidebar-top-actions::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -16px;
+    height: 16px;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(to bottom, var(--sidebar) 0, transparent 100%);
+    transition: opacity var(--duration-fast) ease-out;
   }
 
-  .dark .app-sidebar-top-actions.is-scrolled {
-    box-shadow: 0 0.5px 0 0 var(--sidebar-border), 0 12px 20px -18px
-      rgba(0, 0, 0, 0.72);
+  .app-sidebar-top-actions.is-scrolled::after {
+    opacity: 1;
   }
 
   .app-sidebar-scroll-region {
@@ -586,6 +590,23 @@
       #000 calc(100% - 18px),
       transparent 100%
     );
+  }
+
+  .app-sidebar-footer {
+    position: relative;
+    z-index: 25;
+    background: var(--sidebar);
+  }
+
+  .app-sidebar-footer.can-scroll-down::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -24px;
+    height: 24px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent 0, var(--sidebar) 100%);
   }
 
   /* Neutral panel input surface — sidesteps the green cast on
@@ -891,6 +912,28 @@
     display: inline-flex;
   }
 
+  .composer-send-enter {
+    animation: composer-send-enter 120ms var(--ease-out-quart) both;
+  }
+
+  @keyframes composer-send-enter {
+    from {
+      opacity: 0;
+      transform: scale(0.92);
+    }
+
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .composer-send-enter {
+      animation: none;
+    }
+  }
+
   .composer-input {
     @apply mb-1 min-h-10 w-full resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[15px] font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
   }
@@ -989,11 +1032,14 @@
   }
 
   .unsloth-composer-plus[data-state="open"] {
-    @apply bg-muted-foreground/15;
     /* Radix's modal menu sets body pointer-events:none; re-enable on the open
 		   trigger so the cursor and click-to-close work. */
     pointer-events: auto;
     cursor: pointer;
+  }
+
+  .unsloth-composer-plus[data-state="open"]:hover {
+    background-color: transparent;
   }
 
   .unsloth-composer-plus[data-state="open"] svg {
@@ -1055,8 +1101,7 @@
     ) {
     @apply gap-3 pl-4 pr-3 py-2 text-[14px];
     cursor: pointer;
-    /* Pin hover-box radius so dark matches light (same as the container). */
-    border-radius: 1.1rem;
+    border-radius: 12px;
   }
 
   .unsloth-plus-menu [data-slot="dropdown-menu-label"] {
