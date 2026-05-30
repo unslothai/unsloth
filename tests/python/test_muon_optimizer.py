@@ -1151,6 +1151,191 @@ def test_peft_non_default_adapter_name():
         "Custom adapter embedding weight should NOT go to Muon"
 
 
+# -- Tests: 7th-pass additions (MUON_REVIEW_6.md) ----------------------------
+# -- MT1: 2D norm weights must go to AdamW no-decay group (H1 fix) -------
+
+
+def test_2d_norm_weight_goes_to_no_decay():
+    """2D norm weights must be routed to AdamW no-decay, not Muon."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    class Fake2DNorm(torch.nn.LayerNorm):
+        def __init__(self):
+            super().__init__(4)
+            self.weight = torch.nn.Parameter(torch.randn(4, 4))
+
+    model = torch.nn.Module()
+    model.norm = Fake2DNorm()
+    model.lin = torch.nn.Linear(4, 4)
+
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+
+    muon_params = [p for g in muon_g for p in g["params"]]
+    adamw_params = [p for g in adamw_g for p in g["params"]]
+
+    assert any(p is model.lin.weight for p in muon_params), "Linear weight should go to Muon"
+    assert any(p is model.norm.weight for p in adamw_params), "2D norm weight should go to AdamW no-decay"
+    assert not any(p is model.norm.weight for p in muon_params), "2D norm weight should NOT go to Muon"
+
+    # Verify norm weight is in a no-decay group
+    norm_in_no_decay = any(
+        any(p is model.norm.weight for p in g["params"]) and g.get("weight_decay", 0.0) == 0.0
+        for g in adamw_g
+    )
+    assert norm_in_no_decay, "2D norm weight must be in a no-decay AdamW group"
+
+
+# -- MT2: MuonConfig default must not crash on step() (C1 fix) ------------
+
+
+def test_muon_config_default_step():
+    """Default MuonConfig() must complete step() without crashing."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    config = MuonConfig()
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+
+    p = model.weight
+    q = model.bias
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    # This must not crash (C1 regression: ns_coefficients=None would raise in upstream step())
+    result.step()
+    assert not torch.isnan(p).any(), "Step should not produce NaN with default MuonConfig"
+
+
+# -- MT3: _sync_lr propagates ns_steps, ns_coefficients, adjust_lr_fn (H2 fix) ----
+
+
+def test_sync_lr_propagates_muon_keys():
+    """_sync_lr must propagate Muon-specific keys from chained to sub-optimizer."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    chained = _MuonAdamWChained(muon, adamw)
+
+    chained.param_groups[0]["ns_steps"] = 10
+    chained.param_groups[0]["ns_coefficients"] = (3.0, -4.0, 2.0)
+    chained.param_groups[0]["adjust_lr_fn"] = "match_rms_adamw"
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    assert muon.param_groups[0]["ns_steps"] == 10, "ns_steps not synced"
+    assert muon.param_groups[0]["ns_coefficients"] == (3.0, -4.0, 2.0), "ns_coefficients not synced"
+    assert muon.param_groups[0]["adjust_lr_fn"] == "match_rms_adamw", "adjust_lr_fn not synced"
+
+
+# -- MT4: load_state_dict with structure mismatch (H3 fix) -----------------
+
+
+def test_load_state_dict_missing_muon_key():
+    """load_state_dict must raise RuntimeError when muon key is missing."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    q = torch.nn.Parameter(torch.randn(4))
+    adamw_only = torch.optim.AdamW([q], lr=1e-3)
+    chained_no_muon = _MuonAdamWChained(None, adamw_only)
+
+    state_no_muon = chained_no_muon.state_dict()
+    assert "muon" not in state_no_muon, "state_dict with muon=None must not have muon key"
+
+    # Create new optimizer with Muon
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q2 = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw2 = torch.optim.AdamW([q2], lr=1e-3)
+    chained_with_muon = _MuonAdamWChained(muon, adamw2)
+
+    with pytest.raises(RuntimeError, match="no Muon state"):
+        chained_with_muon.load_state_dict(state_no_muon)
+
+
+def test_load_state_dict_missing_adamw_key():
+    """load_state_dict must raise RuntimeError when adamw key is missing."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    muon_only = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    chained_no_adamw = _MuonAdamWChained(muon_only, None)
+
+    state_no_adamw = chained_no_adamw.state_dict()
+    assert "adamw" not in state_no_adamw, "state_dict with adamw=None must not have adamw key"
+
+    # Create new optimizer with AdamW
+    p2 = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon2 = torch.optim.Muon([p2], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw2 = torch.optim.AdamW([q], lr=1e-3)
+    chained_with_adamw = _MuonAdamWChained(muon2, adamw2)
+
+    with pytest.raises(RuntimeError, match="no AdamW state"):
+        chained_with_adamw.load_state_dict(state_no_adamw)
+
+
+# -- MT5: betas must NOT be synced to Muon groups (M3 fix) -----------------
+
+
+def test_betas_not_propagated_to_muon():
+    """betas set on chained wrapper must NOT be synced to Muon groups via _sync_lr."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    # Record the betas that Muon was constructed with
+    original_muon_betas = muon.param_groups[0].get("betas", None)
+
+    chained = _MuonAdamWChained(muon, adamw)
+
+    # Set different betas on the chained wrapper's groups
+    chained.param_groups[0]["lr"] = 2e-4
+    chained.param_groups[1]["lr"] = 2e-4
+    chained.param_groups[1]["betas"] = (0.8, 0.99)
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
+
+    # Muon's betas must NOT be overwritten by sync (MUON_SYNC_KEYS excludes betas)
+    muon_betas_after = muon.param_groups[0].get("betas", None)
+    assert muon_betas_after == original_muon_betas, \
+        f"Muon betas changed from {original_muon_betas} to {muon_betas_after} via sync"
+    # AdamW group should have the updated betas
+    assert adamw.param_groups[0]["betas"] == (0.8, 0.99), "AdamW betas should be synced"
+
+
 def test_load_state_dict_updates_chained_groups():
     """After load_state_dict, chained.param_groups must match sub-optimizer groups."""
     _skip_if_no_muon()

@@ -67,15 +67,15 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     # Detect tied embeddings (e.g. lm_head.weight aliased to embed_tokens.weight).
     seen_tensors: dict[int, str] = {}
     for name, param in model.named_parameters():
-        tid = id(param)
-        if tid in seen_tensors:
-            first_name = seen_tensors[tid]
+        ptr = param.data_ptr()
+        if ptr in seen_tensors:
+            first_name = seen_tensors[ptr]
             if first_name in embedding_names:
                 embedding_names.add(name)
             if first_name in no_decay_names:
                 no_decay_names.add(name)
         else:
-            seen_tensors[tid] = name
+            seen_tensors[ptr] = name
 
     return embedding_names, no_decay_names
 
@@ -141,7 +141,7 @@ def make_muon_param_groups(
         param-group dicts suitable for ``torch.optim.Muon`` and
         ``torch.optim.AdamW`` respectively.
     """
-    adamw_lr = adamw_lr or lr
+    adamw_lr = adamw_lr if adamw_lr is not None else lr
     adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else weight_decay
 
     embedding_names, no_decay_names = _classify_param_names(model)
@@ -168,12 +168,12 @@ def make_muon_param_groups(
                     adamw_decay_params.append(param)
                 continue
 
-        if not is_embedding and _is_muon_eligible(name, param, embedding_names):
+        if is_no_decay:
+            adamw_no_decay_params.append(param)
+        elif not is_embedding and _is_muon_eligible(name, param, embedding_names):
             muon_params.append(param)
         elif is_embedding:
             adamw_embedding_params.append(param)
-        elif is_no_decay:
-            adamw_no_decay_params.append(param)
         else:
             adamw_decay_params.append(param)
 

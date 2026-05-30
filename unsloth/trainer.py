@@ -204,6 +204,8 @@ class MuonConfig:
         )
     """
 
+    _ADAMW_EPS_UNSET = object()
+
     momentum: float = 0.95
     nesterov: bool = True
     ns_steps: int = 5
@@ -217,11 +219,13 @@ class MuonConfig:
     # Note: if TrainingArguments.adam_beta1/adam_beta2 are set, they override
     # adamw_betas. This matches Q-GaLore's convention and allows users to
     # set betas once in TrainingArguments for all optimizers.
-    adamw_eps: float = 1e-8
+    adamw_eps: object = 1e-8
     adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
+    embedding_lr: Optional[float] = None
 
     def __post_init__(self):
+        import warnings as _warnings
         if self.ns_steps >= 100:
             raise ValueError(
                 f"MuonConfig.ns_steps must be < 100, got {self.ns_steps}. "
@@ -229,6 +233,23 @@ class MuonConfig:
             )
         if self.ns_steps < 1:
             raise ValueError(f"MuonConfig.ns_steps must be >= 1, got {self.ns_steps}.")
+        if self.ns_steps > 20:
+            _warnings.warn(
+                f"MuonConfig.ns_steps={self.ns_steps} is large. "
+                "Each Newton-Schulz step performs a matrix multiplication. "
+                "Consider reducing ns_steps (default: 5) for better performance."
+            )
+        if self.ns_coefficients is not None:
+            if not isinstance(self.ns_coefficients, tuple) or len(self.ns_coefficients) != 3:
+                raise ValueError(
+                    f"MuonConfig.ns_coefficients must be a tuple of 3 floats, "
+                    f"got {self.ns_coefficients}."
+                )
+            if not all(isinstance(v, (int, float)) for v in self.ns_coefficients):
+                raise ValueError(
+                    f"MuonConfig.ns_coefficients must contain only numbers, "
+                    f"got {self.ns_coefficients}."
+                )
         if self.momentum < 0.0:
             raise ValueError(
                 f"MuonConfig.momentum must be >= 0.0, got {self.momentum}."
@@ -355,6 +376,14 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             defaults.update(adamw.defaults)
         self._init_done = False
         super().__init__(all_groups, defaults)
+        # Strip AdamW-specific keys (betas, amsgrad, etc.) from Muon groups,
+        # preventing defaults-merge leakage from super().__init__.
+        if muon is not None:
+            n_muon = len(muon.param_groups)
+            adamw_only = set(self.ADAMW_SYNC_KEYS) - set(self.MUON_SYNC_KEYS)
+            for i in range(n_muon):
+                for k in adamw_only:
+                    self.param_groups[i].pop(k, None)
         self._init_done = True
 
     def add_param_group(self, param_group):
@@ -365,7 +394,13 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             "Add param groups to the sub-optimizers directly."
         )
 
-    KNOWN_HYPERPARAM_KEYS = frozenset({"lr", "weight_decay", "momentum", "betas", "eps", "nesterov"})
+    MUON_SYNC_KEYS = frozenset({
+        "lr", "weight_decay", "momentum", "nesterov", "eps",
+        "ns_steps", "ns_coefficients", "adjust_lr_fn",
+    })
+    ADAMW_SYNC_KEYS = frozenset({
+        "lr", "weight_decay", "betas", "eps",
+    })
 
     def _sync_lr(self):
         idx = 0
@@ -383,13 +418,13 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             )
         if self.muon is not None:
             for group in self.muon.param_groups:
-                for k in self.KNOWN_HYPERPARAM_KEYS:
+                for k in self.MUON_SYNC_KEYS:
                     if k in self.param_groups[idx] and k in group:
                         group[k] = self.param_groups[idx][k]
                 idx += 1
         if self.adamw is not None:
             for group in self.adamw.param_groups:
-                for k in self.KNOWN_HYPERPARAM_KEYS:
+                for k in self.ADAMW_SYNC_KEYS:
                     if k in self.param_groups[idx] and k in group:
                         group[k] = self.param_groups[idx][k]
                 idx += 1
@@ -410,7 +445,8 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     def step(self, closure=None):
         self._sync_lr()
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
         if self.muon is not None:
             self._muon_step_deterministic()
         if self.adamw is not None:
@@ -443,9 +479,21 @@ class _MuonAdamWChained(torch.optim.Optimizer):
                 "This checkpoint is not compatible with the current Muon optimizer format."
             )
         if self.muon is not None:
-            self.muon.load_state_dict(state_dict["muon"])
+            muon_sd = state_dict.get("muon")
+            if muon_sd is None:
+                raise RuntimeError(
+                    "Checkpoint has no Muon state, but current model has Muon-eligible parameters. "
+                    "This can happen when the model structure changed between save and load."
+                )
+            self.muon.load_state_dict(muon_sd)
         if self.adamw is not None:
-            self.adamw.load_state_dict(state_dict["adamw"])
+            adamw_sd = state_dict.get("adamw")
+            if adamw_sd is None:
+                raise RuntimeError(
+                    "Checkpoint has no AdamW state, but current model has AdamW-eligible parameters. "
+                    "This can happen when the model structure changed between save and load."
+                )
+            self.adamw.load_state_dict(adamw_sd)
         # C2 fix: re-sync chained groups to match freshly loaded sub-optimizer groups.
         refreshed = []
         if self.muon is not None:
@@ -540,7 +588,8 @@ class UnslothTrainer(SFTTrainer):
 
         lr = self.args.learning_rate
         weight_decay = self.args.weight_decay  # save original for AdamW fallback
-        embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+        embedding_lr = config.embedding_lr if config.embedding_lr is not None \
+            else getattr(self.args, "embedding_learning_rate", None)
 
         muon_weight_decay = config.muon_weight_decay if config.muon_weight_decay is not None else weight_decay
         adamw_weight_decay = config.adamw_weight_decay if config.adamw_weight_decay is not None else weight_decay
@@ -586,6 +635,9 @@ class UnslothTrainer(SFTTrainer):
             ns_coefficients=config.ns_coefficients,
             adjust_lr_fn=config.adjust_lr_fn,
         )
+        # Filter None values — upstream torch.optim.Muon stores them verbatim in defaults,
+        # then crashes in step() when iterating None (e.g. len(None) in _zeropower_via_newtonschulz).
+        muon_kwargs = {k: v for k, v in muon_kwargs.items() if v is not None}
 
         has_muon_params = sum(len(g["params"]) for g in muon_groups) > 0
         if has_muon_params:
@@ -603,7 +655,10 @@ class UnslothTrainer(SFTTrainer):
             getattr(self.args, "adam_beta1", config.adamw_betas[0]),
             getattr(self.args, "adam_beta2", config.adamw_betas[1]),
         )
-        adamw_eps = getattr(self.args, "adam_epsilon", config.adamw_eps)
+        if config.adamw_eps is not MuonConfig._ADAMW_EPS_UNSET:
+            adamw_eps = config.adamw_eps
+        else:
+            adamw_eps = getattr(self.args, "adam_epsilon", 1e-8)
         adamw_lr = config.adamw_lr or lr
         adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps)
         if adamw_groups:
