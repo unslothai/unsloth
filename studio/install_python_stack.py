@@ -12,8 +12,10 @@ PATH to point at the venv.
 
 from __future__ import annotations
 
+import glob
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -209,8 +211,6 @@ def _detect_rocm_version() -> tuple[int, int] | None:
     # for the rocm-core package version. Matches the chain in
     # install.sh::get_torch_index_url so `unsloth studio update` behaves
     # the same as a fresh `curl | sh` install.
-    import re as _re_pkg
-
     for cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
@@ -232,8 +232,8 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             continue
         raw = result.stdout.strip()
         # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
-        raw = _re_pkg.sub(r"^\d+:", "", raw)
-        m = _re_pkg.match(r"(\d+)[.-](\d+)", raw)
+        raw = re.sub(r"^\d+:", "", raw)
+        m = re.match(r"(\d+)[.-](\d+)", raw)
         if m:
             return int(m.group(1)), int(m.group(2))
 
@@ -274,8 +274,6 @@ def _detect_windows_gfx_arch() -> str | None:
     enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES selects
     which one to install for. The first GPU is used when no env var is set.
     """
-    import re
-
     # 1. Explicit override (matches PowerShell installer's env-var path).
     _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
     if _override and _override.strip():
@@ -366,9 +364,7 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     bitsandbytes — uses importlib.util.find_spec so it is safe to call before
     BNB is imported.
     """
-    import glob
     import importlib.util
-    import re
 
     spec = importlib.util.find_spec("bitsandbytes")
     if spec is None or not spec.submodule_search_locations:
@@ -387,8 +383,6 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
 
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
-    import re
-
     for cmd, check_fn in (
         # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
         # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
@@ -469,7 +463,6 @@ def _detect_amd_gfx_codes() -> list[str]:
     amd-smi but no rocminfo. Returns an empty list when no probe yields
     a gfx target.
     """
-    import re
 
     def _extract(text: str) -> list[str]:
         codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())
@@ -510,28 +503,24 @@ def _install_bnb_windows_rocm() -> bool:
     The continuous-release wheel is intentionally mismatched: the filename
     encodes version 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the
     wheel metadata reports 0.50.0.dev0.  uv rejects this filename/metadata
-    mismatch; set UV_SKIP_WHEEL_FILENAME_CHECK=1 to bypass that check, then
-    restore the previous value (or remove the var) when done.
+    mismatch -- and bypassing it with UV_SKIP_WHEEL_FILENAME_CHECK still leaves
+    uv mangling the bitsandbytes install. Per the AMD install guide
+    (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon) the wheel
+    must be installed with plain pip, not uv, so we force pip here
+    (force_pip=True). plain pip performs no wheel filename/metadata check.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
         return False
-    _old = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
-    os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
-    try:
-        _ok = pip_install_try(
-            "bitsandbytes (AMD Windows, pre-release main)",
-            "--force-reinstall",
-            "--no-cache-dir",
-            "--no-deps",
-            _bnb_win_url,
-            constrain = False,
-        )
-    finally:
-        if _old is None:
-            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-        else:
-            os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = _old
+    _ok = pip_install_try(
+        "bitsandbytes (AMD Windows, pre-release main)",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "--no-deps",
+        _bnb_win_url,
+        constrain = False,
+        force_pip = True,
+    )
     if not _ok:
         return False
     # After install: detect the actual ROCm DLL suffix shipped in the wheel and
