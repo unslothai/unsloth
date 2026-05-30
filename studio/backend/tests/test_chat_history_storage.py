@@ -13,7 +13,7 @@ import pytest
 from storage import studio_db
 
 
-def _reset_studio_db(tmp_path, monkeypatch, projects_home=None):
+def _reset_studio_db(tmp_path, monkeypatch, projects_home = None):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv(
         "UNSLOTH_STUDIO_PROJECTS_HOME",
@@ -32,20 +32,16 @@ def workspace_projects_home(tmp_path):
     """
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
-    check = (
-        os.path.normcase(resolved)
-        if platform.system() == "Windows"
-        else resolved
-    )
+    check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
     denied = studio_db._denied_path_prefixes()
     if any(check == p or check.startswith(p + os.sep) for p in denied):
         candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
-    candidate.mkdir(parents=True, exist_ok=True)
+    candidate.mkdir(parents = True, exist_ok = True)
     try:
         yield candidate
     finally:
         if ".unsloth-studio-tests" in candidate.parts:
-            shutil.rmtree(candidate, ignore_errors=True)
+            shutil.rmtree(candidate, ignore_errors = True)
 
 
 def _thread(thread_id: str = "thread-1") -> dict:
@@ -141,7 +137,7 @@ def test_chat_projects_delete_cascades_threads_and_messages(
 def test_chat_project_delete_files_removes_workspace(
     tmp_path, monkeypatch, workspace_projects_home
 ):
-    _reset_studio_db(tmp_path, monkeypatch, projects_home=workspace_projects_home)
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     project = studio_db.upsert_chat_project(_project())
     # Derive root from the created project so it tracks the projects home.
     root = Path(project["rootPath"])
