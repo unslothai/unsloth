@@ -46,6 +46,10 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
+# Re-export shim: name-load the project-path helpers so the import-hoist
+# safety net sees them used here, not just listed in __all__ as strings.
+_REEXPORTED = (documents_root, project_workspaces_root)
+
 __all__ = [
     "normalize_path",
     "is_local_path",
