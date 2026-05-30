@@ -46,7 +46,6 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
-  ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   DownloadSquare01Icon,
@@ -259,14 +258,11 @@ export function AppSidebar() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const handler = () => setScrolled(el.scrollTop > 0);
-    handler();
-    el.addEventListener("scroll", handler, { passive: true });
-    return () => el.removeEventListener("scroll", handler);
-  }, []);
+  // Top mask appears once the list is scrolled away from the top edge.
+  const syncScrollState = (el: HTMLDivElement) => {
+    const nextScrolled = el.scrollTop > 0;
+    setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
+  };
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
@@ -728,25 +724,6 @@ export function AppSidebar() {
               onClick={() => openNewChat(null)}
             />
             <NavItem
-              icon={ColumnInsertIcon}
-              label={t("shell.navigation.compare")}
-              active={
-                !!search.compare &&
-                !chatItems.some((i) => i.id === search.compare)
-              }
-              disabled={chatDisabled}
-              dataTour="chat-compare"
-              onClick={() => {
-                if (chatDisabled) return;
-                setActiveThreadId(null);
-                navigate({
-                  to: "/chat",
-                  search: { compare: createNavigationNonce() },
-                });
-                closeMobileIfOpen();
-              }}
-            />
-            <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
@@ -763,7 +740,7 @@ export function AppSidebar() {
 
       <SidebarContent
         ref={scrollRef}
-        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+        onScroll={(e) => syncScrollState(e.currentTarget)}
         className={cn(
           "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0",
           scrolled && "is-scrolled",
@@ -948,10 +925,15 @@ export function AppSidebar() {
           </SidebarGroup>
           </Collapsible>
         )}
-        <div className="sidebar-bottom-fade" aria-hidden="true" />
       </SidebarContent>
 
-      <SidebarFooter className="group-data-[collapsible=icon]:px-0">
+      <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
+        {/* Static fade above the profile box. Sidebar-colour to transparent,
+            so it shows over list rows and stays invisible over empty space. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent"
+        />
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>

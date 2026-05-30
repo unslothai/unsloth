@@ -11,6 +11,7 @@ import {
 } from "@/components/assistant-ui/model-selector";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { useSidebar } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
 import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
@@ -22,7 +23,11 @@ import { useNativePathLeasesSupported } from "@/features/native-intents/use-nati
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { CustomizeIcon, Folder02Icon } from "@hugeicons/core-free-icons";
+import {
+  CustomizeIcon,
+  Folder02Icon,
+  FolderAddIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -635,6 +640,7 @@ function ProjectLanding({
   const navigate = useNavigate();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
@@ -745,12 +751,51 @@ function ProjectLanding({
             <div className="mt-9 flex items-center gap-2">
               <button
                 type="button"
-                className="h-10 rounded-full border border-border bg-muted px-5 text-[14px] font-semibold text-foreground"
+                onClick={() => setProjectTab("chats")}
+                data-active={projectTab === "chats"}
+                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("sources")}
+                data-active={projectTab === "sources"}
+                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Sources
+              </button>
             </div>
 
+            {projectTab === "sources" ? (
+              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
+                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    strokeWidth={1.75}
+                    className="size-6"
+                  />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-[15px] font-semibold text-foreground">
+                    Give this project context
+                  </p>
+                  <p className="max-w-sm text-sm text-muted-foreground">
+                    Upload PDFs, documents, or other text. The model can
+                    reference them in every chat in this project.
+                  </p>
+                </div>
+                <Button type="button" className="mt-1" disabled>
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                  Add sources
+                </Button>
+                <p className="text-[11px] text-muted-foreground">Coming soon</p>
+              </div>
+            ) : (
             <div className="mt-8 flex flex-col gap-1">
               {items.map((item) => {
                 const preview = previews[item.id];
@@ -786,6 +831,7 @@ function ProjectLanding({
                 );
               })}
             </div>
+            )}
           </div>
         </div>
       )}
@@ -874,6 +920,18 @@ export function ChatPage(): ReactElement {
   const { items: currentProjectItems } = useChatSidebarItems({
     projectId: currentProjectId ?? "__no_project_selected__",
   });
+  const currentChatTitle = activeThreadId
+    ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
+    : undefined;
+  const openProjectLanding = useCallback(() => {
+    if (!currentProjectId) return;
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    useChatRuntimeStore.getState().setActiveProjectId(currentProjectId);
+    navigate({ to: "/chat", search: { project: currentProjectId } });
+  }, [currentProjectId, navigate]);
+  const openProjectsList = useCallback(() => {
+    navigate({ to: "/projects" });
+  }, [navigate]);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -1832,6 +1890,50 @@ export function ChatPage(): ReactElement {
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
+            )}
+            {currentProject && view.mode !== "compare" && (
+              <nav
+                aria-label="Project location"
+                className="flex min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+              >
+                {activeThreadId ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={openProjectLanding}
+                      className="flex shrink-0 items-center gap-1.5 rounded-[8px] -mx-1 px-1.5 py-0.5 transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <HugeiconsIcon
+                        icon={Folder02Icon}
+                        strokeWidth={1.75}
+                        className="size-icon shrink-0 text-foreground/70"
+                      />
+                      <span className="max-w-[150px] truncate font-medium text-foreground">
+                        {currentProject.name}
+                      </span>
+                    </button>
+                    <span className="shrink-0" aria-hidden>
+                      /
+                    </span>
+                    <span className="min-w-0 truncate">
+                      {currentChatTitle ?? "New chat"}
+                    </span>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={openProjectsList}
+                    className="flex shrink-0 items-center gap-1.5 rounded-[8px] -mx-1 px-1.5 py-0.5 transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <HugeiconsIcon
+                      icon={Folder02Icon}
+                      strokeWidth={1.75}
+                      className="size-icon shrink-0 text-foreground/70"
+                    />
+                    <span className="font-medium text-foreground">Projects</span>
+                  </button>
+                )}
+              </nav>
             )}
             {pendingNativeModelIntent && view.mode !== "compare" ? (
               <NativeModelChip
