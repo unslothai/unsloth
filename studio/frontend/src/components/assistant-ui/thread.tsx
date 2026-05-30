@@ -44,13 +44,15 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
-import { parseExternalModelId } from "@/features/chat/external-providers";
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
-import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import {
+  applyQwenThinkingParams,
+  deleteThreadMessage,
+  getExternalReasoningCapabilities,
+  parseExternalModelId,
+  sentAudioNames,
+  useChatRuntimeStore,
+  useExternalProvidersStore,
+} from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -137,7 +139,10 @@ export const Thread: FC<{
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
   return (
-    <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
+    <GeneratedImageOverlayProvider
+      key={threadId ?? "default"}
+      threadId={threadId}
+    >
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
@@ -162,7 +167,10 @@ export const Thread: FC<{
               <AuiIf
                 condition={({ thread }) => thread.isEmpty && !thread.isLoading}
               >
-                <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+                <ThreadWelcome
+                  hideComposer={hideComposer}
+                  threadId={threadId}
+                />
               </AuiIf>
             )}
 
@@ -363,20 +371,19 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+function getWelcomeEmoji(): string {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 12) return "large sloth drink.png";
+  if (hour >= 12 && hour < 17) return "sloth magnify final.png";
+  if (hour >= 17 && hour < 21) return "sloth shy large.png";
+  return "unsloth-gem.png";
+}
+
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
-  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
-
-  useEffect(() => {
-    const hour = new Date().getHours();
-    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
-    else if (hour >= 12 && hour < 17)
-      setCurrentEmoji("sloth magnify final.png");
-    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
-    else setCurrentEmoji("unsloth-gem.png");
-  }, []);
+  const [currentEmoji] = useState(getWelcomeEmoji);
 
   const currentEmojiSrc =
     currentEmoji === "unsloth-gem.png"
@@ -406,7 +413,7 @@ const ComposerAnimated: FC<{
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
   return (
-    <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
+    <div className="relative mx-auto min-w-0 w-full max-w-[660px]">
       <div className="relative z-10 w-full">
         <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
       </div>
@@ -451,6 +458,9 @@ const Composer: FC<{
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -463,20 +473,23 @@ const Composer: FC<{
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [isMultiline, setIsMultiline] = useState(false);
   useEffect(() => {
-    if (composerText.length === 0) {
-      setIsMultiline(false);
-      return;
-    }
-    const el = inputRef.current;
-    if (!el) {
-      return;
-    }
-    const cs = getComputedStyle(el);
-    const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
-    const padTop = Number.parseFloat(cs.paddingTop) || 0;
-    const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
-    const contentHeight = el.scrollHeight - padTop - padBottom;
-    setIsMultiline((prev) => prev || contentHeight > lineHeight * 1.5);
+    const frame = window.requestAnimationFrame(() => {
+      if (composerText.length === 0) {
+        setIsMultiline(false);
+        return;
+      }
+      const el = inputRef.current;
+      if (!el) {
+        return;
+      }
+      const cs = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+      const padTop = Number.parseFloat(cs.paddingTop) || 0;
+      const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+      const contentHeight = el.scrollHeight - padTop - padBottom;
+      setIsMultiline((prev) => prev || contentHeight > lineHeight * 1.5);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [composerText]);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
@@ -499,7 +512,8 @@ const Composer: FC<{
     hasPendingAudio ||
     toolsEnabled ||
     codeToolsEnabled ||
-    imageToolsEnabled;
+    imageToolsEnabled ||
+    webFetchToolsEnabled;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.
@@ -622,9 +636,10 @@ const Composer: FC<{
           <ComposerToolsMenu side={effectiveMenuSide} />
           {composerExpanded ? (
             <>
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <ImagesToggle />
+              {toolsEnabled ? <WebSearchToggle /> : null}
+              {codeToolsEnabled ? <CodeToolsToggle /> : null}
+              {imageToolsEnabled ? <ImagesToggle /> : null}
+              {webFetchToolsEnabled ? <WebFetchToggle /> : null}
             </>
           ) : null}
         </div>
@@ -645,12 +660,8 @@ const Composer: FC<{
           {...inputProps}
         />
         <ComposerRightControls
-          disabled={
-            disabled ||
-            !hasSendableContent ||
-            isComposing ||
-            hasPendingAttachments
-          }
+          disabled={disabled || isComposing || hasPendingAttachments}
+          showSend={hasSendableContent}
           shouldBlockSend={shouldBlockSend}
           menuSide={effectiveMenuSide}
         />
@@ -1221,6 +1232,7 @@ const WebSearchToggle: FC = () => {
     >
       <GlobeIcon className="size-3.5" />
       <span>Search</span>
+      <XIcon className="composer-pill-close" aria-hidden={true} />
     </button>
   );
 };
@@ -1242,7 +1254,8 @@ const CodeToolsToggle: FC = () => {
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected and reflected, matching the + menu.
-  const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const disabled =
+    modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -1261,6 +1274,7 @@ const CodeToolsToggle: FC = () => {
         strokeWidth={2}
       />
       <span>Code</span>
+      <XIcon className="composer-pill-close" aria-hidden={true} />
     </button>
   );
 };
@@ -1269,10 +1283,6 @@ const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback exists. Mirror of
-  // shared-composer's imageDisabled / showImagePill so the in-thread
-  // composer surfaces the same control as the empty-state composer.
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -1280,10 +1290,14 @@ const ImagesToggle: FC = () => {
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  if (!supportsBuiltinImageGeneration) {
+
+  if (!imageToolsEnabled) {
     return null;
   }
-  const disabled = !modelLoaded;
+
+  // Disable only when a loaded model lacks the capability; before a model is
+  // loaded, preserve the existing pre-selected-pill behavior used by Search/Code.
+  const disabled = modelLoaded && !supportsBuiltinImageGeneration;
   return (
     <button
       type="button"
@@ -1299,6 +1313,46 @@ const ImagesToggle: FC = () => {
     >
       <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
       <span>Images</span>
+      <XIcon className="composer-pill-close" aria-hidden={true} />
+    </button>
+  );
+};
+
+const WebFetchToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsBuiltinWebFetch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebFetch,
+  );
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
+  const setWebFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.setWebFetchToolsEnabled,
+  );
+
+  if (!webFetchToolsEnabled) {
+    return null;
+  }
+
+  // Disable only when a loaded model lacks the capability; before a model is
+  // loaded, preserve the existing pre-selected-pill behavior used by Search/Code.
+  const disabled = modelLoaded && !supportsBuiltinWebFetch;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+      className="composer-pill-btn"
+      data-active={webFetchToolsEnabled && !disabled ? "true" : "false"}
+      aria-label={
+        webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+      }
+    >
+      <DownloadIcon className="size-3.5" />
+      <span>Fetch</span>
+      <XIcon className="composer-pill-close" aria-hidden={true} />
     </button>
   );
 };
@@ -1315,15 +1369,16 @@ const ToolStatusDisplay: FC = () => {
   }, [visible]);
 
   useEffect(() => {
-    if (!toolStatus) {
+    const resetFrame = window.requestAnimationFrame(() => {
       setElapsed(0);
-      if (!isThreadRunning) {
+      if (!toolStatus && !isThreadRunning) {
         setVisible(false);
       }
-      return;
-    }
+    });
 
-    setElapsed(0);
+    if (!toolStatus) {
+      return () => window.cancelAnimationFrame(resetFrame);
+    }
 
     // Debounce badge visibility by 300ms when the badge is not
     // already on screen. Once visible from a prior tool, consecutive
@@ -1338,6 +1393,7 @@ const ToolStatusDisplay: FC = () => {
       setElapsed((prev) => prev + 1);
     }, 1000);
     return () => {
+      window.cancelAnimationFrame(resetFrame);
       clearInterval(interval);
       if (showTimer) {
         clearTimeout(showTimer);
@@ -1376,6 +1432,29 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  const supportsBuiltinWebFetch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebFetch,
+  );
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
+  const setWebFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.setWebFetchToolsEnabled,
+  );
+  const showImageMenuItem = supportsBuiltinImageGeneration || imageToolsEnabled;
+  const showFetchMenuItem = supportsBuiltinWebFetch || webFetchToolsEnabled;
+  const imageMenuDisabled = modelLoaded && !supportsBuiltinImageGeneration;
+  const fetchMenuDisabled = modelLoaded && !supportsBuiltinWebFetch;
 
   const startCompare = useCallback(() => {
     const store = useChatRuntimeStore.getState();
@@ -1397,7 +1476,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           aria-label="Tools and attachments"
           className="unsloth-composer-plus"
         >
-          <PlusIcon className="size-[22px] stroke-[1.75px]" />
+          <PlusIcon className="size-6 stroke-[1.75px]" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -1450,6 +1529,32 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           Code
           {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
+        {showImageMenuItem ? (
+          <DropdownMenuItem
+            disabled={imageMenuDisabled}
+            className={
+              imageToolsEnabled ? "text-primary font-medium" : undefined
+            }
+            onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+          >
+            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            Images
+            {imageToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          </DropdownMenuItem>
+        ) : null}
+        {showFetchMenuItem ? (
+          <DropdownMenuItem
+            disabled={fetchMenuDisabled}
+            className={
+              webFetchToolsEnabled ? "text-primary font-medium" : undefined
+            }
+            onSelect={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+          >
+            <DownloadIcon />
+            Fetch
+            {webFetchToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
           <PlugIcon />
           MCP
@@ -1498,9 +1603,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
+  showSend?: boolean;
   shouldBlockSend?: () => boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, shouldBlockSend, menuSide }) => {
+}> = ({ disabled, showSend, shouldBlockSend, menuSide }) => {
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-0.5">
       <ReasoningToggle side={menuSide} />
@@ -1510,9 +1616,9 @@ const ComposerRightControls: FC<{
             tooltip="Dictate"
             aria-label="Dictate"
             variant="ghost"
-            className="size-9 rounded-full text-foreground"
+            className="size-8 rounded-full text-foreground"
           >
-            <MicIcon className="size-[18px]" />
+            <MicIcon className="size-5" />
           </TooltipIconButton>
         </ComposerPrimitive.Dictate>
       </ComposerPrimitive.If>
@@ -1522,40 +1628,42 @@ const ComposerRightControls: FC<{
             tooltip="Stop dictation"
             aria-label="Stop dictation"
             variant="ghost"
-            className="size-9 rounded-full text-destructive"
+            className="size-8 rounded-full text-destructive"
           >
             <SquareIcon className="size-3 animate-pulse fill-current" />
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning}>
-        <ComposerPrimitive.Send asChild={true}>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            disabled={disabled}
-            onClick={(event) => {
-              if (shouldBlockSend?.()) {
-                event.preventDefault();
-              }
-            }}
-            className="aui-composer-send size-9 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[18px] stroke-[2.5px]" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
+      {showSend ? (
+        <AuiIf condition={({ thread }) => !thread.isRunning}>
+          <ComposerPrimitive.Send asChild={true}>
+            <TooltipIconButton
+              tooltip="Send message"
+              side="bottom"
+              type="submit"
+              variant="default"
+              size="icon"
+              disabled={disabled}
+              onClick={(event) => {
+                if (shouldBlockSend?.()) {
+                  event.preventDefault();
+                }
+              }}
+              className="aui-composer-send size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
+              aria-label="Send message"
+            >
+              <ArrowUpIcon className="aui-composer-send-icon size-6 stroke-[1.75px]" />
+            </TooltipIconButton>
+          </ComposerPrimitive.Send>
+        </AuiIf>
+      ) : null}
       <AuiIf condition={({ thread }) => thread.isRunning}>
         <ComposerPrimitive.Cancel asChild={true}>
           <Button
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-cancel size-9 rounded-full"
+            className="aui-composer-cancel size-8 rounded-full"
             aria-label="Stop generating"
           >
             <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />

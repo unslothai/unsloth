@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ChatPage } from "./chat-page";
+export { sentAudioNames } from "./api/chat-adapter";
+export { parseExternalModelId } from "./external-providers";
+export { getExternalReasoningCapabilities } from "./provider-capabilities";
+export { useExternalProvidersStore } from "./stores/external-providers-store";
+export { deleteThreadMessage } from "./utils/delete-thread-message";
+export { applyQwenThinkingParams } from "./utils/qwen-params";
 export {
   getInferenceStatus,
   listGgufVariants,
