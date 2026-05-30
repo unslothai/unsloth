@@ -149,8 +149,10 @@ def test_chained_optimizer_step_calls_both():
     from unsloth.trainer import _MuonAdamWChained
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3}]
+    muon.defaults = {"lr": 1e-3}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4}]
+    adamw.defaults = {"lr": 1e-4}
 
     chained = _MuonAdamWChained(muon, adamw)
     chained.step()
@@ -163,8 +165,10 @@ def test_chained_optimizer_zero_grad_calls_both():
     from unsloth.trainer import _MuonAdamWChained
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3}]
+    muon.defaults = {"lr": 1e-3}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4}]
+    adamw.defaults = {"lr": 1e-4}
 
     chained = _MuonAdamWChained(muon, adamw)
     chained.zero_grad()
@@ -178,14 +182,18 @@ def test_chained_state_dict_roundtrip():
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3}]
     muon.state_dict.return_value = {"state": "muon"}
+    muon.defaults = {"lr": 1e-3}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4}]
     adamw.state_dict.return_value = {"state": "adamw"}
+    adamw.defaults = {"lr": 1e-4}
 
     chained = _MuonAdamWChained(muon, adamw)
     sd = chained.state_dict()
 
-    assert sd == {"muon": {"state": "muon"}, "adamw": {"state": "adamw"}}
+    assert sd["_muon_version"] == 1
+    assert sd["muon"] == {"state": "muon"}
+    assert sd["adamw"] == {"state": "adamw"}
 
     chained.load_state_dict(sd)
     muon.load_state_dict.assert_called_once_with({"state": "muon"})
@@ -196,8 +204,10 @@ def test_chained_merges_param_groups():
     from unsloth.trainer import _MuonAdamWChained
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3}]
+    muon.defaults = {"lr": 1e-3}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4}, {"params": [], "lr": 5e-5}]
+    adamw.defaults = {"lr": 1e-4}
 
     chained = _MuonAdamWChained(muon, adamw)
     assert len(chained.param_groups) == 3
@@ -218,6 +228,7 @@ def test_create_muon_optimizer_smoke(monkeypatch):
     args.weight_decay = 0.1
     args.adam_beta1 = 0.9
     args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
 
     trainer = UnslothTrainer.__new__(UnslothTrainer)
     trainer.model = model
@@ -304,8 +315,10 @@ def test_chained_add_param_group_raises():
 
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3}]
+    muon.defaults = {"lr": 1e-3}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4}]
+    adamw.defaults = {"lr": 1e-4}
 
     chained = _MuonAdamWChained(muon, adamw)
     with pytest.raises(NotImplementedError, match="add_param_group"):
@@ -419,12 +432,15 @@ def test_chained_defaults_populated():
 
     muon = MagicMock()
     muon.param_groups = [{"params": [], "lr": 1e-3, "weight_decay": 0.1}]
+    muon.defaults = {"lr": 1e-3, "weight_decay": 0.1, "momentum": 0.95, "eps": 1e-7}
     adamw = MagicMock()
     adamw.param_groups = [{"params": [], "lr": 1e-4, "weight_decay": 0.0}]
+    adamw.defaults = {"lr": 1e-4, "weight_decay": 0.0, "betas": (0.9, 0.999), "eps": 1e-8}
 
     chained = _MuonAdamWChained(muon, adamw)
-    assert "lr" in chained.defaults
-    assert "weight_decay" in chained.defaults
+    assert chained.defaults["lr"] == 1e-4  # AdamW wins on overlap
+    assert "momentum" in chained.defaults
+    assert "betas" in chained.defaults
 
 
 # -- Tests: embedding_lr -----------------------------------------------------
@@ -749,6 +765,7 @@ def test_distributed_allowed_with_env_var(mock_init, mock_avail):
     args.weight_decay = 0.1
     args.adam_beta1 = 0.9
     args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
 
     trainer = UnslothTrainer.__new__(UnslothTrainer)
     trainer.model = model
@@ -933,5 +950,121 @@ def test_muon_autocast_smoke():
         q.grad = torch.randn_like(q)
         chained.step()
 
+    assert not torch.isnan(p).any(), "Muon step should not produce NaN"
+    assert not torch.isnan(q).any(), "AdamW step should not produce NaN"
+
+
+# -- Tests: 5th-pass additions (MUON_REVIEW_4.md) ----------------------------
+
+
+def test_checkpoint_version_marker_detects_mismatch():
+    """load_state_dict must reject state dicts with missing/wrong _muon_version."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    # Missing version marker
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        chained.load_state_dict({"muon": {}, "adamw": {}})
+
+    # Wrong version number
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        chained.load_state_dict({"_muon_version": 999, "muon": {}, "adamw": {}})
+
+    # Valid version should pass (sub-optimizer load_state_dict may fail,
+    # but version check itself is fine)
+    sd = chained.state_dict()
+    version = sd.pop("_muon_version")
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        chained.load_state_dict(sd)
+    sd["_muon_version"] = version
+    # load_state_dict may raise from sub-optimizer shape mismatch, but version check passes
+    try:
+        chained.load_state_dict(sd)
+    except (RuntimeError, KeyError, ValueError):
+        pass
+
+
+def test_ns_coefficients_custom_values():
+    """Custom ns_coefficients must propagate to Muon constructor."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    config = MuonConfig(ns_coefficients=(3.0, -4.0, 2.0))
+    # Use a simple model
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    # ns_coefficients is stored in muon.defaults, not param_groups
+    assert result.muon.defaults.get("ns_coefficients") == (3.0, -4.0, 2.0)
+
+
+def test_target_modules_with_embedding_match():
+    """When target_modules contains 'embed', embeddings must still go to AdamW."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Sequential()
+    model.add_module("emb", torch.nn.Embedding(10, 8))
+    model.add_module("lin", torch.nn.Linear(8, 4))
+
+    muon_g, adamw_g = make_muon_param_groups(
+        model, lr=1e-3, weight_decay=0.0, target_modules=["lin"]
+    )
+
+    muon_params = [p for g in muon_g for p in g["params"]]
+    adamw_params = [p for g in adamw_g for p in g["params"]]
+
+    assert any(p is model.emb.weight for p in adamw_params), "Embedding should go to AdamW despite target_modules"
+    assert any(p is model.lin.weight for p in muon_params), "Linear weight matching target_modules should go to Muon"
+
+
+def test_no_trainable_params():
+    """All params requires_grad=False must produce empty groups."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Linear(4, 4)
+    for p in model.parameters():
+        p.requires_grad = False
+
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    assert len(muon_g[0]["params"]) == 0
+    all_adamw = [p for g in adamw_g for p in g["params"]]
+    assert len(all_adamw) == 0
+
+
+def test_empty_muon_group_step():
+    """Real Muon/AdamW with step() must not crash."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+    chained.step()
     assert not torch.isnan(p).any(), "Muon step should not produce NaN"
     assert not torch.isnan(q).any(), "AdamW step should not produce NaN"

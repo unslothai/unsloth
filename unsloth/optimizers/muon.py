@@ -33,7 +33,8 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
 
     Norm parameter names (zero weight decay) and embedding parameter names
     (no weight decay, Muon-ineligible) are identified in one pass, including
-    PEFT-wrapped copies (``modules_to_save``).
+    PEFT-wrapped copies (``modules_to_save``) and tied embeddings
+    (e.g. ``lm_head.weight`` aliased to ``embed_tokens.weight``).
     """
     embedding_names: Set[str] = set()
     no_decay_names: Set[str] = set()
@@ -49,7 +50,8 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
 
     # Catch PEFT-wrapped copies (modules_to_save) in a second pass.
     for name, _ in model.named_parameters():
-        if not name.endswith("modules_to_save.default.weight"):
+        if not name.endswith("modules_to_save.default.weight") and \
+           not name.endswith("modules_to_save.default.bias"):
             continue
         parent_name = name.rsplit(".modules_to_save", 1)[0]
         try:
@@ -60,6 +62,19 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
             embedding_names.add(name)
         elif isinstance(parent, NORM_CLASSES):
             no_decay_names.add(name)
+
+    # Detect tied embeddings (e.g. lm_head.weight aliased to embed_tokens.weight).
+    seen_tensors: dict[int, str] = {}
+    for name, param in model.named_parameters():
+        tid = id(param)
+        if tid in seen_tensors:
+            first_name = seen_tensors[tid]
+            if first_name in embedding_names:
+                embedding_names.add(name)
+            if first_name in no_decay_names:
+                no_decay_names.add(name)
+        else:
+            seen_tensors[tid] = name
 
     return embedding_names, no_decay_names
 
@@ -81,8 +96,6 @@ def make_muon_param_groups(
     weight_decay: float,
     muon_lr_scale: float = 1.0,
     adamw_lr: Optional[float] = None,
-    adamw_betas: tuple = (0.9, 0.999),
-    adamw_eps: float = 1e-8,
     adamw_weight_decay: Optional[float] = None,
     target_modules: Optional[List[str]] = None,
     embedding_lr: Optional[float] = None,
@@ -109,10 +122,6 @@ def make_muon_param_groups(
         LR multiplier for Muon groups (applied on top of ``lr``).
     adamw_lr : float, optional
         Separate LR for AdamW fallback. Defaults to ``lr``.
-    adamw_betas : tuple, optional
-        Betas for AdamW fallback.
-    adamw_eps : float, optional
-        Epsilon for AdamW fallback.
     adamw_weight_decay : float, optional
         Weight decay for AdamW fallback (decay group). Defaults to ``weight_decay``.
     target_modules : list of str, optional

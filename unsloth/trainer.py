@@ -343,10 +343,8 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         self.muon = muon
         self.adamw = adamw
         merged = muon.param_groups + adamw.param_groups
-        defaults = {
-            "lr": muon.param_groups[0].get("lr", 0.0) if muon.param_groups else 0.0,
-            "weight_decay": muon.param_groups[0].get("weight_decay", 0.0) if muon.param_groups else 0.0,
-        }
+        defaults = dict(muon.defaults)
+        defaults.update(adamw.defaults)
         self._init_done = False
         super().__init__(merged, defaults)
         self._init_done = True
@@ -359,7 +357,7 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             "Add param groups to the sub-optimizers directly."
         )
 
-    KNOWN_HYPERPARAM_KEYS = frozenset({"lr", "weight_decay", "momentum", "betas", "eps"})
+    KNOWN_HYPERPARAM_KEYS = frozenset({"lr", "weight_decay", "momentum", "betas", "eps", "nesterov"})
 
     def _sync_lr(self):
         total_sub = len(self.muon.param_groups) + len(self.adamw.param_groups)
@@ -397,10 +395,23 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         self.muon.zero_grad(set_to_none=set_to_none)
         self.adamw.zero_grad(set_to_none=set_to_none)
 
+    MUON_STATE_DICT_VERSION = 1
+
     def state_dict(self):
-        return {"muon": self.muon.state_dict(), "adamw": self.adamw.state_dict()}
+        return {
+            "_muon_version": self.MUON_STATE_DICT_VERSION,
+            "muon": self.muon.state_dict(),
+            "adamw": self.adamw.state_dict(),
+        }
 
     def load_state_dict(self, state_dict):
+        if state_dict.get("_muon_version") != self.MUON_STATE_DICT_VERSION:
+            raise RuntimeError(
+                "_MuonAdamWChained state dict version mismatch: "
+                f"expected version {self.MUON_STATE_DICT_VERSION}, "
+                f"got {state_dict.get('_muon_version', 'missing')}. "
+                "This checkpoint is not compatible with the current Muon optimizer format."
+            )
         self.muon.load_state_dict(state_dict["muon"])
         self.adamw.load_state_dict(state_dict["adamw"])
 
@@ -470,12 +481,22 @@ class UnslothTrainer(SFTTrainer):
             if _os.environ.get("UNSLOTH_MUON_DISTRIBUTED", "0") != "1":
                 raise RuntimeError(
                     "Unsloth: Muon optimizer with distributed training is blocked "
-                    "due to known issues:\n"
+                    "due to known correctness issues:\n"
                     "  1) FSDP state_dict format incompatible with Muon's nested format;\n"
-                    "  2) CuBLAS non-determinism in the Newton-Schulz iteration;\n"
+                    "  2) CuBLAS non-determinism in the Newton-Schulz iteration causes "
+                    "parameter divergence across ranks — this is a CORRECTNESS issue, "
+                    "not just a reproducibility issue;\n"
                     "  3) DeepSpeed ZeRO may not handle Muon's orthogonalization correctly.\n"
-                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1."
+                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1, which "
+                    "also forces torch.use_deterministic_algorithms(True)."
                 )
+            else:
+                logger.warning(
+                    "Unsloth: UNSLOTH_MUON_DISTRIBUTED=1 detected — enforcing "
+                    "deterministic algorithms for training correctness. "
+                    "This may reduce performance."
+                )
+                torch.use_deterministic_algorithms(True)
 
         from unsloth.optimizers.muon import make_muon_param_groups
 
@@ -492,8 +513,6 @@ class UnslothTrainer(SFTTrainer):
             weight_decay=muon_weight_decay,
             muon_lr_scale=config.muon_lr_scale,
             adamw_lr=config.adamw_lr,
-            adamw_betas=config.adamw_betas,
-            adamw_eps=config.adamw_eps,
             adamw_weight_decay=adamw_weight_decay,
             target_modules=config.target_modules,
             embedding_lr=embedding_lr,
@@ -515,9 +534,9 @@ class UnslothTrainer(SFTTrainer):
             f"{n_muon:,} elements via Muon ({100*n_muon/total:.1f}%), "
             f"{n_adamw:,} elements via AdamW fallback ({100*n_adamw/total:.1f}%)"
         )
-        logger.warning(
-            "Unsloth Muon: checkpoint format is incompatible with AdamW. "
-            "Do not use resume_from_checkpoint with an AdamW checkpoint."
+        logger.info(
+            "Unsloth Muon: checkpoint format is incompatible with vanilla AdamW. "
+            "See the _muon_version marker in state_dict for format detection."
         )
 
         muon_kwargs = dict(
@@ -529,8 +548,7 @@ class UnslothTrainer(SFTTrainer):
         )
         if config.ns_coefficients is not None:
             muon_kwargs["ns_coefficients"] = config.ns_coefficients
-        if config.adjust_lr_fn is not None:
-            muon_kwargs["adjust_lr_fn"] = config.adjust_lr_fn
+        muon_kwargs["adjust_lr_fn"] = config.adjust_lr_fn
 
         try:
             muon_optimizer = torch.optim.Muon(muon_groups, **muon_kwargs)
@@ -545,8 +563,9 @@ class UnslothTrainer(SFTTrainer):
             getattr(self.args, "adam_beta1", config.adamw_betas[0]),
             getattr(self.args, "adam_beta2", config.adamw_betas[1]),
         )
+        adamw_eps = getattr(self.args, "adam_epsilon", config.adamw_eps)
         adamw_lr = config.adamw_lr or lr
-        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=config.adamw_eps)
+        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps)
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
         else:
