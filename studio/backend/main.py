@@ -866,8 +866,6 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     @font-face downloads to fail silently.  Stripping the attribute
     makes them regular same-origin fetches that work on any protocol.
     """
-    import re as _re
-
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
     return html.encode("utf-8")
