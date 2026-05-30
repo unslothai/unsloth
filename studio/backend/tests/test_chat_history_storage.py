@@ -1,17 +1,51 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
+import platform
+import shutil
 import threading
+import uuid
+from pathlib import Path
 
 import pytest
 
 from storage import studio_db
 
 
-def _reset_studio_db(tmp_path, monkeypatch):
+def _reset_studio_db(tmp_path, monkeypatch, projects_home=None):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setenv(
+        "UNSLOTH_STUDIO_PROJECTS_HOME",
+        str(projects_home if projects_home is not None else tmp_path / "Projects"),
+    )
     monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+
+@pytest.fixture
+def workspace_projects_home(tmp_path):
+    """Projects root outside the platform delete denylist.
+
+    tmp_path resolves under /private/tmp on macOS, which the workspace
+    delete guard refuses by design. Linux/Windows tmp is not denied and is
+    used as-is; only the denied case falls back to a home subdir.
+    """
+    candidate = tmp_path / "Projects"
+    resolved = str(candidate.resolve())
+    check = (
+        os.path.normcase(resolved)
+        if platform.system() == "Windows"
+        else resolved
+    )
+    denied = studio_db._denied_path_prefixes()
+    if any(check == p or check.startswith(p + os.sep) for p in denied):
+        candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
+    candidate.mkdir(parents=True, exist_ok=True)
+    try:
+        yield candidate
+    finally:
+        if ".unsloth-studio-tests" in candidate.parts:
+            shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _thread(thread_id: str = "thread-1") -> dict:
@@ -104,10 +138,13 @@ def test_chat_projects_delete_cascades_threads_and_messages(
     assert (tmp_path / "Projects" / "Research-project").exists()
 
 
-def test_chat_project_delete_files_removes_workspace(tmp_path, monkeypatch):
-    _reset_studio_db(tmp_path, monkeypatch)
+def test_chat_project_delete_files_removes_workspace(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home=workspace_projects_home)
     project = studio_db.upsert_chat_project(_project())
-    root = tmp_path / "Projects" / "Research-project"
+    # Derive root from the created project so it tracks the projects home.
+    root = Path(project["rootPath"])
     marker = root / "sandbox" / "marker.txt"
     marker.write_text("created by code execution", encoding = "utf-8")
 
