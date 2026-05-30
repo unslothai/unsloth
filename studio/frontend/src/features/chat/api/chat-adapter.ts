@@ -1809,12 +1809,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               const chunkXml = formatRagChunksXml(result.hits);
               const injected =
                 "Use the document excerpts below to answer the question, and " +
-                "cite each excerpt you use as `[N]` using its `id`. " +
-                "If they are not relevant to the question, IGNORE them " +
-                "silently and answer normally — do NOT mention the " +
-                "excerpts, do NOT say they are irrelevant, do NOT refer to " +
-                "any search or retrieval. Just answer the question " +
-                "directly as if no excerpts were provided.\n\n" +
+                "cite each excerpt you use as `[N]` using its `id`. If they " +
+                "are not relevant, answer normally.\n\n" +
                 chunkXml;
               // Send-only mutation: the displayed user bubble comes from the
               // runtime message store, not outboundMessages, so the injected
