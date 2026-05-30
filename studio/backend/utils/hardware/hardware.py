@@ -560,7 +560,6 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         return None
 
 
-
 def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes)."""
     import subprocess as _sp
@@ -575,9 +574,9 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         )
         r = _sp.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None
@@ -585,7 +584,6 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         return round(val, 1) if val >= 0 else None
     except Exception:
         return None
-
 
 
 def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
