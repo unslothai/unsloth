@@ -56,6 +56,7 @@ import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { openLink } from "@/lib/open-link";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -74,6 +75,7 @@ import {
   AttachmentIcon,
   CodeIcon,
   Copy01Icon,
+  DatabaseIcon,
   Delete02Icon,
   Edit03Icon,
   File02Icon,
@@ -456,6 +458,26 @@ const Composer: FC<{
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
+  // Expand only once the input wraps to a second line, not on first keystroke.
+  // Latch until cleared so it can't flip-flop at the wrap boundary.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [isMultiline, setIsMultiline] = useState(false);
+  useEffect(() => {
+    if (composerText.length === 0) {
+      setIsMultiline(false);
+      return;
+    }
+    const el = inputRef.current;
+    if (!el) {
+      return;
+    }
+    const cs = getComputedStyle(el);
+    const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+    const padTop = Number.parseFloat(cs.paddingTop) || 0;
+    const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+    const contentHeight = el.scrollHeight - padTop - padBottom;
+    setIsMultiline((prev) => prev || contentHeight > lineHeight * 1.5);
+  }, [composerText]);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
@@ -470,17 +492,52 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  // Expanded (two-row) layout shows once there's any input or a tool is on.
-  // Uses the raw length, not the trimmed one, so newlines from shift+enter grow
-  // the box instead of leaving a collapsed row fighting the tall
-  // textarea. Send stays gated on hasSendableContent so blanks can't be sent.
+  // Two-row layout shows once the input wraps to a second line or a tool is on.
   const composerExpanded =
-    composerText.length > 0 ||
+    isMultiline ||
     hasAttachments ||
     hasPendingAudio ||
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled;
+  // react-textarea-autosize re-measures only on value change or window resize,
+  // not on the width swap from expanding, so it keeps the taller height and
+  // leaves a stray blank row. Nudge a resize whenever the input width changes.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let lastWidth = -1;
+    const pending: Array<ReturnType<typeof setTimeout>> = [];
+    const observer = new ResizeObserver((entries) => {
+      const width = Math.round(entries[0]?.contentRect.width ?? 0);
+      // Width changes only; reacting to autosize's height change would loop.
+      if (width === lastWidth) {
+        return;
+      }
+      lastWidth = width;
+      // Re-measure after layout settles. An immediate dispatch races autosize's
+      // own measurement (stale pre-expand width); 0ms + 64ms wins it, no flash.
+      while (pending.length) {
+        clearTimeout(pending.pop());
+      }
+      for (const delay of [0, 64]) {
+        pending.push(
+          setTimeout(() => {
+            window.dispatchEvent(new Event("resize"));
+          }, delay),
+        );
+      }
+    });
+    observer.observe(el);
+    return () => {
+      while (pending.length) {
+        clearTimeout(pending.pop());
+      }
+      observer.disconnect();
+    };
+  }, []);
   // Docked composer opens upward; the centered welcome composer opens downward
   // by default and only flips up via collision detection when it would not fit.
   const effectiveMenuSide = menuSide ?? "bottom";
@@ -575,6 +632,7 @@ const Composer: FC<{
           placeholder={
             overlay ? "Type your edits for your image" : "Ask anything"
           }
+          ref={inputRef}
           className="aui-composer-input unsloth-composer-input"
           minRows={1}
           maxRows={12}
@@ -1302,6 +1360,9 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
+// Projects is still in development; its menu entries link to the tracking PR.
+const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
+
 // Plus menu: attachment and workflow actions. Opens downward in the centered
 // welcome composer; the docked composer passes side="top" to open upward.
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
@@ -1313,6 +1374,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
 
   const startCompare = useCallback(() => {
     const store = useChatRuntimeStore.getState();
@@ -1372,30 +1435,42 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         <ComposerAudioMenuItem />
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className={toolsEnabled ? "text-primary" : undefined}
+          className={toolsEnabled ? "text-primary font-medium" : undefined}
           onSelect={() => setToolsEnabled(!toolsEnabled)}
         >
           <GlobeIcon />
           Web search
           {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
+        <DropdownMenuItem
+          className={codeToolsEnabled ? "text-primary font-medium" : undefined}
+          onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+        >
+          <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
+          Code
+          {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
           <PlugIcon />
           MCP
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-            Canvas
+            <MoreHorizontalIcon />
+            More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
             <DropdownMenuItem>
-              <PlusIcon />
-              New canvas
+              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+              Canvas
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
+            </DropdownMenuItem>
+            <DropdownMenuItem>
+              <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
+              RAG
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
@@ -1406,9 +1481,13 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             Projects
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
               <FolderPlusIcon />
               New project
+            </DropdownMenuItem>
+            <DropdownMenuLabel>Recents</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
+              No recent projects
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>

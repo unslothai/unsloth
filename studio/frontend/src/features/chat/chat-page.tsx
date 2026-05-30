@@ -207,6 +207,7 @@ const CompareContent = memo(function CompareContent({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
   models: ModelOption[];
@@ -214,11 +215,12 @@ const CompareContent = memo(function CompareContent({
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
   return isLoraCompare ? (
-    <LoraCompareContent pairId={pairId} />
+    <LoraCompareContent pairId={pairId} onExitCompare={onExitCompare} />
   ) : (
     <GeneralCompareContent
       pairId={pairId}
@@ -227,6 +229,7 @@ const CompareContent = memo(function CompareContent({
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
+      onExitCompare={onExitCompare}
     />
   );
 });
@@ -324,7 +327,8 @@ function CompareShell({
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
-}: { pairId: string }): ReactElement {
+  onExitCompare,
+}: { pairId: string; onExitCompare?: () => void }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -348,7 +352,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   return (
     <CompareShell
       handlesRef={handlesRef}
-      composer={<SharedComposer handlesRef={handlesRef} />}
+      composer={
+        <SharedComposer
+          handlesRef={handlesRef}
+          onExitCompare={onExitCompare}
+        />
+      }
     >
       <>
         <ComparePane
@@ -441,6 +450,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  onExitCompare,
 }: {
   pairId: string;
   models: ModelOption[];
@@ -448,6 +458,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  onExitCompare?: () => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -508,6 +519,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           handlesRef={handlesRef}
           model1={model1}
           model2={model2}
+          onExitCompare={onExitCompare}
         />
       }
     >
@@ -1193,7 +1205,11 @@ export function ChatPage(): ReactElement {
 
   const exitCompare = useCallback(() => {
     const saved = viewBeforeCompareRef.current;
-    if (!saved) return;
+    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    if (!saved) {
+      navigate({ to: "/chat" });
+      return;
+    }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
     // Restore usage from the last assistant message, but only if it
@@ -1606,6 +1622,7 @@ export function ChatPage(): ReactElement {
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
+            onExitCompare={exitCompare}
           />
         )}
       </div>

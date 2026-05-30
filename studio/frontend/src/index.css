@@ -820,17 +820,33 @@
 		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card px-3 py-2.5 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		/* Composer elevation: one soft shadow (on-surface @ 16%). */
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+		/* Light-mode elevation matches Gemini's search box (Lumi level-1): a soft,
+		   diffuse ambient shadow rather than a tight drop shadow. */
+		box-shadow:
+			0 1px 2px 0 rgba(0, 0, 0, 0.04),
+			0 4px 12px 0 rgba(0, 0, 0, 0.08),
+			0 8px 24px 0 rgba(0, 0, 0, 0.06);
 	}
 
 	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+		box-shadow:
+			0 1px 2px 0 rgba(0, 0, 0, 0.04),
+			0 4px 12px 0 rgba(0, 0, 0, 0.08),
+			0 8px 24px 0 rgba(0, 0, 0, 0.06);
 	}
 
 	.dark .unsloth-composer-surface {
 		background-color: #2a2a2c;
 		box-shadow: none;
+	}
+
+	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
+	   the reduced-motion blanket rule) makes getComputedStyle().width lag a
+	   frame, so autosize measures the stale width and leaves a stray blank row. */
+	.unsloth-composer-line,
+	.unsloth-composer-line .unsloth-composer-input,
+	.unsloth-composer-left {
+		transition-property: none !important;
 	}
 
 	/* Composer row: one centered line when empty; two rows (input over controls)
@@ -882,7 +898,7 @@
 	}
 
 	.unsloth-composer-plus {
-		@apply flex size-9 shrink-0 items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	.unsloth-composer-plus[data-state="open"] {

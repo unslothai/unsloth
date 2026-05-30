@@ -9,10 +9,16 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { openLink } from "@/lib/open-link";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -24,14 +30,28 @@ import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
   CheckIcon,
+  Columns2Icon,
   DownloadIcon,
+  FolderPlusIcon,
   GlobeIcon,
   HeadphonesIcon,
+  LibraryIcon,
+  MoreHorizontalIcon,
+  PlugIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { Image03Icon } from "@hugeicons/core-free-icons";
+import {
+  AttachmentIcon,
+  CodeIcon,
+  DatabaseIcon,
+  File02Icon,
+  Folder01Icon,
+  Image03Icon,
+  PencilRulerIcon,
+} from "@hugeicons/core-free-icons";
+import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
@@ -61,6 +81,9 @@ import {
   useRef,
   useState,
 } from "react";
+
+// Projects is still in development; its menu entries link to the tracking PR.
+const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
 
 export type CompareMessagePart =
   | { type: "text"; text: string }
@@ -336,11 +359,26 @@ export function SharedComposer({
   handlesRef,
   model1,
   model2,
+  onExitCompare,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
+  onExitCompare?: () => void;
 }): ReactElement {
+  const navigate = useNavigate();
+  const setSettingsPanelOpen = useChatRuntimeStore(
+    (s) => s.setSettingsPanelOpen,
+  );
+  // Exit compare. Uses the parent's restore handler, or a fresh chat when
+  // compare was opened by direct URL.
+  const handleExitCompare = useCallback(() => {
+    if (onExitCompare) {
+      onExitCompare();
+      return;
+    }
+    navigate({ to: "/chat" });
+  }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -957,48 +995,215 @@ export function SharedComposer({
               e.target.value = "";
             }}
           />
-          <TooltipIconButton
-            tooltip="Add Attachment"
-            side="bottom"
-            variant="ghost"
-            size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
-            onClick={() => {
-              // The picker accepts both image and audio. Don't gate the
-              // button on image-availability — addFiles still filters
-              // image files per-file when the loaded model can't take
-              // them, while audio attach always works.
-              fileInputRef.current?.click();
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept={AUDIO_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = "";
             }}
-            aria-label="Add Attachment"
-          >
-            <PlusIcon className="size-5 stroke-[1.5px]" />
-          </TooltipIconButton>
-          {activeModel?.hasAudioInput && (
-            <>
-              <input
-                ref={audioInputRef}
-                type="file"
-                accept={AUDIO_ACCEPT}
-                className="hidden"
-                onChange={(e) => {
-                  addFiles(e.target.files);
-                  e.target.value = "";
-                }}
-              />
-              <TooltipIconButton
-                tooltip="Upload audio"
-                side="bottom"
-                variant="ghost"
-                size="icon"
-                className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
-                onClick={() => audioInputRef.current?.click()}
-                aria-label="Upload audio"
+          />
+          {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
+              wired to the compare composer's own file/audio inputs and tools. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Tools and attachments"
+                className="unsloth-composer-plus"
               >
-                <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
-              </TooltipIconButton>
-            </>
+                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="top"
+              align="start"
+              sideOffset={2}
+              avoidCollisions={true}
+              className="unsloth-plus-menu w-[212px]"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+                <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                Add photos &amp; files
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={File02Icon} strokeWidth={2} />
+                  Recent files
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[212px]">
+                  <DropdownMenuItem
+                    onSelect={() => fileInputRef.current?.click()}
+                  >
+                    <LibraryIcon />
+                    Add from library
+                  </DropdownMenuItem>
+                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
+                  <DropdownMenuItem disabled={true}>
+                    No recent files
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              {activeModel?.hasAudioInput && (
+                <DropdownMenuItem
+                  onSelect={() => audioInputRef.current?.click()}
+                >
+                  <HeadphonesIcon />
+                  Upload audio
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className={toolsEnabled ? "text-primary font-medium" : undefined}
+                onSelect={() => setToolsEnabled(!toolsEnabled)}
+              >
+                <GlobeIcon />
+                Web search
+                {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className={
+                  codeToolsEnabled ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              >
+                <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
+                Code
+                {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
+                <PlugIcon />
+                MCP
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  <DropdownMenuItem>
+                    <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                    Canvas
+                  </DropdownMenuItem>
+                  {/* Always active: this menu only renders in compare mode.
+                      Ticked like Web search/Code; click toggles it off. */}
+                  <DropdownMenuItem
+                    className="text-primary font-medium"
+                    onSelect={handleExitCompare}
+                  >
+                    <Columns2Icon />
+                    Compare chat
+                    <CheckIcon className="ml-auto" />
+                  </DropdownMenuItem>
+                  <DropdownMenuItem>
+                    <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
+                    RAG
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                  Projects
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
+                    <FolderPlusIcon />
+                    New project
+                  </DropdownMenuItem>
+                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
+                    No recent projects
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button
+            type="button"
+            disabled={searchDisabled}
+            onClick={() => {
+              const next = !toolsEnabled;
+              setToolsEnabled(next);
+              // Kimi's $web_search builtin requires thinking=disabled
+              // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+              // the Think pill off when Search is on, mirroring the backend.
+              if (isKimiExternal) {
+                setReasoningEnabled(!next, { persist: false });
+                applyQwenThinkingParams(!next);
+              }
+            }}
+            className="composer-pill-btn"
+            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
+            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+          >
+            <GlobeIcon className="size-3.5" />
+            <span>Search</span>
+          </button>
+          <button
+            type="button"
+            disabled={codeDisabled}
+            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+            className="composer-pill-btn"
+            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+          >
+            <CodeToggleIcon className="size-3.5" />
+            <span>Code</span>
+          </button>
+          {/* Active in compare mode; click to exit back to single chat. */}
+          <button
+            type="button"
+            onClick={handleExitCompare}
+            className="composer-pill-btn"
+            data-active="true"
+            aria-label="Exit compare chat"
+          >
+            <Columns2Icon className="size-3.5" />
+            <span>Compare</span>
+          </button>
+          {showImagePill && (
+            <button
+              type="button"
+              disabled={imageDisabled}
+              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
+              aria-label={
+                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+              }
+            >
+              <HugeiconsIcon
+                icon={Image03Icon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
+              <span>Images</span>
+            </button>
           )}
+          {showWebFetchPill && (
+            <button
+              type="button"
+              disabled={webFetchDisabled}
+              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+              }
+              aria-label={
+                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+              }
+            >
+              <DownloadIcon className="size-3.5" />
+              <span>Fetch</span>
+            </button>
+          )}
+        </div>
+        <div className="ml-auto flex items-center gap-1">
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
@@ -1018,7 +1223,7 @@ export function SharedComposer({
                     {thinkingActiveLook ? (
                       <span>
                         {isEffort
-                          ? `Thinking \u00b7 ${formatReasoningEffortLabel(
+                          ? `Thinking · ${formatReasoningEffortLabel(
                               reasoningEffort,
                               externalSelection?.modelId,
                             )}`
@@ -1175,78 +1380,6 @@ export function SharedComposer({
               </button>
             )
           ) : null}
-          <button
-            type="button"
-            disabled={searchDisabled}
-            onClick={() => {
-              const next = !toolsEnabled;
-              setToolsEnabled(next);
-              // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search).
-              // Toggle the Think pill off when Search comes on, and
-              // back on when Search goes off — mutual exclusion that
-              // mirrors what the backend enforces.
-              if (isKimiExternal) {
-                setReasoningEnabled(!next, { persist: false });
-                applyQwenThinkingParams(!next);
-              }
-            }}
-            className="composer-pill-btn"
-            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
-          >
-            <GlobeIcon className="size-3.5" />
-            <span>Search</span>
-          </button>
-          <button
-            type="button"
-            disabled={codeDisabled}
-            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className="composer-pill-btn"
-            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
-          >
-            <CodeToggleIcon className="size-3.5" />
-            <span>Code</span>
-          </button>
-          {showImagePill && (
-            <button
-              type="button"
-              disabled={imageDisabled}
-              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
-              className="composer-pill-btn"
-              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
-              aria-label={
-                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
-              }
-            >
-              <HugeiconsIcon
-                icon={Image03Icon}
-                className="size-3.5"
-                strokeWidth={2}
-              />
-              <span>Images</span>
-            </button>
-          )}
-          {showWebFetchPill && (
-            <button
-              type="button"
-              disabled={webFetchDisabled}
-              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
-              className="composer-pill-btn"
-              data-active={
-                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
-              }
-              aria-label={
-                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
-              }
-            >
-              <DownloadIcon className="size-3.5" />
-              <span>Fetch</span>
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
           {dictationSupported && (
             <>
               {!isDictating ? (
