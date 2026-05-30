@@ -58,7 +58,7 @@ import {
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -327,11 +327,19 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 
 function CollapsibleSection({
   label,
+  labelHref,
   children,
   defaultOpen = false,
   first = false,
 }: {
   label: string;
+  /**
+   * When set, the label text becomes an external link (e.g. to the feature's
+   * GitHub PR) instead of part of the collapse toggle. The chevron still
+   * toggles open/close, so we render the two as siblings rather than nesting
+   * an <a> inside the <button> (invalid HTML).
+   */
+  labelHref?: string;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -341,6 +349,17 @@ function CollapsibleSection({
     return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
 
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    saveCollapsibleOpen(label, next);
+  };
+
+  const headerClasses = cn(
+    "flex w-full items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
+    first ? "pt-4 pb-5" : "py-5",
+  );
+
   return (
     <div
       className={cn(
@@ -348,25 +367,42 @@ function CollapsibleSection({
           "border-t border-black/[0.13] dark:border-white/[0.09]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          saveCollapsibleOpen(label, next);
-        }}
-        className={cn(
-          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors hover:text-nav-fg focus-visible:outline-none focus-visible:ring-0",
-          first ? "pt-4 pb-5" : "py-5",
-        )}
-      >
-        <span className="leading-none">{label}</span>
-        <span className="flex shrink-0 items-center leading-none">
-          <ChevronDown
-            className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
-          />
-        </span>
-      </button>
+      {labelHref ? (
+        <div className={headerClasses}>
+          <a
+            href={labelHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex cursor-pointer items-center gap-1 leading-none transition-colors hover:text-nav-fg"
+          >
+            <span>{label}</span>
+            <ExternalLink className="size-3" />
+          </a>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+            className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+          >
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={toggle}
+          className={cn("cursor-pointer hover:text-nav-fg", headerClasses)}
+        >
+          <span className="leading-none">{label}</span>
+          <span className="flex shrink-0 items-center leading-none">
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </span>
+        </button>
+      )}
       {open && <div className="pb-7">{children}</div>}
     </div>
   );
@@ -1345,7 +1381,10 @@ export function ChatSettingsPanel({
         ) : null}
 
         {!isExternalModel ? (
-          <CollapsibleSection label="MCP Servers">
+          <CollapsibleSection
+            label="MCP Servers"
+            labelHref="https://github.com/unslothai/unsloth/pull/5852"
+          >
             <McpServersSection />
           </CollapsibleSection>
         ) : null}

@@ -987,8 +987,8 @@ const PreserveThinkingToggle: FC = () => {
         disabled
           ? "cursor-not-allowed opacity-40"
           : preserveThinking
-            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+            ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
       )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"

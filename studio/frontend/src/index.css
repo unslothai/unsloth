@@ -7,12 +7,68 @@
 @import "streamdown/styles.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/dm-sans/index.css";
 @import "tw-shimmer";
 @plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
+
+@layer components {
+	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
+	   last rows dissolve into the profile footer (no divider line). Once
+	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
+	   pinned New Chat / Search header. */
+	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
+	   New Chat / Search header (mask — fades content to transparent). */
+	.sidebar-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge: Gemini-style sticky gradient OVERLAY painted in the sidebar
+	   background colour, so the last rows wash into the profile footer. Uses a
+	   zero-height sticky anchor with an absolutely-positioned gradient so it
+	   never takes layout space. */
+	.sidebar-bottom-fade {
+		position: sticky;
+		bottom: 0;
+		height: 0;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.sidebar-bottom-fade::after {
+		content: "";
+		position: absolute;
+		inset-inline: 0;
+		bottom: 0;
+		height: 40px;
+		background: linear-gradient(to top, var(--sidebar), transparent);
+	}
+}
+
+@layer base {
+	h1,
+	h2,
+	h3,
+	[data-slot="dialog-title"],
+	[data-slot="alert-dialog-title"] {
+		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans) !important;
+		font-weight: 500 !important;
+	}
+}
+
+
+/* Unlayered on purpose: the global `*` / `::-webkit-scrollbar` rules further
+   down this file are also unlayered, so layered rules can never beat them.
+   Keeping these unlayered lets specificity win, so the sidebar scrollbar
+   stays hidden so rows never shift on hover (Gemini-style). */
+.sidebar-scroll-fade {
+	scrollbar-width: none;
+}
+.sidebar-scroll-fade::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+}
 
 @font-face {
 	font-family: "Hellix";
@@ -90,7 +146,7 @@
 	--sidebar-border: oklch(0.945 0.0101 164.8536);
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -211,7 +267,7 @@
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
 	--shadow-color: hsl(0 0% 0%);
@@ -261,7 +317,7 @@
 }
 
 @theme inline {
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
@@ -474,9 +530,9 @@
 		height: var(--icon-size);
 	}
 
-	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
+	/* Pins DM Sans across themes; parent `font-heading` resolves to Geist in dark. */
 	.nav-badge {
-		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+		font-family: "DM Sans Variable", ui-sans-serif, system-ui, sans-serif;
 	}
 
 	.sidebar-nav-btn {
@@ -511,7 +567,7 @@
 	}
 
 	.sidebar-row-action {
-		@apply absolute top-0 bottom-0 right-0 inline-flex items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
@@ -537,13 +593,18 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-2 pl-[18px] pr-4 text-[14.5px]! font-medium normal-case text-nav-fg focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14.5px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents". */
+		color: #5f6368;
 		letter-spacing: 0.015em;
 	}
 	.sidebar-sticky-label-following {
-		@apply pt-4;
+		@apply pt-[21px];
 	}
 	.dark .sidebar-sticky-label {
+		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
+		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
+		color: #9aa0a6;
 		letter-spacing: 0.03em;
 	}
 	/* Neutral panel input surface — sidesteps the green cast on
@@ -821,7 +882,7 @@
 	}
 
 	.composer-pill-btn {
-		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);

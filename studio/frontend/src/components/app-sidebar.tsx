@@ -56,6 +56,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout01Icon,
+  MoreVerticalIcon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
@@ -209,7 +210,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="sidebar-nav-btn h-[35px] rounded-[10px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
+          className="sidebar-nav-btn h-[33px] rounded-[10px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
@@ -217,131 +218,6 @@ function NavItem({
       </div>
       {children}
     </SidebarMenuItem>
-  );
-}
-
-function ProjectSidebarItem({
-  project,
-  isActive,
-  rowActive,
-  chatDisabled,
-  onOpenProject,
-  onNewChat,
-  onRenameProject,
-  onDeleteProject,
-  renderChatItem,
-  items,
-}: {
-  project: ProjectRecord;
-  isActive: boolean;
-  rowActive: boolean;
-  chatDisabled: boolean;
-  onOpenProject: (projectId: string) => void;
-  onNewChat: (projectId: string) => void;
-  onRenameProject: (project: ProjectRecord) => void;
-  onDeleteProject: (project: ProjectRecord) => void;
-  renderChatItem: (item: SidebarItem, variant: "project") => ReactNode;
-  items: SidebarItem[];
-}) {
-  const [open, setOpen] = useState(isActive);
-  const [iconSwapActive, setIconSwapActive] = useState(false);
-
-  return (
-    <>
-      <SidebarMenuItem key={project.id} className="group/project-item relative">
-        <Tooltip>
-          <TooltipPrimitive.Trigger asChild>
-            <button
-              type="button"
-              disabled={chatDisabled}
-              aria-label={open ? "Hide chats" : "Show chats"}
-              aria-expanded={open}
-              onPointerEnter={() => setIconSwapActive(true)}
-              onPointerLeave={() => setIconSwapActive(false)}
-              onFocus={() => setIconSwapActive(true)}
-              onBlur={() => setIconSwapActive(false)}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (chatDisabled) return;
-                setOpen((value) => !value);
-              }}
-              className="peer/project-toggle absolute left-2.5 top-1/2 z-10 inline-flex size-icon -translate-y-1/2 items-center justify-center rounded-[6px] text-nav-fg-muted opacity-0 transition-colors hover:opacity-100 hover:text-nav-fg focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            >
-              <ChevronDown
-                className={cn(
-                  "size-3.5 transition-transform duration-200",
-                  !open && "-rotate-90",
-                )}
-              />
-            </button>
-          </TooltipPrimitive.Trigger>
-          <TooltipContent side="right" sideOffset={8} className="tooltip-compact">
-            {open ? "Hide chats" : "Show chats"}
-          </TooltipContent>
-        </Tooltip>
-        <SidebarMenuButton
-          isActive={rowActive}
-          className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 group-hover/project-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-item:pr-10 text-[14.5px] leading-[19px] font-medium tracking-nav"
-          onClick={() => {
-            setOpen(true);
-            onOpenProject(project.id);
-          }}
-          disabled={chatDisabled}
-        >
-          <HugeiconsIcon
-            icon={Folder01Icon}
-            strokeWidth={1.75}
-            className={cn(
-              "size-icon shrink-0 text-current opacity-80 transition-opacity",
-              iconSwapActive && "opacity-0",
-            )}
-          />
-          <span className="truncate">{project.name}</span>
-        </SidebarMenuButton>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              onClick={(e) => e.stopPropagation()}
-              aria-label="Project options"
-              className="sidebar-row-action group-hover/project-item:opacity-100 group-hover/project-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-            >
-              <span className="sidebar-row-action-glyph">
-                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
-              </span>
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side="bottom"
-            align="end"
-            sideOffset={4}
-            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 py-2 font-heading rounded-[14px] border-0"
-          >
-            <DropdownMenuItem
-              onSelect={() => {
-                setOpen(true);
-                onNewChat(project.id);
-              }}
-            >
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-              <span>New chat</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onRenameProject(project)}>
-              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-              <span>Rename</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => onDeleteProject(project)}
-            >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-              <span>Delete</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </SidebarMenuItem>
-      {open ? items.map((item) => renderChatItem(item, "project")) : null}
-    </>
   );
 }
 
@@ -369,7 +245,7 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
-  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [trainOpen, setTrainOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -407,19 +283,6 @@ export function AppSidebar() {
     () => allChatItems.filter((item) => !item.projectId),
     [allChatItems],
   );
-  const projectChatItemsByProjectId = useMemo(() => {
-    const byProject = new Map<string, SidebarItem[]>();
-    for (const item of allChatItems) {
-      if (!item.projectId) continue;
-      const group = byProject.get(item.projectId);
-      if (group) {
-        group.push(item);
-      } else {
-        byProject.set(item.projectId, [item]);
-      }
-    }
-    return byProject;
-  }, [allChatItems]);
   const chatItems = allChatItems;
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
@@ -503,10 +366,6 @@ export function AppSidebar() {
   function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
     setRenamingTarget({ kind: "chat", item, current: item.title });
-  }
-  function openRenameProject(project: ProjectRecord) {
-    setRenameDraft(project.name);
-    setRenamingTarget({ kind: "project", project, current: project.name });
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = run.display_name ?? run.model_name;
@@ -664,11 +523,11 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[32px] rounded-[10px] pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-[10px] pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       variant === "project" ? "pl-[37px]" : "pl-2.5",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-10"
-        : "group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10",
+        ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
+        : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
     );
 
     return (
@@ -707,7 +566,7 @@ export function AppSidebar() {
               className={actionClass}
             >
               <span className="sidebar-row-action-glyph">
-                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
               </span>
             </button>
           </DropdownMenuTrigger>
@@ -741,12 +600,10 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
                   <span>New project</span>
                 </DropdownMenuItem>
-                <DropdownMenuSeparator className="mx-2.5! my-2! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem
                   disabled={!item.projectId}
                   onSelect={() => void moveChatToProject(item, null)}
                 >
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Recents</span>
                 </DropdownMenuItem>
                 {projects.map((project) => (
@@ -781,7 +638,7 @@ export function AppSidebar() {
       variant="sidebar"
       className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
     >
-      <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[8px] group-data-[collapsible=icon]:px-0">
+      <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
         <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
           <Link
@@ -812,7 +669,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[32px] items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -831,13 +688,13 @@ export function AppSidebar() {
 
         {/* Collapsed: panel icon doubles as expand trigger */}
         {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex h-[35px] items-center justify-center w-full">
+          <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[32px] items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -855,34 +712,36 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[8px] shrink-0">
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-px shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
               icon={PencilEdit02Icon}
               label={t("shell.navigation.newChat")}
-              active={false}
+              active={
+                isChatRoute &&
+                !search.thread &&
+                !search.compare &&
+                !search.project
+              }
               disabled={chatDisabled}
-              onClick={() => openNewChat()}
+              onClick={() => openNewChat(null)}
             />
             <NavItem
               icon={ColumnInsertIcon}
               label={t("shell.navigation.compare")}
-              active={!!search.compare && !chatItems.some((i) => i.id === search.compare)}
+              active={
+                !!search.compare &&
+                !chatItems.some((i) => i.id === search.compare)
+              }
               disabled={chatDisabled}
               dataTour="chat-compare"
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                useChatRuntimeStore
-                  .getState()
-                  .setActiveProjectId(activeProjectId);
                 navigate({
                   to: "/chat",
-                  search: {
-                    compare: createNavigationNonce(),
-                    ...(activeProjectId ? { project: activeProjectId } : {}),
-                  },
+                  search: { compare: createNavigationNonce() },
                 });
                 closeMobileIfOpen();
               }}
@@ -902,102 +761,87 @@ export function AppSidebar() {
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px] shrink-0">
-        <SidebarGroupContent>
-          <SidebarMenu>
-            <NavItem
-              icon={TestTubeOutlineIcon}
-              label={t("shell.navigation.train")}
-              active={pathname === "/studio" || pathname.startsWith("/studio/")}
-              disabled={chatOnly}
-              onClick={() => {
-                if (chatOnly) return;
-                navigate({ to: "/studio" });
-                closeMobileIfOpen();
-              }}
-            />
-
-            <NavItem
-              icon={ChefHatIcon}
-              label={t("shell.navigation.recipes")}
-              active={isRecipesRoute}
-              onClick={() => {
-                navigate({ to: "/data-recipes" });
-                closeMobileIfOpen();
-              }}
-            />
-
-            <NavItem
-              icon={DownloadSquare01Icon}
-              label={t("shell.navigation.export")}
-              active={pathname === "/export" || pathname.startsWith("/export/")}
-              disabled={chatOnly}
-              onClick={() => {
-                if (chatOnly) return;
-                navigate({ to: "/export" });
-                closeMobileIfOpen();
-              }}
-            />
-          </SidebarMenu>
-        </SidebarGroupContent>
-      </SidebarGroup>
-
-      <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto overscroll-contain min-h-0">
-        {!isStudioRoute && (
-          <Collapsible open={projectsOpen} onOpenChange={setProjectsOpen} asChild>
-            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                  Projects
-                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
-                </CollapsibleTrigger>
-              </SidebarGroupLabel>
-              <CollapsibleContent>
-                <SidebarGroupContent className="px-2">
-                  <SidebarMenu>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 text-[14.5px] leading-[19px] font-medium tracking-nav"
-                        onClick={() => {
-                          setProjectNameDraft("");
-                          setCreatingProject(true);
-                        }}
-                      >
-                        <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon shrink-0 text-current opacity-80" />
-                        <span className="truncate">New project</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    {projects.map((project) => (
-                      <ProjectSidebarItem
-                        key={project.id}
-                        project={project}
-                        isActive={activeProjectId === project.id}
-                        rowActive={activeProjectId === project.id && !activeThreadId}
-                        chatDisabled={chatDisabled}
-                        onOpenProject={openProject}
-                        onNewChat={openNewChat}
-                        onRenameProject={openRenameProject}
-                        onDeleteProject={(target) =>
-                          setConfirmingDelete({ kind: "project", project: target })
-                        }
-                        renderChatItem={renderChatSidebarItem}
-                        items={projectChatItemsByProjectId.get(project.id) ?? []}
-                      />
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </CollapsibleContent>
-            </SidebarGroup>
-          </Collapsible>
+      <SidebarContent
+        ref={scrollRef}
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+        className={cn(
+          "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0",
+          scrolled && "is-scrolled",
         )}
+      >
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-2 py-0 shrink-0">
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <NavItem
+                icon={Folder01Icon}
+                label="Projects"
+                active={
+                  pathname === "/projects" || pathname.startsWith("/projects/")
+                }
+                onClick={() => {
+                  navigate({ to: "/projects" });
+                  closeMobileIfOpen();
+                }}
+              />
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <Collapsible open={trainOpen} onOpenChange={setTrainOpen} asChild>
+          <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                {t("shell.navigation.train")}
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent className="px-2">
+                <SidebarMenu>
+                  <NavItem
+                    icon={TestTubeOutlineIcon}
+                    label={t("shell.navigation.train")}
+                    active={pathname === "/studio" || pathname.startsWith("/studio/")}
+                    disabled={chatOnly}
+                    onClick={() => {
+                      if (chatOnly) return;
+                      navigate({ to: "/studio" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                  <NavItem
+                    icon={ChefHatIcon}
+                    label={t("shell.navigation.recipes")}
+                    active={isRecipesRoute}
+                    onClick={() => {
+                      navigate({ to: "/data-recipes" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                  <NavItem
+                    icon={DownloadSquare01Icon}
+                    label={t("shell.navigation.export")}
+                    active={pathname === "/export" || pathname.startsWith("/export/")}
+                    disabled={chatOnly}
+                    onClick={() => {
+                      if (chatOnly) return;
+                      navigate({ to: "/export" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+        </Collapsible>
 
         {!isStudioRoute && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
@@ -1017,9 +861,9 @@ export function AppSidebar() {
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
-              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -1104,9 +948,10 @@ export function AppSidebar() {
           </SidebarGroup>
           </Collapsible>
         )}
+        <div className="sidebar-bottom-fade" aria-hidden="true" />
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-transparent group-data-[collapsible=icon]:px-0">
+      <SidebarFooter className="group-data-[collapsible=icon]:px-0">
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
@@ -1114,14 +959,14 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[50px] gap-[8px] px-2 py-[9px] rounded-[10px]"
+                  className="sidebar-nav-btn !h-[40px] gap-[8px] px-2 py-[5px] rounded-[10px]"
                 >
                   <div className="shrink-0">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
                       size="sm"
-                      className="!size-8"
+                      className="!size-[30px]"
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">

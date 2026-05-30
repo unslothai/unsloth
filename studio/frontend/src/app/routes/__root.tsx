@@ -41,6 +41,7 @@ function RouteFallback() {
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
+  "/projects",
   "/login",
   "/signup",
   "/change-password",
