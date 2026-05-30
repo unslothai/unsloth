@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 class DeployError(Exception):
@@ -18,6 +19,7 @@ class Gpu:
     name: str
     vram_gb: int
     cost_per_hour_usd: float
+    stock: Optional[str] = None  # RunPod availability band: High/Medium/Low, or None
 
 
 @dataclass(frozen = True)

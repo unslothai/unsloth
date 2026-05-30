@@ -22,7 +22,20 @@ _USER_AGENT = "curl/8.7.1"
 
 _HEALTH_POLL_S = 3
 _DEFAULT_TIMEOUT_S = 30
-_LOAD_TIMEOUT_S = 900
+_LOAD_TIMEOUT_S = 900          # total budget for a model load to finish
+_LOAD_POLL_S = 5               # how often to poll load status while waiting
+# Cloudflare (and proxies generally) cut a single request off well before a big
+# model finishes loading; these timeouts mean "still working", not "failed".
+_GATEWAY_TIMEOUT_CODES = (504, 524)
+
+
+def _is_gateway_timeout(msg: str) -> bool:
+    """True if a request error looks like a proxy/gateway cut-off (Cloudflare 524
+    and friends, or a read/connection timeout) rather than a real failure."""
+    if any(f"-> {code}:" in msg for code in _GATEWAY_TIMEOUT_CODES):
+        return True
+    lowered = msg.lower()
+    return any(s in lowered for s in ("timed out", "timeout", "connection reset"))
 
 
 class StudioClient:
@@ -78,11 +91,68 @@ class StudioClient:
         return body["key"]
 
     def load_model(self, model_path: str, **kwargs) -> dict:
+        """Load a model on the pod. A load can take several minutes -- longer than
+        the ~100s a single request survives behind RunPod's *.proxy.runpod.net
+        (Cloudflare 524). So a gateway timeout here is not a failure: we fall back
+        to polling /api/inference/status until the model is actually live."""
         payload: dict[str, Any] = {"model_path": model_path}
         payload.update(kwargs)
-        return self._post(
-            "/api/inference/load", payload, auth = True, timeout = _LOAD_TIMEOUT_S,
+        try:
+            return self._post(
+                "/api/inference/load", payload, auth = True, timeout = _LOAD_TIMEOUT_S,
+            )
+        except DeployError as e:
+            # A non-gateway error (bad path, OOM reported synchronously, auth) is
+            # a real failure -- let it propagate. Only a proxy cut-off falls through.
+            if not _is_gateway_timeout(str(e)):
+                raise
+        return self._wait_until_loaded(payload, timeout_s = _LOAD_TIMEOUT_S)
+
+    def _wait_until_loaded(self, payload: dict, *, timeout_s: int) -> dict:
+        """Poll /api/inference/status until a model is active, after the load
+        request was cut off by the proxy. If the load instead stops without a
+        model becoming active, re-issue it so the caller sees Studio's real error
+        rather than a blind timeout (re-loading a live model is a backend no-op)."""
+        deadline = time.time() + timeout_s
+        saw_loading = False
+        while time.time() < deadline:
+            try:
+                status = self._get("/api/inference/status", auth = True)
+            except DeployError:
+                time.sleep(_LOAD_POLL_S)
+                continue  # transient proxy/connection blip mid-load; keep waiting
+            if status.get("active_model"):
+                return status
+            if status.get("loading"):
+                saw_loading = True
+            elif saw_loading:
+                # Was loading, now neither loading nor active: the load failed.
+                # Re-issue so Studio returns the actual error (or 200 if it raced
+                # to ready) instead of us reporting a generic timeout.
+                return self._post(
+                    "/api/inference/load", payload, auth = True, timeout = _LOAD_TIMEOUT_S,
+                )
+            time.sleep(_LOAD_POLL_S)
+        raise DeployError(
+            f"Model '{payload['model_path']}' did not finish loading within {timeout_s}s."
         )
+
+    def _get(self, path: str, *, auth: bool, timeout: int = _DEFAULT_TIMEOUT_S) -> dict:
+        headers = {"User-Agent": _USER_AGENT}
+        if auth:
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(
+            self.base_url + path, headers = headers, method = "GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout = timeout) as resp:
+                text = resp.read().decode(errors = "replace")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors = "replace")
+            raise DeployError(f"GET {path} -> {e.code}: {detail[:400]}") from e
+        except (urllib.error.URLError, OSError) as e:
+            raise DeployError(f"GET {path} failed: {e}") from e
+        return json.loads(text) if text else {}
 
     def _post(
         self, path: str, json_body: dict, *, auth: bool, timeout: int = _DEFAULT_TIMEOUT_S,

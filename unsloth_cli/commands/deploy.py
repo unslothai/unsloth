@@ -143,9 +143,6 @@ def run(
         datacenter = _resolve_datacenter(provider, chosen, datacenter)
 
     typer.echo("")
-    typer.echo(f"  Provider: {provider.name}")
-    typer.echo(f"  Image:   {IMAGE_TAG}")
-    typer.echo(f"  Studio:  port {STUDIO_PORT}")
     typer.echo(f"  GPU:     {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr")
     if model is not None:
         typer.echo(f"  Model:   {model}")
@@ -338,20 +335,17 @@ def _pick_gpu(
         _fail(f"--gpu '{override}' not found. Available:\n{listing}", code = 2)
 
     if yes:
-        return options[0]
+        # Prefer the cheapest GPU that actually has capacity over a sold-out one.
+        return next((g for g in options if g.stock), options[0])
 
     shown = options[:MAX_GPU_CHOICES]
     typer.echo("")
     typer.echo("Available GPUs (cheapest first):")
     for i, gpu in enumerate(shown, start = 1):
+        price = f"${gpu.cost_per_hour_usd:.3f}/hr"
         typer.echo(
-            f"  {i:2d}. {gpu.name:<28} {gpu.vram_gb:>3} GB   "
-            f"${gpu.cost_per_hour_usd:.3f}/hr   ({gpu.id})"
-        )
-    if len(options) > len(shown):
-        typer.echo(
-            f"  ... and {len(options) - len(shown)} more "
-            "(narrow with --min-vram, or pick one directly with --gpu <id>)."
+            f"  {i:2d}. {gpu.name:<24} {gpu.vram_gb:>3} GB   {price:<11} "
+            f"stock: {gpu.stock or 'none':<6}   ({gpu.id})"
         )
     typer.echo("")
     raw = typer.prompt("Pick a GPU (number)", default = "1")
@@ -365,36 +359,27 @@ def _pick_gpu(
 
 
 def _resolve_datacenter(provider, gpu: Gpu, requested: Optional[str]) -> str:
-    """Pick the datacenter the network volume (and therefore the pod) lands in.
-    Honor an explicit --datacenter; otherwise choose one that currently has
-    capacity for `gpu`, so the pod can actually schedule."""
+    """Datacenter for the network volume (and therefore the pod). Honor an
+    explicit --datacenter; otherwise pick the one with the most capacity for
+    `gpu` right now, since a fixed default goes stale as stock moves."""
     if requested:
         return requested
     if not hasattr(provider, "datacenters_for_gpu"):
-        _fail(
-            f"{provider.name} can't auto-pick a datacenter; pass --datacenter.",
-            code = 2,
-        )
+        _fail(f"{provider.name} can't auto-pick a datacenter; pass --datacenter.", code = 2)
 
     typer.echo(f"Finding a datacenter with capacity for {gpu.name}...")
     try:
         ranked = provider.datacenters_for_gpu(gpu.id)
     except DeployError as e:
         _fail(str(e))
-
     if not ranked:
         _fail(
             f"No datacenter currently has secure-cloud capacity for {gpu.name}.\n"
-            "Pick a different GPU, or retry shortly -- RunPod stock changes minute "
-            "to minute. Live availability: https://www.runpod.io/console/deploy"
+            "Pick a different GPU (the picker shows stock) or retry shortly."
         )
 
     datacenter, stock = ranked[0]
-    alts = ", ".join(f"{dc} ({s})" for dc, s in ranked[1:4])
-    typer.echo(
-        f"  -> {datacenter} ({stock} stock)"
-        + (f"; also available: {alts}" if alts else "")
-    )
+    typer.echo(f"  -> {datacenter} ({stock} stock)")
     return datacenter
 
 
@@ -448,9 +433,15 @@ def _deploy(
             data_center_id = datacenter if network_volume_id else None,
         )
     except DeployError as e:
-        # Capacity in the chosen datacenter can vanish between the availability
-        # check and this call; don't leave the volume behind billing for it.
-        _fail(_cleanup_volume_after_failure(provider, network_volume_id, str(e)))
+        # Capacity in the chosen datacenter can vanish between the check and now.
+        # Delete the volume so it doesn't keep billing, then point at the fix.
+        if network_volume_id:
+            _delete_volume_quietly(provider, network_volume_id)
+            _fail(
+                f"{e}\nStock in {datacenter} changed. Retry, pick a higher-stock "
+                "GPU (the picker shows stock), or set --datacenter."
+            )
+        _fail(str(e))
     typer.echo(f"  pod id: {pod_id}")
 
     try:
@@ -544,6 +535,19 @@ def _volume_size_gb(local: Path) -> int:
     return max(VOLUME_MIN_GB, math.ceil(total / 1e9 * VOLUME_HEADROOM_FACTOR) + 5)
 
 
+def _delete_volume_quietly(provider, volume_id: Optional[str]) -> None:
+    if not volume_id:
+        return
+    try:
+        runpod_storage.delete_network_volume(provider, volume_id)
+    except DeployError:
+        typer.echo(
+            f"  warning: couldn't delete volume {volume_id}; "
+            f"remove it with: unsloth deploy delete-volume {volume_id}",
+            err = True,
+        )
+
+
 def _upload_to_volume(
     provider,
     local: Path,
@@ -579,7 +583,6 @@ def _upload_to_volume(
             access_key = access_key,
             secret_key = secret_key,
             prefix = prefix,
-            on_file = lambda key, size: typer.echo(f"  {key}  ({size / 1e6:.0f} MB)"),
         )
     except DeployError as e:
         _fail(_with_volume_note(str(e), volume_id))
@@ -593,22 +596,6 @@ def _volume_billing_note(volume_id: Optional[str]) -> str:
         f"\nNetwork volume {volume_id} also persists (storage billed). Delete it with:"
         f"\n    unsloth deploy delete-volume {volume_id}"
     )
-
-
-def _cleanup_volume_after_failure(
-    provider, volume_id: Optional[str], msg: str,
-) -> str:
-    """Delete the just-created volume after a failed pod create so it stops
-    billing. If the delete itself fails, fall back to telling the user how."""
-    if not volume_id:
-        return msg
-    try:
-        runpod_storage.delete_network_volume(provider, volume_id)
-    except DeployError as e:
-        return _with_volume_note(
-            f"{msg}\n(Could not auto-delete the network volume: {e})", volume_id,
-        )
-    return f"{msg}\nThe network volume {volume_id} was deleted, so it is not billing."
 
 
 def _with_volume_note(msg: str, volume_id: Optional[str]) -> str:

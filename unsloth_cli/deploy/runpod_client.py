@@ -62,6 +62,7 @@ class RunPod:
         except Exception as e:
             raise DeployError(f"RunPod GPU listing failed: {e}") from e
 
+        stock = self._global_stock()
         out: list[Gpu] = []
         for g in catalog:
             vram = int(g.get("memoryInGb") or 0)
@@ -79,8 +80,30 @@ class RunPod:
                 name = g.get("displayName") or g["id"],
                 vram_gb = vram,
                 cost_per_hour_usd = float(price),
+                stock = stock.get(g["id"]),
             ))
         out.sort(key = lambda o: (o.cost_per_hour_usd, o.vram_gb))
+        return out
+
+    def _global_stock(self) -> dict[str, str]:
+        """`{gpu_id: stock_band}` for secure-cloud availability across the whole
+        catalog, in a single query, so the picker can show which GPUs actually
+        have capacity. Best-effort: returns {} if the lookup fails, so listing
+        still works (just without the stock column)."""
+        try:
+            from runpod.api.graphql import run_graphql_query
+
+            rows = run_graphql_query(
+                "{ gpuTypes { id lowestPrice(input: {gpuCount: 1, secureCloud: true})"
+                " { stockStatus } } }"
+            )["data"]["gpuTypes"]
+        except Exception:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:
+            band = (r.get("lowestPrice") or {}).get("stockStatus")
+            if band and r.get("id"):
+                out[r["id"]] = band
         return out
 
     def datacenters_for_gpu(self, gpu_id: str) -> list[tuple[str, str]]:
@@ -91,8 +114,10 @@ class RunPod:
         whose stock comes and goes.
 
         Network volumes only exist in secure cloud, so we ask per datacenter with
-        `secureCloud: true`. The catalog (`get_gpus`) is global and says nothing
-        about per-datacenter stock, hence the sweep."""
+        `secureCloud: true`. We also restrict to datacenters that actually support
+        network volumes (`storageSupport`) -- some have GPU stock but can't host a
+        volume, and creating one there fails. The catalog (`get_gpus`) is global
+        and says nothing about per-datacenter stock, hence the sweep."""
         self._sdk()  # ensure authenticated
         try:
             from runpod.api.graphql import run_graphql_query
@@ -100,10 +125,12 @@ class RunPod:
             raise DeployError(f"RunPod availability lookup is unavailable: {e}") from e
 
         try:
-            data = run_graphql_query("{ dataCenters { id } }")["data"]["dataCenters"]
+            data = run_graphql_query(
+                "{ dataCenters { id storageSupport } }"
+            )["data"]["dataCenters"]
         except Exception as e:
             raise DeployError(f"RunPod datacenter listing failed: {e}") from e
-        dc_ids = [d["id"] for d in data if d.get("id")]
+        dc_ids = [d["id"] for d in data if d.get("id") and d.get("storageSupport")]
 
         def stock(dc: str) -> Optional[str]:
             query = (
