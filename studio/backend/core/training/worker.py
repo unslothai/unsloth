@@ -70,6 +70,58 @@ _TILELANG_INSTALL_TIMEOUT_S = 600
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
+# Module-level handle so the torch.library.Library registration survives past
+# run_training_process() and is not garbage collected mid-run.
+_WINDOWS_ROCM_GROUPED_MM_LIB = None
+
+# Worker subprocesses inherit the parent env but not the parent's
+# os.add_dll_directory registrations. Replicate main.py's Windows ROCm DLL
+# setup at module load so the first `import torch` can find amdhip64.dll even
+# when HIP_PATH\bin is not on the system PATH. Handles retained at module
+# scope so they are not garbage collected.
+_ROCM_DLL_HANDLES: list = []
+if sys.platform == "win32":
+
+    def _add_rocm_dll_dirs_worker() -> None:
+        _candidates: list[str] = []
+        for _var in ("HIP_PATH", "ROCM_PATH"):
+            _val = os.environ.get(_var)
+            if _val:
+                _candidates.append(os.path.join(_val, "bin"))
+        _default_root = os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+        )
+
+        def _ver_key(name: str) -> tuple:
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            parts = []
+            for chunk in name.split("."):
+                try:
+                    parts.append((0, int(chunk)))
+                except ValueError:
+                    parts.append((1, chunk))
+            return tuple(parts)
+
+        try:
+            if os.path.isdir(_default_root):
+                for _ver in sorted(
+                    os.listdir(_default_root), key = _ver_key, reverse = True
+                ):
+                    _bin = os.path.join(_default_root, _ver, "bin")
+                    if os.path.isdir(_bin):
+                        _candidates.append(_bin)
+        except OSError:
+            pass
+        for _d in _candidates:
+            if os.path.isdir(_d):
+                try:
+                    _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
+                except (OSError, AttributeError):
+                    pass
+
+    _add_rocm_dll_dirs_worker()
+    del _add_rocm_dll_dirs_worker
+
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
@@ -320,11 +372,21 @@ def _install_package_wheel_first(
                 f"{snippet}",
             )
         else:
-            logger.error(
-                "Failed to install %s from PyPI:\n%s",
-                display_name,
-                result.stdout,
-            )
+            if sys.platform == "win32":
+                # No prebuilt wheel and no source build toolchain on Windows --
+                # this is expected for packages like causal-conv1d.  Log at
+                # info so users aren't alarmed by what looks like an error.
+                logger.info(
+                    "%s is not available on Windows (no prebuilt wheel); skipping",
+                    display_name,
+                )
+                logger.debug("Install output:\n%s", result.stdout)
+            else:
+                logger.error(
+                    "Failed to install %s from PyPI:\n%s",
+                    display_name,
+                    result.stdout,
+                )
         return False
 
     if is_hip:
@@ -336,6 +398,9 @@ def _install_package_wheel_first(
 
 def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
     if not _model_wants_causal_conv1d(model_name):
+        return
+    if sys.platform == "win32":
+        logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
         return
 
     _install_package_wheel_first(
@@ -403,6 +468,11 @@ def _flash_linear_attention_current(already_importable: bool | None = None) -> b
 def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     """Install pinned FLA + fla-core with --no-deps. Returns True iff importable post-call."""
     if os.getenv(_FLA_SKIP_ENV) == "1":
+        return False
+    if sys.platform == "win32":
+        logger.info(
+            "Skipping flash-linear-attention install: no prebuilt wheel for Windows"
+        )
         return False
     if sys.version_info < _FLA_MIN_PYTHON:
         logger.info(
@@ -483,10 +553,17 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         return False
 
     if result.returncode != 0:
-        logger.warning(
-            "flash-linear-attention install failed (continuing on torch fallback):\n%s",
-            result.stdout,
-        )
+        if sys.platform == "win32":
+            logger.info(
+                "flash-linear-attention not available on Windows (no prebuilt wheel); "
+                "continuing on torch fallback"
+            )
+            logger.debug("Install output:\n%s", result.stdout)
+        else:
+            logger.warning(
+                "flash-linear-attention install failed (continuing on torch fallback):\n%s",
+                result.stdout,
+            )
         _send_status(
             event_queue,
             "flash-linear-attention install failed; continuing without it",
@@ -607,13 +684,59 @@ def _tilelang_importable() -> bool:
 
 
 def _torch_has_hip() -> bool:
-    """True iff torch is a ROCm build; `torch.version.hip` is the only reliable signal on x86_64 ROCm."""
+    """True iff torch is a ROCm build.
+
+    `torch.version.hip` covers official PyTorch ROCm wheels; AMD SDK / Radeon
+    wheels can leave it unset but still encode "rocm" in `torch.__version__`.
+    """
     try:
         import torch as _torch
 
-        return getattr(_torch.version, "hip", None) is not None
+        return bool(
+            getattr(_torch.version, "hip", None)
+            or "rocm" in getattr(_torch, "__version__", "").lower()
+        )
     except Exception:
         return False
+
+
+def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
+    """Classify a ROCm device as unified-memory (APU) or discrete.
+
+    Returns ``(gcn_arch, is_unified)`` where:
+    - ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a
+      known attribute is present, or ``""`` when all arch attrs are absent.
+    - ``is_unified`` is ``True`` for AMD APUs with a shared GPU/system-RAM pool
+      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
+      ``set_per_process_memory_fraction`` cap to leave headroom for the OS.
+
+    Classification priority:
+    1. ``gcnArchName`` / variant spellings (stable, naming-independent).
+    2. Device-name substring match as a last-resort fallback when all arch
+       attrs are absent (AMD SDK / Radeon wheels may not populate them):
+         - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
+         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
+                                ``Radeon 8050S`` (cut-down SKU)
+    """
+    gcn_arch = ""
+    for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        _v = (getattr(props, _attr, "") or "").split(":")[0].strip()
+        if _v:
+            gcn_arch = _v
+            break
+
+    if gcn_arch:
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+
+    # Arch attrs absent — fall back to device-name matching.
+    dev_lower = (getattr(props, "name", "") or "").lower()
+    is_unified = (
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
+    )
+    return gcn_arch, is_unified
 
 
 def _tilelang_platform_supported() -> bool:
@@ -881,6 +1004,9 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         _ensure_tilelang_backend_unconditional(eq)
 
     def _causal_conv1d_install(eq: Any) -> bool:
+        if sys.platform == "win32":
+            logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
+            return False
         ok = _install_package_wheel_first(
             event_queue = eq,
             import_name = "causal_conv1d",
@@ -1893,6 +2019,452 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1d. Stub torchao on Windows ROCm ──
+    # torchao (pulled in by transformers.quantizers) imports
+    # torch.distributed._functional_collectives at module level, which imports
+    # distributed_c10d.py unconditionally — that file crashes on Windows ROCm
+    # because torch._C._distributed_c10d (the RCCL backend) is absent.
+    # torch/distributed/__init__.py itself is guarded by `if is_available()`
+    # so `import torch.distributed` alone is safe; the crash only comes via
+    # torchao's import chain.  Stubbing torchao short-circuits it entirely.
+    # _StubSubpackageFinder handles any depth of torchao.xxx.yyy imports.
+    import types as _types
+    import importlib.machinery as _ilm
+    import importlib.abc as _ilabc
+
+    _STUB_SENTINEL = object()
+
+    # Metaclass for stub types so that isinstance(x, StubClass) returns False
+    # instead of raising TypeError ("arg 2 must be a type").
+    # peft/tuners/lora/torchao.py does:
+    #   from torchao.dtypes import AffineQuantizedTensor, LinearActivationQuantizedTensor
+    #   isinstance(weight, (AffineQuantizedTensor, LinearActivationQuantizedTensor))
+    # If those names resolve to stub modules rather than types, isinstance() raises.
+    class _StubTypeMeta(type):
+        def __instancecheck__(cls, instance):
+            return False
+
+        def __subclasscheck__(cls, subclass):
+            return False
+
+        def __getattr__(cls, attr):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _StubTypeMeta(attr, (), {})
+            setattr(cls, attr, child)
+            return child
+
+        def __call__(cls, *args, **kwargs):
+            return None
+
+    def _make_stub_type(name):
+        """Stub class: accepted by isinstance() (always False), supports attr access."""
+        return _StubTypeMeta(name, (), {})
+
+    def _make_mod_stub(mod_name):
+        m = _types.ModuleType(mod_name)
+        m.__path__ = []
+        m.__package__ = mod_name
+        m._unsloth_stub = _STUB_SENTINEL
+        m.__spec__ = _ilm.ModuleSpec(mod_name, loader = None, is_package = True)
+
+        def _ga(attr, _m = m, _n = mod_name):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            # Return a stub CLASS (not a module) so that isinstance(x, attr)
+            # works and returns False instead of raising TypeError.
+            child = _make_stub_type(f"{_n}.{attr}")
+            setattr(_m, attr, child)
+            return child
+
+        m.__getattr__ = _ga
+        return m
+
+    class _StubSubpackageLoader(_ilabc.Loader):
+        def __init__(self, mod_name):
+            self._mod_name = mod_name
+
+        def create_module(self, spec):
+            return _make_mod_stub(self._mod_name)
+
+        def exec_module(self, module):
+            pass
+
+    class _StubSubpackageFinder(_ilabc.MetaPathFinder):
+        def find_spec(self, fullname, path, target = None):
+            if "." not in fullname:
+                return None
+            parent = sys.modules.get(fullname.rsplit(".", 1)[0])
+            if parent is None:
+                return None
+            if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
+                return None
+            return _ilm.ModuleSpec(
+                fullname, _StubSubpackageLoader(fullname), is_package = True
+            )
+
+    # Only stub torchao on Windows ROCm hosts -- on Windows CUDA (NVIDIA) torchao
+    # is real and shadowing it breaks torchao-based quantization paths.
+    # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
+    # ROCM_PATH stay set after a user installs the HIP SDK and reverts to a
+    # CUDA torch wheel. AMD SDK / Radeon ROCm wheels may not set torch.version.hip
+    # but still encode "rocm" in torch.__version__, so accept either.
+    _is_win32_rocm = False
+    if sys.platform == "win32":
+        try:
+            import torch as _torch_probe
+
+            _is_win32_rocm = bool(
+                getattr(getattr(_torch_probe, "version", None), "hip", None)
+                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+            )
+            del _torch_probe
+        except Exception:
+            pass
+    if _is_win32_rocm:
+        # Register the finder only on Windows ROCm -- on other platforms there
+        # are no stub modules seeded, so appending is a pure accumulation.
+        sys.meta_path.append(_StubSubpackageFinder())
+        # Seed torchao top-level + key submodules; the finder handles the rest.
+        for _tao_name in (
+            "torchao",
+            "torchao.quantization",
+            "torchao.dtypes",
+            "torchao.float8",
+            "torchao.utils",
+        ):
+            if _tao_name not in sys.modules:
+                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+
+    # ── 1e. Ensure torch.distributed helper attrs are present ──
+    # Single-GPU training never initialises the process group, so these helpers
+    # are never called — but transformers/trl import them unconditionally.
+    _td_stubs = {
+        "is_initialized": lambda: False,
+        "is_available": lambda: False,
+        "is_torchelastic_launched": lambda: False,
+        "get_rank": lambda: 0,
+        "get_world_size": lambda: 1,
+        "barrier": lambda: None,
+    }
+
+    try:
+        import torch.distributed as _td
+
+        for _name, _stub in _td_stubs.items():
+            if not hasattr(_td, _name):
+                setattr(_td, _name, _stub)
+    except Exception:
+        _td_mock = _types.ModuleType("torch.distributed")
+        for _name, _stub in _td_stubs.items():
+            setattr(_td_mock, _name, _stub)
+        sys.modules["torch.distributed"] = _td_mock
+        try:
+            import torch as _torch
+
+            _torch.distributed = _td_mock
+        except Exception:
+            pass
+
+    # ── 1f. Windows ROCm runtime patches ──
+    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm ≤ 7.12 Windows),
+    # causing 0xC0000005 (access violation) during training.
+    #
+    # Root cause: the JitDecomp autograd decomposition system (NOT torch.compile)
+    # dispatches _grouped_mm → _fused_adagrad_ → _grouped_mm HIP → null crash.
+    # TORCHDYNAMO_DISABLE=1 stops the compiler frontend but does NOT stop
+    # JitDecomp, so we must also override the CUDA dispatch key for _grouped_mm
+    # with a safe Python fallback.
+    #
+    # Fixed in AMD's wheel: torch==2.11.0+rocm7.13.0 — the 3-D batch and grouped
+    # (with offs) variants of _grouped_mm now have working HIP kernels on gfx1200.
+    # We gate the dispatch override on HIP < 7.13 so users on the fixed wheel get
+    # the real GPU kernel rather than our Python fallback.
+    #
+    # Verified: null on torch==2.10.0+rocm7.12.0; fixed on torch==2.11.0+rocm7.13.0.
+    #
+    # Schema: _grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None,
+    #                     Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
+    #   offs: optional group-split offsets (MoE-style variable-size batches)
+    #
+    # torch is already in sys.modules from section 1e's `import torch.distributed`.
+    # Module-level _WINDOWS_ROCM_GROUPED_MM_LIB keeps the registration alive past
+    # function return / mid-run GC.
+    global _WINDOWS_ROCM_GROUPED_MM_LIB
+    if sys.platform == "win32":
+        _torch_for_rocm = sys.modules.get("torch")
+        # Broad check: torch.version.hip OR "rocm" in torch.__version__.
+        # AMD SDK / Radeon Windows wheels do not always populate
+        # torch.version.hip; without the broad check the BNB version pin,
+        # dynamo-disable, and _grouped_mm fallback below silently skip
+        # (matches the torchao stub gate above and main.py).
+        _build_version_for_rocm = (
+            getattr(_torch_for_rocm, "__version__", "").lower()
+            if _torch_for_rocm is not None
+            else ""
+        )
+        _is_win_rocm_torch = bool(
+            _torch_for_rocm is not None
+            and (
+                getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
+                or "rocm" in _build_version_for_rocm
+            )
+        )
+        if _is_win_rocm_torch:
+            # Disable dynamo (belt-and-suspenders; JitDecomp patch below is the
+            # real fix, but keeping dynamo off avoids any other compile paths).
+            if "TORCHDYNAMO_DISABLE" not in os.environ:
+                os.environ["TORCHDYNAMO_DISABLE"] = "1"
+                logger.info("Windows ROCm: torch.compile (dynamo) disabled")
+
+            # BNB auto-detects the HIP version from torch.version.hip and uses
+            # it to choose which DLL to load (e.g. "7.13" → rocm713.dll).
+            # AMD's Windows BNB prerelease wheel ships only one rocm DLL, and its
+            # version suffix does not always match the torch HIP version (e.g.
+            # torch==2.11.0+rocm7.13.0 ships HIP 7.13, but the BNB wheel still
+            # ships rocm72.dll).  We detect the actual DLL name from the installed
+            # package and override BNB's auto-detection.  "72" is a safe fallback
+            # if detection fails.  Callers may override by pre-setting the var.
+            if "BNB_ROCM_VERSION" not in os.environ:
+                _bnb_rocm_ver = None
+                try:
+                    import glob as _glob
+                    import importlib.util as _ilu
+                    import re as _re
+
+                    _bnb_spec = _ilu.find_spec("bitsandbytes")
+                    if _bnb_spec and _bnb_spec.submodule_search_locations:
+                        _all_vers: list[str] = []
+                        for _pkg_dir in _bnb_spec.submodule_search_locations:
+                            for _dll in _glob.glob(
+                                os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                            ):
+                                _m = _re.search(
+                                    r"libbitsandbytes_rocm(\d+)\.dll",
+                                    os.path.basename(_dll),
+                                )
+                                if _m:
+                                    _all_vers.append(_m.group(1))
+                        # Pick the highest numeric suffix so that e.g. "713"
+                        # wins over "72" when both variants are present.
+                        # Filesystem glob order is not guaranteed, so always
+                        # sort rather than stopping at the first match.
+                        if _all_vers:
+                            _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
+                except Exception:
+                    pass
+                _bnb_rocm_ver = _bnb_rocm_ver or "72"
+                os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
+                logger.info(
+                    "Windows ROCm: set BNB_ROCM_VERSION=%s "
+                    "(detected from installed BNB wheel; "
+                    "overrides torch.version.hip auto-detection)",
+                    _bnb_rocm_ver,
+                )
+
+            # Parse HIP version for the kernel-fix gate below.
+            # torch.version.hip can be "7.13.99004", "7.2.0", etc.
+            # AMD SDK / Radeon wheels may leave torch.version.hip unset and
+            # encode the ROCm version in torch.__version__ instead
+            # (e.g. "2.11.0+rocm7.13.0" or "2.9.0+rocmsdk20251116"); fall back
+            # to that string when version.hip is missing.
+            def _hip_ver_at_least(major: int, minor: int) -> bool:
+                import re as _re_ver
+
+                _hip_str = getattr(
+                    getattr(_torch_for_rocm, "version", None), "hip", None
+                )
+                if not _hip_str:
+                    # Try the standard "+rocmX.Y.Z" embedded version first
+                    # (e.g. "2.11.0+rocm7.13.0").
+                    _ver_match = _re_ver.search(
+                        r"rocm(\d+)\.(\d+)", _build_version_for_rocm
+                    )
+                    if _ver_match:
+                        return (
+                            int(_ver_match.group(1)),
+                            int(_ver_match.group(2)),
+                        ) >= (major, minor)
+                    # AMD SDK / Radeon Windows wheels encode the build as
+                    # "+rocmsdk<date>" (e.g. "2.9.0+rocmsdk20251116") with no
+                    # explicit rocmX.Y component. The rocmsdk format was
+                    # introduced after the gfx120X null-kernel fix landed in
+                    # ROCm 7.13, so any wheel with this suffix is new enough to
+                    # have working HIP kernels. Treat as >= 7.13 rather than
+                    # falling back to False and installing the Python workaround
+                    # on a wheel that doesn't need it.
+                    if "rocmsdk" in _build_version_for_rocm:
+                        logger.debug(
+                            "Windows ROCm: AMD SDK wheel detected (%r); "
+                            "assuming HIP >= %d.%d (rocmsdk wheels post-date "
+                            "the gfx120X null-kernel fix)",
+                            _build_version_for_rocm,
+                            major,
+                            minor,
+                        )
+                        return True
+                    return False
+                try:
+                    _parts = [int(x) for x in str(_hip_str).split(".")[:2]]
+                    if len(_parts) < 2:
+                        logger.warning(
+                            "Windows ROCm: torch.version.hip %r has fewer than "
+                            "two components; cannot compare against %d.%d",
+                            _hip_str,
+                            major,
+                            minor,
+                        )
+                        return False
+                    return (_parts[0], _parts[1]) >= (major, minor)
+                except ValueError:
+                    logger.warning(
+                        "Windows ROCm: could not parse torch.version.hip %r as "
+                        "a version number; assuming HIP < %d.%d",
+                        _hip_str,
+                        major,
+                        minor,
+                    )
+                    return False
+
+            # _grouped_mm HIP kernel was null on gfx1200 in ROCm ≤ 7.12,
+            # causing 0xC0000005.  AMD fixed it in ROCm 7.13 (torch 2.11+).
+            # Only install the Python fallback on the affected versions so users
+            # on 7.13+ get the real GPU kernel for MoE workloads.
+            if not _hip_ver_at_least(7, 13):
+                try:
+                    import warnings as _warnings
+
+                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
+
+                    def _grouped_mm_safe_impl(
+                        self, mat2, offs = None, bias = None, out_dtype = None
+                    ):
+                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
+                        _t = _torch_for_rocm
+                        if offs is None:
+                            # No offsets: behave like the real op, which
+                            # accepts either (M, K) x (K, N) -> mm, or 3-D
+                            # batched inputs -> bmm. Picking torch.mm
+                            # unconditionally previously raised "self must be
+                            # a matrix" on 3-D MoE workloads.
+                            if self.dim() == 3 and mat2.dim() == 3:
+                                result = _t.bmm(self.contiguous(), mat2.contiguous())
+                            elif self.dim() == 3 and mat2.dim() == 2:
+                                # Broadcast 2-D mat2 across the batch dim.
+                                result = _t.matmul(self.contiguous(), mat2.contiguous())
+                            elif self.dim() == 2 and mat2.dim() == 3:
+                                # Broadcast 2-D self across batch via matmul semantics.
+                                result = _t.matmul(self.contiguous(), mat2.contiguous())
+                            else:
+                                result = _t.mm(self.contiguous(), mat2.contiguous())
+                        else:
+                            # Grouped case: offs[i] is the exclusive end-row of
+                            # group i in `self`; mat2 may be 3-D or 2-D.
+                            offs_list = offs.tolist()
+                            pieces = []
+                            prev = 0
+                            for idx, end in enumerate(offs_list):
+                                end = int(end)
+                                a_part = self[prev:end].contiguous()
+                                if mat2.dim() == 3:
+                                    b_part = mat2[idx].contiguous()
+                                else:
+                                    b_part = mat2.contiguous()
+                                pieces.append(_t.mm(a_part, b_part))
+                                prev = end
+                            # Include any trailing rows not covered by offs
+                            if prev < self.shape[0]:
+                                a_tail = self[prev:].contiguous()
+                                b_tail = (
+                                    mat2[-1].contiguous()
+                                    if mat2.dim() == 3
+                                    else mat2.contiguous()
+                                )
+                                pieces.append(_t.mm(a_tail, b_tail))
+                            result = (
+                                _t.cat(pieces, dim = 0)
+                                if pieces
+                                else _t.zeros(
+                                    0,
+                                    mat2.shape[-1],
+                                    device = self.device,
+                                    dtype = self.dtype,
+                                )
+                            )
+                        if bias is not None:
+                            result = result + bias
+                        if out_dtype is not None:
+                            result = result.to(out_dtype)
+                        elif result.dtype != self.dtype:
+                            result = result.to(self.dtype)
+                        return result
+
+                    with _warnings.catch_warnings():
+                        _warnings.simplefilter("ignore")
+                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
+                    logger.info(
+                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
+                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
+                        "bypassed with Python mm fallback)"
+                    )
+                except Exception as _patch_exc:
+                    logger.warning(
+                        "Windows ROCm: could not patch _grouped_mm — "
+                        "training may crash with 0xC0000005: %s",
+                        _patch_exc,
+                    )
+            else:
+                logger.info(
+                    "Windows ROCm: HIP >= 7.13 — _grouped_mm kernel is functional, "
+                    "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
+                )
+
+    # ── 1g. ROCm OOM guard ──
+    # On RDNA 4 (gfx1200/gfx1201) and other ROCm GPUs, exhausting VRAM can
+    # cause a HIP driver hang that freezes the entire system rather than
+    # raising a Python exception.  set_per_process_memory_fraction caps the
+    # HIP allocator so PyTorch raises OutOfMemoryError before hitting the
+    # hardware limit, giving the UI a clean error instead of a system freeze.
+    # Only applied on ROCm -- NVIDIA CUDA has a graceful OOM path and does
+    # not need this cap.
+    # Unified-memory APUs (gfx1150 Strix Point / gfx1151 Strix Halo) share GPU
+    # and system RAM in one pool: 0.90 of 128 GB starves the OS. Use 0.80 there.
+    # Primary classifier: gcnArchName from device properties — stable within a
+    # product family and naming-independent.  AMD SDK / Radeon wheels may omit
+    # gcnArchName or expose it under a variant spelling, so we try several attr
+    # names then fall back to known device-name markers as a last resort.
+    # Non-fatal: silently skipped if torch is not importable.
+    if _hw.IS_ROCM:
+        try:
+            import torch as _torch_mem
+
+            if _torch_mem.cuda.is_available():
+                # Classify unified vs discrete via _rocm_classify_unified_memory.
+                # See that function's docstring for classification priority.
+                _props = _torch_mem.cuda.get_device_properties(0)
+                _dev_name = _props.name
+                _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
+                if _is_unified and not _gcn_arch:
+                    logger.debug(
+                        "ROCm OOM guard: gcnArchName absent -- inferred "
+                        "unified memory from device name %r; applying 0.80 cap",
+                        _dev_name,
+                    )
+                _mem_fraction = 0.80 if _is_unified else 0.90
+                _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
+                logger.info(
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
+                    "%s memory host (%s, %s)",
+                    _mem_fraction,
+                    "unified" if _is_unified else "discrete",
+                    _dev_name,
+                    _gcn_arch or "unknown arch",
+                )
+        except Exception as _oom_guard_err:
+            logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
+
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")
@@ -2347,14 +2919,38 @@ def run_training_process(
             )
 
     except Exception as exc:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            }
+        _exc_str = str(exc).lower()
+        _is_oom = (
+            "out of memory" in _exc_str
+            or "hip out of memory" in _exc_str
+            or "cuda out of memory" in _exc_str
+            or type(exc).__name__ == "OutOfMemoryError"
         )
+        if _is_oom:
+            _oom_msg = (
+                "GPU ran out of VRAM during training.\n"
+                "To fix: reduce max_seq_length (e.g. 2048–4096), enable "
+                "gradient_checkpointing=True, lower per_device_train_batch_size, "
+                "or use a smaller model / higher quantization."
+            )
+            logger.error("Training stopped: GPU OOM — %s", exc)
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": _oom_msg,
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+        else:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
 
 
 def _send_status(event_queue: Any, message: str) -> None:
