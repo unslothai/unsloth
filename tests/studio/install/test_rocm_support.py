@@ -1098,9 +1098,7 @@ class TestLiveRegression:
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
 # The torchao Windows-ROCm stub was de-duplicated out of the export/training
 # workers into a shared module; both workers now call into it.
-_TORCHAO_STUB_PATH = (
-    PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
-)
+_TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
 # The wheel-probe subprocess was hoisted out of worker.py into wheel_utils
 # during the wheel-resolver refactor; the probe script literal lives there.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"

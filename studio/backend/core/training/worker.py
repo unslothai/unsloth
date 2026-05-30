@@ -2169,9 +2169,7 @@ def run_training_process(
                 if not _hip_str:
                     # Try the standard "+rocmX.Y.Z" embedded version first
                     # (e.g. "2.11.0+rocm7.13.0").
-                    _ver_match = re.search(
-                        r"rocm(\d+)\.(\d+)", _build_version_for_rocm
-                    )
+                    _ver_match = re.search(r"rocm(\d+)\.(\d+)", _build_version_for_rocm)
                     if _ver_match:
                         return (
                             int(_ver_match.group(1)),

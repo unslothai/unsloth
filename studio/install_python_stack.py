@@ -463,6 +463,7 @@ def _detect_amd_gfx_codes() -> list[str]:
     amd-smi but no rocminfo. Returns an empty list when no probe yields
     a gfx target.
     """
+
     def _extract(text: str) -> list[str]:
         codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())
         return list(dict.fromkeys(f"gfx{c}" for c in codes))

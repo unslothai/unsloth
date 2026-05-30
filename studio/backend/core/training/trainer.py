@@ -666,8 +666,13 @@ class UnslothTrainer:
             # bf16/fp16/float32 auto-detection (including FORCE_FLOAT32 models) is
             # honored -- older NVIDIA without bf16 (T4/V100) must NOT be coerced to
             # float16 here, which the previous unconditional branch did wrongly.
-            _is_rocm = bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
-            _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+            _is_rocm = (
+                bool(getattr(torch.version, "hip", None))
+                or "rocm" in torch.__version__.lower()
+            )
+            _auto_dtype = (
+                torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+            )
 
             # Branch based on model type
             if self._audio_type == "csm":
