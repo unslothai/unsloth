@@ -135,7 +135,7 @@ function ToolGroupTrigger({
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
-          "aui-tool-group-trigger-label-wrapper relative inline-block grow text-left font-medium leading-none",
+          "aui-tool-group-trigger-label-wrapper relative inline-block text-left font-medium leading-none",
         )}
       >
         <span>{label}</span>
@@ -152,7 +152,7 @@ function ToolGroupTrigger({
       <ChevronDownIcon
         data-slot="tool-group-trigger-chevron"
         className={cn(
-          "aui-tool-group-trigger-chevron size-4 shrink-0",
+          "aui-tool-group-trigger-chevron size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",

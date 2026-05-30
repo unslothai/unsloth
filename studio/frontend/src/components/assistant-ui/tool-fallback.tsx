@@ -165,11 +165,11 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 grow text-left leading-none text-muted-foreground",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span className="block truncate">
+        <span className="block break-words">
           {label}:{" "}
           <span className="font-medium text-foreground/85">{displayName}</span>
         </span>
@@ -177,7 +177,7 @@ function ToolFallbackTrigger({
           <span
             aria-hidden={true}
             data-slot="tool-fallback-trigger-shimmer"
-            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate motion-reduce:animate-none"
+            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block break-words motion-reduce:animate-none"
           >
             {label}:{" "}
             <span className="font-medium text-foreground/85">{displayName}</span>
@@ -187,8 +187,9 @@ function ToolFallbackTrigger({
       <ChevronDownIcon
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
-          "aui-tool-fallback-trigger-chevron size-4 shrink-0",
-          "transition-transform duration-(--animation-duration) ease-out",
+          "aui-tool-fallback-trigger-chevron size-3.5 shrink-0",
+          "opacity-0 transition-[transform,opacity] duration-(--animation-duration) ease-out",
+          "group-hover/trigger:opacity-100 group-focus-visible/trigger:opacity-100",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
         )}
