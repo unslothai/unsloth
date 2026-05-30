@@ -1096,6 +1096,11 @@ class TestLiveRegression:
 
 # Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+# The torchao Windows-ROCm stub was de-duplicated out of the export/training
+# workers into a shared module; both workers now call into it.
+_TORCHAO_STUB_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
+)
 # The wheel-probe subprocess was hoisted out of worker.py into wheel_utils
 # during the wheel-resolver refactor; the probe script literal lives there.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
@@ -1654,53 +1659,46 @@ class TestInstallBnbWindowsRocm:
     """Verify AMD Windows BNB wheel install helper."""
 
     def test_calls_pip_install_try_with_win_amd64_url(self):
-        """Should call pip_install_try with the win_amd64 wheel URL."""
+        """Should call pip_install_try with the win_amd64 wheel URL via plain pip."""
         with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
             stack_mod._install_bnb_windows_rocm()
         assert mock_pip.call_count == 1
         call_args = str(mock_pip.call_args_list[0])
         assert "bitsandbytes" in call_args
         assert "win_amd64" in call_args
+        # Must force plain pip (uv mangles the bitsandbytes wheel) -- see
+        # https://unsloth.ai/docs/get-started/install/amd/amd-hackathon
+        assert mock_pip.call_args.kwargs.get("force_pip") is True
 
-    def test_sets_uv_skip_env_var_during_install(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK must be '1' when pip_install_try runs."""
+    def test_forces_plain_pip_not_uv(self):
+        """The bnb wheel must be installed with plain pip, never uv."""
+        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+            stack_mod._install_bnb_windows_rocm()
+        assert mock_pip.call_args.kwargs.get("force_pip") is True
+
+    def test_does_not_touch_uv_skip_env_var(self):
+        """The UV_SKIP_WHEEL_FILENAME_CHECK hack is gone; the env must be untouched."""
         observed = {}
 
         def _capture(*args, **kwargs):
-            observed["val"] = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
+            observed["during"] = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
             return True
 
-        with patch.object(stack_mod, "pip_install_try", side_effect = _capture):
-            stack_mod._install_bnb_windows_rocm()
-        assert observed.get("val") == "1"
-
-    def test_restores_uv_skip_env_var_after_install(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK should be removed after install if it wasn't set before."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-            with patch.object(stack_mod, "pip_install_try", return_value = True):
+            with patch.object(stack_mod, "pip_install_try", side_effect = _capture):
                 stack_mod._install_bnb_windows_rocm()
+            assert observed.get("during") is None
             assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
 
-    def test_restores_previous_uv_skip_value(self):
-        """If UV_SKIP_WHEEL_FILENAME_CHECK was already set, restore it afterwards."""
-        with patch.dict(os.environ, {"UV_SKIP_WHEEL_FILENAME_CHECK": "0"}):
-            with patch.object(stack_mod, "pip_install_try", return_value = True):
-                stack_mod._install_bnb_windows_rocm()
-            assert os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK") == "0"
-
-    def test_restores_env_even_if_install_raises(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK must be cleaned up even on pip failure."""
+    def test_returns_false_on_pip_failure(self):
+        """A failed pip_install_try must surface as a False return, not BNB_ROCM_VERSION."""
         with patch.dict(os.environ, {}, clear = False):
-            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-            with patch.object(
-                stack_mod, "pip_install_try", side_effect = RuntimeError("pip failed")
-            ):
-                try:
-                    stack_mod._install_bnb_windows_rocm()
-                except RuntimeError:
-                    pass
-            assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = False):
+                result = stack_mod._install_bnb_windows_rocm()
+            assert result is False
+            assert "BNB_ROCM_VERSION" not in os.environ
 
     def test_no_op_when_win_amd64_url_missing(self):
         """Should be silent no-op if win_amd64 key absent from _BNB_ROCM_PRERELEASE_URLS."""
@@ -1906,24 +1904,29 @@ class TestWorkerWindowsRocmPatches:
         assert "offs_list" in source
         assert "offs.tolist()" in source
 
+    def test_worker_calls_shared_torchao_stub(self):
+        """worker.py must invoke the shared torchao stub entrypoint."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
     def test_torchao_stub_uses_stub_type_meta(self):
         """Torchao stub must use _StubTypeMeta so isinstance() returns False not TypeError."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "_StubTypeMeta" in source
 
     def test_stub_type_meta_has_instancecheck(self):
         """_StubTypeMeta must define __instancecheck__ returning False."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "__instancecheck__" in source
 
     def test_stub_subpackage_finder_registered(self):
         """_StubSubpackageFinder must be appended to sys.meta_path."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "sys.meta_path.append(_StubSubpackageFinder())" in source
 
     def test_torchao_key_submodules_pre_stubbed(self):
         """Key torchao submodules (dtypes, quantization) must be pre-stubbed."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "torchao.dtypes" in source
         assert "torchao.quantization" in source
 

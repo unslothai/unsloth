@@ -21,6 +21,9 @@ import shutil
 import sys
 import time
 import traceback
+import gc
+import re
+import types
 import subprocess as _sp
 from pathlib import Path
 from typing import Any, Callable
@@ -1259,7 +1262,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     Mirrors the event_queue protocol so the parent process pump works unchanged.
     """
     import time
-    import gc
     import math
     import threading
     import queue as _queue
@@ -2020,121 +2022,13 @@ def run_training_process(
             )
 
     # ── 1d. Stub torchao on Windows ROCm ──
-    # torchao (pulled in by transformers.quantizers) imports
-    # torch.distributed._functional_collectives at module level, which imports
-    # distributed_c10d.py unconditionally — that file crashes on Windows ROCm
-    # because torch._C._distributed_c10d (the RCCL backend) is absent.
-    # torch/distributed/__init__.py itself is guarded by `if is_available()`
-    # so `import torch.distributed` alone is safe; the crash only comes via
-    # torchao's import chain.  Stubbing torchao short-circuits it entirely.
-    # _StubSubpackageFinder handles any depth of torchao.xxx.yyy imports.
-    import types as _types
-    import importlib.machinery as _ilm
-    import importlib.abc as _ilabc
+    # Shared with the export worker; see core/_torchao_stub.py for the full
+    # rationale (torchao -> torch.distributed._functional_collectives crashes on
+    # Windows ROCm because the RCCL backend is absent). No-op off Windows ROCm.
+    # Must run before any import of transformers / unsloth_zoo.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
 
-    _STUB_SENTINEL = object()
-
-    # Metaclass for stub types so that isinstance(x, StubClass) returns False
-    # instead of raising TypeError ("arg 2 must be a type").
-    # peft/tuners/lora/torchao.py does:
-    #   from torchao.dtypes import AffineQuantizedTensor, LinearActivationQuantizedTensor
-    #   isinstance(weight, (AffineQuantizedTensor, LinearActivationQuantizedTensor))
-    # If those names resolve to stub modules rather than types, isinstance() raises.
-    class _StubTypeMeta(type):
-        def __instancecheck__(cls, instance):
-            return False
-
-        def __subclasscheck__(cls, subclass):
-            return False
-
-        def __getattr__(cls, attr):
-            if attr.startswith("__"):
-                raise AttributeError(attr)
-            child = _StubTypeMeta(attr, (), {})
-            setattr(cls, attr, child)
-            return child
-
-        def __call__(cls, *args, **kwargs):
-            return None
-
-    def _make_stub_type(name):
-        """Stub class: accepted by isinstance() (always False), supports attr access."""
-        return _StubTypeMeta(name, (), {})
-
-    def _make_mod_stub(mod_name):
-        m = _types.ModuleType(mod_name)
-        m.__path__ = []
-        m.__package__ = mod_name
-        m._unsloth_stub = _STUB_SENTINEL
-        m.__spec__ = _ilm.ModuleSpec(mod_name, loader = None, is_package = True)
-
-        def _ga(attr, _m = m, _n = mod_name):
-            if attr.startswith("__"):
-                raise AttributeError(attr)
-            # Return a stub CLASS (not a module) so that isinstance(x, attr)
-            # works and returns False instead of raising TypeError.
-            child = _make_stub_type(f"{_n}.{attr}")
-            setattr(_m, attr, child)
-            return child
-
-        m.__getattr__ = _ga
-        return m
-
-    class _StubSubpackageLoader(_ilabc.Loader):
-        def __init__(self, mod_name):
-            self._mod_name = mod_name
-
-        def create_module(self, spec):
-            return _make_mod_stub(self._mod_name)
-
-        def exec_module(self, module):
-            pass
-
-    class _StubSubpackageFinder(_ilabc.MetaPathFinder):
-        def find_spec(self, fullname, path, target = None):
-            if "." not in fullname:
-                return None
-            parent = sys.modules.get(fullname.rsplit(".", 1)[0])
-            if parent is None:
-                return None
-            if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
-                return None
-            return _ilm.ModuleSpec(
-                fullname, _StubSubpackageLoader(fullname), is_package = True
-            )
-
-    # Only stub torchao on Windows ROCm hosts -- on Windows CUDA (NVIDIA) torchao
-    # is real and shadowing it breaks torchao-based quantization paths.
-    # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
-    # ROCM_PATH stay set after a user installs the HIP SDK and reverts to a
-    # CUDA torch wheel. AMD SDK / Radeon ROCm wheels may not set torch.version.hip
-    # but still encode "rocm" in torch.__version__, so accept either.
-    _is_win32_rocm = False
-    if sys.platform == "win32":
-        try:
-            import torch as _torch_probe
-
-            _is_win32_rocm = bool(
-                getattr(getattr(_torch_probe, "version", None), "hip", None)
-                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-            )
-            del _torch_probe
-        except Exception:
-            pass
-    if _is_win32_rocm:
-        # Register the finder only on Windows ROCm -- on other platforms there
-        # are no stub modules seeded, so appending is a pure accumulation.
-        sys.meta_path.append(_StubSubpackageFinder())
-        # Seed torchao top-level + key submodules; the finder handles the rest.
-        for _tao_name in (
-            "torchao",
-            "torchao.quantization",
-            "torchao.dtypes",
-            "torchao.float8",
-            "torchao.utils",
-        ):
-            if _tao_name not in sys.modules:
-                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+    install_torchao_windows_rocm_stub()
 
     # ── 1e. Ensure torch.distributed helper attrs are present ──
     # Single-GPU training never initialises the process group, so these helpers
@@ -2155,7 +2049,7 @@ def run_training_process(
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
     except Exception:
-        _td_mock = _types.ModuleType("torch.distributed")
+        _td_mock = types.ModuleType("torch.distributed")
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
         sys.modules["torch.distributed"] = _td_mock
@@ -2269,15 +2163,13 @@ def run_training_process(
             # (e.g. "2.11.0+rocm7.13.0" or "2.9.0+rocmsdk20251116"); fall back
             # to that string when version.hip is missing.
             def _hip_ver_at_least(major: int, minor: int) -> bool:
-                import re as _re_ver
-
                 _hip_str = getattr(
                     getattr(_torch_for_rocm, "version", None), "hip", None
                 )
                 if not _hip_str:
                     # Try the standard "+rocmX.Y.Z" embedded version first
                     # (e.g. "2.11.0+rocm7.13.0").
-                    _ver_match = _re_ver.search(
+                    _ver_match = re.search(
                         r"rocm(\d+)\.(\d+)", _build_version_for_rocm
                     )
                     if _ver_match:
