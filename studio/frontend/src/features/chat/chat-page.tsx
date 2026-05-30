@@ -159,10 +159,12 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
+  canCompare,
   onEnterCompare,
 }: {
   threadId?: string;
   newThreadNonce?: string;
+  canCompare?: boolean;
   onEnterCompare?: () => void;
 }): ReactElement {
   return (
@@ -175,6 +177,7 @@ const SingleContent = memo(function SingleContent({
         <Thread
           hideWelcome={Boolean(threadId)}
           targetThreadId={threadId}
+          canCompare={canCompare}
           onEnterCompare={onEnterCompare}
         />
       </div>
@@ -1634,6 +1637,7 @@ export function ChatPage(): ReactElement {
             key={view.threadId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            canCompare={canCompare}
             onEnterCompare={enterCompare}
           />
         ) : (

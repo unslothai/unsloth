@@ -125,8 +125,15 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ hideComposer, hideWelcome, targetThreadId, onEnterCompare }) => {
+}> = ({
+  hideComposer,
+  hideWelcome,
+  targetThreadId,
+  canCompare = true,
+  onEnterCompare,
+}) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
@@ -172,6 +179,7 @@ export const Thread: FC<{
                 <ThreadWelcome
                   hideComposer={hideComposer}
                   threadId={threadId}
+                  canCompare={canCompare}
                   onEnterCompare={onEnterCompare}
                 />
               </AuiIf>
@@ -216,6 +224,7 @@ export const Thread: FC<{
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
+                canCompare={canCompare}
                 onEnterCompare={onEnterCompare}
               />
             </AuiIf>
@@ -321,8 +330,9 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ disabled, threadId, onEnterCompare }) => {
+}> = ({ disabled, threadId, canCompare = true, onEnterCompare }) => {
   const { overlay } = useGeneratedImageOverlay();
 
   return (
@@ -342,6 +352,7 @@ const ThreadComposerDock: FC<{
             disabled={disabled}
             threadId={threadId}
             menuSide="top"
+            canCompare={canCompare}
             onEnterCompare={onEnterCompare}
           />
         </div>
@@ -388,8 +399,9 @@ function getWelcomeEmoji(): string {
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ hideComposer, threadId, onEnterCompare }) => {
+}> = ({ hideComposer, threadId, canCompare = true, onEnterCompare }) => {
   const [currentEmoji] = useState(getWelcomeEmoji);
 
   const currentEmojiSrc =
@@ -410,6 +422,7 @@ const ThreadWelcome: FC<{
           {!hideComposer && (
             <ComposerAnimated
               threadId={threadId}
+              canCompare={canCompare}
               onEnterCompare={onEnterCompare}
             />
           )}
@@ -423,8 +436,9 @@ const ComposerAnimated: FC<{
   disabled?: boolean;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ disabled, threadId, menuSide, onEnterCompare }) => {
+}> = ({ disabled, threadId, menuSide, canCompare = true, onEnterCompare }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[660px]">
       <div className="relative z-10 w-full">
@@ -432,6 +446,7 @@ const ComposerAnimated: FC<{
           disabled={disabled}
           threadId={threadId}
           menuSide={menuSide}
+          canCompare={canCompare}
           onEnterCompare={onEnterCompare}
         />
       </div>
@@ -467,8 +482,9 @@ const Composer: FC<{
   disabled?: boolean;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ disabled, threadId, menuSide, onEnterCompare }) => {
+}> = ({ disabled, threadId, menuSide, canCompare = true, onEnterCompare }) => {
   const aui = useAui();
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -654,6 +670,7 @@ const Composer: FC<{
         <div className="unsloth-composer-left">
           <ComposerToolsMenu
             side={effectiveMenuSide}
+            canCompare={canCompare}
             onEnterCompare={onEnterCompare}
           />
           {composerExpanded ? (
@@ -1477,8 +1494,9 @@ const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
 // welcome composer; the docked composer passes side="top" to open upward.
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
+  canCompare?: boolean;
   onEnterCompare?: () => void;
-}> = ({ side = "bottom", onEnterCompare }) => {
+}> = ({ side = "bottom", canCompare = true, onEnterCompare }) => {
   const navigate = useNavigate();
   const setSettingsPanelOpen = useChatRuntimeStore(
     (s) => s.setSettingsPanelOpen,
@@ -1559,6 +1577,9 @@ const ComposerToolsMenu: FC<{
   }, [codeMenuDisabled, codeToolsEnabled, setCodeToolsEnabled]);
 
   const startCompare = useCallback(() => {
+    if (!canCompare) {
+      return;
+    }
     if (onEnterCompare) {
       onEnterCompare();
       return;
@@ -1567,7 +1588,7 @@ const ComposerToolsMenu: FC<{
     store.setActiveThreadId(null);
     store.setContextUsage(null);
     navigate({ to: "/chat", search: { compare: createCompareId() } });
-  }, [navigate, onEnterCompare]);
+  }, [canCompare, navigate, onEnterCompare]);
 
   return (
     <DropdownMenu>
@@ -1672,7 +1693,7 @@ const ComposerToolsMenu: FC<{
               <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
               Canvas (coming soon)
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => startCompare()}>
+            <DropdownMenuItem disabled={!canCompare} onSelect={startCompare}>
               <Columns2Icon />
               Compare chat
             </DropdownMenuItem>
