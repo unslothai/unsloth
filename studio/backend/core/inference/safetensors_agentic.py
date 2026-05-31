@@ -18,6 +18,7 @@ cumulative text and dispatches them via ``core.inference.tools``.
 """
 
 import json
+import re
 import threading
 from typing import Callable, Generator, Optional
 from urllib.parse import urlparse
@@ -41,6 +42,24 @@ logger = get_logger(__name__)
 
 # Buffer cap while waiting to disambiguate a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
+
+# Forward-looking intent ("I'll...", "First, ...", "Step 1:") that
+# means the model is planning rather than answering. Used to nudge it
+# to call a tool. Excludes "I can / I should / I want / let's" because
+# those also appear in direct answers and explanations. Mirrors GGUF.
+_INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    r"|\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
+    r"|\b(?:now i|next i)\b"
+    r")"
+)
+_MAX_REPROMPTS = 3
+_REPROMPT_MAX_CHARS = 2000
+_REPROMPT_INSTRUCTION = (
+    "STOP. Do NOT write code or explain. You MUST call a tool NOW. "
+    "Call web_search or python immediately."
+)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -142,6 +161,7 @@ def run_safetensors_tool_loop(
         if (tool.get("function") or {}).get("name")
     }
     next_call_id = 0
+    reprompt_count = 0
 
     if max_tool_iterations <= 0:
         # 0 = disabled (same contract as the GGUF loop).
@@ -152,7 +172,9 @@ def run_safetensors_tool_loop(
     _state_streaming = 1
     _state_draining = 2
 
-    for iteration in range(max_tool_iterations + 1):
+    # Reserve re-prompt slots so they don't eat the caller's tool budget.
+    _extra_iters = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+    for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
 
@@ -242,24 +264,57 @@ def run_safetensors_tool_loop(
             if stripped and has_tool_signal(stripped):
                 detect_state = _state_draining
             else:
+                # Drain the buffer and fall through to STREAMING so the
+                # intent re-prompt + safety-net parser can still fire on
+                # short emissions like "Let me search." that never exit
+                # BUFFERING (would otherwise silently end the loop).
                 if content_buffer:
                     cumulative_display += content_buffer
-                    yield {
-                        "type": "content",
-                        "text": strip_tool_markup(cumulative_display, final = True),
-                    }
-                yield {"type": "status", "text": ""}
-                return
+                    cleaned = strip_tool_markup(cumulative_display, final = True)
+                    if len(cleaned) > len(last_emitted):
+                        last_emitted = cleaned
+                        yield {"type": "content", "text": cleaned}
+                detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # No tool detected mid-stream -- check for late tool XML.
-            safety_tc = None
-            if has_tool_signal(content_accum):
-                safety_tc = parse_tool_calls_from_text(
-                    content_accum,
-                    id_offset = next_call_id,
-                )
+            # No tool XML detected mid-stream -- run the parser anyway.
+            # The Llama-3.2 bare-JSON tool form ``{"name":..,"parameters":..}``
+            # carries no XML signal, so gating this on has_tool_signal()
+            # silently dropped real tool calls and re-prompted the model into
+            # giving up. parse_tool_calls_from_text is strict (it only fires
+            # on a valid tool-call shape), so plain answers stay untouched.
+            # This mirrors what llama-server already does for GGUF.
+            safety_tc = parse_tool_calls_from_text(
+                content_accum,
+                id_offset = next_call_id,
+            )
             if not safety_tc:
+                # Re-prompt only when the model planned without acting
+                # (intent signal present); direct answers like "4" or
+                # "Hello!" never trigger. Mirrors GGUF.
+                _stripped = content_accum.strip()
+                if (
+                    tools
+                    and reprompt_count < _MAX_REPROMPTS
+                    and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
+                    and _INTENT_SIGNAL.search(_stripped)
+                    and not final_attempt_done
+                ):
+                    reprompt_count += 1
+                    logger.info(
+                        "Safetensors re-prompt %d/%d: model planned without "
+                        "calling tools (%d chars)",
+                        reprompt_count,
+                        _MAX_REPROMPTS,
+                        len(_stripped),
+                    )
+                    conversation.append({"role": "assistant", "content": _stripped})
+                    conversation.append(
+                        {"role": "user", "content": _REPROMPT_INSTRUCTION}
+                    )
+                    yield {"type": "status", "text": ""}
+                    continue
+
                 # Final answer: streaming already emitted content.
                 # Skip a final=True re-strip so literal "<tool_call>"
                 # in prose survives when no real tool call parsed.
@@ -379,7 +434,10 @@ def run_safetensors_tool_loop(
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
-        if iteration + 1 >= max_tool_iterations and not final_attempt_done:
+        # Track against the caller-requested cap, excluding re-prompt
+        # slots so a stalling model still gets a final-answer attempt.
+        _tool_iters_done = iteration + 1 - reprompt_count
+        if _tool_iters_done >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append(

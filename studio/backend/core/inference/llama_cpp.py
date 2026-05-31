@@ -45,7 +45,14 @@ from core.tool_healing import (
     _TOOL_ALL_PATS,
     _TOOL_CLOSED_PATS,
     parse_tool_calls_from_text,
-    strip_tool_call_markup,
+)
+
+# Share strip / signal constants with the multi-format parser so the
+# BUFFERING state machine also catches Llama-3 / Mistral / Gemma 4
+# emissions (legacy helper only knew <tool_call> / <function=).
+from core.inference.tool_call_parser import (
+    TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
+    strip_tool_markup as _shared_strip_tool_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
@@ -4600,14 +4607,12 @@ class LlamaCppBackend:
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            return strip_tool_call_markup(text, final = final)
+            return _shared_strip_tool_markup(text, final = final)
 
-        # XML prefixes that signal a tool call in content.
-        # Empty when auto_heal is disabled so the buffer never
-        # speculatively holds content for XML detection.
-        _TOOL_XML_SIGNALS = (
-            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
-        )
+        # Markers the BUFFERING state machine watches for; covers Qwen,
+        # Qwen3.5, Llama-3, Mistral, and Gemma 4. Empty when auto-heal
+        # is off so the buffer never speculatively holds content.
+        _TOOL_XML_SIGNALS = _SHARED_TOOL_XML_SIGNALS if auto_heal_tool_calls else ()
         _MAX_BUFFER_CHARS = 32
 
         # ── Duplicate tool-call detection ────────────────────────
@@ -5158,7 +5163,15 @@ class LlamaCppBackend:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
                             if auto_heal_tool_calls:
-                                arguments = {"query": raw_args}
+                                # Canonical per-tool heal key (must match
+                                # safetensors_agentic._CANONICAL_HEAL_ARG)
+                                # so bare-string emissions still run the
+                                # intended tool.
+                                _heal_key = {
+                                    "python": "code",
+                                    "terminal": "command",
+                                }.get(tool_name, "query")
+                                arguments = {_heal_key: raw_args}
                             else:
                                 arguments = {"raw": raw_args}
                     else:
