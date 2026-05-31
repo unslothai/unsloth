@@ -1027,8 +1027,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "use_fp16 = getattr(args, 'fp16', False)\n"
             "if type(use_fp16) is not bool: use_fp16 = False\n"
             "force_float32 = False\n"
+            # device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16
+            # but AMD/Intel are unaffected; fall back on older unsloth_zoo.
+            "try:\n"
+            "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
+            "except Exception:\n"
+            "    _bf16_supported = torch.cuda.is_bf16_supported\n"
+            # FORCE_FLOAT32 models (Gemma3, gpt_oss, ...) cannot use float16. On a GPU without
+            # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
+            # full finetuning can still use bf16 autocast (master weights stay float32), which is
+            # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
             "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            "if not full_finetuning and (os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'):\n"
+            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
@@ -1037,8 +1047,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
+            "bfloat16 = dtype == torch.bfloat16\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
-            "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
+            "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
             "    # Forced float32 training\n"
             "    args.fp16 = False\n"
@@ -1047,11 +1058,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
-            "    # Mixed precision training\n"
-            "    args.fp16 = float16\n"
-            "    args.bf16 = not float16\n"
-            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
-            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
+            "    use_bf16_amp = (not float16) and _bf16_supported()\n"
+            "    args.fp16 = not use_bf16_amp\n"
+            "    args.bf16 = use_bf16_amp\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16_amp else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16_amp else 'fp16'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif mixed_precision_dtype == 'bfloat16':\n"
             "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
