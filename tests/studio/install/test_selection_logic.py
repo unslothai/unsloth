@@ -2208,8 +2208,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
             [("14.0", "cuda14"), ("13.3", "cuda13"), ("12.4", "cuda12")]
         )
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (14, 0), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (14, 0),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda14"
@@ -2220,8 +2222,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 3), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda13"
@@ -2232,8 +2236,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 1), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda12"
