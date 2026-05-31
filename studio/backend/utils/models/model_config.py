@@ -1159,16 +1159,15 @@ def detect_gguf_model(path: str) -> Optional[str]:
     if p.suffix.lower() == ".gguf":
         if _is_mmproj(p.name):
             return None
-        # Don't gate on p.is_file() or p.exists() — on Windows, both call
-        # stat() internally and can raise OSError during the brief lock window
-        # after llama-server is killed, causing fallthrough to the transformers
-        # backend with a confusing "No config file found" error. The extension
-        # alone is enough to identify a GGUF file. If the file is truly missing,
-        # llama-server raises a clear FileNotFoundError instead.
-        # Use absolute (not resolve) to preserve symlink names -- e.g.
-        # Ollama .studio_links/model.gguf -> blobs/sha256-... should
-        # keep the readable symlink name, not the opaque blob hash.
-        return str(p.absolute())
+        # Extension is authoritative: don't gate on is_file()/exists(), which
+        # can fail in the Windows lock window after llama-server is killed.
+        try:
+            is_dir = p.is_dir()
+        except OSError:
+            is_dir = False  # stat() unavailable in the lock window
+        if not is_dir:
+            return str(p.absolute())  # absolute() keeps symlink names readable
+        # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():

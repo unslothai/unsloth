@@ -85,6 +85,17 @@ def test_detects_gguf_in_directory(tmp_path):
     assert result.endswith("model-Q4_K_M.gguf")
 
 
+def test_directory_named_like_gguf_scans_inside(tmp_path):
+    """A directory named *.gguf resolves the real .gguf inside, not itself."""
+    gguf_dir = tmp_path / "mymodel.gguf"
+    gguf_dir.mkdir()
+    inner = gguf_dir / "model-Q4_K_M.gguf"
+    inner.write_bytes(b"")
+    result = detect_gguf_model(str(gguf_dir))
+    assert result is not None
+    assert result.endswith("model-Q4_K_M.gguf")
+
+
 def test_returns_none_for_non_gguf_path(tmp_path):
     """Non-.gguf paths with no .gguf files inside return None."""
     result = detect_gguf_model(str(tmp_path))
