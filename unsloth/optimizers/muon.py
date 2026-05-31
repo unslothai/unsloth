@@ -82,7 +82,7 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     # torch.nn.RMSNorm (e.g. LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm,
     # GemmaRMSNorm, Phi3RMSNorm, etc.).  Matches HuggingFace Trainer's
     # convention of excluding norm weights from weight decay.
-    _norm_name_pattern = _re.compile(r"(?:layernorm|rmsnorm|norm)", _re.IGNORECASE)
+    _norm_name_pattern = _re.compile(r"(?:layernorm|rmsnorm|^norm$|\.norm\b)", _re.IGNORECASE)
     for name, param in model.named_parameters():
         if name not in no_decay_names and _norm_name_pattern.search(name.rsplit(".", 1)[0]):
             no_decay_names.add(name)
@@ -161,9 +161,14 @@ def make_muon_param_groups(
     adamw_no_decay_params: list[torch.Tensor] = []
     adamw_embedding_params: list[torch.Tensor] = []
 
+    seen_params: set[int] = set()
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
+        ptr = param.data_ptr()
+        if ptr in seen_params:
+            continue
+        seen_params.add(ptr)
 
         is_embedding = name in embedding_names
         is_no_decay = name in no_decay_names or param.ndim == 1

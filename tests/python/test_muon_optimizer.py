@@ -1679,3 +1679,175 @@ def test_no_decay_takes_precedence_over_embedding():
             "Overlapping param must be in AdamW no-decay group (weight_decay=0.0)"
     finally:
         muon_mod._classify_param_names = original
+
+
+# -- Tests: R13 H1 — adamw_betas sentinel identity comparison -----------------
+
+
+def test_adamw_betas_sentinel_overrides_training_args():
+    """Config adamw_betas=(0.9, 0.999) must override TrainingArguments(adam_beta1=0.95)."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.95
+    args.adam_beta2 = 0.99
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig(adamw_betas=(0.9, 0.999))
+    result = trainer._create_muon_optimizer(config)
+    actual = result.adamw.param_groups[0]["betas"]
+    assert actual == (0.9, 0.999), \
+        f"Config must override TrainingArguments even when value matches default, got {actual}"
+
+
+# -- Tests: R13 L3 — _classify_param_names tied embedding detection via data_ptr
+
+
+def test_tied_embedding_detected_via_data_ptr():
+    """Tied embedding must be excluded from Muon via data_ptr detection."""
+    from unsloth.optimizers.muon import _classify_param_names
+
+    model = torch.nn.Module()
+    model.emb = torch.nn.Embedding(10, 4)
+    model.lm_head = torch.nn.Linear(4, 10, bias=False)
+    model.lm_head.weight = torch.nn.Parameter(model.emb.weight)
+
+    embedding_names, _ = _classify_param_names(model)
+    assert "emb.weight" in embedding_names
+    assert "lm_head.weight" in embedding_names, \
+        "Tied lm_head.weight must be in embedding_names"
+
+
+# -- Tests: R13 H2 — Tied non-embedding parameter deduplication ---------------
+
+
+def test_tied_non_embedding_not_duplicated():
+    """Shared tensor must not appear twice in muon_params."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Module()
+    weight = torch.nn.Parameter(torch.randn(4, 4))
+    model.register_parameter("shared_weight", weight)
+    model.register_parameter("shared_weight_alias", weight)
+
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
+    muon_params_list = [p for g in muon_g for p in g["params"]]
+    count = sum(1 for p in muon_params_list if p.data_ptr() == weight.data_ptr())
+    assert count == 1, f"Shared tensor appears {count} times in muon_params (expected 1)"
+
+
+# -- Tests: R13 M2 — embedding_lr=0.0 warning --------------------------------
+
+
+def test_embedding_lr_zero_warning(caplog):
+    """embedding_lr=0.0 must produce a warning."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+    _skip_if_no_muon()
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig(embedding_lr=0.0)
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert any("embedding_lr=0.0" in record.getMessage() for record in caplog.records), \
+        "Expected warning about embedding_lr=0.0"
+
+
+# -- Tests: R13 MT4 — modules_to_save norm classification --------------------
+
+
+def test_modules_to_save_norm_goes_to_no_decay():
+    """PEFT-wrapped norm copies must go to AdamW no-decay."""
+    from unsloth.optimizers.muon import _classify_param_names
+
+    model = torch.nn.Module()
+    model.norm = torch.nn.LayerNorm(4)
+    peft_param = torch.nn.Parameter(torch.randn(4))
+    model._parameters["norm.modules_to_save.default.weight"] = peft_param
+
+    _, no_decay_names = _classify_param_names(model)
+    assert "norm.modules_to_save.default.weight" in no_decay_names
+
+
+# -- Tests: R13 MT5 — has_muon_params=False (no Muon params) -----------------
+
+
+def test_no_muon_params_optimizer():
+    """No 2D params -> muon=None, but optimizer must still be constructable."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Module()
+    model.register_parameter("bias", torch.nn.Parameter(torch.randn(4)))
+
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig()
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert result.muon is None
+    assert result.adamw is not None
+
+
+# -- Tests: R13 MT6 — not adamw_groups (no AdamW params) --------------------
+
+
+def test_no_adamw_params_optimizer():
+    """All trainable params are 2D Muon-eligible -> adamw=None."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4, bias=False)
+
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig()
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert result.muon is not None
+    assert result.adamw is None

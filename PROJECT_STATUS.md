@@ -1,7 +1,7 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 12
-## Global Status: READY_FOR_MERGE (all R12 findings resolved)
+## Current Round: 13
+## Global Status: READY_FOR_MERGE (all R13 findings resolved)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
@@ -18,10 +18,24 @@
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
 - [ ] **[R11 M4]** `modal_validate_muon.py` model name may not resolve on HF Hub — **Deferred:** Use a known-good model revision. Validation infrastructure risk.
-- [ ] **[R11 L4]** `_norm_name_pattern` regex false-positive risk — **Deferred:** Low probability. Monitor for future HF model naming conventions. (Deferred R8/R10/R11)
 - [ ] **[R11 L5]** No verification that `muon.defaults` contains expected keys — **Deferred:** Maintenance risk if upstream Muon changes defaults format.
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 13 Resolutions
+- [x] **[R13] [H1]** `adamw_betas` sentinel uses identity comparison instead of value comparison — **Fixed:** Added `_ADAMW_BETAS_UNSET = object()` sentinel alongside `_ADAMW_EPS_UNSET`. Default changed from `(0.9, 0.999)` to `_ADAMW_BETAS_UNSET`. Comparison changed from `!= (0.9, 0.999)` to `is not MuonConfig._ADAMW_BETAS_UNSET`. Validation in `__post_init__` skips sentinel. (`unsloth/trainer.py:208, 219, 308-314, 711-717`).
+- [x] **[R13] [H2]** Non-embedding tied parameters receive duplicate Muon updates — **Fixed:** Added `data_ptr()`-based deduplication in `make_muon_param_groups` param routing loop. Shared tensors are now skipped after the first occurrence. (`unsloth/optimizers/muon.py:162-167`).
+- [x] **[R13] [M1]** `_norm_name_pattern` regex matches non-norm names containing "norm" — **Fixed:** Regex hardened from `r"(?:layernorm|rmsnorm|norm)"` to `r"(?:layernorm|rmsnorm|^norm$|\.norm\b)"` to exclude names like `normalizer`. (`unsloth/optimizers/muon.py:85`).
+- [x] **[R13] [M2]** `embedding_lr=0.0` silently freezes embeddings — **Fixed:** Warning logged when `embedding_lr == 0.0` informing users that embeddings will receive zero gradient updates. (`unsloth/trainer.py:649-655`).
+- [x] **[R13] [L1]** `weight_decay` kwarg omitted from `torch.optim.Muon` constructor — **Fixed:** `weight_decay=muon_weight_decay` added to `muon_kwargs` dict. Redundant with per-group value but ensures upstream validation runs. (`unsloth/trainer.py:692`).
+- [x] **[R13] [L2]** Missing sentinel test for `adamw_betas` — **Added:** `test_adamw_betas_sentinel_overrides_training_args` verifies config `(0.9, 0.999)` overrides `TrainingArguments(adam_beta1=0.95)`.
+- [x] **[R13] [L3]** Missing `_classify_param_names` tied embedding test — **Added:** `test_tied_embedding_detected_via_data_ptr` verifies `data_ptr()` aliasing correctly propagates embedding classification.
+- [x] **[R13] [MT1]** Tied non-embedding parameter detection test — **Added:** `test_tied_non_embedding_not_duplicated` verifies shared tensors appear once in `muon_params`.
+- [x] **[R13] [MT2]** `adamw_betas` sentinel exact match test — **Added:** Covered by L2 test (same test case).
+- [x] **[R13] [MT3]** `embedding_lr=0.0` warning test — **Added:** `test_embedding_lr_zero_warning` verifies warning is emitted.
+- [x] **[R13] [MT4]** PEFT norm `modules_to_save` test — **Added:** `test_modules_to_save_norm_goes_to_no_decay` verifies norm copies classified as no_decay.
+- [x] **[R13] [MT5]** No Muon params edge case — **Added:** `test_no_muon_params_optimizer` verifies `muon=None` when no 2D params.
+- [x] **[R13] [MT6]** No AdamW params edge case — **Added:** `test_no_adamw_params_optimizer` verifies `adamw=None` when all params are 2D Muon-eligible.
 
 ### Round 12 Resolutions
 - [x] **[R12] [M1]** `_sync_lr` group count check extracted into `_assert_group_count_matches` — **Fixed:** Sync loop removed (dead code due to identity-sharing). Group count check isolated into `_assert_group_count_matches()` called from `step()`. `MUON_SYNC_KEYS`/`ADAMW_SYNC_KEYS` frozensets removed. (`unsloth/trainer.py:469-482, 514`).
@@ -142,9 +156,9 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from twelve review passes (R0–R12) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
-- **Latest Input Telemetry Source:** `MUON_REVIEW_12.md` (this round)
-- **Merge Recommendation as of R12:** APPROVE (all R12 issues resolved — see MUON_REVIEW_12.md for details)
+- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from thirteen review passes (R0–R13) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
+- **Latest Input Telemetry Source:** `MUON_REVIEW_13.md` (this round)
+- **Merge Recommendation as of R13:** APPROVE (all R13 issues resolved — see MUON_REVIEW_13.md for details)
 - **Inviolable Architecture Constraints:**
     1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
     2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.

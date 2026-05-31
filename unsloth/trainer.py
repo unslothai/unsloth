@@ -205,6 +205,7 @@ class MuonConfig:
     """
 
     _ADAMW_EPS_UNSET = object()
+    _ADAMW_BETAS_UNSET = object()
 
     momentum: float = 0.95
     nesterov: bool = True
@@ -215,7 +216,7 @@ class MuonConfig:
     muon_eps: float = 1e-7
     muon_weight_decay: Optional[float] = None
     adamw_lr: Optional[float] = None
-    adamw_betas: tuple = (0.9, 0.999)
+    adamw_betas: object = _ADAMW_BETAS_UNSET
     adamw_eps: object = _ADAMW_EPS_UNSET
     adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
@@ -300,11 +301,12 @@ class MuonConfig:
             raise TypeError(
                 f"MuonConfig.nesterov must be a bool, got {type(self.nesterov).__name__}."
             )
-        if not isinstance(self.adamw_betas, tuple) or len(self.adamw_betas) != 2:
-            raise ValueError(
-                f"MuonConfig.adamw_betas must be a tuple of 2 floats, "
-                f"got {self.adamw_betas}."
-            )
+        if self.adamw_betas is not MuonConfig._ADAMW_BETAS_UNSET:
+            if not isinstance(self.adamw_betas, tuple) or len(self.adamw_betas) != 2:
+                raise ValueError(
+                    f"MuonConfig.adamw_betas must be a tuple of 2 floats, "
+                    f"got {self.adamw_betas}."
+                )
         if self.adjust_lr_fn is not None:
             if not isinstance(self.adjust_lr_fn, str):
                 raise TypeError(
@@ -643,6 +645,12 @@ class UnslothTrainer(SFTTrainer):
         weight_decay = self.args.weight_decay  # save original for AdamW fallback
         embedding_lr = config.embedding_lr if config.embedding_lr is not None \
             else getattr(self.args, "embedding_learning_rate", None)
+        if embedding_lr is not None and embedding_lr == 0.0:
+            logger.warning(
+                "Unsloth: embedding_lr=0.0 — embeddings will receive zero gradient updates. "
+                "Leave embedding_lr=None (default) to use the AdamW learning rate, "
+                "or set a positive value."
+            )
 
         muon_weight_decay = config.muon_weight_decay if config.muon_weight_decay is not None else weight_decay
         adamw_weight_decay = config.adamw_weight_decay if config.adamw_weight_decay is not None else weight_decay
@@ -686,6 +694,7 @@ class UnslothTrainer(SFTTrainer):
             eps=config.muon_eps,
             ns_coefficients=config.ns_coefficients,
             adjust_lr_fn=config.adjust_lr_fn,
+            weight_decay=muon_weight_decay,
         )
         # Filter None values — upstream torch.optim.Muon stores them verbatim in defaults,
         # then crashes in step() when iterating None (e.g. len(None) in _zeropower_via_newtonschulz).
@@ -703,7 +712,7 @@ class UnslothTrainer(SFTTrainer):
         else:
             muon_optimizer = None
 
-        if config.adamw_betas != (0.9, 0.999):
+        if config.adamw_betas is not MuonConfig._ADAMW_BETAS_UNSET:
             adamw_betas = config.adamw_betas
         else:
             adamw_betas = (
