@@ -3317,7 +3317,11 @@ def _pinned_windows_cuda_fallback(
     b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
     (dormant) whenever the in-release selection already offers a Blackwell-capable
     build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14), so it self-disables
-    once upstream ships a driver-runnable build again."""
+    once upstream ships a driver-runnable build again.
+
+    The b9360 binary reuses the current release's source tree and convert scripts
+    and is recorded via binary_release_tag, the same binary/source split used for
+    the lemonade prebuilt."""
     if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
         return None
     driver = host.driver_cuda_version
