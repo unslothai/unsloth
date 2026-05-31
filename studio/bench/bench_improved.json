@@ -1,0 +1,97 @@
+{
+  "label": "improved",
+  "base": "http://127.0.0.1:8912",
+  "warmup_s": 0.0,
+  "kb": "c4d2d437-ca46-49d5-9cf0-10f1f84d023b",
+  "corpus_index": [
+    {
+      "file": "attention_1706.03762.pdf",
+      "elapsed_s": 7.403,
+      "chunks": 20,
+      "status": "completed",
+      "document_id": "9135a31a-383e-4c5b-bab4-3788ad9ec048",
+      "which": "cold"
+    },
+    {
+      "file": "bert_1810.04805.pdf",
+      "elapsed_s": 7.96,
+      "chunks": 29,
+      "status": "completed",
+      "document_id": "5af121ca-377e-4747-99a9-ee0a36e2466e",
+      "which": "warm"
+    },
+    {
+      "file": "rag_2005.11401.pdf",
+      "elapsed_s": 6.942,
+      "chunks": 26,
+      "status": "completed",
+      "document_id": "6a1ce2dc-ccf8-4d7e-acc9-ff1ff3cb942f",
+      "which": "warm"
+    },
+    {
+      "file": "rfc9110.txt",
+      "elapsed_s": 1.169,
+      "chunks": 1,
+      "status": "completed",
+      "document_id": "80f821fb-9ac7-49fc-9a9c-589c7514f0e6",
+      "which": "warm"
+    }
+  ],
+  "accuracy": {
+    "bm25": {
+      "recall@1": 0.75,
+      "recall@3": 0.75,
+      "recall@5": 0.875,
+      "mrr": 0.775,
+      "search_ms_median": 8.93
+    },
+    "dense": {
+      "recall@1": 0.75,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr": 0.875,
+      "search_ms_median": 15.18
+    },
+    "hybrid": {
+      "recall@1": 0.75,
+      "recall@3": 0.875,
+      "recall@5": 1.0,
+      "mrr": 0.844,
+      "search_ms_median": 12.56
+    }
+  },
+  "scaling": [
+    {
+      "n": 1,
+      "elapsed_s": 0.118
+    },
+    {
+      "n": 2,
+      "elapsed_s": 0.117
+    },
+    {
+      "n": 3,
+      "elapsed_s": 0.118
+    },
+    {
+      "n": 4,
+      "elapsed_s": 0.118
+    },
+    {
+      "n": 5,
+      "elapsed_s": 0.117
+    },
+    {
+      "n": 6,
+      "elapsed_s": 0.117
+    },
+    {
+      "n": 7,
+      "elapsed_s": 0.118
+    },
+    {
+      "n": 8,
+      "elapsed_s": 0.118
+    }
+  ]
+}

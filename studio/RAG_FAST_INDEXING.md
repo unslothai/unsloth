@@ -44,4 +44,46 @@ isolation.
 
 ## Results
 
-Pending - populated as runs complete (see commits below).
+Measured through the real Studio HTTP API on two isolated Studios (baseline = flag unset on
+port 8905, improved = `UNSLOTH_RAG_FAST=1` on port 8912), same `bge-small-en-v1.5` embedder, same
+corpus, same chunk settings. Single GPU.
+
+### Indexing latency (upload to ready)
+
+| Document | Baseline | Improved | Speedup |
+|---|--:|--:|--:|
+| attention (1706.03762, 20 chunks) | 23.4 s | 7.4 s | 3.2x |
+| bert (1810.04805, 29 chunks) | 24.6 s | 8.0 s | 3.1x |
+| rag (2005.11401, 26 chunks) | 23.2 s | 6.9 s | 3.4x |
+| rfc9110.txt | 19.4 s | 1.2 s | 16x |
+| **mean** | **22.7 s** | **5.9 s** | **~4x** |
+
+Every baseline upload pays ~17 s of subprocess startup + model reload regardless of document size
+(note rfc9110 at 19.4 s for one chunk). The improved path removes that fixed cost; what remains is
+parse + embed.
+
+### Scaling: 8 small docs into one knowledge base, per-document index time
+
+| | Baseline | Improved |
+|---|--:|--:|
+| per-doc mean | 17.6 s | **0.12 s** |
+| behavior | flat (subprocess dominates) | flat, ~147x faster |
+
+(The bm25s O(N^2) scope rebuild is additionally eliminated; at small N the subprocess cost
+dominates, but a standalone benchmark showed the rebuild alone is 25x overhead at 50 docs.)
+
+### Retrieval accuracy (8 gold queries over the 4 docs, scored independently of generation)
+
+| Mode | Baseline R@5 / MRR | Improved R@5 / MRR |
+|---|--:|--:|
+| bm25 | 0.875 / 0.807 | 0.875 / 0.775 |
+| dense | 1.000 / 0.875 | 1.000 / 0.875 |
+| hybrid | 1.000 / 0.833 | 1.000 / 0.844 |
+
+No regression: dense and hybrid Recall@5 are 1.0 on both; hybrid MRR is slightly higher on the
+improved path. Search latency on the improved path: 9-15 ms median (FTS5 + sqlite-vec).
+
+### Summary
+
+Indexing a paper drops from ~23 s to ~7 s and a small document from ~18 s to ~0.12 s, with
+retrieval accuracy held constant. UI walkthrough (Playwright) and the local-GGUF chat path follow.
