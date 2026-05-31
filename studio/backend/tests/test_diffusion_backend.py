@@ -622,7 +622,7 @@ def test_prompt_embedding_cache_unwraps_flux2_klein_auxiliary_text_ids(monkeypat
     assert hasattr(backend._prompt_embedding_cache_value[0], "shape")
 
 
-def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance():
+def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(monkeypatch):
     import torch
     from core.inference import diffusion as d
 
@@ -648,6 +648,7 @@ def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(
             assert self.config.is_distilled is False
 
     pipe = _Pipe()
+    monkeypatch.setenv("UNSLOTH_STUDIO_FLUX2_KLEIN_SINGLE_PASS_GUIDANCE", "1")
 
     assert d._enable_flux2_klein_embedded_guidance(pipe, fam) is True
     assert pipe.config.is_distilled is False
@@ -662,6 +663,17 @@ def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(
     assert guidance.device == hidden_states.device
     assert guidance.dtype is torch.float32
     assert guidance.tolist() == [4.0, 4.0]
+
+
+def test_flux2_klein_embedded_guidance_patch_is_opt_in(monkeypatch):
+    from core.inference import diffusion as d
+
+    fam = next(f for f in d._FAMILIES if f.name == "flux.2-klein")
+    pipe = SimpleNamespace(transformer = SimpleNamespace(forward = lambda **_: None))
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_FLUX2_KLEIN_SINGLE_PASS_GUIDANCE", raising = False)
+
+    assert d._enable_flux2_klein_embedded_guidance(pipe, fam) is False
 
 
 def test_aggressive_memory_policy_enables_vae_slicing_and_tiling():

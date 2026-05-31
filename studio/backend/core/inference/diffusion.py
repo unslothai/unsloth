@@ -958,16 +958,25 @@ def supported_families() -> list[dict[str, Any]]:
 
 
 def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFamily]) -> bool:
-    """Make Flux2 Klein use Flux-style single-pass guidance.
+    """Optionally make Flux2 Klein use Flux-style single-pass guidance.
 
     Diffusers' Flux2KleinPipeline currently treats non-distilled Klein
     guidance_scale > 1 as classifier-free guidance, which runs the
     transformer twice per denoising step. The Flux-style path
     sends the scalar guidance into Flux2Transformer2DModel.forward as a
-    conditioning embedding and keeps denoising single-pass.
+    conditioning embedding and keeps denoising single-pass. Keep this
+    experimental path opt-in because it is not activation-equivalent to
+    Diffusers' official two-pass CFG sampling.
     """
 
     if fam is None or fam.name != "flux.2-klein":
+        return False
+    if (
+        os.environ.get("UNSLOTH_STUDIO_FLUX2_KLEIN_SINGLE_PASS_GUIDANCE", "")
+        .strip()
+        .lower()
+        not in {"1", "true", "yes", "on"}
+    ):
         return False
     transformer = getattr(pipe, "transformer", None)
     original_forward = getattr(transformer, "forward", None)

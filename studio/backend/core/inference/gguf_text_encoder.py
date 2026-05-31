@@ -1048,16 +1048,17 @@ class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         qweight = self._compute_qweight(inputs.device)
-        weight = _dequantize_gguf_bytes(qweight, self.quant_type, dtype = self.compute_dtype)
+        # Match diffusers' GGUFLinear.forward_native: dequantize in the
+        # dequantizer default precision, then cast to compute dtype.
+        weight = _dequantize_gguf_bytes(qweight, self.quant_type)
         if self.reverse_permute_heads is not None:
             weight = _reverse_permute_qk(weight, self.reverse_permute_heads)
-        weight = weight.to(dtype = inputs.dtype)
+        weight = weight.to(dtype = self.compute_dtype)
         if "qbias" in self._buffers:
             qbias = self._compute_quant_buffer("qbias", inputs.device)
             bias = _dequantize_gguf_bytes(
                 qbias,
                 self.bias_quant_type,
-                dtype = self.compute_dtype,
                 logical_shape = self.bias_logical_shape,
             )
         else:
@@ -1065,7 +1066,7 @@ class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Module):
         if bias is not None and self.reverse_permute_heads is not None:
             bias = _reverse_permute_qk(bias, self.reverse_permute_heads)
         if bias is not None:
-            bias = bias.to(device = inputs.device, dtype = inputs.dtype)
+            bias = bias.to(device = inputs.device, dtype = self.compute_dtype)
         return F.linear(inputs, weight, bias)
 
 
