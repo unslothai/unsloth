@@ -218,6 +218,7 @@ def build_eval_run_fn() -> RunFn:
         return run_eval(
             examples=examples, generate=generate, scorer=scorer,
             system_prompt=req.system_prompt, template=req.template,
+            instruction=getattr(req, "instruction", "") or "",
             gen_params={}, should_cancel=should_cancel, on_result=_on_result,
         )
 

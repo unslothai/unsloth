@@ -30,6 +30,7 @@ export interface EvalStartRequest {
   metric_config: Record<string, unknown>;
   system_prompt: string;
   template?: string | null;
+  instruction?: string; // user-message text when input is an image
   limit: number | null; // null = all rows
   max_new_tokens: number;
   temperature: number;

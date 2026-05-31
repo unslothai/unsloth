@@ -84,6 +84,27 @@ def test_cancellation_stops_early():
     assert summary.num_scored == 1
 
 
+def test_image_input_uses_instruction_and_passes_image():
+    # A non-string input (e.g. PIL.Image) goes to the model as the `image`
+    # kwarg; the user message content becomes the instruction.
+    captured = {}
+    def generate(messages, system_prompt, image=None, **gen):
+        captured["content"] = messages[-1]["content"]
+        captured["image"] = image
+        return "ok"
+    img = object()  # opaque stand-in for a PIL image
+    summary = run_eval(
+        examples=[(img, "x")], generate=generate,
+        scorer=make_scorer("exact_match", {}),
+        system_prompt="", template=None,
+        instruction="Extract the invoice as JSON.", gen_params={},
+        should_cancel=lambda: False, on_result=lambda *a: None,
+    )
+    assert summary.num_scored == 1
+    assert captured["content"] == "Extract the invoice as JSON."
+    assert captured["image"] is img
+
+
 def test_generation_error_does_not_abort():
     def generate(messages, system_prompt, **gen):
         if messages[-1]["content"] == "boom":

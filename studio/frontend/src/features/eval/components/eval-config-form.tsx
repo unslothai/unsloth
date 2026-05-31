@@ -168,6 +168,7 @@ export function EvalConfigForm({
       metric_config: parsedMetricConfig,
       system_prompt: "",
       template: null,
+      instruction: dataset.instruction || "",
       limit: runAll ? null : Math.max(1, Math.floor(limit)),
       max_new_tokens: Math.max(1, Math.floor(maxNewTokens)),
       temperature: Number.isFinite(temperature) ? temperature : 0,

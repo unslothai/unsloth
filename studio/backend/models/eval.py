@@ -25,6 +25,7 @@ class EvalStartRequest(BaseModel):
     metric_config: dict = Field(default_factory=dict)
     system_prompt: str = ""
     template: Optional[str] = None
+    instruction: str = ""               # user message text when input is an image
     limit: Optional[int] = 100          # None = all rows
     max_new_tokens: int = 256
     temperature: float = 0.0

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
 import { InputGroupAddon } from "@/components/ui/input-group";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -50,6 +51,8 @@ export interface EvalDatasetValue {
   subset: string; // "" = none
   inputColumn: string;
   referenceColumn: string;
+  /** User instruction sent alongside the image when the input column holds images. */
+  instruction?: string;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -69,6 +72,9 @@ export function EvalDatasetFields({
   // ── Internal state ──────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
   const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
+  const [detectedImageColumn, setDetectedImageColumn] = useState<string | null>(
+    null,
+  );
   const [previewSample, setPreviewSample] = useState<Record<string, unknown> | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectError, setDetectError] = useState<string | null>(null);
@@ -164,6 +170,7 @@ export function EvalDatasetFields({
       });
       const cols = res.columns ?? [];
       setDetectedColumns(cols);
+      setDetectedImageColumn(res.detected_image_column ?? null);
       setPreviewSample(res.preview_samples?.[0] ?? null);
       if (cols.length) {
         // Reconcile the mapping against the dataset's actual columns so a stale
@@ -191,6 +198,7 @@ export function EvalDatasetFields({
     const ref = (value.isLocal ? value.path : value.name).trim();
     if (!ref) {
       setDetectedColumns([]);
+      setDetectedImageColumn(null);
       setPreviewSample(null);
       setDetectError(null);
       return;
@@ -556,6 +564,28 @@ export function EvalDatasetFields({
           </div>
         </div>
       </div>
+
+      {/* Instruction — only when the input column holds images (the model
+          needs a text prompt alongside the image). */}
+      {detectedImageColumn &&
+        value.inputColumn &&
+        value.inputColumn === detectedImageColumn && (
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs font-medium text-muted-foreground">
+              Instruction (sent with each image)
+            </Label>
+            <Textarea
+              value={value.instruction ?? ""}
+              onChange={(e) => update({ instruction: e.target.value })}
+              placeholder="e.g. Extract this invoice as JSON matching the schema."
+              className="min-h-20 max-h-40 overflow-auto font-mono text-xs"
+              spellCheck={false}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              The image goes to the model with this text as the user message.
+            </p>
+          </div>
+        )}
 
       {/* Preview sample */}
       {previewSample && (

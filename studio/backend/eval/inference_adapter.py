@@ -17,9 +17,12 @@ def collect_generation(chunks: Iterable[str]) -> str:
 
 
 def make_generate(backend, *, max_new_tokens: int, temperature: float) -> Callable[..., str]:
-    def generate(messages: list, system_prompt: str, **_: Any) -> str:
+    def generate(
+        messages: list, system_prompt: str, image: Any = None, **_: Any,
+    ) -> str:
         chunks = backend.generate_chat_response(
             messages=messages, system_prompt=system_prompt,
+            image=image,
             max_new_tokens=max_new_tokens, temperature=temperature,
         )
         return collect_generation(chunks)

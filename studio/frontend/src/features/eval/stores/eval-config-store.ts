@@ -37,6 +37,7 @@ const DEFAULT_DATASET: EvalDatasetValue = {
   subset: "",
   inputColumn: "",
   referenceColumn: "",
+  instruction: "",
 };
 
 export const useEvalConfigStore = create<EvalConfigState>()(

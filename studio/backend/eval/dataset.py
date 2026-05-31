@@ -24,6 +24,25 @@ def _coerce(value: Any) -> Any:
     return str(value)
 
 
+def _is_image_feature(feature: Any) -> bool:
+    """True when the HF Dataset feature is an Image (PIL.Image rows)."""
+    name = type(feature).__name__
+    return name in ("Image", "ImageFeature") or "datasets.features.image" in str(
+        type(feature).__module__
+    )
+
+
+def _coerce_input(value: Any, *, is_image: bool) -> Any:
+    """Inputs: text columns -> str (so the model sees text); image columns
+    pass the PIL.Image (or whatever the HF features yields) through verbatim
+    for downstream multimodal generation."""
+    if value is None:
+        return "" if not is_image else None
+    if is_image:
+        return value  # PIL.Image or similar — handed to the vision backend
+    return str(value)
+
+
 def _load_dataset(ref: DatasetRef):
     """Load the requested split from an HF repo or a local file/dir."""
     from datasets import load_dataset
@@ -85,10 +104,12 @@ def load_eval_examples(
                 f"column {col!r} not in dataset (have: {sorted(cols)})"
             )
 
+    input_is_image = _is_image_feature(ds.features.get(input_col))
+
     n = len(ds) if limit is None else min(limit, len(ds))
     sliced = ds.select(range(n))
     return [
-        (str(row[input_col]) if row[input_col] is not None else "",
+        (_coerce_input(row[input_col], is_image=input_is_image),
          _coerce(row[reference_col]))
         for row in sliced
     ]
