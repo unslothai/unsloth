@@ -28,8 +28,11 @@ import urllib.request
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     call_tool_sync,
+    is_stdio,
     list_tools_async,
     parse_server_headers,
+    probe_timeout,
+    stdio_mcp_enabled,
 )
 from storage import mcp_servers_db
 
@@ -594,17 +597,19 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
+    # carried over from a desktop install onto a Colab / network deployment).
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # OAuth probes need minutes for first-connect/expired-token browser
-    # sign-in; non-OAuth probes fail fast. Matches routes/mcp_servers.py.
     results = await asyncio.gather(
         *(
             list_tools_async(
                 url = s["url"],
                 headers = parse_server_headers(s),
-                timeout = 305.0 if s.get("use_oauth") else 8.0,
+                timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                 use_oauth = bool(s.get("use_oauth")),
             )
             for s in servers
@@ -669,6 +674,8 @@ def execute_tool(
             return f"Error: MCP server '{server_id}' not found"
         if not server.get("is_enabled"):
             return f"Error: MCP server '{server_id}' is disabled"
+        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
         return call_tool_sync(
             url = server["url"],
             headers = parse_server_headers(server),
