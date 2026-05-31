@@ -3347,13 +3347,26 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(release.selection_log) + list(selection_preamble)
-    runtime_by_line = {"cuda12": "12.4", "cuda13": "13.1"}
+    # Seed the runtime-line ordering from the real published windows-cuda minors
+    # (their names encode the minor), so a future CUDA major published here is
+    # ordered too instead of a hardcoded cuda12/cuda13 pair. Keys mirror the
+    # upstream naming so windows_cuda_attempts can match them; fall back to the
+    # long-standing default when the release lists no windows-cuda asset.
+    published_minors: list[str] = []
+    for artifact in release.artifacts:
+        if artifact.install_kind != "windows-cuda":
+            continue
+        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        if m:
+            published_minors.append(m.group(1))
+    if not published_minors:
+        published_minors = ["12.4", "13.1"]
     runtime_order = windows_cuda_attempts(
         host,
         release.upstream_tag,
         {
-            f"llama-{release.upstream_tag}-bin-win-cuda-{runtime}-x64.zip": "published"
-            for runtime in runtime_by_line.values()
+            f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+            for minor in published_minors
         },
         preferred_runtime_line,
         selection_log,

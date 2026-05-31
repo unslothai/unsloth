@@ -80,6 +80,7 @@ env_int = INSTALL_LLAMA_PREBUILT.env_int
 direct_upstream_release_plan = INSTALL_LLAMA_PREBUILT.direct_upstream_release_plan
 _pinned_windows_cuda_fallback = INSTALL_LLAMA_PREBUILT._pinned_windows_cuda_fallback
 CudaRuntimePreference = INSTALL_LLAMA_PREBUILT.CudaRuntimePreference
+published_windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.published_windows_cuda_attempts
 
 
 # ---------------------------------------------------------------------------
@@ -2172,6 +2173,70 @@ class TestDirectUpstreamBlackwellPin:
         assert plan.attempts[0].tag == self.TAG
         assert plan.attempts[0].runtime_line == "cuda13"
         assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# ===========================================================================
+# N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
+# ===========================================================================
+
+
+class TestPublishedWindowsCudaAttemptsDynamicMajor:
+    """The published-path ordering seed is derived from the release's real
+    published minors, so a future CUDA major published here is selectable
+    instead of being hidden by a hardcoded cuda12/cuda13 seed."""
+
+    TAG = "b8508"
+
+    def _win_cuda_artifact(self, minor, runtime_line):
+        return make_artifact(
+            f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+            install_kind = "windows-cuda",
+            runtime_line = runtime_line,
+            max_sm = 120,
+        )
+
+    def _release(self, minors_lines):
+        artifacts = [self._win_cuda_artifact(m, line) for m, line in minors_lines]
+        return make_release(artifacts, upstream_tag = self.TAG)
+
+    def test_future_cuda14_published_is_selected(self, monkeypatch):
+        # With the dynamic seed a 14.x driver reaches a published cuda14 build;
+        # the old hardcoded cuda12/cuda13 seed would never order it (the cuda14
+        # line would be skipped for want of a 14.x asset in the seed).
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        release = self._release(
+            [("14.0", "cuda14"), ("13.3", "cuda13"), ("12.4", "cuda12")]
+        )
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (14, 0), compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda14"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
+
+    def test_cuda13_minor_selected_for_13_3_driver(self, monkeypatch):
+        # Existing behavior unchanged: a 13.3 driver gets the real 13.3 build.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 3), compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_below_minor_driver_gated_to_cuda12(self, monkeypatch):
+        # A 13.1 driver is gated off a published 13.3 and falls to cuda12.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 1), compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda12"
 
 
 # ===========================================================================
