@@ -17,6 +17,7 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -28,6 +29,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.llama_server_args import (
+    parse_cache_override,
+    parse_ctx_override,
+    resolve_cache_type_kv,
+    resolve_requested_ctx,
+)
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -959,9 +966,6 @@ class LlamaCppBackend:
         7.  llama-server on PATH                     (system install)
         8.  ./bin/llama-server                       (legacy: extracted binary)
         """
-        import os
-        import sys
-
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         # 1. Env var — direct path to binary
@@ -1233,6 +1237,33 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _amd_apu_wants_unified_memory() -> bool:
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
+        False for discrete AMD, NVIDIA, CPU and macOS (the env hurts discrete
+        GPUs). ROCm reuses torch.cuda.*; the gcnArchName suffix is stripped."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is None:
+                return False
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            for _i in range(torch.cuda.device_count()):
+                try:
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "")
+                        or ""
+                    )
+                except Exception:
+                    continue
+                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
@@ -1249,8 +1280,6 @@ class LlamaCppBackend:
         Returns list of (gpu_index, free_mib) sorted by index. Empty
         list if no supported GPU is reachable.
         """
-        import os
-
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -2562,6 +2591,105 @@ class LlamaCppBackend:
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
+    # GGUF ``general.architecture`` values for diffusion / image models.
+    # llama.cpp proper has no such architectures, so loading one as a chat
+    # model dies with "unknown model architecture: '<arch>'". These match
+    # the patched stable-diffusion.cpp / ComfyUI-GGUF enums (LLM_ARCH_FLUX,
+    # LLM_ARCH_QWEN_IMAGE, ...). Unsloth publishes FLUX and Qwen-Image GGUFs
+    # under https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
+    # Matched exactly (not as a substring) so a chat arch merely containing a
+    # short token like "wan"/"sd1" (e.g. "taiwan") is not misrouted to Images.
+    _DIFFUSION_ARCHES = frozenset(
+        (
+            "qwen_image",
+            "flux",
+            "sd1",
+            "sdxl",
+            "sd3",
+            "aura",
+            "hidream",
+            "cosmos",
+            "ltxv",
+            "hyvid",
+            "wan",
+            "lumina2",
+        )
+    )
+
+    @staticmethod
+    def _classify_llama_start_failure(
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+    ) -> str:
+        """Explain *why* llama-server failed to start, from its output.
+
+        Several distinct failures all otherwise collapse into the same
+        opaque "invalid GGUF or out of memory" message. The worst case is
+        a diffusion / image GGUF (FLUX, Qwen-Image, ...) loaded as a chat
+        model: the file is perfectly valid and there is plenty of memory,
+        but llama.cpp has no such architecture, so the user is told to free
+        memory that was never the problem (issue #5842). Pick the most
+        specific message the captured output supports.
+        """
+        lowered = (output or "").lower()
+
+        # Detect Ollama source up front so the arch branch can keep the
+        # Ollama hint instead of the generic "unsupported arch" message.
+        gguf = gguf_path or ""
+        is_ollama = (
+            ".studio_links" in gguf
+            or os.sep + "ollama_links" + os.sep in gguf
+            or os.sep + ".cache" + os.sep + "ollama" + os.sep in gguf
+            or (model_identifier or "").startswith("ollama/")
+        )
+
+        # "unknown model architecture: '<arch>'": diffusion -> Images page,
+        # Ollama -> Ollama hint, else a precise "unsupported" message. Exact
+        # match so chat archs are never misrouted.
+        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
+        if arch_match:
+            arch = arch_match.group(1)
+            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Use "
+                    "Studio's Images page to generate with local diffusion "
+                    "GGUFs such as FLUX and Qwen-Image."
+                )
+            if is_ollama:
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+            return (
+                f"llama.cpp does not support this GGUF's model architecture "
+                f"('{arch}'). The file is valid, but this model type cannot "
+                "be run with llama-server."
+            )
+
+        # Other Ollama compat failures that do not name an arch. Only when
+        # the output shows a GGUF compat issue, not OOM / missing binaries.
+        if is_ollama:
+            gguf_compat_hints = (
+                "key not found",
+                "unknown model architecture",
+                "failed to load model",
+            )
+            if any(h in lowered for h in gguf_compat_hints):
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+
+        # Fallback: genuinely unknown failure (OOM, missing binary, ...).
+        return (
+            "llama-server failed to start. "
+            "Check that the GGUF file is valid and you have enough memory."
+        )
+
     def load_model(
         self,
         *,
@@ -2724,7 +2852,23 @@ class LlamaCppBackend:
                 # Select GPU(s) based on model size + estimated KV cache.
                 # Seed safe defaults before GPU probing so the except path
                 # still has valid state to publish.
-                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+                ctx_override = parse_ctx_override(extra_args)
+                requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
+                cache_override = parse_cache_override(extra_args)
+                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                if ctx_override is not None and ctx_override > 0:
+                    logger.info(
+                        f"User --ctx-size {ctx_override} honored; "
+                        "skipping auto-reduce"
+                    )
+                if cache_override is not None:
+                    logger.info(
+                        f"User --cache-type-k/-v {cache_override} "
+                        "honored for KV estimate"
+                    )
+                effective_ctx = (
+                    requested_ctx if requested_ctx > 0 else (self._context_length or 0)
+                )
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 try:
@@ -2734,8 +2878,8 @@ class LlamaCppBackend:
                     # Resolve effective context: 0 means let llama-server use the
                     # model's native length.  Only expand to a known native length
                     # if metadata is available; otherwise preserve 0 as a sentinel.
-                    if n_ctx > 0:
-                        effective_ctx = n_ctx
+                    if requested_ctx > 0:
+                        effective_ctx = requested_ctx
                     elif self._context_length is not None:
                         effective_ctx = self._context_length
                     else:
@@ -2788,7 +2932,7 @@ class LlamaCppBackend:
                     #   since multi-GPU is slower and the user didn't ask for a
                     #   specific context length.
                     gpu_indices, use_fit = None, True
-                    explicit_ctx = n_ctx > 0
+                    explicit_ctx = requested_ctx > 0
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
@@ -2845,7 +2989,7 @@ class LlamaCppBackend:
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total, gpus
                             )
-                            # No silent shrink: effective_ctx stays == n_ctx.
+                            # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap context
                             # to fit. Same headroom threshold as
@@ -2934,7 +3078,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
-                    effective_ctx = n_ctx  # fall back to original
+                    effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
                     model_path = model_path,
@@ -3136,6 +3280,14 @@ class LlamaCppBackend:
                 env = child_env_without_native_path_secret()
                 binary_dir = str(Path(binary).parent)
 
+                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
+                # shared system RAM. setdefault so a user value wins.
+                if self._amd_apu_wants_unified_memory():
+                    env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+                    logger.info(
+                        "AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
+
                 if sys.platform == "win32":
                     # See _build_windows_path_dirs for ordering. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3145,6 +3297,24 @@ class LlamaCppBackend:
                     )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
+                    # but NOT the Tensile kernel library files it needs
+                    # (rocblas/library/TensileLibrary*.dat + *.hsaco).  The
+                    # bundled DLL searches relative to its own location by
+                    # default (i.e. <binary_dir>/rocblas/library/) which does
+                    # not exist, causing a silent crash on the first GEMM.
+                    # ROCBLAS_TENSILE_LIBPATH overrides that search to point at
+                    # the ROCm installation where the kernel files actually are.
+                    _hip_path = os.environ.get(
+                        "HIP_PATH", os.environ.get("ROCM_PATH", "")
+                    )
+                    if _hip_path:
+                        _rocblas_lib = os.path.join(
+                            _hip_path, "bin", "rocblas", "library"
+                        )
+                        if os.path.isdir(_rocblas_lib):
+                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)
@@ -3312,31 +3482,12 @@ class LlamaCppBackend:
                 # Wait for llama-server to become healthy
                 if not self._wait_for_health(timeout = 600.0):
                     self._kill_process()
-                    _gguf = gguf_path or ""
-                    _is_ollama = (
-                        ".studio_links" in _gguf
-                        or os.sep + "ollama_links" + os.sep in _gguf
-                        or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
-                        or (self._model_identifier or "").startswith("ollama/")
-                    )
-                    # Only show the Ollama-specific message when the server
-                    # output indicates a GGUF compatibility issue, not for
-                    # unrelated failures like OOM or missing binaries.
-                    if _is_ollama:
-                        _output = "\n".join(self._stdout_lines[-50:]).lower()
-                        _gguf_compat_hints = (
-                            "key not found",
-                            "unknown model architecture",
-                            "failed to load model",
-                        )
-                        if any(h in _output for h in _gguf_compat_hints):
-                            raise RuntimeError(
-                                "Some Ollama models do not work with llama.cpp. "
-                                "Try a different model, or use this model directly through Ollama instead."
-                            )
                     raise RuntimeError(
-                        "llama-server failed to start. "
-                        "Check that the GGUF file is valid and you have enough memory."
+                        self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                        )
                     )
 
                 self._healthy = True
@@ -3853,10 +4004,6 @@ class LlamaCppBackend:
         Falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         not installed.
         """
-        import os
-        import signal
-        import sys
-
         try:
             # -- Build the ownership allowlist --------------------------------
             # Two kinds of matches:
