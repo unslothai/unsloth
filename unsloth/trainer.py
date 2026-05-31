@@ -299,7 +299,21 @@ class MuonConfig:
             raise ValueError(
                 f"MuonConfig.adamw_weight_decay must be >= 0.0, got {self.adamw_weight_decay}."
             )
+        if not isinstance(self.nesterov, bool):
+            raise TypeError(
+                f"MuonConfig.nesterov must be a bool, got {type(self.nesterov).__name__}."
+            )
+        if not isinstance(self.adamw_betas, tuple) or len(self.adamw_betas) != 2:
+            raise ValueError(
+                f"MuonConfig.adamw_betas must be a tuple of 2 floats, "
+                f"got {self.adamw_betas}."
+            )
         if self.adjust_lr_fn is not None:
+            if not isinstance(self.adjust_lr_fn, str):
+                raise TypeError(
+                    f"MuonConfig.adjust_lr_fn must be a string, "
+                    f"got {type(self.adjust_lr_fn).__name__}."
+                )
             norm = self.adjust_lr_fn.lower()
             if norm not in ("original", "match_rms_adamw"):
                 raise ValueError(
@@ -376,8 +390,11 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     the two sub-optimizers.
 
     ``param_groups`` is the concatenation of both sub-optimizers' groups.
-    LR schedulers applied to this object will have their LR changes
-    propagated to sub-optimizers at each ``step()`` via ``_sync_lr()``.
+    The groups are **identity-shared** — ``self.param_groups[i] is
+    sub_optimizer.param_groups[i]``.  LR schedulers applied to this object
+    will have their LR changes visible to sub-optimizers immediately;
+    ``_sync_lr()`` is a no-op in the current implementation (but retained
+    for forward compatibility if identity-sharing is ever removed).
 
     .. warning::
 
@@ -413,6 +430,18 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             for i in range(n_muon):
                 for k in adamw_only:
                     self.param_groups[i].pop(k, None)
+        # Enforce identity-sharing contract: param_groups are the same objects
+        # as sub-optimizer groups.  If this assertion ever fails it means
+        # identity-sharing was broken and _sync_lr behaviour would change.
+        if muon is not None:
+            n_muon = len(muon.param_groups)
+            for i in range(n_muon):
+                if self.param_groups[i] is not muon.param_groups[i]:
+                    raise RuntimeError(
+                        f"_MuonAdamWChained identity-sharing broken: "
+                        f"group {i} is not the same object as muon.param_groups[{i}]. "
+                        "This can happen if param_groups were deep-copied or reassigned."
+                    )
         self._init_done = True
 
     def add_param_group(self, param_group):
@@ -542,8 +571,12 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         )
 
     def __repr__(self):
-        muon_str = f"Muon({len(self.muon.param_groups) if self.muon is not None else 0} groups)"
-        adamw_str = f"AdamW({len(self.adamw.param_groups) if self.adamw is not None else 0} groups)"
+        def _param_count(sub):
+            if sub is None:
+                return 0
+            return sum(len(g["params"]) for g in sub.param_groups)
+        muon_str = f"Muon({_param_count(self.muon)} params)"
+        adamw_str = f"AdamW({_param_count(self.adamw)} params)"
         return f"{type(self).__name__}({muon_str}, {adamw_str})"
 
 

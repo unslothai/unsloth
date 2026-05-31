@@ -1,7 +1,7 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 8
-## Global Status: CHANGES_REQUESTED
+## Current Round: 9
+## Global Status: READY_FOR_MERGE (with notes)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
@@ -13,12 +13,22 @@
 
 ## 3. Medium & Low-Severity Items (Refactoring, Debt, & Border Configurations)
 
-- [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:608-613`)
+- [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:644-649`)
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
+- [ ] **[R9 M3]** `_sync_lr` identity-sharing contract undocumented (`unsloth/trainer.py:434-459`)
+  * **Note:** `_sync_lr` is a no-op due to identity sharing. A future refactor that deep-copies groups silently breaks LR propagation. Deferred cleanup (_sync_lr removal deferred; assertion and docstring added in R9).
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 9 Resolutions
+- [x] **[R9] [M1]** `nesterov` type validation — **Fixed:** Added `isinstance(self.nesterov, bool)` check in `__post_init__` (`unsloth/trainer.py:309-314`)
+- [x] **[R9] [M2]** `adamw_betas` validation — **Fixed:** Added tuple/len check in `__post_init__` (`unsloth/trainer.py:315-319`)
+- [x] **[R9] [M3]** `_sync_lr` identity-sharing contract — **Partially fixed:** Added class docstring noting identity-sharing; added runtime assertion in `__init__` verifying `param_groups[i] is muon.param_groups[i]`. Full `_sync_lr` removal deferred. (`unsloth/trainer.py:372-390, 416-427`)
+- [x] **[R9] [L1]** `adjust_lr_fn` type check — **Fixed:** Added `isinstance(self.adjust_lr_fn, str)` guard before `.lower()` (`unsloth/trainer.py:320-325`)
+- [x] **[R9] [L3]** bias detection via `param.ndim` — **Fixed:** Replaced `"bias" in name.lower()` with `param.ndim == 1` (`unsloth/optimizers/muon.py:169`)
+- [x] **[R9] [L4]** `__repr__` improvement — **Fixed:** Shows parameter count instead of group count (`unsloth/trainer.py:561-567`)
 
 ### Round 8 Resolutions
 - [x] **[R8] [H1]** Custom RMSNorm implementations always receive weight decay — **Fixed:** Added name-based fallback in `_classify_param_names` matching HF Trainer's `norm`/`layernorm`/`rmsnorm` regex pattern, catching all custom RMSNorm classes (LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm, etc.) (`unsloth/optimizers/muon.py:82-90`)
@@ -109,8 +119,9 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high, and medium functional findings from eight review passes (R0–R7) have been resolved. Code is production-ready for single-GPU full-finetuning. Remaining items are minor (LoRA validation warning, test coverage for edge cases).
-- **Latest Input Telemetry Source:** `MUON_REVIEW_8.md` (cross-verified against current code state via grep/read)
+- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from nine review passes (R0–R9) have been resolved (with the exception of deferred cleanup for `_sync_lr` removal and `_gpu_init` reorder, and open benchmarking for LoRA+Muon quality). Code is safe to merge for single-GPU full-finetuning.
+- **Latest Input Telemetry Source:** `MUON_REVIEW_9.md` (this round)
+- **Merge Recommendation as of R9:** APPROVE (with notes — see MUON_REVIEW_9.md for details)
 - **Inviolable Architecture Constraints:**
   1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
   2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.

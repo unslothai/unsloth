@@ -166,7 +166,7 @@ def make_muon_param_groups(
             continue
 
         is_embedding = name in embedding_names
-        is_no_decay = name in no_decay_names or "bias" in name.lower()
+        is_no_decay = name in no_decay_names or param.ndim == 1
 
         if target_modules is not None:
             if not any(mod in name for mod in target_modules):

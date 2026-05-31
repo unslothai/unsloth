@@ -213,6 +213,25 @@ def test_chained_merges_param_groups():
     assert len(chained.param_groups) == 3
 
 
+def test_chained_identity_sharing():
+    """param_groups must be identity-shared with sub-optimizer groups."""
+    from unsloth.trainer import _MuonAdamWChained
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+    chained = _MuonAdamWChained(muon, adamw)
+    for i in range(len(muon.param_groups)):
+        assert chained.param_groups[i] is muon.param_groups[i], \
+            f"Muon group {i} not identity-shared"
+    offset = len(muon.param_groups)
+    for i in range(len(adamw.param_groups)):
+        assert chained.param_groups[offset + i] is adamw.param_groups[i], \
+            f"AdamW group {i} not identity-shared"
+
+
 # -- Tests: _create_muon_optimizer (mocked) -----------------------------------
 
 
@@ -520,6 +539,38 @@ def test_weight_decay_isolation():
 
 
 # -- Tests: MuonConfig validation --------------------------------------------
+
+
+def test_muon_config_nesterov_validation():
+    from unsloth.trainer import MuonConfig
+    with pytest.raises(TypeError, match="nesterov"):
+        MuonConfig(nesterov="yes")
+    with pytest.raises(TypeError, match="nesterov"):
+        MuonConfig(nesterov=1)
+    cfg = MuonConfig(nesterov=True)
+    assert cfg.nesterov is True
+    cfg = MuonConfig(nesterov=False)
+    assert cfg.nesterov is False
+
+
+def test_muon_config_adamw_betas_validation():
+    from unsloth.trainer import MuonConfig
+    with pytest.raises((ValueError, TypeError), match="adamw_betas"):
+        MuonConfig(adamw_betas=(0.9,))
+    with pytest.raises((ValueError, TypeError), match="adamw_betas"):
+        MuonConfig(adamw_betas="0.9,0.999")
+    cfg = MuonConfig(adamw_betas=(0.8, 0.99))
+    assert cfg.adamw_betas == (0.8, 0.99)
+
+
+def test_muon_config_adjust_lr_fn_type_validation():
+    from unsloth.trainer import MuonConfig
+    with pytest.raises((AttributeError, TypeError), match="adjust_lr_fn"):
+        MuonConfig(adjust_lr_fn=True)
+    with pytest.raises((AttributeError, TypeError), match="adjust_lr_fn"):
+        MuonConfig(adjust_lr_fn=42)
+    cfg = MuonConfig(adjust_lr_fn="original")
+    assert cfg.adjust_lr_fn == "original"
 
 
 def test_muon_config_validates_ns_steps():
