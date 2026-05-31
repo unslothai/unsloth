@@ -3303,7 +3303,9 @@ def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
     if attempt.install_kind != "windows-cuda":
         return False
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
-    return m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+    return (
+        m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+    )
 
 
 def _pinned_windows_cuda_fallback(

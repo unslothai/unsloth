@@ -2141,16 +2141,27 @@ class TestPinnedBlackwellCudaFallback:
 
     @pytest.mark.parametrize(
         "minor, covers",
-        [("12.4", False), ("12.8", True), ("13.1", True), ("13.3", True), ("14.0", True)],
+        [
+            ("12.4", False),
+            ("12.8", True),
+            ("13.1", True),
+            ("13.3", True),
+            ("14.0", True),
+        ],
     )
     def test_attempt_covers_blackwell(self, minor, covers):
-        assert _windows_cuda_attempt_covers_blackwell(self._win_cuda_attempt(minor)) is covers
+        assert (
+            _windows_cuda_attempt_covers_blackwell(self._win_cuda_attempt(minor))
+            is covers
+        )
 
     def test_attempt_covers_blackwell_ignores_non_cuda_kind(self):
         cpu = AssetChoice(
-            repo = UPSTREAM_REPO, tag = self.TAG,
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
             name = f"llama-{self.TAG}-bin-win-cpu-x64.zip",
-            url = "https://example.com/x", source_label = "upstream",
+            url = "https://example.com/x",
+            source_label = "upstream",
             install_kind = "windows-cpu",
         )
         assert _windows_cuda_attempt_covers_blackwell(cpu) is False
