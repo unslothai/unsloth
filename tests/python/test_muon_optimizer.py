@@ -1851,3 +1851,39 @@ def test_no_adamw_params_optimizer():
     assert isinstance(result, _MuonAdamWChained)
     assert result.muon is not None
     assert result.adamw is None
+
+
+# -- Tests: R14 C1 — Meta device guard ---------------------------------------
+
+
+def test_meta_device_raises_error():
+    """make_muon_param_groups must raise RuntimeError on meta device."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+    model = torch.nn.Linear(4, 4, device="meta")
+    with pytest.raises(RuntimeError, match="meta"):
+        make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
+
+
+def test_classify_param_names_meta_device():
+    """_classify_param_names must raise RuntimeError on meta device."""
+    from unsloth.optimizers.muon import _classify_param_names
+    model = torch.nn.Linear(4, 4, device="meta")
+    with pytest.raises(RuntimeError, match="meta"):
+        _classify_param_names(model)
+
+
+# -- Tests: R14 M1 — _norm_name_pattern with rms_norm (underscore variant) ---
+
+
+def test_norm_name_pattern_catches_rms_norm():
+    """_classify_param_names must catch custom RMSNorm named 'rms_norm'."""
+    from unsloth.optimizers.muon import _classify_param_names
+    model = torch.nn.Module()
+    class CustomRMSNorm(torch.nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.randn(dim))
+    model.rms_norm = CustomRMSNorm(4)
+    _, no_decay_names = _classify_param_names(model)
+    assert "rms_norm.weight" in no_decay_names, \
+        "rms_norm must be classified as no_decay via regex"

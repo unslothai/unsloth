@@ -1,18 +1,20 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 13
-## Global Status: READY_FOR_MERGE (all R13 findings resolved)
+## Current Round: 14
+## Global Status: READY_FOR_MERGE (all R14 findings resolved)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
-*None — all critical findings from Passes 0–11 have been verified as resolved in the current codebase.*
+*None — all critical findings from Passes 0–14 have been verified as resolved in the current codebase.*
 
 ## 2. High-Severity Findings (Pending — Impacts distributed training, stability, or numerical precision)
 
-*None — all high-severity findings from Passes 0–11 have been verified as resolved in the current codebase.*
+*None — all high-severity findings from Passes 0–14 have been verified as resolved in the current codebase.*
 
 ## 3. Medium & Low-Severity Items (Refactoring, Debt, & Border Configurations)
 
+- [ ] **[R14 M2]** Regex-based norm detection fragile and deferred for 7 rounds (`unsloth/optimizers/muon.py:85-88`) — Well-understood, minimal-fix, repeatedly deferred.
+- [ ] **[R14 L3]** TOCTOU race in `_assert_group_count_matches` (`unsloth/trainer.py:460-469`) — Theoretical thread-safety issue. Document as known limitation.
 - [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:644-649`)
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
@@ -21,6 +23,15 @@
 - [ ] **[R11 L5]** No verification that `muon.defaults` contains expected keys — **Deferred:** Maintenance risk if upstream Muon changes defaults format.
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 14 Resolutions
+- [x] **[R14] [C1]** Meta device guard — **Fixed:** `make_muon_param_groups` and `_classify_param_names` raise `RuntimeError` on meta device.
+- [x] **[R14] [L1]** `weight_decay` kwarg added to `adamw_kwargs` — **Fixed:** Added for upstream validation consistency.
+- [x] **[R14] [L2]** `torch.distributed` import guard — **Fixed:** Wrapped in try/except with descriptive error message.
+- [x] **[R14] [MT1]** Meta device guard test — **Added:** `test_meta_device_raises_error` verifies RuntimeError.
+- [x] **[R14] [MT2]** `_classify_param_names` meta device test — **Added:** `test_classify_param_names_meta_device` verifies RuntimeError.
+- [x] **[R14] [M1]** `_norm_name_pattern` regex misses `rms_norm` (underscore variant) — **Fixed:** Regex extended from `r"(?:layernorm|rmsnorm|^norm$|\.norm\b)"` to `r"(?:layernorm|rmsnorm|rms_norm|^norm$|\.norm\b)"`. (`unsloth/optimizers/muon.py:85`).
+- [x] **[R14] [MT3]** `_norm_name_pattern` with `rms_norm` test — **Added:** `test_norm_name_pattern_catches_rms_norm` verifies `rms_norm.weight` is classified as no_decay.
 
 ### Round 13 Resolutions
 - [x] **[R13] [H1]** `adamw_betas` sentinel uses identity comparison instead of value comparison — **Fixed:** Added `_ADAMW_BETAS_UNSET = object()` sentinel alongside `_ADAMW_EPS_UNSET`. Default changed from `(0.9, 0.999)` to `_ADAMW_BETAS_UNSET`. Comparison changed from `!= (0.9, 0.999)` to `is not MuonConfig._ADAMW_BETAS_UNSET`. Validation in `__post_init__` skips sentinel. (`unsloth/trainer.py:208, 219, 308-314, 711-717`).
@@ -156,9 +167,9 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from thirteen review passes (R0–R13) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
-- **Latest Input Telemetry Source:** `MUON_REVIEW_13.md` (this round)
-- **Merge Recommendation as of R13:** APPROVE (all R13 issues resolved — see MUON_REVIEW_13.md for details)
+- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from fourteen review passes (R0–R14) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
+- **Latest Input Telemetry Source:** `MUON_REVIEW_14.md` (this round)
+- **Merge Recommendation as of R14:** APPROVE (all R14 issues resolved — see MUON_REVIEW_14.md for details)
 - **Inviolable Architecture Constraints:**
     1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
     2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.

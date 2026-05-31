@@ -618,7 +618,15 @@ class UnslothTrainer(SFTTrainer):
             )
 
         import os as _os
-        import torch.distributed as dist
+        try:
+            import torch.distributed as dist
+        except ImportError:
+            raise RuntimeError(
+                "Unsloth: torch.distributed is not available. "
+                "Muon optimizer requires torch.distributed for distributed training "
+                "guard checks. If using a custom PyTorch build without distributed, "
+                "use a standard PyTorch distribution."
+            )
         needs_deterministic = False
         if dist.is_available() and dist.is_initialized():
             if _os.environ.get("UNSLOTH_MUON_DISTRIBUTED", "0") != "1":
@@ -724,7 +732,7 @@ class UnslothTrainer(SFTTrainer):
         else:
             adamw_eps = getattr(self.args, "adam_epsilon", 1e-8)
         adamw_lr = config.adamw_lr if config.adamw_lr is not None else lr
-        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps)
+        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps, weight_decay=adamw_weight_decay)
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
         else:
