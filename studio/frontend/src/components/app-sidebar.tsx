@@ -51,7 +51,7 @@ import {
   Edit03Icon,
   Globe02Icon,
   HelpCircleIcon,
-  Logout01Icon,
+  Logout05Icon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
@@ -94,9 +94,33 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
+import { translate, useT, type TranslationKey } from "@/i18n";
+
+const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
+
+type AppT = ReturnType<typeof useT>;
+
+function renderEmphasizedTranslation(
+  t: AppT,
+  key: TranslationKey,
+  emphasizedValue: string,
+): ReactNode {
+  const translated = t(key, { name: EMPHASIS_MARKER });
+  const parts = translated.split(EMPHASIS_MARKER);
+  if (parts.length === 1) return translated;
+
+  const nodes: ReactNode[] = [];
+  parts.forEach((part, index) => {
+    if (part.length > 0) nodes.push(part);
+    if (index < parts.length - 1) {
+      nodes.push(<em key={`emphasis-${index}`}>{emphasizedValue}</em>);
+    }
+  });
+  return nodes;
+}
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -189,6 +213,7 @@ function NavItem({
 }
 
 export function AppSidebar() {
+  const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const { pathname, search } = useRouterState({
     select: (s) => ({
@@ -208,14 +233,8 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
-  // Chat collapsible state — open by default, auto-expand on route entry
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
-  const [chatOpen, setChatOpen] = useState(true);
-  const [runsOpen, setRunsOpen] = useState(true);
-
-  useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
-  useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -321,7 +340,7 @@ export function AppSidebar() {
       try {
         await renameChatItem(target.item, renameTrimmed);
       } catch (err) {
-        toast.error("Failed to rename chat", {
+        toast.error(translate("shell.toast.failedToRenameChat"), {
           description: err instanceof Error ? err.message : undefined,
         });
       }
@@ -331,7 +350,7 @@ export function AppSidebar() {
       const updated = await renameTrainingRun(target.run.id, nextRunDisplayName);
       emitTrainingRunUpdated(updated);
     } catch (err) {
-      toast.error("Failed to rename run", {
+      toast.error(translate("shell.toast.failedToRenameRun"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -351,14 +370,14 @@ export function AppSidebar() {
       try {
         await handleDeleteThread(target.item);
       } catch (err) {
-        toast.error("Failed to delete chat", {
+        toast.error(translate("shell.toast.failedToDeleteChat"), {
           description: err instanceof Error ? err.message : undefined,
         });
       }
       return;
     }
     if (target.run.status === "running") {
-      toast.error("Cannot delete a running training run");
+      toast.error(t("shell.toast.cannotDeleteRunningRun"));
       return;
     }
     try {
@@ -368,7 +387,7 @@ export function AppSidebar() {
       }
       emitTrainingRunDeleted(target.run.id);
     } catch (err) {
-      toast.error("Failed to delete run", {
+      toast.error(translate("shell.toast.failedToDeleteRun"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -397,7 +416,7 @@ export function AppSidebar() {
               });
             }}
             className="flex items-center gap-[6px] select-none"
-            aria-label="Unsloth home"
+            aria-label={t("shell.aria.home")}
           >
             <img
               src="/circle-logo-small.png"
@@ -408,7 +427,7 @@ export function AppSidebar() {
               unsloth
             </span>
             <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-              BETA
+              {t("shell.beta")}
             </span>
           </Link>
           {!isMobile && (
@@ -418,7 +437,7 @@ export function AppSidebar() {
                   type="button"
                   onClick={togglePinned}
                   className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close sidebar"
+                  aria-label={t("shell.aria.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
                 </button>
@@ -428,7 +447,7 @@ export function AppSidebar() {
                 sideOffset={6}
                 className="tooltip-compact"
               >
-                Close sidebar
+                {t("shell.aria.closeSidebar")}
               </TooltipContent>
             </Tooltip>
           )}
@@ -443,7 +462,7 @@ export function AppSidebar() {
                   type="button"
                   onClick={togglePinned}
                   className="inline-flex h-[35px] w-[32px] items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Open sidebar"
+                  aria-label={t("shell.aria.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
                 </button>
@@ -453,7 +472,7 @@ export function AppSidebar() {
                 sideOffset={8}
                 className="tooltip-compact"
               >
-                Open sidebar
+                {t("shell.aria.openSidebar")}
               </TooltipContent>
             </Tooltip>
           </div>
@@ -465,7 +484,7 @@ export function AppSidebar() {
           <SidebarMenu>
             <NavItem
               icon={PencilEdit02Icon}
-              label="New Chat"
+              label={t("shell.navigation.newChat")}
               active={false}
               disabled={chatDisabled}
               onClick={() => {
@@ -477,7 +496,7 @@ export function AppSidebar() {
             />
             <NavItem
               icon={ColumnInsertIcon}
-              label="Compare"
+              label={t("shell.navigation.compare")}
               active={!!search.compare && !chatItems.some((i) => i.id === search.compare)}
               disabled={chatDisabled}
               dataTour="chat-compare"
@@ -490,7 +509,7 @@ export function AppSidebar() {
             />
             <NavItem
               icon={Search01Icon}
-              label="Search"
+              label={t("shell.navigation.search")}
               active={false}
               disabled={chatDisabled}
               onClick={() => {
@@ -508,7 +527,7 @@ export function AppSidebar() {
           <SidebarMenu>
             <NavItem
               icon={TestTubeOutlineIcon}
-              label="Train"
+              label={t("shell.navigation.train")}
               active={pathname === "/studio" || pathname.startsWith("/studio/")}
               disabled={chatOnly}
               onClick={() => {
@@ -520,7 +539,7 @@ export function AppSidebar() {
 
             <NavItem
               icon={ChefHatIcon}
-              label="Recipes"
+              label={t("shell.navigation.recipes")}
               active={isRecipesRoute}
               onClick={() => {
                 navigate({ to: "/data-recipes" });
@@ -530,7 +549,7 @@ export function AppSidebar() {
 
             <NavItem
               icon={DownloadSquare01Icon}
-              label="Export"
+              label={t("shell.navigation.export")}
               active={pathname === "/export" || pathname.startsWith("/export/")}
               disabled={chatOnly}
               onClick={() => {
@@ -544,13 +563,16 @@ export function AppSidebar() {
       </SidebarGroup>
 
       <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto overscroll-contain min-h-0">
-        {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
         {!isStudioRoute && chatItems.length > 0 && (
-          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
+          <Collapsible
+            key={isChatRoute ? "chat-route" : "non-chat-route"}
+            defaultOpen
+            asChild
+          >
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                Recents
+                {t("shell.navigation.recents")}
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
@@ -583,7 +605,7 @@ export function AppSidebar() {
                         <button
                           type="button"
                           onClick={(e) => e.stopPropagation()}
-                          aria-label="Chat options"
+                          aria-label={t("shell.aria.chatOptions")}
                           className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                         >
                           <span className="sidebar-row-action-glyph">
@@ -599,7 +621,7 @@ export function AppSidebar() {
                       >
                         <DropdownMenuItem onSelect={() => openRenameChat(item)}>
                           <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>Rename</span>
+                          <span>{t("common.rename")}</span>
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
                           <HugeiconsIcon icon={Archive01Icon} strokeWidth={1.75} className="size-icon" />
@@ -685,7 +707,7 @@ export function AppSidebar() {
                           onSelect={() => setConfirmingDelete({ kind: "chat", item })}
                         >
                           <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                          <span>Delete</span>
+                          <span>{t("common.delete")}</span>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -698,13 +720,12 @@ export function AppSidebar() {
           </Collapsible>
         )}
 
-        {/* Recent Runs */}
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
-          <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
+          <Collapsible key="studio-runs-route" defaultOpen asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                Recents
+                {t("shell.navigation.recents")}
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
@@ -751,7 +772,7 @@ export function AppSidebar() {
                             <button
                               type="button"
                               onClick={(e) => e.stopPropagation()}
-                              aria-label="Run options"
+                              aria-label={t("shell.aria.runOptions")}
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
@@ -767,7 +788,7 @@ export function AppSidebar() {
                           >
                             <DropdownMenuItem onSelect={() => openRenameRun(run)}>
                               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>Rename</span>
+                              <span>{t("common.rename")}</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
@@ -777,7 +798,7 @@ export function AppSidebar() {
                               }
                             >
                               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                              <span>Delete</span>
+                              <span>{t("common.delete")}</span>
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -799,7 +820,7 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  aria-label={`${displayTitle} account menu`}
+                  aria-label={t("shell.accountMenu", { name: displayTitle })}
                   className="sidebar-nav-btn !h-[50px] gap-[8px] px-2 py-[9px] rounded-[10px]"
                 >
                   <div className="shrink-0">
@@ -827,16 +848,16 @@ export function AppSidebar() {
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Settings</span>
+                    <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>API</span>
+                    <span>{t("shell.navigation.api")}</span>
                     <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      New
+                      {t("common.new")}
                     </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -844,7 +865,11 @@ export function AppSidebar() {
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
                     {isDark ? <Sun strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                    <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
+                    <span>
+                      {isDark
+                        ? t("shell.navigation.lightMode")
+                        : t("shell.navigation.darkMode")}
+                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={!getTourId(pathname)}
@@ -859,7 +884,7 @@ export function AppSidebar() {
                     }}
                   >
                     <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Guided Tour</span>
+                    <span>{t("shell.navigation.guidedTour")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
@@ -867,7 +892,7 @@ export function AppSidebar() {
                   onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                 >
                   <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>Help</span>
+                  <span>{t("common.help")}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={async () => {
@@ -881,12 +906,12 @@ export function AppSidebar() {
                     void navigate({ to: "/login" });
                   }}
                 >
-                  <HugeiconsIcon icon={Logout01Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Log out</span>
+                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.logOut")}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>Shutdown</span>
+                  <span>{t("common.shutdown")}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -910,20 +935,23 @@ export function AppSidebar() {
         <DialogHeader>
           <DialogTitle>
             {confirmingDelete?.kind === "run"
-              ? "Delete training run"
-              : "Delete chat"}
+              ? t("shell.dialog.deleteRun.title")
+              : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
-              <>
-                Are you sure you want to delete this run{" "}
-                <em>{confirmingDelete.run.display_name ?? confirmingDelete.run.model_name}</em>?
-              </>
+              renderEmphasizedTranslation(
+                t,
+                "shell.dialog.deleteRun.description",
+                confirmingDelete.run.display_name ??
+                  confirmingDelete.run.model_name,
+              )
             ) : confirmingDelete?.kind === "chat" ? (
-              <>
-                Are you sure you want to delete this chat{" "}
-                <em>{confirmingDelete.item.title}</em>?
-              </>
+              renderEmphasizedTranslation(
+                t,
+                "shell.dialog.deleteChat.description",
+                confirmingDelete.item.title,
+              )
             ) : null}
           </DialogDescription>
         </DialogHeader>
@@ -933,14 +961,14 @@ export function AppSidebar() {
             variant="ghost"
             onClick={() => setConfirmingDelete(null)}
           >
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             type="button"
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -954,7 +982,9 @@ export function AppSidebar() {
       <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {renamingTarget?.kind === "run" ? "Rename run" : "Rename chat"}
+            {renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.title")
+              : t("shell.dialog.renameChat.title")}
           </DialogTitle>
         </DialogHeader>
         <Input
@@ -968,8 +998,16 @@ export function AppSidebar() {
           }}
           autoFocus
           maxLength={120}
-          placeholder={renamingTarget?.kind === "run" ? "Run name" : "Chat title"}
-          aria-label={renamingTarget?.kind === "run" ? "Run name" : "Chat title"}
+          placeholder={
+            renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.placeholder")
+              : t("shell.dialog.renameChat.placeholder")
+          }
+          aria-label={
+            renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.placeholder")
+              : t("shell.dialog.renameChat.placeholder")
+          }
           className="focus-visible:border-input focus-visible:ring-0"
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
@@ -978,14 +1016,14 @@ export function AppSidebar() {
             variant="ghost"
             onClick={() => setRenamingTarget(null)}
           >
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             type="button"
             onClick={() => void commitRename()}
             disabled={!renameDirty}
           >
-            Save
+            {t("common.save")}
           </Button>
         </DialogFooter>
       </DialogContent>
