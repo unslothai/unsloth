@@ -1,20 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Per-session tool-call confirmation gate.
+"""Per-call tool-call confirmation gate.
 
 When a chat request sets ``confirm_tool_calls``, the agentic loop pauses
 before executing each tool and waits here for the user's decision, which
 arrives via ``POST /api/inference/tool-confirm`` on a separate connection.
 
-The agentic loop is sequential, so a session normally has a single tool
-awaiting a decision -- the gate keys on ``session_id`` alone and never
-needs to match individual tool-call ids (which some models omit). If a
-second waiter ever registers for the same key (e.g. two id-less chats
-both mapping to ""), the older one is unblocked as denied so it can't
-hang.
+Each gated call is identified by a unique ``approval_id`` (minted with
+``new_approval_id``) that the loop both registers here and echoes in the
+``tool_start`` stream event. The frontend sends that exact id back, so a
+stale or duplicate confirmation -- or a second tool awaiting a decision in
+the same session -- can never resolve the wrong call. ``session_id`` is
+kept alongside purely as a scope check.
+
+The slot is registered with ``begin_tool_decision`` *before* the loop
+yields ``tool_start``, closing the race where a fast confirmation (or an
+auto "Always allow") could otherwise arrive before the waiter exists.
+``wait_tool_decision`` then blocks and cleans up its own slot.
 """
 
+import secrets
 import threading
 from typing import Optional
 
@@ -27,31 +33,40 @@ _DECISION_TIMEOUT = 3600.0
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
 _lock = threading.Lock()
-# session_key -> {"event": threading.Event, "decision": "allow"|"deny"|None}
+# approval_id -> {"event": threading.Event, "decision": str|None, "session": str}
 _pending: dict[str, dict] = {}
 
 
-def _key(session_id: Optional[str]) -> str:
-    return session_id or ""
+def new_approval_id() -> str:
+    """Mint an unguessable id for one pending tool-call confirmation."""
+    return secrets.token_urlsafe(16)
 
 
-def request_tool_decision(session_id, cancel_event = None, timeout = _DECISION_TIMEOUT):
-    """Block until the user allows/denies the pending tool call.
+def begin_tool_decision(session_id, approval_id) -> dict:
+    """Register a pending decision slot and return it.
+
+    Call this *before* yielding the ``tool_start`` event so the waiter
+    always exists by the time the user's confirmation can arrive.
+    """
+    slot = {
+        "event": threading.Event(),
+        "decision": None,
+        "session": session_id or "",
+    }
+    with _lock:
+        _pending[approval_id] = slot
+    return slot
+
+
+def wait_tool_decision(
+    slot, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT
+):
+    """Block on a slot from ``begin_tool_decision`` until the user decides.
 
     Returns ``"allow"`` or ``"deny"``. Falls back to ``"deny"`` if the wait
-    times out or generation is cancelled before the user decides.
+    times out or generation is cancelled before the user decides. Always
+    removes its own slot on exit.
     """
-    key = _key(session_id)
-    slot = {"event": threading.Event(), "decision": None}
-    with _lock:
-        # If a waiter already holds this key (same session, or two id-less
-        # chats both mapping to ""), unblock it as denied so it can't hang
-        # once we orphan its event below.
-        old = _pending.get(key)
-        if old is not None:
-            old["decision"] = "deny"
-            old["event"].set()
-        _pending[key] = slot
     try:
         waited = 0.0
         while not slot["event"].wait(timeout = 0.5):
@@ -60,25 +75,36 @@ def request_tool_decision(session_id, cancel_event = None, timeout = _DECISION_T
             waited += 0.5
             if waited >= timeout:
                 return "deny"
-        # Read our own slot, not _pending[key], which a newer waiter may
-        # have replaced.
         return slot["decision"] or "deny"
     finally:
         with _lock:
-            if _pending.get(key) is slot:
-                _pending.pop(key, None)
+            if _pending.get(approval_id) is slot:
+                _pending.pop(approval_id, None)
 
 
-def resolve_tool_decision(session_id, decision) -> bool:
+def request_tool_decision(
+    session_id, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT
+):
+    """Register and wait in one call (when the slot is not needed early)."""
+    slot = begin_tool_decision(session_id, approval_id)
+    return wait_tool_decision(
+        slot, approval_id, cancel_event = cancel_event, timeout = timeout
+    )
+
+
+def resolve_tool_decision(approval_id, decision, session_id = None) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop.
 
     Returns ``True`` if a pending call matched, ``False`` otherwise (e.g. a
-    stale or duplicate confirmation).
+    stale or duplicate confirmation, or a session-scope mismatch).
     """
-    key = _key(session_id)
+    if not approval_id:
+        return False
     with _lock:
-        slot = _pending.get(key)
+        slot = _pending.get(approval_id)
         if not slot:
+            return False
+        if session_id is not None and slot["session"] != (session_id or ""):
             return False
         slot["decision"] = decision
         slot["event"].set()

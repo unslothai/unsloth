@@ -20,6 +20,7 @@ import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { ToolConfirmationControls } from "@/components/assistant-ui/tool-confirmation-controls";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
@@ -62,6 +63,7 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  type ToolCallMessagePartComponent,
   useAui,
   useAuiEvent,
   useAuiState,
@@ -1293,6 +1295,39 @@ const CancelledIndicator: FC = () => {
   );
 };
 
+// Render Allow / Always allow / Deny controls under every tool card so the
+// "Confirm tool calls" gate works for the built-in tools (search, python,
+// terminal, code, image) too -- not just the MCP tools that use the
+// fallback renderer. The controls no-op unless the adapter registered a
+// backend-gated pending call for this card, so non-gated tools are
+// unaffected. Wrapped once at module scope to keep stable component
+// identities (inline wrapping would remount the tool subtree each render).
+const withToolConfirmation = (
+  Component: ToolCallMessagePartComponent,
+): ToolCallMessagePartComponent => {
+  const WithToolConfirmation: ToolCallMessagePartComponent = (props) => (
+    <>
+      <Component {...props} />
+      <ToolConfirmationControls
+        toolCallId={props.toolCallId}
+        toolName={props.toolName}
+        result={props.result}
+        status={props.status}
+      />
+    </>
+  );
+  return WithToolConfirmation;
+};
+
+const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
+const PythonToolUIConfirmable = withToolConfirmation(PythonToolUI);
+const TerminalToolUIConfirmable = withToolConfirmation(TerminalToolUI);
+const CodeExecutionToolUIConfirmable = withToolConfirmation(CodeExecutionToolUI);
+const ImageGenerationToolUIConfirmable = withToolConfirmation(
+  ImageGenerationToolUI,
+);
+const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -1311,13 +1346,13 @@ const AssistantMessage: FC = () => {
             ToolGroup: ToolGroup,
             tools: {
               by_name: {
-                web_search: WebSearchToolUI,
-                python: PythonToolUI,
-                terminal: TerminalToolUI,
-                code_execution: CodeExecutionToolUI,
-                image_generation: ImageGenerationToolUI,
+                web_search: WebSearchToolUIConfirmable,
+                python: PythonToolUIConfirmable,
+                terminal: TerminalToolUIConfirmable,
+                code_execution: CodeExecutionToolUIConfirmable,
+                image_generation: ImageGenerationToolUIConfirmable,
               },
-              Fallback: ToolFallback,
+              Fallback: ToolFallbackConfirmable,
             },
           }}
         />

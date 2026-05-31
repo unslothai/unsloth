@@ -308,10 +308,20 @@ type ChatRuntimeStore = {
    */
   confirmToolCalls: boolean;
   /**
-   * Tool names the user chose to auto-approve for the rest of this
-   * session via "Always allow". Not persisted across reloads.
+   * Per-session set of tool names the user chose to auto-approve via
+   * "Always allow". Keyed by thread/session id so allowing a tool in one
+   * chat does not silently auto-approve it in another. Not persisted
+   * across reloads.
    */
-  alwaysAllowTools: Set<string>;
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<string, { approvalId: string; sessionId: string }>;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -381,7 +391,13 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
-  allowToolAlways: (toolName: string) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -634,7 +650,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
-  alwaysAllowTools: new Set<string>(),
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
@@ -921,12 +938,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
       return { confirmToolCalls };
     }),
-  allowToolAlways: (toolName) =>
-    set((state) =>
-      state.alwaysAllowTools.has(toolName)
-        ? state
-        : { alwaysAllowTools: new Set(state.alwaysAllowTools).add(toolName) },
-    ),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId },
+      },
+    })),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolConfirmations)) return state;
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);

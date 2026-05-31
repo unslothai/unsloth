@@ -951,6 +951,7 @@ class ChatCompletionRequest(BaseModel):
 
 class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
+    approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
 
 

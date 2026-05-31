@@ -24,7 +24,12 @@ from urllib.parse import urlparse
 
 from loggers import get_logger
 
-from state.tool_approvals import TOOL_REJECTED_MESSAGE, request_tool_decision
+from state.tool_approvals import (
+    TOOL_REJECTED_MESSAGE,
+    begin_tool_decision,
+    new_approval_id,
+    wait_tool_decision,
+)
 
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
@@ -311,34 +316,51 @@ def run_safetensors_tool_loop(
                 tool_name = tool_name,
             )
 
+            tc_key = tool_name + str(arguments)
+            is_disabled = bool(allowed_tool_names) and tool_name not in allowed_tool_names
+            already_ran_ok = any(
+                k == tc_key and not err for k, err in tool_call_history
+            )
+            # Only gate calls that would actually run: a disabled or
+            # duplicate call is short-circuited below and never executes, so
+            # asking the user to approve it would be noise. Registering the
+            # approval slot *before* tool_start closes the race where the
+            # confirmation could arrive before the waiter exists.
+            needs_confirm = confirm_tool_calls and not is_disabled and not already_ran_ok
+            approval_id = new_approval_id() if needs_confirm else ""
+            decision_slot = (
+                begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            )
+
             yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
             yield {
                 "type": "tool_start",
                 "tool_name": tool_name,
                 "tool_call_id": tc.get("id", ""),
                 "arguments": arguments,
+                "approval_id": approval_id,
+                "awaiting_confirmation": needs_confirm,
             }
 
-            tc_key = tool_name + str(arguments)
-            denied = (
-                confirm_tool_calls
-                and request_tool_decision(session_id, cancel_event = cancel_event)
-                == "deny"
-            )
-            if denied:
-                result = TOOL_REJECTED_MESSAGE
-            elif allowed_tool_names and tool_name not in allowed_tool_names:
+            denied = False
+            if is_disabled:
                 result = (
                     f"Error: tool '{tool_name}' is not enabled for this "
                     "request. Use one of the enabled tools or provide a "
                     "final answer."
                 )
+            elif already_ran_ok:
+                result = DUPLICATE_CALL_NUDGE
             else:
-                already_ran_ok = any(
-                    k == tc_key and not err for k, err in tool_call_history
+                denied = (
+                    decision_slot is not None
+                    and wait_tool_decision(
+                        decision_slot, approval_id, cancel_event = cancel_event
+                    )
+                    == "deny"
                 )
-                if already_ran_ok:
-                    result = DUPLICATE_CALL_NUDGE
+                if denied:
+                    result = TOOL_REJECTED_MESSAGE
                 else:
                     eff_timeout = (
                         None if tool_call_timeout >= 9999 else tool_call_timeout

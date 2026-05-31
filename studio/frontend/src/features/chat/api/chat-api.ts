@@ -107,19 +107,27 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 
 /**
  * Allow or deny a tool call that is paused awaiting user confirmation
- * (when the "Confirm tool calls" toggle is on). The backend gates on the
- * session id alone, since at most one call awaits a decision per thread.
+ * (when the "Confirm tool calls" toggle is on). The call is identified by
+ * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
+ * is a scope check. Resolves to ``true`` only when the backend matched a
+ * pending call, so the caller can surface a retry on a stale/failed post.
  */
 export async function resolveToolConfirmation(
   sessionId: string,
+  approvalId: string,
   decision: "allow" | "deny",
-): Promise<void> {
+): Promise<boolean> {
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, decision }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      approval_id: approvalId,
+      decision,
+    }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
+  return parsed.resolved === true;
 }
 
 export interface CachedGgufRepo {

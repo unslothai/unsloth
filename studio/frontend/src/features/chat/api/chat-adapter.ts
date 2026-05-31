@@ -2204,6 +2204,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 if (toolEvent.type === "tool_start") {
                   const id =
                     (toolEvent.tool_call_id as string) ||
+                    (toolEvent.approval_id as string) ||
                     `${toolEvent.tool_name}_${Date.now()}`;
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
@@ -2214,11 +2215,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     argsText: JSON.stringify(toolArgs),
                     args: toolArgs,
                   });
+                  // Backend-gated tool calls pause for an allow/deny. Record
+                  // the approval id + the session the generation runs under
+                  // (the same id sent as session_id) so the tool card can
+                  // resolve the exact pending call. Non-gated calls (toggle
+                  // off, external providers) never set this, so their cards
+                  // show no approval controls.
+                  if (toolEvent.awaiting_confirmation === true) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolConfirmation(
+                        id,
+                        (toolEvent.approval_id as string) || "",
+                        resolvedThreadId ?? "",
+                      );
+                  }
                 } else if (toolEvent.type === "tool_end") {
                   const id =
                     (toolEvent.tool_call_id as string) ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  // The call resolved; drop any pending confirmation entry.
+                  useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );

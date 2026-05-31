@@ -1268,12 +1268,16 @@ async def confirm_tool_call(
 ):
     """Allow or deny a tool call awaiting user confirmation.
 
-    Returns {"resolved": bool}. ``False`` means no matching call was
-    waiting (e.g. a stale or duplicate confirmation).
+    Identified by ``approval_id`` (echoed from the ``tool_start`` event);
+    ``session_id`` is a scope check. Returns {"resolved": bool}. ``False``
+    means no matching call was waiting (e.g. a stale or duplicate
+    confirmation, or a mismatched session).
     """
     from state.tool_approvals import resolve_tool_decision
 
-    resolved = resolve_tool_decision(body.session_id, body.decision)
+    resolved = resolve_tool_decision(
+        body.approval_id, body.decision, session_id = body.session_id
+    )
     return {"resolved": resolved}
 
 

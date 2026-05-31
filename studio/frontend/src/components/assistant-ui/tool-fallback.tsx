@@ -3,14 +3,11 @@
 
 "use client";
 
-import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -30,7 +27,6 @@ import {
   type ElementType,
   memo,
   useCallback,
-  useEffect,
   useRef,
   useState,
 } from "react";
@@ -323,40 +319,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
-  const alwaysAllowTools = useChatRuntimeStore((s) => s.alwaysAllowTools);
-  const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
-  const [decided, setDecided] = useState(false);
-
-  // A live tool call with no result yet, while confirmation is on, is one
-  // the backend has paused awaiting our decision (the loop is sequential,
-  // so only ever one at a time — the backend gates on the session alone).
-  const awaiting =
-    confirmToolCalls && result === undefined && status?.type === "running";
-  const autoAllowed = alwaysAllowTools.has(toolName);
-  const showConfirm = awaiting && !decided;
-
-  const resolve = useCallback((decision: "allow" | "deny") => {
-    setDecided(true);
-    // Falls back to "" so a thread that started before it had an id (matching
-    // the backend's empty-session gate key) still gets unblocked.
-    const sessionId = useChatRuntimeStore.getState().activeThreadId ?? "";
-    void resolveToolConfirmation(sessionId, decision).catch(() => {});
-  }, []);
-
-  // Tools the user marked "Always allow" approve themselves this session.
-  useEffect(() => {
-    if (showConfirm && autoAllowed) resolve("allow");
-  }, [showConfirm, autoAllowed, resolve]);
-
+  // Allow/Deny confirmation controls are rendered uniformly for every tool
+  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
+  // thread.tsx, so this renderer stays purely presentational.
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
   return (
-    <ToolFallbackRoot
-      className={cn(isCancelled && "bg-muted/30")}
-      defaultOpen={showConfirm && !autoAllowed}
-    >
+    <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
       <ToolFallbackTrigger toolName={toolName} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
@@ -364,30 +334,6 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {showConfirm && !autoAllowed && (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button size="xs" onClick={() => resolve("allow")}>
-              Allow
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                allowToolAlways(toolName);
-                resolve("allow");
-              }}
-            >
-              Always allow
-            </Button>
-            <Button
-              size="xs"
-              variant="destructive"
-              onClick={() => resolve("deny")}
-            >
-              Deny
-            </Button>
-          </div>
-        )}
         {!isCancelled && <ToolFallbackResult result={result} />}
       </ToolFallbackContent>
     </ToolFallbackRoot>

@@ -4465,7 +4465,9 @@ class LlamaCppBackend:
         from core.inference.tools import execute_tool
         from state.tool_approvals import (
             TOOL_REJECTED_MESSAGE,
-            request_tool_decision,
+            begin_tool_decision,
+            new_approval_id,
+            wait_tool_decision,
         )
 
         if not self.is_loaded:
@@ -5077,27 +5079,50 @@ class LlamaCppBackend:
                         status_text = f"Calling: {tool_name}"
                     yield {"type": "status", "text": status_text}
 
-                    yield {
-                        "type": "tool_start",
-                        "tool_name": tool_name,
-                        "tool_call_id": tc.get("id", ""),
-                        "arguments": arguments,
-                    }
-
                     # ── Duplicate call detection ──────────────
                     # str(dict) is stable here: arguments always comes from
                     # json.loads on the same model output within one request,
                     # so insertion order is deterministic (Python 3.7+).
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
-                    _denied = (
-                        confirm_tool_calls
-                        and request_tool_decision(session_id, cancel_event = cancel_event)
-                        == "deny"
+                    _is_duplicate = bool(_prev) and _prev[0] == _tc_key and not _prev[1]
+                    # Guard against the model emitting a tool not in the
+                    # per-request advertised set: filtered MCP names, a
+                    # built-in the caller opted out of, or a stale name
+                    # from a prior turn. Mirrors the safetensors loop's
+                    # allowed_tool_names check.
+                    _allowed = {
+                        (t.get("function") or {}).get("name")
+                        for t in (tools or [])
+                        if (t.get("function") or {}).get("name")
+                    }
+                    _is_disabled = bool(_allowed) and tool_name not in _allowed
+                    # Only gate calls that would actually run: duplicate or
+                    # disabled calls are short-circuited below and never
+                    # execute, so prompting for them would be noise.
+                    # Registering the slot before tool_start closes the race
+                    # where the confirmation could arrive before the waiter.
+                    _needs_confirm = (
+                        confirm_tool_calls and not _is_duplicate and not _is_disabled
                     )
-                    if _denied:
-                        result = TOOL_REJECTED_MESSAGE
-                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
+                    _approval_id = new_approval_id() if _needs_confirm else ""
+                    _decision_slot = (
+                        begin_tool_decision(session_id, _approval_id)
+                        if _needs_confirm
+                        else None
+                    )
+
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_call_id": tc.get("id", ""),
+                        "arguments": arguments,
+                        "approval_id": _approval_id,
+                        "awaiting_confirmation": _needs_confirm,
+                    }
+
+                    _denied = False
+                    if _is_duplicate:
                         result = (
                             "You already made this exact call. "
                             "Do not repeat the same tool call. "
@@ -5106,27 +5131,28 @@ class LlamaCppBackend:
                             "process data you already have, or "
                             "provide your final answer now."
                         )
-                    else:
-                        _effective_timeout = (
-                            None if tool_call_timeout >= 9999 else tool_call_timeout
+                    elif _is_disabled:
+                        result = (
+                            f"Error: tool '{tool_name}' is not enabled "
+                            "for this request. Use one of the enabled "
+                            "tools or provide a final answer."
                         )
-                        # Guard against the model emitting a tool not in the
-                        # per-request advertised set: filtered MCP names, a
-                        # built-in the caller opted out of, or a stale name
-                        # from a prior turn. Mirrors the safetensors loop's
-                        # allowed_tool_names check.
-                        _allowed = {
-                            (t.get("function") or {}).get("name")
-                            for t in (tools or [])
-                            if (t.get("function") or {}).get("name")
-                        }
-                        if _allowed and tool_name not in _allowed:
-                            result = (
-                                f"Error: tool '{tool_name}' is not enabled "
-                                "for this request. Use one of the enabled "
-                                "tools or provide a final answer."
+                    else:
+                        _denied = (
+                            _decision_slot is not None
+                            and wait_tool_decision(
+                                _decision_slot,
+                                _approval_id,
+                                cancel_event = cancel_event,
                             )
+                            == "deny"
+                        )
+                        if _denied:
+                            result = TOOL_REJECTED_MESSAGE
                         else:
+                            _effective_timeout = (
+                                None if tool_call_timeout >= 9999 else tool_call_timeout
+                            )
                             result = execute_tool(
                                 tool_name,
                                 arguments,
