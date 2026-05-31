@@ -2364,8 +2364,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 1), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert result[0].tag == "b9360"
@@ -2382,8 +2384,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["13.3", "12.4"])
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 3), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
@@ -2395,8 +2399,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 1), compute_caps = ["89"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["89"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
