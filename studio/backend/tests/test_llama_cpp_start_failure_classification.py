@@ -30,7 +30,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # Give the structlog stub a real get_logger: a bare ModuleType poisons
 # sys.modules for later tests that call structlog.get_logger at import time.
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
+    "structlog"
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -86,13 +88,13 @@ class TestUnsupportedNonDiffusionArchitecture:
     @pytest.mark.parametrize(
         "arch",
         [
-            "taiwan",        # contains "wan"
-            "swan_llm",      # contains "wan"
-            "fluxion",       # contains "flux"
-            "sd1234",        # contains "sd1"
-            "sd3_chat",      # contains "sd3"
-            "aura2_text",    # contains "aura"
-            "cosmos_reason", # contains "cosmos"
+            "taiwan",  # contains "wan"
+            "swan_llm",  # contains "wan"
+            "fluxion",  # contains "flux"
+            "sd1234",  # contains "sd1"
+            "sd3_chat",  # contains "sd3"
+            "aura2_text",  # contains "aura"
+            "cosmos_reason",  # contains "cosmos"
             "qwen_image_text",  # contains "qwen_image"
         ],
     )
