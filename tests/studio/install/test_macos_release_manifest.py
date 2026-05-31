@@ -81,12 +81,16 @@ def _manifest_bytes():
             },
         ],
     }
-    return (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    return (json.dumps(manifest, indent = 2) + "\n").encode("utf-8")
 
 
-def _checksums_payload(manifest_bytes, *, include_exact_source=True):
+def _checksums_payload(manifest_bytes, *, include_exact_source = True):
     artifacts = {
-        ARM64_ASSET: {"sha256": _hex(ARM64_ASSET), "repo": REPO, "kind": "macos-arm64-app"},
+        ARM64_ASSET: {
+            "sha256": _hex(ARM64_ASSET),
+            "repo": REPO,
+            "kind": "macos-arm64-app",
+        },
         X64_ASSET: {"sha256": _hex(X64_ASSET), "repo": REPO, "kind": "macos-x64-app"},
         "llama-prebuilt-manifest.json": {
             "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
@@ -139,7 +143,10 @@ def test_bundle_parses_both_slices(manifest_bytes):
     bundle = ILP.parse_published_release_bundle(REPO, _release_dict())
     assert bundle is not None
     assert bundle.upstream_tag == UPSTREAM_TAG
-    assert sorted(a.install_kind for a in bundle.artifacts) == ["macos-arm64", "macos-x64"]
+    assert sorted(a.install_kind for a in bundle.artifacts) == [
+        "macos-arm64",
+        "macos-x64",
+    ]
     assert bundle.source_commit == COMMIT
 
 
@@ -183,7 +190,9 @@ def test_missing_source_hash_is_rejected(manifest_bytes):
     # No exact-source and no legacy source entry -> require_approved_source_hash
     # must reject, so we never silently ship a bundle with no approved source.
     checksums = ILP.parse_approved_release_checksums(
-        REPO, RELEASE_TAG, _checksums_payload(manifest_bytes, include_exact_source=False)
+        REPO,
+        RELEASE_TAG,
+        _checksums_payload(manifest_bytes, include_exact_source = False),
     )
     assert ILP.exact_source_archive_hash(checksums) is None
     with pytest.raises(ILP.PrebuiltFallback):
