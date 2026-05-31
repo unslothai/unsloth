@@ -81,6 +81,9 @@ direct_upstream_release_plan = INSTALL_LLAMA_PREBUILT.direct_upstream_release_pl
 _pinned_windows_cuda_fallback = INSTALL_LLAMA_PREBUILT._pinned_windows_cuda_fallback
 CudaRuntimePreference = INSTALL_LLAMA_PREBUILT.CudaRuntimePreference
 published_windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.published_windows_cuda_attempts
+_windows_cuda_attempt_covers_blackwell = (
+    INSTALL_LLAMA_PREBUILT._windows_cuda_attempt_covers_blackwell
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2098,6 +2101,59 @@ class TestPinnedBlackwellCudaFallback:
         existing = windows_cuda_attempts(host, self.TAG, assets, None)
         assert any(a.runtime_line == "cuda13" for a in existing)
         assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def _win_cuda_attempt(self, minor):
+        major = minor.split(".")[0]
+        return AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+            url = "https://example.com/x",
+            source_label = "upstream",
+            install_kind = "windows-cuda",
+            runtime_line = f"cuda{major}",
+        )
+
+    def test_pin_dormant_when_runnable_cuda14_present(self, monkeypatch):
+        # A future Blackwell host with an in-release cuda14 build (no cuda13)
+        # must not get the older b9360 13.1 pin ahead of the runnable cuda14.
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda12"])
+        host = self._win_host((14, 0), ["120"])
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip": "https://example.com/14.0",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/12.4",
+        }
+        existing = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert any(a.runtime_line == "cuda14" for a in existing)
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def test_pin_dormant_when_runnable_cuda12_8_present(self):
+        # A cuda-12.8 build also covers Blackwell, so the pin defers to it.
+        host = self._win_host((13, 1), ["120"])
+        existing = [self._win_cuda_attempt("12.8")]
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def test_pin_fires_when_only_cuda12_4_present(self):
+        # cuda-12.4 does not cover Blackwell, so the pin still fires.
+        host = self._win_host((13, 1), ["120"])
+        existing = [self._win_cuda_attempt("12.4")]
+        assert _pinned_windows_cuda_fallback(host, existing) is not None
+
+    @pytest.mark.parametrize(
+        "minor, covers",
+        [("12.4", False), ("12.8", True), ("13.1", True), ("13.3", True), ("14.0", True)],
+    )
+    def test_attempt_covers_blackwell(self, minor, covers):
+        assert _windows_cuda_attempt_covers_blackwell(self._win_cuda_attempt(minor)) is covers
+
+    def test_attempt_covers_blackwell_ignores_non_cuda_kind(self):
+        cpu = AssetChoice(
+            repo = UPSTREAM_REPO, tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+            url = "https://example.com/x", source_label = "upstream",
+            install_kind = "windows-cpu",
+        )
+        assert _windows_cuda_attempt_covers_blackwell(cpu) is False
 
 
 # ===========================================================================

@@ -231,6 +231,10 @@ _PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
 _PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
 _PINNED_BLACKWELL_DRIVER_FLOOR = (13, 1)
 _BLACKWELL_MIN_SM = 120
+# ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
+# windows-cuda build at or above this already covers Blackwell and makes the
+# older pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
+_BLACKWELL_MIN_TOOLKIT = (12, 8)
 _PINNED_BLACKWELL_LLAMA_SHA256 = (
     "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
 )
@@ -3293,15 +3297,25 @@ def windows_cuda_attempts(
     return attempts
 
 
+def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
+    """True if an in-release windows-cuda attempt is built with a toolkit that
+    covers Blackwell sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    if attempt.install_kind != "windows-cuda":
+        return False
+    m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
+    return m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+
+
 def _pinned_windows_cuda_fallback(
     host: HostInfo, existing_cuda_attempts: list[AssetChoice]
 ) -> AssetChoice | None:
-    """Pinned GPU fallback for a Blackwell host the in-release cuda13 build gates
-    off. Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360,
-    and cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
+    """Pinned GPU fallback for a Blackwell host the in-release build gates off.
+    Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360, and
+    cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
     b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
-    (dormant) whenever a runnable in-release cuda13 build is already present, so
-    it self-disables once upstream ships a driver-runnable build again."""
+    (dormant) whenever the in-release selection already offers a Blackwell-capable
+    build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14), so it self-disables
+    once upstream ships a driver-runnable build again."""
     if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
         return None
     driver = host.driver_cuda_version
@@ -3310,7 +3324,10 @@ def _pinned_windows_cuda_fallback(
     caps = normalize_compute_caps(host.compute_caps)
     if not caps or int(caps[-1]) < _BLACKWELL_MIN_SM:
         return None
-    if any(attempt.runtime_line == "cuda13" for attempt in existing_cuda_attempts):
+    if any(
+        _windows_cuda_attempt_covers_blackwell(attempt)
+        for attempt in existing_cuda_attempts
+    ):
         return None
     tag = _PINNED_BLACKWELL_FALLBACK_TAG
     runtime = _PINNED_BLACKWELL_FALLBACK_RUNTIME
