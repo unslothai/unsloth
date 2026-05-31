@@ -1197,9 +1197,7 @@ def latest_upstream_release_tag() -> str:
     redirect_tag = _resolve_latest_release_tag_via_redirect(UPSTREAM_REPO)
     if redirect_tag:
         return redirect_tag
-    raise RuntimeError(
-        f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
-    )
+    raise RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
 
 
 def is_release_tag_like(value: str | None) -> bool:
@@ -1231,9 +1229,7 @@ def _needs_dynamic_asset_enumeration(host: HostInfo | None) -> bool:
     if host is None:
         return False
     return bool(
-        host.is_windows
-        and host.is_x86_64
-        and (host.has_usable_nvidia or host.has_rocm)
+        host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or host.has_rocm)
     )
 
 
