@@ -3,9 +3,11 @@
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<total_bytes>`` line per device to stdout. The indices
+``<idx>\\t<free_bytes>\\t<is_igpu>`` line per device to stdout. The indices
 are ggml's own Vulkan device ordinals (the space GGML_VK_VISIBLE_DEVICES
-expects), which need not match nvidia-smi order.
+expects), which need not match nvidia-smi order. ``is_igpu`` is ``1`` for an
+integrated GPU (shared system RAM) and ``0`` otherwise, taken from ggml's own
+device type so the reader needn't guess from VRAM-vs-RAM ratios.
 
 Uses only the standard library so it stays runnable as a bare script without
 importing the backend package.
@@ -14,6 +16,48 @@ importing the backend package.
 import ctypes
 import os
 import sys
+
+# ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2, ...
+_GGML_BACKEND_DEVICE_TYPE_IGPU = 2
+
+
+def _igpu_flags(base, lib, count: int) -> list[bool]:
+    """Per-device integrated-GPU flags via ggml's backend registry.
+
+    The Vulkan reg enumerates devices in the same order as
+    ``ggml_backend_vk_get_device_memory`` (ggml-vulkan builds each device
+    context with ``ctx->device = i``), so reg index == device ordinal.
+    Returns all-False on any failure so the reader never over-caps a
+    discrete card just because the type couldn't be read.
+    """
+    flags = [False] * count
+    try:
+        lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
+        lib.ggml_backend_vk_reg.argtypes = []
+        base.ggml_backend_reg_dev_count.restype = ctypes.c_size_t
+        base.ggml_backend_reg_dev_count.argtypes = [ctypes.c_void_p]
+        base.ggml_backend_reg_dev_get.restype = ctypes.c_void_p
+        base.ggml_backend_reg_dev_get.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        base.ggml_backend_dev_type.restype = ctypes.c_int
+        base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
+
+        reg = lib.ggml_backend_vk_reg()
+        if not reg:
+            return flags
+        dev_count = base.ggml_backend_reg_dev_count(reg)
+        for i in range(min(count, dev_count)):
+            dev = base.ggml_backend_reg_dev_get(reg, i)
+            if dev:
+                flags[i] = (
+                    base.ggml_backend_dev_type(dev)
+                    == _GGML_BACKEND_DEVICE_TYPE_IGPU
+                )
+    except Exception:
+        # iGPU detection is best-effort: any failure (missing symbol,
+        # registry call error) degrades to "discrete" so the memory
+        # readings still get through instead of crashing the probe.
+        pass
+    return flags
 
 
 def main() -> int:
@@ -31,7 +75,7 @@ def main() -> int:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
     try:
-        ctypes.CDLL(os.path.join(bindir, base_name), mode = ctypes.RTLD_GLOBAL)
+        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = ctypes.RTLD_GLOBAL)
         lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = ctypes.RTLD_GLOBAL)
     except OSError as e:
         print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
@@ -46,13 +90,17 @@ def main() -> int:
         ctypes.POINTER(ctypes.c_size_t),
     ]
 
+    count = lib.ggml_backend_vk_get_device_count()
+    igpu = _igpu_flags(base, lib, count)
     rows = []
-    for i in range(lib.ggml_backend_vk_get_device_count()):
+    for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
+        # total is a required out-param of the C call but unused: the reader
+        # leaves a flat per-device margin, not a fraction of total.
         lib.ggml_backend_vk_get_device_memory(
             i, ctypes.byref(free), ctypes.byref(total)
         )
-        rows.append("%d\t%d\t%d" % (i, free.value, total.value))
+        rows.append("%d\t%d\t%d" % (i, free.value, int(igpu[i])))
     sys.stdout.write("\n".join(rows))
     return 0
 

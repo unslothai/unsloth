@@ -611,6 +611,29 @@ def _vulkan_lib_filename() -> str:
     return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
 
 
+# Free system RAM to leave on an integrated GPU, mirroring llama.cpp's own
+# auto-fit margin (llama-server --fit-target, default 1024 MiB per device).
+# ggml reports an iGPU's "VRAM" as shared system RAM, so we hold back the same
+# per-device margin --fit would rather than inventing a larger reserve.
+_IGPU_HOST_RESERVE_MIB = 1024
+
+
+def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
+    """Reserve host headroom on an integrated (shared-memory) Vulkan GPU.
+
+    ggml sums every memory heap for an integrated GPU (ggml-vulkan's
+    ggml_backend_vk_get_device_memory), so its reported free "VRAM" is really
+    free system RAM. Sizing context/offload against all of it would crowd out
+    the host and push it into swap or the OOM killer. We leave the same
+    per-device margin llama.cpp's --fit uses (``_IGPU_HOST_RESERVE_MIB``).
+    ``is_igpu`` comes straight from ggml's device type, so a discrete card is
+    never touched. Only ever reduces the budget.
+    """
+    if not is_igpu:
+        return free_mib
+    return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
+
+
 def _llama_lib_dir(binary: str) -> Path:
     # The installer exposes llama-server as a top-level symlink
     # (~/.unsloth/llama.cpp/llama-server) into build/bin/, where the ggml
@@ -1440,8 +1463,9 @@ class LlamaCppBackend:
         instance is created in this process. Returns list of
         (device_index, free_mib) sorted by index, where the index is ggml's
         own Vulkan device ordinal (the space ``GGML_VK_VISIBLE_DEVICES``
-        expects). Returns [] when no Vulkan build is installed or no device
-        is reachable.
+        expects). Integrated GPUs leave a per-device host-RAM margin (see
+        ``_apply_igpu_host_reserve_mib``). Returns [] when no Vulkan build is
+        installed or no device is reachable.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -1451,6 +1475,12 @@ class LlamaCppBackend:
             return []
 
         env = child_env_without_native_path_secret()
+        # Enumerate ggml's canonical, full device list. An inherited
+        # GGML_VK_VISIBLE_DEVICES would renumber/restrict the ordinals, but
+        # load_model writes its own pin in that same full space, so letting
+        # the probe see a pre-existing mask would make the pin double-apply
+        # and target the wrong device.
+        env.pop("GGML_VK_VISIBLE_DEVICES", None)
         if sys.platform != "win32":
             # Let the loader resolve sibling ggml libs next to the binary.
             existing_ld = env.get("LD_LIBRARY_PATH", "")
@@ -1484,9 +1514,17 @@ class LlamaCppBackend:
             try:
                 idx = int(parts[0])
                 free_mib = int(parts[1]) // (1024 * 1024)
+                is_igpu = parts[2] == "1"
             except ValueError:
                 continue
-            gpus.append((idx, free_mib))
+            capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
+            if capped < free_mib:
+                logger.info(
+                    f"Vulkan device VK{idx} is an integrated GPU sharing system "
+                    f"RAM; reserving {free_mib - capped}MiB host headroom "
+                    f"({free_mib}->{capped}MiB usable)"
+                )
+            gpus.append((idx, capped))
         gpus.sort(key = lambda g: g[0])
         if gpus:
             logger.info(
