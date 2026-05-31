@@ -54,7 +54,7 @@ import {
   Folder01Icon,
   Globe02Icon,
   HelpCircleIcon,
-  Logout01Icon,
+  Logout05Icon,
   MoreVerticalIcon,
   Search01Icon,
   PowerIcon,
@@ -1026,7 +1026,7 @@ export function AppSidebar() {
                     void navigate({ to: "/login" });
                   }}
                 >
-                  <HugeiconsIcon icon={Logout01Icon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("shell.navigation.logOut")}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
