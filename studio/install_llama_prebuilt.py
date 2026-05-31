@@ -3312,11 +3312,20 @@ def published_windows_cuda_attempts(
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
-            # See windows_cuda_attempts: pair the cudart bundle.
+            am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
+            # Gate the real published minor against the driver, so a published
+            # windows-cuda artifact can never bypass the driver-version gate.
+            if (
+                am is not None
+                and host.driver_cuda_version is not None
+                and (int(am.group(1)), int(am.group(2))) > host.driver_cuda_version
+            ):
+                continue
+            # See windows_cuda_attempts: pair the cudart bundle for the real minor.
             runtime_archive_name: str | None = None
             runtime_archive_url: str | None = None
-            if artifact.asset_name.startswith("llama-"):
-                runtime = runtime_by_line[runtime_line]
+            if am is not None and artifact.asset_name.startswith("llama-"):
+                runtime = f"{am.group(1)}.{am.group(2)}"
                 cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
                 cudart_url = release.assets.get(cudart_name)
                 if cudart_url and cudart_url != asset_url:
