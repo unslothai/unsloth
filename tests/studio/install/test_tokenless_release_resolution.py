@@ -418,7 +418,7 @@ def test_direct_release_real_asset_takes_precedence_over_redirect(monkeypatch):
         "_resolve_latest_release_tag_via_redirect",
         lambda repo: (_ for _ in ()).throw(AssertionError("redirect used")),
     )
-    plans = MOD.resolve_simple_install_release_plans(
+    _requested, plans = MOD.resolve_simple_install_release_plans(
         "latest", host, "ggml-org/llama.cpp", ""
     )
     assert plans

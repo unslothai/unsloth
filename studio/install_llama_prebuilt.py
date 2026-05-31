@@ -1169,7 +1169,10 @@ def _resolve_latest_release_tag_via_redirect(repo: str) -> str | None:
                     location = exc.headers.get("Location") if exc.headers else None
                 else:
                     raise
-            return _tag_from_release_location(location)
+            tag = _tag_from_release_location(location)
+            # Accept only upstream-style tags (b1234); any other redirect target
+            # is unexpected, so fail closed to the REST/source path.
+            return tag if is_release_tag_like(tag) else None
         except Exception as exc:
             last_exc = exc
             if attempt >= JSON_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
@@ -1258,14 +1261,12 @@ def iter_release_payloads_by_time(
                 )
             else:
                 raise
-        except Exception:
-            raise
 
     # Primary: the GitHub REST release listing. Fallback for upstream "latest":
     # resolve the tag from the github.com release redirect (no api.github.com
-    # budget spent) and synthesize a release with deterministic asset URLs, so a
-    # rate-limited (HTTP 403) REST API does not force a source build. Gated to
-    # upstream single-asset platforms.
+    # budget spent) and synthesize a release whose sentinel lets the planner
+    # build deterministic download URLs, so a rate-limited (HTTP 403) REST API
+    # does not force a source build. Gated to upstream single-asset platforms.
     redirect_eligible = (
         repo == UPSTREAM_REPO
         and (not requested_tag or requested_tag == "latest")
@@ -1295,6 +1296,10 @@ def iter_release_payloads_by_time(
                     "_unsloth_download_repo": repo,
                 }
                 return
+            # Both REST and the redirect fallback failed; surface both causes.
+            raise RuntimeError(
+                f"{exc}; release redirect fallback for {repo} also failed"
+            ) from exc
         raise
     releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
