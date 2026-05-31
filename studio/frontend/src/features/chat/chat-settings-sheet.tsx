@@ -1338,6 +1338,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <ConfirmToolCallsToggle />
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
@@ -1512,13 +1513,35 @@ function AutoHealToolCallsToggle() {
   );
 }
 
+function ConfirmToolCallsToggle() {
+  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
+  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Confirm tool calls
+        </span>
+        <InfoHint>
+          When on, every tool call pauses for your approval in the chat before
+          it runs.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={confirmToolCalls}
+        onCheckedChange={setConfirmToolCalls}
+      />
+    </div>
+  );
+}
+
 function McpServersSection() {
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
-  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
-  const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
   const [enabledServerCount, setEnabledServerCount] = useState<number | null>(
     null,
   );
@@ -1557,22 +1580,6 @@ function McpServersSection() {
           checked={mcpEnabledForChat}
           onCheckedChange={setMcpEnabledForChat}
           disabled={enabledServerCount === 0 && !mcpEnabledForChat}
-        />
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Confirm tool calls
-          </span>
-          <InfoHint>
-            When on, every tool call pauses for your approval in the chat
-            before it runs.
-          </InfoHint>
-        </div>
-        <Switch
-          className="panel-switch"
-          checked={confirmToolCalls}
-          onCheckedChange={setConfirmToolCalls}
         />
       </div>
       <div className="flex items-center justify-between">
