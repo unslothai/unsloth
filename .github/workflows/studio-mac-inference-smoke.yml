@@ -114,13 +114,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -369,13 +364,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Reset auth + boot Studio (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
@@ -760,13 +750,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
