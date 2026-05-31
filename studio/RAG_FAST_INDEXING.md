@@ -86,4 +86,21 @@ improved path. Search latency on the improved path: 9-15 ms median (FTS5 + sqlit
 ### Summary
 
 Indexing a paper drops from ~23 s to ~7 s and a small document from ~18 s to ~0.12 s, with
-retrieval accuracy held constant. UI walkthrough (Playwright) and the local-GGUF chat path follow.
+retrieval accuracy held constant.
+
+### End-to-end validation in the real Studio UI (Playwright + local GGUF)
+
+Both Studios were driven through the actual web UI with Playwright, with the local
+`unsloth/Qwen3.5-9B-GGUF` (Q4_K_M) loaded via llama-server. Flow per Studio: load model, enable the
+RAG toggle, upload `bert_1810.04805.pdf` through the composer, then ask "What are BERT's two
+pre-training objectives?".
+
+- **RAG works on both** (identical functionality): the model calls the `search_knowledge_base`
+  tool, retrieves from the uploaded PDF, and answers with source citations
+  (`[3][4] bert_1810.04805.pdf`). API-level tool-call test: 3/3 gold questions called the tool,
+  retrieved the correct source paper, and answered with the right fact (BERT -> MLM + NSP,
+  Transformer -> 8 heads, RAG -> DPR).
+- **Indexing speed in the UI**: baseline 34.9 s vs improved 14.0 s for the same composer upload.
+
+This confirms the fast path keeps the PR's full RAG behavior (many document types, the RAG toggle,
+and tool-call retrieval with citations) while indexing materially faster.
